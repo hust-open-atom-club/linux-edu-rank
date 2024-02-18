@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+from argparse import ArgumentParser
 from datetime import datetime
 from functools import reduce
 
@@ -9,11 +10,17 @@ import git
 import requests
 from tqdm import tqdm
 
-branch = "master"
-path = "/home/chengziqiu/linux"
-repo_name = "Linux Mainline"
+parser = ArgumentParser()
+parser.add_argument("--branch", type=str, default="master")
+parser.add_argument("--path", type=str, default="/tmp/linux")
+parser.add_argument("--repo", type=str, default="Linux Mainline")
 
-repo = git.Repo("/home/chengziqiu/linux")
+args = parser.parse_args()
+branch = args.branch
+path = args.path
+repo_name = args.repo
+
+repo = git.Repo(path)
 
 
 print("Getting university list...")
