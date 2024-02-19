@@ -219,7 +219,11 @@ def generate_html(id, title, patches):
                     pagination=get_pagination(i),
                     content="<hr>".join(
                         map(
-                            lambda x: "<pre>{}</pre>".format(x),
+                            lambda x: "<pre>{}</pre>".format(
+                                x.replace("&", "&amp;")
+                                .replace("<", "&lt;")
+                                .replace(">", "&gt;")
+                            ),
                             patches[(i - 1) * PAGE_SIZE : i * PAGE_SIZE],
                         )
                     ),
