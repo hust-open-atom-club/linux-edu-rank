@@ -139,6 +139,6 @@ for item in result:
         for patch in patches:
             str += f"<pre>{patch}</pre>"
             str += "<hr>"
-    with open(f"detail/{item['rank']}.html", "w") as f:
+    with open(f"detail/{item['id']}.html", "w") as f:
         f.write(str.encode("utf-8", "replace").decode("utf-8"))
 print("Done!")
