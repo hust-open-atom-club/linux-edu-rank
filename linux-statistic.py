@@ -41,7 +41,8 @@ meta = {
 }
 
 # exec command and turn pipe to iterator
-result = {}
+result_patches = {}
+result_lines = {}
 result_detail = {}
 result_authors = {}
 print("Total commits: ", len(commits))
@@ -54,15 +55,27 @@ for commit in tqdm(commits):
     if not ".edu" in domain:
         continue
 
-    result[domain] = result.get(domain, 0) + 1
+    result_patches[domain] = result_patches.get(domain, 0) + 1
+    result_lines[domain] = result_lines.get(domain, 0) + commit.stats.total["lines"]
     if result_detail.get(domain) is None:
         result_detail[domain] = []
     result_detail[domain].append(repo.git.show(commit.hexsha))
     if result_authors.get(domain) is None:
         result_authors[domain] = {}
     if result_authors.get(domain).get(email) is None:
-        result_authors[domain][email] = [commit.author.name, 0]
+        result_authors[domain][email] = [commit.author.name, 0, []]
     result_authors[domain][email][1] = result_authors[domain][email][1] + 1
+    result_authors[domain][email][2].append(
+        {
+            "commit": commit.hexsha,
+            "summary": commit.summary,
+            "date": commit.authored_datetime.isoformat(),
+            "files": commit.stats.total["files"],
+            "lines": "-{}/+{}".format(
+                commit.stats.total["deletions"], commit.stats.total["insertions"]
+            ),
+        }
+    )
 
 
 def get_university(domain):
@@ -82,27 +95,38 @@ result = map(
     lambda x: {
         "domain": x[0],
         "count": x[1],
+        "lines": result_lines[x[0]],
         "university": get_university(x[0]),
     },
-    result.items(),
+    result_patches.items(),
 )
 
 result_tmp = {}
 # merge same university and set domain to list
 for item in result:
-    if item["university"] is None:
-        authors = list(
+
+    def result_authors_transform(result_authors):
+        return list(
             map(
-                lambda x: {"email": x[0], "name": x[1][0], "count": x[1][1]},
+                lambda x: {
+                    "email": x[0],
+                    "name": x[1][0],
+                    "count": x[1][1],
+                    "commits": x[1][2],
+                },
                 result_authors.get(item["domain"], {}).items(),
             )
         )
+
+    if item["university"] is None:
+        authors = result_authors_transform(result_authors)
         authors.sort(key=lambda x: x["count"], reverse=True),
         result_tmp[item["domain"]] = {
             "name": f"Unknown ({item['domain']})",
             "domains": [item["domain"]],
             "university": None,
             "count": item["count"],
+            "lines": item["lines"],
             "authors": authors,
         }
         continue
@@ -113,20 +137,15 @@ for item in result:
             "domains": [],
             "university": item["university"],
             "count": 0,
+            "lines": 0,
             "authors": [],
         }
     if item["domain"] not in result_tmp[name]["domains"]:
         result_tmp[name]["domains"].append(item["domain"])
-        result_tmp[name]["authors"].extend(
-            list(
-                map(
-                    lambda x: {"email": x[0], "name": x[1][0], "count": x[1][1]},
-                    result_authors.get(item["domain"], {}).items(),
-                )
-            )
-        )
+        result_tmp[name]["authors"].extend(result_authors_transform(result_authors))
     result_tmp[name]["authors"].sort(key=lambda x: x["count"], reverse=True)
     result_tmp[name]["count"] += item["count"]
+    result_tmp[name]["lines"] += item["lines"]
 
 result = list(result_tmp.values())
 result.sort(key=lambda x: x["count"], reverse=True)

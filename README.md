@@ -1,4 +1,4 @@
-# Linux Kernel Contribute Rank among Universities
+# Linux Kernel Contribution Ranking among Universities
 
 ## Introduction
 
