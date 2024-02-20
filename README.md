@@ -1,8 +1,8 @@
-# Linux Kernel Contribution Ranking among Universities
+# Linux Kernel Patch Statistic among Universities
 
 ## Introduction
 
-This project is to rank the contribution of universities to the Linux kernel.
+This project is to do some data statistics about Linux kernel patches contributed by universities.
 
 The result is displayed in a web page with a table.
 
