@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 35e9a9f93994d7f7d12afa41169c7ba05513721b
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Apr 20 22:42:24 2015 -0500
+
+    SCSI: add 1024 max sectors black list flag
+    
+    This works around a issue with qnap iscsi targets not handling large IOs
+    very well.
+    
+    The target returns:
+    
+    VPD INQUIRY: Block limits page (SBC)
+      Maximum compare and write length: 1 blocks
+      Optimal transfer length granularity: 1 blocks
+      Maximum transfer length: 4294967295 blocks
+      Optimal transfer length: 4294967295 blocks
+      Maximum prefetch, xdread, xdwrite transfer length: 0 blocks
+      Maximum unmap LBA count: 8388607
+      Maximum unmap block descriptor count: 1
+      Optimal unmap granularity: 16383
+      Unmap granularity alignment valid: 0
+      Unmap granularity alignment: 0
+      Maximum write same length: 0xffffffff blocks
+      Maximum atomic transfer length: 0
+      Atomic alignment: 0
+      Atomic transfer length granularity: 0
+    
+    and it is *sometimes* able to handle at least one IO of size up to 8 MB. We
+    have seen in traces where it will sometimes work, but other times it
+    looks like it fails and it looks like it returns failures if we send
+    multiple large IOs sometimes. Also it looks like it can return 2 different
+    errors. It will sometimes send iscsi reject errors indicating out of
+    resources or it will send invalid cdb illegal requests check conditions.
+    And then when it sends iscsi rejects it does not seem to handle retries
+    when there are command sequence holes, so I could not just add code to
+    try and gracefully handle that error code.
+    
+    The problem is that we do not have a good contact for the company,
+    so we are not able to determine under what conditions it returns
+    which error and why it sometimes works.
+    
+    So, this patch just adds a new black list flag to set targets like this to
+    the old max safe sectors of 1024. The max_hw_sectors changes added in 3.19
+    caused this regression, so I also ccing stable.
+    
+    Reported-by: Christian Hesse &lt;list@eworm.de&gt;
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Cc: stable@vger.kernel.org
+    Reviewed-by: Christoph Hellwig &lt;hch@lst.de&gt;
+    Signed-off-by: James Bottomley &lt;JBottomley@Odin.com&gt;
+
+diff --git a/drivers/scsi/scsi_devinfo.c b/drivers/scsi/scsi_devinfo.c
+index 262ab837a704..9f77d23239a2 100644
+--- a/drivers/scsi/scsi_devinfo.c
++++ b/drivers/scsi/scsi_devinfo.c
+@@ -226,6 +226,7 @@ static struct {
+ 	{"PIONEER", "CD-ROM DRM-624X", NULL, BLIST_FORCELUN | BLIST_SINGLELUN},
+ 	{"Promise", "VTrak E610f", NULL, BLIST_SPARSELUN | BLIST_NO_RSOC},
+ 	{"Promise", "", NULL, BLIST_SPARSELUN},
++	{"QNAP", "iSCSI Storage", NULL, BLIST_MAX_1024},
+ 	{"QUANTUM", "XP34301", "1071", BLIST_NOTQ},
+ 	{"REGAL", "CDC-4X", NULL, BLIST_MAX5LUN | BLIST_SINGLELUN},
+ 	{"SanDisk", "ImageMate CF-SD1", NULL, BLIST_FORCELUN},
+diff --git a/drivers/scsi/scsi_scan.c b/drivers/scsi/scsi_scan.c
+index 60aae01caa89..6efab1c455e1 100644
+--- a/drivers/scsi/scsi_scan.c
++++ b/drivers/scsi/scsi_scan.c
+@@ -897,6 +897,12 @@ static int scsi_add_lun(struct scsi_device *sdev, unsigned char *inq_result,
+ 	 */
+ 	if (*bflags &amp; BLIST_MAX_512)
+ 		blk_queue_max_hw_sectors(sdev-&gt;request_queue, 512);
++	/*
++	 * Max 1024 sector transfer length for targets that report incorrect
++	 * max/optimal lengths and relied on the old block layer safe default
++	 */
++	else if (*bflags &amp; BLIST_MAX_1024)
++		blk_queue_max_hw_sectors(sdev-&gt;request_queue, 1024);
+ 
+ 	/*
+ 	 * Some devices may not want to have a start command automatically
+diff --git a/include/scsi/scsi_devinfo.h b/include/scsi/scsi_devinfo.h
+index 183eaab7c380..96e3f56519e7 100644
+--- a/include/scsi/scsi_devinfo.h
++++ b/include/scsi/scsi_devinfo.h
+@@ -36,5 +36,6 @@
+ 					     for sequential scan */
+ #define BLIST_TRY_VPD_PAGES	0x10000000 /* Attempt to read VPD pages */
+ #define BLIST_NO_RSOC		0x20000000 /* don't try to issue RSOC */
++#define BLIST_MAX_1024		0x40000000 /* maximum 1024 sector cdb length */
+ 
+ #endif</pre><hr><pre>commit b815fc12d4dd2b5586184fb4f867caff05a810d4
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Apr 10 02:47:27 2015 -0500
+
+    iscsi target: fix oops when adding reject pdu
+    
+    This fixes a oops due to a double list add when adding a reject PDU for
+    iscsit_allocate_iovecs allocation failures. The cmd has already been
+    added to the conn_cmd_list in iscsit_setup_scsi_cmd, so this has us call
+    iscsit_reject_cmd.
+    
+    Note that for ERL0 the reject PDU is not actually sent, so this patch
+    is not completely tested. Just verified we do not oops. The problem is the
+    add reject functions return -1 which is returned all the way up to
+    iscsi_target_rx_thread which for ERL0 will drop the connection.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Cc: &lt;stable@vger.kernel.org&gt; # v3.10+
+    Signed-off-by: Nicholas Bellinger &lt;nab@linux-iscsi.org&gt;
+
+diff --git a/drivers/target/iscsi/iscsi_target.c b/drivers/target/iscsi/iscsi_target.c
+index d5f66be6988e..77d64251af40 100644
+--- a/drivers/target/iscsi/iscsi_target.c
++++ b/drivers/target/iscsi/iscsi_target.c
+@@ -1181,7 +1181,7 @@ iscsit_handle_scsi_cmd(struct iscsi_conn *conn, struct iscsi_cmd *cmd,
+ 	 * traditional iSCSI block I/O.
+ 	 */
+ 	if (iscsit_allocate_iovecs(cmd) &lt; 0) {
+-		return iscsit_add_reject_cmd(cmd,
++		return iscsit_reject_cmd(cmd,
+ 				ISCSI_REASON_BOOKMARK_NO_RESOURCES, buf);
+ 	}
+ 	immed_data = cmd-&gt;immediate_data;</pre><hr><pre>commit 28072ad50ca7328bd99f9dba94ac27c723da0053
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Jan 28 03:46:53 2015 -0600
+
+    scsi: fix device handler detach oops
+    
+    This fixes a regression caused by commit 1d5203 ("scsi: handle more device
+    handler setup/teardown in common code").
+    
+    The bug is that the alua detach() callout will try to access the
+    sddev-&gt;scsi_dh_data, but we have already set it to NULL. This patch
+    moves the clearing of that field to after detach() is called.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Christoph Hellwig &lt;hch@lst.de&gt;
+
+diff --git a/drivers/scsi/device_handler/scsi_dh.c b/drivers/scsi/device_handler/scsi_dh.c
+index 1dba62c5cf6a..1efebc9eedfb 100644
+--- a/drivers/scsi/device_handler/scsi_dh.c
++++ b/drivers/scsi/device_handler/scsi_dh.c
+@@ -136,11 +136,12 @@ static void __detach_handler (struct kref *kref)
+ 	struct scsi_device_handler *scsi_dh = scsi_dh_data-&gt;scsi_dh;
+ 	struct scsi_device *sdev = scsi_dh_data-&gt;sdev;
+ 
++	scsi_dh-&gt;detach(sdev);
++
+ 	spin_lock_irq(sdev-&gt;request_queue-&gt;queue_lock);
+ 	sdev-&gt;scsi_dh_data = NULL;
+ 	spin_unlock_irq(sdev-&gt;request_queue-&gt;queue_lock);
+ 
+-	scsi_dh-&gt;detach(sdev);
+ 	sdev_printk(KERN_NOTICE, sdev, "%s: Detached\n", scsi_dh-&gt;name);
+ 	module_put(scsi_dh-&gt;module);
+ }</pre><hr><pre>commit 89baaa570ab0b476db09408d209578cfed700e9f
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu Oct 16 01:50:19 2014 -0500
+
+    libceph: use memalloc flags for net IO
+    
+    This patch has ceph's lib code use the memalloc flags.
+    
+    If the VM layer needs to write data out to free up memory to handle new
+    allocation requests, the block layer must be able to make forward progress.
+    To handle that requirement we use structs like mempools to reserve memory for
+    objects like bios and requests.
+    
+    The problem is when we send/receive block layer requests over the network
+    layer, net skb allocations can fail and the system can lock up.
+    To solve this, the memalloc related flags were added. NBD, iSCSI
+    and NFS uses these flags to tell the network/vm layer that it should
+    use memory reserves to fullfill allcation requests for structs like
+    skbs.
+    
+    I am running ceph in a bunch of VMs in my laptop, so this patch was
+    not tested very harshly.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Reviewed-by: Ilya Dryomov &lt;idryomov@redhat.com&gt;
+
+diff --git a/net/ceph/messenger.c b/net/ceph/messenger.c
+index 559c9f619c20..8d1653caffdb 100644
+--- a/net/ceph/messenger.c
++++ b/net/ceph/messenger.c
+@@ -484,7 +484,7 @@ static int ceph_tcp_connect(struct ceph_connection *con)
+ 			       IPPROTO_TCP, &amp;sock);
+ 	if (ret)
+ 		return ret;
+-	sock-&gt;sk-&gt;sk_allocation = GFP_NOFS;
++	sock-&gt;sk-&gt;sk_allocation = GFP_NOFS | __GFP_MEMALLOC;
+ 
+ #ifdef CONFIG_LOCKDEP
+ 	lockdep_set_class(&amp;sock-&gt;sk-&gt;sk_lock, &amp;socket_class);
+@@ -509,6 +509,9 @@ static int ceph_tcp_connect(struct ceph_connection *con)
+ 
+ 		return ret;
+ 	}
++
++	sk_set_memalloc(sock-&gt;sk);
++
+ 	con-&gt;sock = sock;
+ 	return 0;
+ }
+@@ -2769,8 +2772,11 @@ static void con_work(struct work_struct *work)
+ {
+ 	struct ceph_connection *con = container_of(work, struct ceph_connection,
+ 						   work.work);
++	unsigned long pflags = current-&gt;flags;
+ 	bool fault;
+ 
++	current-&gt;flags |= PF_MEMALLOC;
++
+ 	mutex_lock(&amp;con-&gt;mutex);
+ 	while (true) {
+ 		int ret;
+@@ -2824,6 +2830,8 @@ static void con_work(struct work_struct *work)
+ 		con_fault_finish(con);
+ 
+ 	con-&gt;ops-&gt;put(con);
++
++	tsk_restore_flags(current, pflags, PF_MEMALLOC);
+ }
+ 
+ /*</pre><hr><pre>commit a41a9ad3bbf61fae0b6bfb232153da60d14fdbd9
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Sep 29 13:55:41 2014 -0500
+
+    be2iscsi: check ip buffer before copying
+    
+    Dan Carpenter found a issue where be2iscsi would copy the ip
+    from userspace to the driver buffer before checking the len
+    of the data being copied:
+    http://marc.info/?l=linux-scsi&amp;m=140982651504251&amp;w=2
+    
+    This patch just has us only copy what we the driver buffer
+    can support.
+    
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Tested-by: John Soni Jose &lt;sony.john-n@emulex.com&gt;
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Christoph Hellwig &lt;hch@lst.de&gt;
+
+diff --git a/drivers/scsi/be2iscsi/be_mgmt.c b/drivers/scsi/be2iscsi/be_mgmt.c
+index 8478506739fb..681d4e8f003a 100644
+--- a/drivers/scsi/be2iscsi/be_mgmt.c
++++ b/drivers/scsi/be2iscsi/be_mgmt.c
+@@ -943,17 +943,20 @@ mgmt_static_ip_modify(struct beiscsi_hba *phba,
+ 
+ 	if (ip_action == IP_ACTION_ADD) {
+ 		memcpy(req-&gt;ip_params.ip_record.ip_addr.addr, ip_param-&gt;value,
+-		       ip_param-&gt;len);
++		       sizeof(req-&gt;ip_params.ip_record.ip_addr.addr));
+ 
+ 		if (subnet_param)
+ 			memcpy(req-&gt;ip_params.ip_record.ip_addr.subnet_mask,
+-			       subnet_param-&gt;value, subnet_param-&gt;len);
++			       subnet_param-&gt;value,
++			       sizeof(req-&gt;ip_params.ip_record.ip_addr.subnet_mask));
+ 	} else {
+ 		memcpy(req-&gt;ip_params.ip_record.ip_addr.addr,
+-		       if_info-&gt;ip_addr.addr, ip_param-&gt;len);
++		       if_info-&gt;ip_addr.addr,
++		       sizeof(req-&gt;ip_params.ip_record.ip_addr.addr));
+ 
+ 		memcpy(req-&gt;ip_params.ip_record.ip_addr.subnet_mask,
+-		       if_info-&gt;ip_addr.subnet_mask, ip_param-&gt;len);
++		       if_info-&gt;ip_addr.subnet_mask,
++		       sizeof(req-&gt;ip_params.ip_record.ip_addr.subnet_mask));
+ 	}
+ 
+ 	rc = mgmt_exec_nonemb_cmd(phba, &amp;nonemb_cmd, NULL, 0);
+@@ -981,7 +984,7 @@ static int mgmt_modify_gateway(struct beiscsi_hba *phba, uint8_t *gt_addr,
+ 	req-&gt;action = gtway_action;
+ 	req-&gt;ip_addr.ip_type = BE2_IPV4;
+ 
+-	memcpy(req-&gt;ip_addr.addr, gt_addr, param_len);
++	memcpy(req-&gt;ip_addr.addr, gt_addr, sizeof(req-&gt;ip_addr.addr));
+ 
+ 	return mgmt_exec_nonemb_cmd(phba, &amp;nonemb_cmd, NULL, 0);
+ }</pre><hr><pre>commit 4bfb8ebf4c21f372a8677f9aa99963985e9e6539
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Sep 29 13:55:42 2014 -0500
+
+    iscsi_tcp: export port being used
+    
+    This just has iscsi_tcp support ISCSI_PARAM_LOCAL_PORT which
+    exports the local port being used by the iscsi connection.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Christoph Hellwig &lt;hch@lst.de&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index a669f2d11c31..427af0f24b0f 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -726,13 +726,18 @@ static int iscsi_sw_tcp_conn_get_param(struct iscsi_cls_conn *cls_conn,
+ 	switch(param) {
+ 	case ISCSI_PARAM_CONN_PORT:
+ 	case ISCSI_PARAM_CONN_ADDRESS:
++	case ISCSI_PARAM_LOCAL_PORT:
+ 		spin_lock_bh(&amp;conn-&gt;session-&gt;frwd_lock);
+ 		if (!tcp_sw_conn || !tcp_sw_conn-&gt;sock) {
+ 			spin_unlock_bh(&amp;conn-&gt;session-&gt;frwd_lock);
+ 			return -ENOTCONN;
+ 		}
+-		rc = kernel_getpeername(tcp_sw_conn-&gt;sock,
+-					(struct sockaddr *)&amp;addr, &amp;len);
++		if (param == ISCSI_PARAM_LOCAL_PORT)
++			rc = kernel_getsockname(tcp_sw_conn-&gt;sock,
++						(struct sockaddr *)&amp;addr, &amp;len);
++		else
++			rc = kernel_getpeername(tcp_sw_conn-&gt;sock,
++						(struct sockaddr *)&amp;addr, &amp;len);
+ 		spin_unlock_bh(&amp;conn-&gt;session-&gt;frwd_lock);
+ 		if (rc)
+ 			return rc;
+@@ -895,6 +900,7 @@ static umode_t iscsi_sw_tcp_attr_is_visible(int param_type, int param)
+ 		case ISCSI_PARAM_DATADGST_EN:
+ 		case ISCSI_PARAM_CONN_ADDRESS:
+ 		case ISCSI_PARAM_CONN_PORT:
++		case ISCSI_PARAM_LOCAL_PORT:
+ 		case ISCSI_PARAM_EXP_STATSN:
+ 		case ISCSI_PARAM_PERSISTENT_ADDRESS:
+ 		case ISCSI_PARAM_PERSISTENT_PORT:
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 191b59793519..0d8bc6c66650 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -3505,6 +3505,7 @@ int iscsi_conn_get_addr_param(struct sockaddr_storage *addr,
+ 			len = sprintf(buf, "%pI6\n", &amp;sin6-&gt;sin6_addr);
+ 		break;
+ 	case ISCSI_PARAM_CONN_PORT:
++	case ISCSI_PARAM_LOCAL_PORT:
+ 		if (sin)
+ 			len = sprintf(buf, "%hu\n", be16_to_cpu(sin-&gt;sin_port));
+ 		else</pre><hr><pre>commit db9bfd64b14a3a8f1868d2164518fdeab1b26ad1
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Sep 3 00:00:39 2014 -0500
+
+    [SCSI] libiscsi: fix potential buffer overrun in __iscsi_conn_send_pdu
+    
+    This patches fixes a potential buffer overrun in __iscsi_conn_send_pdu.
+    This function is used by iscsi drivers and userspace to send iscsi PDUs/
+    commands. For login commands, we have a set buffer size. For all other
+    commands we do not support data buffers.
+    
+    This was reported by Dan Carpenter here:
+    http://www.spinics.net/lists/linux-scsi/msg66838.html
+    
+    Reported-by: Dan Carpenter &lt;dan.carpenter@oracle.com&gt;
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Reviewed-by: Sagi Grimberg &lt;sagig@mellanox.com&gt;
+    Signed-off-by: Christoph Hellwig &lt;hch@lst.de&gt;
+    Cc: stable@vger.kernel.org
+    Signed-off-by: James Bottomley &lt;JBottomley@Parallels.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index ea025e4806b6..191b59793519 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -717,11 +717,21 @@ __iscsi_conn_send_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 			return NULL;
+ 		}
+ 
++		if (data_size &gt; ISCSI_DEF_MAX_RECV_SEG_LEN) {
++			iscsi_conn_printk(KERN_ERR, conn, "Invalid buffer len of %u for login task. Max len is %u\n", data_size, ISCSI_DEF_MAX_RECV_SEG_LEN);
++			return NULL;
++		}
++
+ 		task = conn-&gt;login_task;
+ 	} else {
+ 		if (session-&gt;state != ISCSI_STATE_LOGGED_IN)
+ 			return NULL;
+ 
++		if (data_size != 0) {
++			iscsi_conn_printk(KERN_ERR, conn, "Can not send data buffer of len %u for op 0x%x\n", data_size, opcode);
++			return NULL;
++		}
++
+ 		BUG_ON(conn-&gt;c_stage == ISCSI_CONN_INITIAL_STAGE);
+ 		BUG_ON(conn-&gt;c_stage == ISCSI_CONN_STOPPED);
+ </pre><hr><pre>commit cbaa42213461e9a722a391b3800d7c111de7049b
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Sep 3 00:00:39 2014 -0500
+
+    libiscsi: fix potential buffer overrun in __iscsi_conn_send_pdu
+    
+    This patches fixes a potential buffer overrun in __iscsi_conn_send_pdu.
+    This function is used by iscsi drivers and userspace to send iscsi PDUs/
+    commands. For login commands, we have a set buffer size. For all other
+    commands we do not support data buffers.
+    
+    This was reported by Dan Carpenter here:
+    http://www.spinics.net/lists/linux-scsi/msg66838.html
+    
+    Reported-by: Dan Carpenter &lt;dan.carpenter@oracle.com&gt;
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Reviewed-by: Sagi Grimberg &lt;sagig@mellanox.com&gt;
+    Signed-off-by: Christoph Hellwig &lt;hch@lst.de&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index ea025e4806b6..191b59793519 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -717,11 +717,21 @@ __iscsi_conn_send_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 			return NULL;
+ 		}
+ 
++		if (data_size &gt; ISCSI_DEF_MAX_RECV_SEG_LEN) {
++			iscsi_conn_printk(KERN_ERR, conn, "Invalid buffer len of %u for login task. Max len is %u\n", data_size, ISCSI_DEF_MAX_RECV_SEG_LEN);
++			return NULL;
++		}
++
+ 		task = conn-&gt;login_task;
+ 	} else {
+ 		if (session-&gt;state != ISCSI_STATE_LOGGED_IN)
+ 			return NULL;
+ 
++		if (data_size != 0) {
++			iscsi_conn_printk(KERN_ERR, conn, "Can not send data buffer of len %u for op 0x%x\n", data_size, opcode);
++			return NULL;
++		}
++
+ 		BUG_ON(conn-&gt;c_stage == ISCSI_CONN_INITIAL_STAGE);
+ 		BUG_ON(conn-&gt;c_stage == ISCSI_CONN_STOPPED);
+ </pre><hr><pre>commit bfb5087924921f147d4c5d731cbc8c3a069bed0b
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sun Aug 3 18:37:52 2014 -0500
+
+    iscsi class: Fix freeing of skb in get host error path
+    
+    If get_host_stats failes we are using kfree to free the
+    skb. We should be using kfree_skb.
+    
+    This patch was made over Christoph's scsi-queue drivers-for-3.17 branch.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Christoph Hellwig &lt;hch@lst.de&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 534d3fb87658..67d43e35693d 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -3468,7 +3468,7 @@ iscsi_get_host_stats(struct iscsi_transport *transport, struct nlmsghdr *nlh)
+ 
+ 		err = transport-&gt;get_host_stats(shost, buf, host_stats_size);
+ 		if (err) {
+-			kfree(skbhost_stats);
++			kfree_skb(skbhost_stats);
+ 			goto exit_host_stats;
+ 		}
+ </pre><hr><pre>commit 09ff742c62a6bbfca7aed485f44c8b16f52e1096
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sat Jul 12 15:51:51 2014 -0500
+
+    libiscsi: return new error code when nop times out
+    
+    When a iscsi nop as ping timedout we were failing with the
+    common connection error code, ISCSI_ERR_CONN_FAILED. This
+    patch adds a new error code for this problem so can properly
+    track/distinguish in userspace.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: Vikas Chaudhary &lt;vikas.chaudhary@qlogic.com&gt;
+    Reviewed-by: Hannes Reinecke &lt;hare@suse.de&gt;
+    Signed-off-by: Christoph Hellwig &lt;hch@lst.de&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index f9f3a1224dfa..ea025e4806b6 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -2097,7 +2097,7 @@ static void iscsi_check_transport_timeouts(unsigned long data)
+ 				  conn-&gt;ping_timeout, conn-&gt;recv_timeout,
+ 				  last_recv, conn-&gt;last_ping, jiffies);
+ 		spin_unlock(&amp;session-&gt;frwd_lock);
+-		iscsi_conn_failure(conn, ISCSI_ERR_CONN_FAILED);
++		iscsi_conn_failure(conn, ISCSI_ERR_NOP_TIMEDOUT);
+ 		return;
+ 	}
+ 
+diff --git a/include/scsi/iscsi_if.h b/include/scsi/iscsi_if.h
+index fd0421c6d40a..95ed9424a11a 100644
+--- a/include/scsi/iscsi_if.h
++++ b/include/scsi/iscsi_if.h
+@@ -527,6 +527,7 @@ enum iscsi_err {
+ 	ISCSI_ERR_XMIT_FAILED		= ISCSI_ERR_BASE + 19,
+ 	ISCSI_ERR_TCP_CONN_CLOSE	= ISCSI_ERR_BASE + 20,
+ 	ISCSI_ERR_SCSI_EH_SESSION_RST	= ISCSI_ERR_BASE + 21,
++	ISCSI_ERR_NOP_TIMEDOUT		= ISCSI_ERR_BASE + 22,
+ };
+ 
+ /*</pre>
+    <div class="pagination">
+        <span>[1]</span><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

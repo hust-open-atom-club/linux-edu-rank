@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_47.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><span>[48]</span>
+    </div>
+    <hr>
+    <pre>commit 5d424d5a674f782d0659a3b66d951f412901faee
+Author: John Heffner &lt;jheffner@psc.edu&gt;
+Date:   Mon Mar 20 17:53:41 2006 -0800
+
+    [TCP]: MTU probing
+    
+    Implementation of packetization layer path mtu discovery for TCP, based on
+    the internet-draft currently found at
+    &lt;http://www.ietf.org/internet-drafts/draft-ietf-pmtud-method-05.txt&gt;.
+    
+    Signed-off-by: John Heffner &lt;jheffner@psc.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/include/linux/sysctl.h b/include/linux/sysctl.h
+index 8ad4beab2888..6e8880ea49e7 100644
+--- a/include/linux/sysctl.h
++++ b/include/linux/sysctl.h
+@@ -397,6 +397,8 @@ enum
+ 	NET_TCP_CONG_CONTROL=110,
+ 	NET_TCP_ABC=111,
+ 	NET_IPV4_IPFRAG_MAX_DIST=112,
++ 	NET_TCP_MTU_PROBING=113,
++	NET_TCP_BASE_MSS=114,
+ };
+ 
+ enum {
+diff --git a/include/net/inet_connection_sock.h b/include/net/inet_connection_sock.h
+index fa587c94e9d0..b3abe33f4e5f 100644
+--- a/include/net/inet_connection_sock.h
++++ b/include/net/inet_connection_sock.h
+@@ -72,6 +72,7 @@ struct inet_connection_sock_af_ops {
+  * @icsk_probes_out:	   unanswered 0 window probes
+  * @icsk_ext_hdr_len:	   Network protocol overhead (IP/IPv6 options)
+  * @icsk_ack:		   Delayed ACK control data
++ * @icsk_mtup;		   MTU probing control data
+  */
+ struct inet_connection_sock {
+ 	/* inet_sock has to be the first member! */
+@@ -104,6 +105,18 @@ struct inet_connection_sock {
+ 		__u16		  last_seg_size; /* Size of last incoming segment	   */
+ 		__u16		  rcv_mss;	 /* MSS used for delayed ACK decisions	   */ 
+ 	} icsk_ack;
++	struct {
++		int		  enabled;
++
++		/* Range of MTUs to search */
++		int		  search_high;
++		int		  search_low;
++
++		/* Information on the current probe. */
++		int		  probe_size;
++		__u32		  probe_seq_start;
++		__u32		  probe_seq_end;
++	} icsk_mtup;
+ 	u32			  icsk_ca_priv[16];
+ #define ICSK_CA_PRIV_SIZE	(16 * sizeof(u32))
+ };
+diff --git a/include/net/tcp.h b/include/net/tcp.h
+index 77f21c65bbca..16879fa560de 100644
+--- a/include/net/tcp.h
++++ b/include/net/tcp.h
+@@ -60,6 +60,9 @@ extern void tcp_time_wait(struct sock *sk, int state, int timeo);
+ /* Minimal RCV_MSS. */
+ #define TCP_MIN_RCVMSS		536U
+ 
++/* The least MTU to use for probing */
++#define TCP_BASE_MSS		512
++
+ /* After receiving this amount of duplicate ACKs fast retransmit starts. */
+ #define TCP_FASTRETRANS_THRESH 3
+ 
+@@ -219,6 +222,8 @@ extern int sysctl_tcp_nometrics_save;
+ extern int sysctl_tcp_moderate_rcvbuf;
+ extern int sysctl_tcp_tso_win_divisor;
+ extern int sysctl_tcp_abc;
++extern int sysctl_tcp_mtu_probing;
++extern int sysctl_tcp_base_mss;
+ 
+ extern atomic_t tcp_memory_allocated;
+ extern atomic_t tcp_sockets_allocated;
+@@ -447,6 +452,10 @@ extern int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
+ 
+ extern void tcp_initialize_rcv_mss(struct sock *sk);
+ 
++extern int tcp_mtu_to_mss(struct sock *sk, int pmtu);
++extern int tcp_mss_to_mtu(struct sock *sk, int mss);
++extern void tcp_mtup_init(struct sock *sk);
++
+ static inline void __tcp_fast_path_on(struct tcp_sock *tp, u32 snd_wnd)
+ {
+ 	tp-&gt;pred_flags = htonl((tp-&gt;tcp_header_len &lt;&lt; 26) |
+diff --git a/net/ipv4/sysctl_net_ipv4.c b/net/ipv4/sysctl_net_ipv4.c
+index 16984d4a8a06..ebf2e0b363c4 100644
+--- a/net/ipv4/sysctl_net_ipv4.c
++++ b/net/ipv4/sysctl_net_ipv4.c
+@@ -664,6 +664,22 @@ ctl_table ipv4_table[] = {
+ 		.mode		= 0644,
+ 		.proc_handler	= &amp;proc_dointvec,
+ 	},
++	{
++		.ctl_name	= NET_TCP_MTU_PROBING,
++		.procname	= "tcp_mtu_probing",
++		.data		= &amp;sysctl_tcp_mtu_probing,
++		.maxlen		= sizeof(int),
++		.mode		= 0644,
++		.proc_handler	= &amp;proc_dointvec,
++	},
++	{
++		.ctl_name	= NET_TCP_BASE_MSS,
++		.procname	= "tcp_base_mss",
++		.data		= &amp;sysctl_tcp_base_mss,
++		.maxlen		= sizeof(int),
++		.mode		= 0644,
++		.proc_handler	= &amp;proc_dointvec,
++	},
+ 
+ 	{ .ctl_name = 0 }
+ };
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+index e9a54ae7d690..0ac388e3d01d 100644
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -1891,6 +1891,34 @@ static void tcp_try_to_open(struct sock *sk, struct tcp_sock *tp, int flag)
+ 	}
+ }
+ 
++static void tcp_mtup_probe_failed(struct sock *sk)
++{
++	struct inet_connection_sock *icsk = inet_csk(sk);
++
++	icsk-&gt;icsk_mtup.search_high = icsk-&gt;icsk_mtup.probe_size - 1;
++	icsk-&gt;icsk_mtup.probe_size = 0;
++}
++
++static void tcp_mtup_probe_success(struct sock *sk, struct sk_buff *skb)
++{
++	struct tcp_sock *tp = tcp_sk(sk);
++	struct inet_connection_sock *icsk = inet_csk(sk);
++
++	/* FIXME: breaks with very large cwnd */
++	tp-&gt;prior_ssthresh = tcp_current_ssthresh(sk);
++	tp-&gt;snd_cwnd = tp-&gt;snd_cwnd *
++		       tcp_mss_to_mtu(sk, tp-&gt;mss_cache) /
++		       icsk-&gt;icsk_mtup.probe_size;
++	tp-&gt;snd_cwnd_cnt = 0;
++	tp-&gt;snd_cwnd_stamp = tcp_time_stamp;
++	tp-&gt;rcv_ssthresh = tcp_current_ssthresh(sk);
++
++	icsk-&gt;icsk_mtup.search_low = icsk-&gt;icsk_mtup.probe_size;
++	icsk-&gt;icsk_mtup.probe_size = 0;
++	tcp_sync_mss(sk, icsk-&gt;icsk_pmtu_cookie);
++}
++
++
+ /* Process an event, which can update packets-in-flight not trivially.
+  * Main goal of this function is to calculate new estimate for left_out,
+  * taking into account both packets sitting in receiver's buffer and
+@@ -2023,6 +2051,17 @@ tcp_fastretrans_alert(struct sock *sk, u32 prior_snd_una,
+ 			return;
+ 		}
+ 
++		/* MTU probe failure: don't reduce cwnd */
++		if (icsk-&gt;icsk_ca_state &lt; TCP_CA_CWR &amp;&amp;
++		    icsk-&gt;icsk_mtup.probe_size &amp;&amp;
++		    tp-&gt;snd_una == icsk-&gt;icsk_mtup.probe_seq_start) {
++			tcp_mtup_probe_failed(sk);
++			/* Restores the reduction we did in tcp_mtup_probe() */
++			tp-&gt;snd_cwnd++;
++			tcp_simple_retransmit(sk);
++			return;
++		}
++
+ 		/* Otherwise enter Recovery state */
+ 
+ 		if (IsReno(tp))
+@@ -2243,6 +2282,13 @@ static int tcp_clean_rtx_queue(struct sock *sk, __s32 *seq_rtt_p)
+ 			tp-&gt;retrans_stamp = 0;
+ 		}
+ 
++		/* MTU probing checks */
++		if (icsk-&gt;icsk_mtup.probe_size) {
++			if (!after(icsk-&gt;icsk_mtup.probe_seq_end, TCP_SKB_CB(skb)-&gt;end_seq)) {
++				tcp_mtup_probe_success(sk, skb);
++			}
++		}
++
+ 		if (sacked) {
+ 			if (sacked &amp; TCPCB_RETRANS) {
+ 				if(sacked &amp; TCPCB_SACKED_RETRANS)
+@@ -4101,6 +4147,7 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
+ 		if (tp-&gt;rx_opt.sack_ok &amp;&amp; sysctl_tcp_fack)
+ 			tp-&gt;rx_opt.sack_ok |= 2;
+ 
++		tcp_mtup_init(sk);
+ 		tcp_sync_mss(sk, icsk-&gt;icsk_pmtu_cookie);
+ 		tcp_initialize_rcv_mss(sk);
+ 
+@@ -4211,6 +4258,7 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
+ 		if (tp-&gt;ecn_flags&amp;TCP_ECN_OK)
+ 			sock_set_flag(sk, SOCK_NO_LARGESEND);
+ 
++		tcp_mtup_init(sk);
+ 		tcp_sync_mss(sk, icsk-&gt;icsk_pmtu_cookie);
+ 		tcp_initialize_rcv_mss(sk);
+ 
+@@ -4399,6 +4447,7 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
+ 				 */
+ 				tp-&gt;lsndtime = tcp_time_stamp;
+ 
++				tcp_mtup_init(sk);
+ 				tcp_initialize_rcv_mss(sk);
+ 				tcp_init_buffer_space(sk);
+ 				tcp_fast_path_on(tp);
+diff --git a/net/ipv4/tcp_ipv4.c b/net/ipv4/tcp_ipv4.c
+index 233bdf259965..57e7a26e8213 100644
+--- a/net/ipv4/tcp_ipv4.c
++++ b/net/ipv4/tcp_ipv4.c
+@@ -900,6 +900,7 @@ struct sock *tcp_v4_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
+ 		inet_csk(newsk)-&gt;icsk_ext_hdr_len = newinet-&gt;opt-&gt;optlen;
+ 	newinet-&gt;id = newtp-&gt;write_seq ^ jiffies;
+ 
++	tcp_mtup_init(newsk);
+ 	tcp_sync_mss(newsk, dst_mtu(dst));
+ 	newtp-&gt;advmss = dst_metric(dst, RTAX_ADVMSS);
+ 	tcp_initialize_rcv_mss(newsk);
+diff --git a/net/ipv4/tcp_output.c b/net/ipv4/tcp_output.c
+index 9f498a6c8895..8197b5e12f1f 100644
+--- a/net/ipv4/tcp_output.c
++++ b/net/ipv4/tcp_output.c
+@@ -51,6 +51,12 @@ int sysctl_tcp_retrans_collapse = 1;
+  */
+ int sysctl_tcp_tso_win_divisor = 3;
+ 
++int sysctl_tcp_mtu_probing = 0;
++int sysctl_tcp_base_mss = 512;
++
++EXPORT_SYMBOL(sysctl_tcp_mtu_probing);
++EXPORT_SYMBOL(sysctl_tcp_base_mss);
++
+ static void update_send_head(struct sock *sk, struct tcp_sock *tp,
+ 			     struct sk_buff *skb)
+ {
+@@ -681,6 +687,62 @@ int tcp_trim_head(struct sock *sk, struct sk_buff *skb, u32 len)
+ 	return 0;
+ }
+ 
++/* Not accounting for SACKs here. */
++int tcp_mtu_to_mss(struct sock *sk, int pmtu)
++{
++	struct tcp_sock *tp = tcp_sk(sk);
++	struct inet_connection_sock *icsk = inet_csk(sk);
++	int mss_now;
++
++	/* Calculate base mss without TCP options:
++	   It is MMS_S - sizeof(tcphdr) of rfc1122
++	 */
++	mss_now = pmtu - icsk-&gt;icsk_af_ops-&gt;net_header_len - sizeof(struct tcphdr);
++
++	/* Clamp it (mss_clamp does not include tcp options) */
++	if (mss_now &gt; tp-&gt;rx_opt.mss_clamp)
++		mss_now = tp-&gt;rx_opt.mss_clamp;
++
++	/* Now subtract optional transport overhead */
++	mss_now -= icsk-&gt;icsk_ext_hdr_len;
++
++	/* Then reserve room for full set of TCP options and 8 bytes of data */
++	if (mss_now &lt; 48)
++		mss_now = 48;
++
++	/* Now subtract TCP options size, not including SACKs */
++	mss_now -= tp-&gt;tcp_header_len - sizeof(struct tcphdr);
++
++	return mss_now;
++}
++
++/* Inverse of above */
++int tcp_mss_to_mtu(struct sock *sk, int mss)
++{
++	struct tcp_sock *tp = tcp_sk(sk);
++	struct inet_connection_sock *icsk = inet_csk(sk);
++	int mtu;
++
++	mtu = mss +
++	      tp-&gt;tcp_header_len +
++	      icsk-&gt;icsk_ext_hdr_len +
++	      icsk-&gt;icsk_af_ops-&gt;net_header_len;
++
++	return mtu;
++}
++
++void tcp_mtup_init(struct sock *sk)
++{
++	struct tcp_sock *tp = tcp_sk(sk);
++	struct inet_connection_sock *icsk = inet_csk(sk);
++
++	icsk-&gt;icsk_mtup.enabled = sysctl_tcp_mtu_probing &gt; 1;
++	icsk-&gt;icsk_mtup.search_high = tp-&gt;rx_opt.mss_clamp + sizeof(struct tcphdr) +
++	                       icsk-&gt;icsk_af_ops-&gt;net_header_len;
++	icsk-&gt;icsk_mtup.search_low = tcp_mss_to_mtu(sk, sysctl_tcp_base_mss);
++	icsk-&gt;icsk_mtup.probe_size = 0;
++}
++
+ /* This function synchronize snd mss to current pmtu/exthdr set.
+ 
+    tp-&gt;rx_opt.user_mss is mss set by user by TCP_MAXSEG. It does NOT counts
+@@ -708,25 +770,12 @@ unsigned int tcp_sync_mss(struct sock *sk, u32 pmtu)
+ {
+ 	struct tcp_sock *tp = tcp_sk(sk);
+ 	struct inet_connection_sock *icsk = inet_csk(sk);
+-	/* Calculate base mss without TCP options:
+-	   It is MMS_S - sizeof(tcphdr) of rfc1122
+-	 */
+-	int mss_now = (pmtu - icsk-&gt;icsk_af_ops-&gt;net_header_len -
+-		       sizeof(struct tcphdr));
++	int mss_now;
+ 
+-	/* Clamp it (mss_clamp does not include tcp options) */
+-	if (mss_now &gt; tp-&gt;rx_opt.mss_clamp)
+-		mss_now = tp-&gt;rx_opt.mss_clamp;
++	if (icsk-&gt;icsk_mtup.search_high &gt; pmtu)
++		icsk-&gt;icsk_mtup.search_high = pmtu;
+ 
+-	/* Now subtract optional transport overhead */
+-	mss_now -= icsk-&gt;icsk_ext_hdr_len;
+-
+-	/* Then reserve room for full set of TCP options and 8 bytes of data */
+-	if (mss_now &lt; 48)
+-		mss_now = 48;
+-
+-	/* Now subtract TCP options size, not including SACKs */
+-	mss_now -= tp-&gt;tcp_header_len - sizeof(struct tcphdr);
++	mss_now = tcp_mtu_to_mss(sk, pmtu);
+ 
+ 	/* Bound mss with half of window */
+ 	if (tp-&gt;max_window &amp;&amp; mss_now &gt; (tp-&gt;max_window&gt;&gt;1))
+@@ -734,6 +783,8 @@ unsigned int tcp_sync_mss(struct sock *sk, u32 pmtu)
+ 
+ 	/* And store cached results */
+ 	icsk-&gt;icsk_pmtu_cookie = pmtu;
++	if (icsk-&gt;icsk_mtup.enabled)
++		mss_now = min(mss_now, tcp_mtu_to_mss(sk, icsk-&gt;icsk_mtup.search_low));
+ 	tp-&gt;mss_cache = mss_now;
+ 
+ 	return mss_now;
+@@ -1063,6 +1114,140 @@ static int tcp_tso_should_defer(struct sock *sk, struct tcp_sock *tp, struct sk_
+ 	return 1;
+ }
+ 
++/* Create a new MTU probe if we are ready.
++ * Returns 0 if we should wait to probe (no cwnd available),
++ *         1 if a probe was sent,
++ *         -1 otherwise */
++static int tcp_mtu_probe(struct sock *sk)
++{
++	struct tcp_sock *tp = tcp_sk(sk);
++	struct inet_connection_sock *icsk = inet_csk(sk);
++	struct sk_buff *skb, *nskb, *next;
++	int len;
++	int probe_size;
++	unsigned int pif;
++	int copy;
++	int mss_now;
++
++	/* Not currently probing/verifying,
++	 * not in recovery,
++	 * have enough cwnd, and
++	 * not SACKing (the variable headers throw things off) */
++	if (!icsk-&gt;icsk_mtup.enabled ||
++	    icsk-&gt;icsk_mtup.probe_size ||
++	    inet_csk(sk)-&gt;icsk_ca_state != TCP_CA_Open ||
++	    tp-&gt;snd_cwnd &lt; 11 ||
++	    tp-&gt;rx_opt.eff_sacks)
++		return -1;
++
++	/* Very simple search strategy: just double the MSS. */
++	mss_now = tcp_current_mss(sk, 0);
++	probe_size = 2*tp-&gt;mss_cache;
++	if (probe_size &gt; tcp_mtu_to_mss(sk, icsk-&gt;icsk_mtup.search_high)) {
++		/* TODO: set timer for probe_converge_event */
++		return -1;
++	}
++
++	/* Have enough data in the send queue to probe? */
++	len = 0;
++	if ((skb = sk-&gt;sk_send_head) == NULL)
++		return -1;
++	while ((len += skb-&gt;len) &lt; probe_size &amp;&amp; !tcp_skb_is_last(sk, skb))
++		skb = skb-&gt;next;
++	if (len &lt; probe_size)
++		return -1;
++
++	/* Receive window check. */
++	if (after(TCP_SKB_CB(skb)-&gt;seq + probe_size, tp-&gt;snd_una + tp-&gt;snd_wnd)) {
++		if (tp-&gt;snd_wnd &lt; probe_size)
++			return -1;
++		else
++			return 0;
++	}
++
++	/* Do we need to wait to drain cwnd? */
++	pif = tcp_packets_in_flight(tp);
++	if (pif + 2 &gt; tp-&gt;snd_cwnd) {
++		/* With no packets in flight, don't stall. */
++		if (pif == 0)
++			return -1;
++		else
++			return 0;
++	}
++
++	/* We're allowed to probe.  Build it now. */
++	if ((nskb = sk_stream_alloc_skb(sk, probe_size, GFP_ATOMIC)) == NULL)
++		return -1;
++	sk_charge_skb(sk, nskb);
++
++	skb = sk-&gt;sk_send_head;
++	__skb_insert(nskb, skb-&gt;prev, skb, &amp;sk-&gt;sk_write_queue);
++	sk-&gt;sk_send_head = nskb;
++
++	TCP_SKB_CB(nskb)-&gt;seq = TCP_SKB_CB(skb)-&gt;seq;
++	TCP_SKB_CB(nskb)-&gt;end_seq = TCP_SKB_CB(skb)-&gt;seq + probe_size;
++	TCP_SKB_CB(nskb)-&gt;flags = TCPCB_FLAG_ACK;
++	TCP_SKB_CB(nskb)-&gt;sacked = 0;
++	nskb-&gt;csum = 0;
++	if (skb-&gt;ip_summed == CHECKSUM_HW)
++		nskb-&gt;ip_summed = CHECKSUM_HW;
++
++	len = 0;
++	while (len &lt; probe_size) {
++		next = skb-&gt;next;
++
++		copy = min_t(int, skb-&gt;len, probe_size - len);
++		if (nskb-&gt;ip_summed)
++			skb_copy_bits(skb, 0, skb_put(nskb, copy), copy);
++		else
++			nskb-&gt;csum = skb_copy_and_csum_bits(skb, 0,
++			                 skb_put(nskb, copy), copy, nskb-&gt;csum);
++
++		if (skb-&gt;len &lt;= copy) {
++			/* We've eaten all the data from this skb.
++			 * Throw it away. */
++			TCP_SKB_CB(nskb)-&gt;flags |= TCP_SKB_CB(skb)-&gt;flags;
++			__skb_unlink(skb, &amp;sk-&gt;sk_write_queue);
++			sk_stream_free_skb(sk, skb);
++		} else {
++			TCP_SKB_CB(nskb)-&gt;flags |= TCP_SKB_CB(skb)-&gt;flags &amp;
++			                           ~(TCPCB_FLAG_FIN|TCPCB_FLAG_PSH);
++			if (!skb_shinfo(skb)-&gt;nr_frags) {
++				skb_pull(skb, copy);
++				if (skb-&gt;ip_summed != CHECKSUM_HW)
++					skb-&gt;csum = csum_partial(skb-&gt;data, skb-&gt;len, 0);
++			} else {
++				__pskb_trim_head(skb, copy);
++				tcp_set_skb_tso_segs(sk, skb, mss_now);
++			}
++			TCP_SKB_CB(skb)-&gt;seq += copy;
++		}
++
++		len += copy;
++		skb = next;
++	}
++	tcp_init_tso_segs(sk, nskb, nskb-&gt;len);
++
++	/* We're ready to send.  If this fails, the probe will
++	 * be resegmented into mss-sized pieces by tcp_write_xmit(). */
++	TCP_SKB_CB(nskb)-&gt;when = tcp_time_stamp;
++	if (!tcp_transmit_skb(sk, nskb, 1, GFP_ATOMIC)) {
++		/* Decrement cwnd here because we are sending
++		* effectively two packets. */
++		tp-&gt;snd_cwnd--;
++		update_send_head(sk, tp, nskb);
++
++		icsk-&gt;icsk_mtup.probe_size = tcp_mss_to_mtu(sk, nskb-&gt;len);
++		icsk-&gt;icsk_mtup.probe_seq_start = TCP_SKB_CB(nskb)-&gt;seq;
++		icsk-&gt;icsk_mtup.probe_seq_end = TCP_SKB_CB(nskb)-&gt;end_seq;
++
++		return 1;
++	}
++
++	return -1;
++}
++
++
+ /* This routine writes packets to the network.  It advances the
+  * send_head.  This happens as incoming acks open up the remote
+  * window for us.
+@@ -1076,6 +1261,7 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle)
+ 	struct sk_buff *skb;
+ 	unsigned int tso_segs, sent_pkts;
+ 	int cwnd_quota;
++	int result;
+ 
+ 	/* If we are closed, the bytes will have to remain here.
+ 	 * In time closedown will finish, we empty the write queue and all
+@@ -1085,6 +1271,14 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle)
+ 		return 0;
+ 
+ 	sent_pkts = 0;
++
++	/* Do MTU probing. */
++	if ((result = tcp_mtu_probe(sk)) == 0) {
++		return 0;
++	} else if (result &gt; 0) {
++		sent_pkts = 1;
++	}
++
+ 	while ((skb = sk-&gt;sk_send_head)) {
+ 		unsigned int limit;
+ 
+@@ -1455,9 +1649,15 @@ void tcp_simple_retransmit(struct sock *sk)
+ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
+ {
+ 	struct tcp_sock *tp = tcp_sk(sk);
++	struct inet_connection_sock *icsk = inet_csk(sk);
+  	unsigned int cur_mss = tcp_current_mss(sk, 0);
+ 	int err;
+ 
++	/* Inconslusive MTU probe */
++	if (icsk-&gt;icsk_mtup.probe_size) {
++		icsk-&gt;icsk_mtup.probe_size = 0;
++	}
++
+ 	/* Do not sent more than we queued. 1/4 is reserved for possible
+ 	 * copying overhead: fragmentation, tunneling, mangling etc.
+ 	 */
+@@ -1883,6 +2083,7 @@ static void tcp_connect_init(struct sock *sk)
+ 	if (tp-&gt;rx_opt.user_mss)
+ 		tp-&gt;rx_opt.mss_clamp = tp-&gt;rx_opt.user_mss;
+ 	tp-&gt;max_window = 0;
++	tcp_mtup_init(sk);
+ 	tcp_sync_mss(sk, dst_mtu(dst));
+ 
+ 	if (!tp-&gt;window_clamp)
+@@ -2180,3 +2381,4 @@ EXPORT_SYMBOL(tcp_make_synack);
+ EXPORT_SYMBOL(tcp_simple_retransmit);
+ EXPORT_SYMBOL(tcp_sync_mss);
+ EXPORT_SYMBOL(sysctl_tcp_tso_win_divisor);
++EXPORT_SYMBOL(tcp_mtup_init);
+diff --git a/net/ipv4/tcp_timer.c b/net/ipv4/tcp_timer.c
+index e1880959614a..7c1bde3cd6cb 100644
+--- a/net/ipv4/tcp_timer.c
++++ b/net/ipv4/tcp_timer.c
+@@ -119,8 +119,10 @@ static int tcp_orphan_retries(struct sock *sk, int alive)
+ /* A write timeout has occurred. Process the after effects. */
+ static int tcp_write_timeout(struct sock *sk)
+ {
+-	const struct inet_connection_sock *icsk = inet_csk(sk);
++	struct inet_connection_sock *icsk = inet_csk(sk);
++	struct tcp_sock *tp = tcp_sk(sk);
+ 	int retry_until;
++	int mss;
+ 
+ 	if ((1 &lt;&lt; sk-&gt;sk_state) &amp; (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
+ 		if (icsk-&gt;icsk_retransmits)
+@@ -128,25 +130,19 @@ static int tcp_write_timeout(struct sock *sk)
+ 		retry_until = icsk-&gt;icsk_syn_retries ? : sysctl_tcp_syn_retries;
+ 	} else {
+ 		if (icsk-&gt;icsk_retransmits &gt;= sysctl_tcp_retries1) {
+-			/* NOTE. draft-ietf-tcpimpl-pmtud-01.txt requires pmtu black
+-			   hole detection. :-(
+-
+-			   It is place to make it. It is not made. I do not want
+-			   to make it. It is disgusting. It does not work in any
+-			   case. Let me to cite the same draft, which requires for
+-			   us to implement this:
+-
+-   "The one security concern raised by this memo is that ICMP black holes
+-   are often caused by over-zealous security administrators who block
+-   all ICMP messages.  It is vitally important that those who design and
+-   deploy security systems understand the impact of strict filtering on
+-   upper-layer protocols.  The safest web site in the world is worthless
+-   if most TCP implementations cannot transfer data from it.  It would
+-   be far nicer to have all of the black holes fixed rather than fixing
+-   all of the TCP implementations."
+-
+-                           Golden words :-).
+-		   */
++			/* Black hole detection */
++			if (sysctl_tcp_mtu_probing) {
++				if (!icsk-&gt;icsk_mtup.enabled) {
++					icsk-&gt;icsk_mtup.enabled = 1;
++					tcp_sync_mss(sk, icsk-&gt;icsk_pmtu_cookie);
++				} else {
++					mss = min(sysctl_tcp_base_mss,
++					          tcp_mtu_to_mss(sk, icsk-&gt;icsk_mtup.search_low)/2);
++					mss = max(mss, 68 - tp-&gt;tcp_header_len);
++					icsk-&gt;icsk_mtup.search_low = tcp_mss_to_mtu(sk, mss);
++					tcp_sync_mss(sk, icsk-&gt;icsk_pmtu_cookie);
++				}
++			}
+ 
+ 			dst_negative_advice(&amp;sk-&gt;sk_dst_cache);
+ 		}
+diff --git a/net/ipv6/tcp_ipv6.c b/net/ipv6/tcp_ipv6.c
+index ca9cf6853755..14de50380f4e 100644
+--- a/net/ipv6/tcp_ipv6.c
++++ b/net/ipv6/tcp_ipv6.c
+@@ -987,6 +987,7 @@ static struct sock * tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
+ 		inet_csk(newsk)-&gt;icsk_ext_hdr_len = (newnp-&gt;opt-&gt;opt_nflen +
+ 						     newnp-&gt;opt-&gt;opt_flen);
+ 
++	tcp_mtup_init(newsk);
+ 	tcp_sync_mss(newsk, dst_mtu(dst));
+ 	newtp-&gt;advmss = dst_metric(dst, RTAX_ADVMSS);
+ 	tcp_initialize_rcv_mss(newsk);</pre><hr><pre>commit 6fcf9412de64056238a6295f21db7aa9c37a532e
+Author: John Heffner &lt;jheffner@psc.edu&gt;
+Date:   Thu Feb 9 17:06:57 2006 -0800
+
+    [TCP]: rcvbuf lock when tcp_moderate_rcvbuf enabled
+    
+    The rcvbuf lock should probably be honored here.
+    
+    Signed-off-by: John Heffner &lt;jheffner@psc.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+index a97ed5416c28..e9a54ae7d690 100644
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -456,7 +456,8 @@ void tcp_rcv_space_adjust(struct sock *sk)
+ 
+ 		tp-&gt;rcvq_space.space = space;
+ 
+-		if (sysctl_tcp_moderate_rcvbuf) {
++		if (sysctl_tcp_moderate_rcvbuf &amp;&amp;
++		    !(sk-&gt;sk_userlocks &amp; SOCK_RCVBUF_LOCK)) {
+ 			int new_clamp = space;
+ 
+ 			/* Receive space grows, normalize in order to</pre><hr><pre>commit 326f36e9e7de362e09745ce6f84b65e7ccac33ba
+Author: John Heffner &lt;jheffner@psc.edu&gt;
+Date:   Thu Nov 10 17:11:48 2005 -0800
+
+    [TCP]: receive buffer growth limiting with mixed MTU
+    
+    This is a patch for discussion addressing some receive buffer growing issues.
+    This is partially related to the thread "Possible BUG in IPv4 TCP window
+    handling..." last week.
+    
+    Specifically it addresses the problem of an interaction between rcvbuf
+    moderation (receiver autotuning) and rcv_ssthresh.  The problem occurs when
+    sending small packets to a receiver with a larger MTU.  (A very common case I
+    have is a host with a 1500 byte MTU sending to a host with a 9k MTU.)  In
+    such a case, the rcv_ssthresh code is targeting a window size corresponding
+    to filling up the current rcvbuf, not taking into account that the new rcvbuf
+    moderation may increase the rcvbuf size.
+    
+    One hunk makes rcv_ssthresh use tcp_rmem[2] as the size target rather than
+    rcvbuf.  The other changes the behavior when it overflows its memory bounds
+    with in-order data so that it tries to grow rcvbuf (the same as with
+    out-of-order data).
+    
+    These changes should help my problem of mixed MTUs, and should also help the
+    case from last week's thread I think.  (In both cases though you still need
+    tcp_rmem[2] to be set much larger than the TCP window.)  One question is if
+    this is too aggressive at trying to increase rcvbuf if it's under memory
+    stress.
+    
+    Orignally-from: John Heffner &lt;jheffner@psc.edu&gt;
+    Signed-off-by: Stephen Hemminger &lt;shemminger@osdl.org&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+index 4cb5e6f408dc..827cd4b9e867 100644
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -234,7 +234,7 @@ static int __tcp_grow_window(const struct sock *sk, struct tcp_sock *tp,
+ {
+ 	/* Optimize this! */
+ 	int truesize = tcp_win_from_space(skb-&gt;truesize)/2;
+-	int window = tcp_full_space(sk)/2;
++	int window = tcp_win_from_space(sysctl_tcp_rmem[2])/2;
+ 
+ 	while (tp-&gt;rcv_ssthresh &lt;= window) {
+ 		if (truesize &lt;= skb-&gt;len)
+@@ -327,37 +327,18 @@ static void tcp_init_buffer_space(struct sock *sk)
+ static void tcp_clamp_window(struct sock *sk, struct tcp_sock *tp)
+ {
+ 	struct inet_connection_sock *icsk = inet_csk(sk);
+-	struct sk_buff *skb;
+-	unsigned int app_win = tp-&gt;rcv_nxt - tp-&gt;copied_seq;
+-	int ofo_win = 0;
+ 
+ 	icsk-&gt;icsk_ack.quick = 0;
+ 
+-	skb_queue_walk(&amp;tp-&gt;out_of_order_queue, skb) {
+-		ofo_win += skb-&gt;len;
+-	}
+-
+-	/* If overcommit is due to out of order segments,
+-	 * do not clamp window. Try to expand rcvbuf instead.
+-	 */
+-	if (ofo_win) {
+-		if (sk-&gt;sk_rcvbuf &lt; sysctl_tcp_rmem[2] &amp;&amp;
+-		    !(sk-&gt;sk_userlocks &amp; SOCK_RCVBUF_LOCK) &amp;&amp;
+-		    !tcp_memory_pressure &amp;&amp;
+-		    atomic_read(&amp;tcp_memory_allocated) &lt; sysctl_tcp_mem[0])
+-			sk-&gt;sk_rcvbuf = min(atomic_read(&amp;sk-&gt;sk_rmem_alloc),
+-					    sysctl_tcp_rmem[2]);
++	if (sk-&gt;sk_rcvbuf &lt; sysctl_tcp_rmem[2] &amp;&amp;
++	    !(sk-&gt;sk_userlocks &amp; SOCK_RCVBUF_LOCK) &amp;&amp;
++	    !tcp_memory_pressure &amp;&amp;
++	    atomic_read(&amp;tcp_memory_allocated) &lt; sysctl_tcp_mem[0]) {
++		sk-&gt;sk_rcvbuf = min(atomic_read(&amp;sk-&gt;sk_rmem_alloc),
++				    sysctl_tcp_rmem[2]);
+ 	}
+-	if (atomic_read(&amp;sk-&gt;sk_rmem_alloc) &gt; sk-&gt;sk_rcvbuf) {
+-		app_win += ofo_win;
+-		if (atomic_read(&amp;sk-&gt;sk_rmem_alloc) &gt;= 2 * sk-&gt;sk_rcvbuf)
+-			app_win &gt;&gt;= 1;
+-		if (app_win &gt; icsk-&gt;icsk_ack.rcv_mss)
+-			app_win -= icsk-&gt;icsk_ack.rcv_mss;
+-		app_win = max(app_win, 2U*tp-&gt;advmss);
+-
++	if (atomic_read(&amp;sk-&gt;sk_rmem_alloc) &gt; sk-&gt;sk_rcvbuf)
+ 		tp-&gt;rcv_ssthresh = min(tp-&gt;window_clamp, 2U*tp-&gt;advmss);
+-	}
+ }
+ 
+ /* Receiver "autotuning" code.</pre><hr><pre>commit 0e57976b6376f7fda6bef8b7dee2a3c8819ec9e9
+Author: John Heffner &lt;jheffner@psc.edu&gt;
+Date:   Thu Jun 23 12:29:07 2005 -0700
+
+    [TCP]: Add Scalable TCP congestion control module.
+    
+    This patch implements Tom Kelly's Scalable TCP congestion control algorithm
+    for the modular framework.
+    
+    The algorithm has some nice scaling properties, and has been used a fair bit
+    in research, though is known to have significant fairness issues, so it's not
+    really suitable for general purpose use.
+    
+    Signed-off-by: John Heffner &lt;jheffner@psc.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
+index 73a25b52bf7d..690e88ba2484 100644
+--- a/net/ipv4/Kconfig
++++ b/net/ipv4/Kconfig
+@@ -511,6 +511,15 @@ config TCP_CONG_VEGAS
+ 	window. TCP Vegas should provide less packet loss, but it is
+ 	not as aggressive as TCP Reno.
+ 
++config TCP_CONG_SCALABLE
++	tristate "Scalable TCP"
++	depends on INET &amp;&amp; EXPERIMENTAL
++	default n
++	---help---
++	Scalable TCP is a sender-side only change to TCP which uses a
++	MIMD congestion control algorithm which has some nice scaling
++	properties, though is known to have fairness issues.
++	See http://www-lce.eng.cam.ac.uk/~ctk21/scalable/
+ 
+ endmenu
+ 
+diff --git a/net/ipv4/Makefile b/net/ipv4/Makefile
+index e96ed17deb96..5718cdb3a61e 100644
+--- a/net/ipv4/Makefile
++++ b/net/ipv4/Makefile
+@@ -37,6 +37,7 @@ obj-$(CONFIG_TCP_CONG_HSTCP) += tcp_highspeed.o
+ obj-$(CONFIG_TCP_CONG_HYBLA) += tcp_hybla.o
+ obj-$(CONFIG_TCP_CONG_HTCP) += tcp_htcp.o
+ obj-$(CONFIG_TCP_CONG_VEGAS) += tcp_vegas.o
++obj-$(CONFIG_TCP_CONG_SCALABLE) += tcp_scalable.o
+ 
+ obj-$(CONFIG_XFRM) += xfrm4_policy.o xfrm4_state.o xfrm4_input.o \
+ 		      xfrm4_output.o
+diff --git a/net/ipv4/tcp_scalable.c b/net/ipv4/tcp_scalable.c
+new file mode 100644
+index 000000000000..70e108e15c71
+--- /dev/null
++++ b/net/ipv4/tcp_scalable.c
+@@ -0,0 +1,68 @@
++/* Tom Kelly's Scalable TCP
++ *
++ * See htt://www-lce.eng.cam.ac.uk/~ctk21/scalable/
++ *
++ * John Heffner &lt;jheffner@sc.edu&gt;
++ */
++
++#include &lt;linux/config.h&gt;
++#include &lt;linux/module.h&gt;
++#include &lt;net/tcp.h&gt;
++
++/* These factors derived from the recommended values in the aer:
++ * .01 and and 7/8. We use 50 instead of 100 to account for
++ * delayed ack.
++ */
++#define TCP_SCALABLE_AI_CNT	50U
++#define TCP_SCALABLE_MD_SCALE	3
++
++static void tcp_scalable_cong_avoid(struct tcp_sock *tp, u32 ack, u32 rtt,
++				    u32 in_flight, int flag)
++{
++	if (in_flight &lt; tp-&gt;snd_cwnd)
++		return;
++
++	if (tp-&gt;snd_cwnd &lt;= tp-&gt;snd_ssthresh) {
++		tp-&gt;snd_cwnd++;
++	} else {
++		tp-&gt;snd_cwnd_cnt++;
++		if (tp-&gt;snd_cwnd_cnt &gt; min(tp-&gt;snd_cwnd, TCP_SCALABLE_AI_CNT)){
++			tp-&gt;snd_cwnd++;
++			tp-&gt;snd_cwnd_cnt = 0;
++		}
++	}
++	tp-&gt;snd_cwnd = min_t(u32, tp-&gt;snd_cwnd, tp-&gt;snd_cwnd_clamp);
++	tp-&gt;snd_cwnd_stamp = tcp_time_stamp;
++}
++
++static u32 tcp_scalable_ssthresh(struct tcp_sock *tp)
++{
++	return max(tp-&gt;snd_cwnd - (tp-&gt;snd_cwnd&gt;&gt;TCP_SCALABLE_MD_SCALE), 2U);
++}
++
++
++static struct tcp_congestion_ops tcp_scalable = {
++	.ssthresh	= tcp_scalable_ssthresh,
++	.cong_avoid	= tcp_scalable_cong_avoid,
++	.min_cwnd	= tcp_reno_min_cwnd,
++
++	.owner		= THIS_MODULE,
++	.name		= "scalable",
++};
++
++static int __init tcp_scalable_register(void)
++{
++	return tcp_register_congestion_control(&amp;tcp_scalable);
++}
++
++static void __exit tcp_scalable_unregister(void)
++{
++	tcp_unregister_congestion_control(&amp;tcp_scalable);
++}
++
++module_init(tcp_scalable_register);
++module_exit(tcp_scalable_unregister);
++
++MODULE_AUTHOR("John Heffner");
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Scalable TCP");</pre><hr><pre>commit a628d29b56d3f420bf3ff1d7543a9caf3ce3b994
+Author: John Heffner &lt;jheffner@psc.edu&gt;
+Date:   Thu Jun 23 12:24:58 2005 -0700
+
+    [TCP]: Add High Speed TCP congestion control module.
+    
+    Sally Floyd's high speed TCP congestion control.
+    This is useful for comparison and research.
+    
+    Signed-off-by: John Heffner &lt;jheffner@psc.edu&gt;
+    Signed-off-by: Stephen Hemminger &lt;shemminger@osdl.org&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
+index adbe855d931a..910e25b65756 100644
+--- a/net/ipv4/Kconfig
++++ b/net/ipv4/Kconfig
+@@ -467,6 +467,17 @@ config TCP_CONG_WESTWOOD
+ 	TCP Westwood+ significantly increases fairness wrt TCP Reno in
+ 	wired networks and throughput over wireless links.
+ 
++config TCP_CONG_HSTCP
++	tristate "High Speed TCP"
++	depends on INET &amp;&amp; EXPERIMENTAL
++	default n
++	---help---
++	Sally Floyd's High Speed TCP (RFC 3649) congestion control.
++	A modification to TCP's congestion control mechanism for use
++	with large congestion windows. A table indicates how much to
++	increase the congestion window by when an ACK is received.
++ 	For more detail	see http://www.icir.org/floyd/hstcp.html
++
+ endmenu
+ 
+ source "net/ipv4/ipvs/Kconfig"
+diff --git a/net/ipv4/Makefile b/net/ipv4/Makefile
+index dedfbe62a104..ddf5d7785bf4 100644
+--- a/net/ipv4/Makefile
++++ b/net/ipv4/Makefile
+@@ -33,6 +33,7 @@ obj-$(CONFIG_IP_TCPDIAG) += tcp_diag.o
+ obj-$(CONFIG_IP_ROUTE_MULTIPATH_CACHED) += multipath.o
+ obj-$(CONFIG_TCP_CONG_BIC) += tcp_bic.o
+ obj-$(CONFIG_TCP_CONG_WESTWOOD) += tcp_westwood.o
++obj-$(CONFIG_TCP_CONG_HSTCP) += tcp_highspeed.o
+ 
+ obj-$(CONFIG_XFRM) += xfrm4_policy.o xfrm4_state.o xfrm4_input.o \
+ 		      xfrm4_output.o
+diff --git a/net/ipv4/tcp_highspeed.c b/net/ipv4/tcp_highspeed.c
+new file mode 100644
+index 000000000000..36c51f8136bf
+--- /dev/null
++++ b/net/ipv4/tcp_highspeed.c
+@@ -0,0 +1,181 @@
++/*
++ * Sally Floyd's High Speed TCP (RFC 3649) congestion control
++ *
++ * See http://www.icir.org/floyd/hstcp.html
++ *
++ * John Heffner &lt;jheffner@psc.edu&gt;
++ */
++
++#include &lt;linux/config.h&gt;
++#include &lt;linux/module.h&gt;
++#include &lt;net/tcp.h&gt;
++
++
++/* From AIMD tables from RFC 3649 appendix B,
++ * with fixed-point MD scaled &lt;&lt;8.
++ */
++static const struct hstcp_aimd_val {
++        unsigned int cwnd;
++        unsigned int md;
++} hstcp_aimd_vals[] = {
++ {     38,  128, /*  0.50 */ },
++ {    118,  112, /*  0.44 */ },
++ {    221,  104, /*  0.41 */ },
++ {    347,   98, /*  0.38 */ },
++ {    495,   93, /*  0.37 */ },
++ {    663,   89, /*  0.35 */ },
++ {    851,   86, /*  0.34 */ },
++ {   1058,   83, /*  0.33 */ },
++ {   1284,   81, /*  0.32 */ },
++ {   1529,   78, /*  0.31 */ },
++ {   1793,   76, /*  0.30 */ },
++ {   2076,   74, /*  0.29 */ },
++ {   2378,   72, /*  0.28 */ },
++ {   2699,   71, /*  0.28 */ },
++ {   3039,   69, /*  0.27 */ },
++ {   3399,   68, /*  0.27 */ },
++ {   3778,   66, /*  0.26 */ },
++ {   4177,   65, /*  0.26 */ },
++ {   4596,   64, /*  0.25 */ },
++ {   5036,   62, /*  0.25 */ },
++ {   5497,   61, /*  0.24 */ },
++ {   5979,   60, /*  0.24 */ },
++ {   6483,   59, /*  0.23 */ },
++ {   7009,   58, /*  0.23 */ },
++ {   7558,   57, /*  0.22 */ },
++ {   8130,   56, /*  0.22 */ },
++ {   8726,   55, /*  0.22 */ },
++ {   9346,   54, /*  0.21 */ },
++ {   9991,   53, /*  0.21 */ },
++ {  10661,   52, /*  0.21 */ },
++ {  11358,   52, /*  0.20 */ },
++ {  12082,   51, /*  0.20 */ },
++ {  12834,   50, /*  0.20 */ },
++ {  13614,   49, /*  0.19 */ },
++ {  14424,   48, /*  0.19 */ },
++ {  15265,   48, /*  0.19 */ },
++ {  16137,   47, /*  0.19 */ },
++ {  17042,   46, /*  0.18 */ },
++ {  17981,   45, /*  0.18 */ },
++ {  18955,   45, /*  0.18 */ },
++ {  19965,   44, /*  0.17 */ },
++ {  21013,   43, /*  0.17 */ },
++ {  22101,   43, /*  0.17 */ },
++ {  23230,   42, /*  0.17 */ },
++ {  24402,   41, /*  0.16 */ },
++ {  25618,   41, /*  0.16 */ },
++ {  26881,   40, /*  0.16 */ },
++ {  28193,   39, /*  0.16 */ },
++ {  29557,   39, /*  0.15 */ },
++ {  30975,   38, /*  0.15 */ },
++ {  32450,   38, /*  0.15 */ },
++ {  33986,   37, /*  0.15 */ },
++ {  35586,   36, /*  0.14 */ },
++ {  37253,   36, /*  0.14 */ },
++ {  38992,   35, /*  0.14 */ },
++ {  40808,   35, /*  0.14 */ },
++ {  42707,   34, /*  0.13 */ },
++ {  44694,   33, /*  0.13 */ },
++ {  46776,   33, /*  0.13 */ },
++ {  48961,   32, /*  0.13 */ },
++ {  51258,   32, /*  0.13 */ },
++ {  53677,   31, /*  0.12 */ },
++ {  56230,   30, /*  0.12 */ },
++ {  58932,   30, /*  0.12 */ },
++ {  61799,   29, /*  0.12 */ },
++ {  64851,   28, /*  0.11 */ },
++ {  68113,   28, /*  0.11 */ },
++ {  71617,   27, /*  0.11 */ },
++ {  75401,   26, /*  0.10 */ },
++ {  79517,   26, /*  0.10 */ },
++ {  84035,   25, /*  0.10 */ },
++ {  89053,   24, /*  0.10 */ },
++};
++
++#define HSTCP_AIMD_MAX	ARRAY_SIZE(hstcp_aimd_vals)
++
++struct hstcp {
++	u32	ai;
++};
++
++static void hstcp_init(struct tcp_sock *tp)
++{
++	struct hstcp *ca = tcp_ca(tp);
++
++	ca-&gt;ai = 0;
++
++	/* Ensure the MD arithmetic works.  This is somewhat pedantic,
++	 * since I don't think we will see a cwnd this large. :) */
++	tp-&gt;snd_cwnd_clamp = min_t(u32, tp-&gt;snd_cwnd_clamp, 0xffffffff/128);
++}
++
++static void hstcp_cong_avoid(struct tcp_sock *tp, u32 adk, u32 rtt,
++			     u32 in_flight, int good)
++{
++	struct hstcp *ca = tcp_ca(tp);
++
++	if (in_flight &lt; tp-&gt;snd_cwnd)
++		return;
++
++	if (tp-&gt;snd_cwnd &lt;= tp-&gt;snd_ssthresh) {
++		if (tp-&gt;snd_cwnd &lt; tp-&gt;snd_cwnd_clamp)
++			tp-&gt;snd_cwnd++;
++	} else {
++		/* Update AIMD parameters */
++		if (tp-&gt;snd_cwnd &gt; hstcp_aimd_vals[ca-&gt;ai].cwnd) {
++			while (tp-&gt;snd_cwnd &gt; hstcp_aimd_vals[ca-&gt;ai].cwnd &amp;&amp;
++			       ca-&gt;ai &lt; HSTCP_AIMD_MAX)
++				ca-&gt;ai++;
++		} else if (tp-&gt;snd_cwnd &lt; hstcp_aimd_vals[ca-&gt;ai].cwnd) {
++			while (tp-&gt;snd_cwnd &gt; hstcp_aimd_vals[ca-&gt;ai].cwnd &amp;&amp;
++			       ca-&gt;ai &gt; 0)
++				ca-&gt;ai--;
++		}
++
++		/* Do additive increase */
++		if (tp-&gt;snd_cwnd &lt; tp-&gt;snd_cwnd_clamp) {
++			tp-&gt;snd_cwnd_cnt += ca-&gt;ai;
++			if (tp-&gt;snd_cwnd_cnt &gt;= tp-&gt;snd_cwnd) {
++				tp-&gt;snd_cwnd++;
++				tp-&gt;snd_cwnd_cnt -= tp-&gt;snd_cwnd;
++			}
++		}
++	}
++}
++
++static u32 hstcp_ssthresh(struct tcp_sock *tp)
++{
++	struct hstcp *ca = tcp_ca(tp);
++
++	/* Do multiplicative decrease */
++	return max(tp-&gt;snd_cwnd - ((tp-&gt;snd_cwnd * hstcp_aimd_vals[ca-&gt;ai].md) &gt;&gt; 8), 2U);
++}
++
++
++static struct tcp_congestion_ops tcp_highspeed = {
++	.init		= hstcp_init,
++	.ssthresh	= hstcp_ssthresh,
++	.cong_avoid	= hstcp_cong_avoid,
++	.min_cwnd	= tcp_reno_min_cwnd,
++
++	.owner		= THIS_MODULE,
++	.name		= "highspeed"
++};
++
++static int __init hstcp_register(void)
++{
++	BUG_ON(sizeof(struct hstcp) &gt; TCP_CA_PRIV_SIZE);
++	return tcp_register_congestion_control(&amp;tcp_highspeed);
++}
++
++static void __exit hstcp_unregister(void)
++{
++	tcp_unregister_congestion_control(&amp;tcp_highspeed);
++}
++
++module_init(hstcp_register);
++module_exit(hstcp_unregister);
++
++MODULE_AUTHOR("John Heffner");
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("High Speed TCP");</pre>
+    <div class="pagination">
+        <a href='5_47.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><span>[48]</span>
+    <div>
+</body>

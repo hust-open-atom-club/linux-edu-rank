@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Minnesota</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Minnesota</h1>
+    <div class="pagination">
+        <a href='7_27.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><span>[28]</span><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_29.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit a26ac6c1bed951b2066cc4b2257facd919e35c0b
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Thu Oct 4 11:44:02 2018 -0400
+
+    media: isif: fix a NULL pointer dereference bug
+    
+    In isif_probe(), there is a while loop to get the ISIF base address and
+    linearization table0 and table1 address. In the loop body, the function
+    platform_get_resource() is called to get the resource. If
+    platform_get_resource() returns NULL, the loop is terminated and the
+    execution goes to 'fail_nobase_res'. Suppose the loop is terminated at the
+    first iteration because platform_get_resource() returns NULL and the
+    execution goes to 'fail_nobase_res'. Given that there is another while loop
+    at 'fail_nobase_res' and i equals to 0, one iteration of the second while
+    loop will be executed. However, the second while loop does not check the
+    return value of platform_get_resource(). This can cause a NULL pointer
+    dereference bug if the return value is a NULL pointer.
+    
+    This patch avoids the above issue by adding a check in the second while
+    loop after the call to platform_get_resource().
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/platform/davinci/isif.c b/drivers/media/platform/davinci/isif.c
+index f924e76e2fbf..340f8218f54d 100644
+--- a/drivers/media/platform/davinci/isif.c
++++ b/drivers/media/platform/davinci/isif.c
+@@ -1100,7 +1100,8 @@ static int isif_probe(struct platform_device *pdev)
+ 
+ 	while (i &gt;= 0) {
+ 		res = platform_get_resource(pdev, IORESOURCE_MEM, i);
+-		release_mem_region(res-&gt;start, resource_size(res));
++		if (res)
++			release_mem_region(res-&gt;start, resource_size(res));
+ 		i--;
+ 	}
+ 	vpfe_unregister_ccdc_device(&amp;isif_hw_dev);</pre><hr><pre>commit 0781168e23a2fc8dceb989f11fc5b39b3ccacc35
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Fri Oct 5 10:59:36 2018 -0500
+
+    yam: fix a missing-check bug
+    
+    In yam_ioctl(), the concrete ioctl command is firstly copied from the
+    user-space buffer 'ifr-&gt;ifr_data' to 'ioctl_cmd' and checked through the
+    following switch statement. If the command is not as expected, an error
+    code EINVAL is returned. In the following execution the buffer
+    'ifr-&gt;ifr_data' is copied again in the cases of the switch statement to
+    specific data structures according to what kind of ioctl command is
+    requested. However, after the second copy, no re-check is enforced on the
+    newly-copied command. Given that the buffer 'ifr-&gt;ifr_data' is in the user
+    space, a malicious user can race to change the command between the two
+    copies. This way, the attacker can inject inconsistent data and cause
+    undefined behavior.
+    
+    This patch adds a re-check in each case of the switch statement if there is
+    a second copy in that case, to re-check whether the command obtained in the
+    second copy is the same as the one in the first copy. If not, an error code
+    EINVAL will be returned.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/hamradio/yam.c b/drivers/net/hamradio/yam.c
+index 16ec7af6ab7b..ba9df430fca6 100644
+--- a/drivers/net/hamradio/yam.c
++++ b/drivers/net/hamradio/yam.c
+@@ -966,6 +966,8 @@ static int yam_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
+ 				 sizeof(struct yamdrv_ioctl_mcs));
+ 		if (IS_ERR(ym))
+ 			return PTR_ERR(ym);
++		if (ym-&gt;cmd != SIOCYAMSMCS)
++			return -EINVAL;
+ 		if (ym-&gt;bitrate &gt; YAM_MAXBITRATE) {
+ 			kfree(ym);
+ 			return -EINVAL;
+@@ -981,6 +983,8 @@ static int yam_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
+ 		if (copy_from_user(&amp;yi, ifr-&gt;ifr_data, sizeof(struct yamdrv_ioctl_cfg)))
+ 			 return -EFAULT;
+ 
++		if (yi.cmd != SIOCYAMSCFG)
++			return -EINVAL;
+ 		if ((yi.cfg.mask &amp; YAM_IOBASE) &amp;&amp; netif_running(dev))
+ 			return -EINVAL;		/* Cannot change this parameter when up */
+ 		if ((yi.cfg.mask &amp; YAM_IRQ) &amp;&amp; netif_running(dev))</pre><hr><pre>commit 2c05d88818ab6571816b93edce4d53703870d7ae
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Fri Oct 5 08:48:27 2018 -0500
+
+    net: cxgb3_main: fix a missing-check bug
+    
+    In cxgb_extension_ioctl(), the command of the ioctl is firstly copied from
+    the user-space buffer 'useraddr' to 'cmd' and checked through the
+    switch statement. If the command is not as expected, an error code
+    EOPNOTSUPP is returned. In the following execution, i.e., the cases of the
+    switch statement, the whole buffer of 'useraddr' is copied again to a
+    specific data structure, according to what kind of command is requested.
+    However, after the second copy, there is no re-check on the newly-copied
+    command. Given that the buffer 'useraddr' is in the user space, a malicious
+    user can race to change the command between the two copies. By doing so,
+    the attacker can supply malicious data to the kernel and cause undefined
+    behavior.
+    
+    This patch adds a re-check in each case of the switch statement if there is
+    a second copy in that case, to re-check whether the command obtained in the
+    second copy is the same as the one in the first copy. If not, an error code
+    EINVAL is returned.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/chelsio/cxgb3/cxgb3_main.c b/drivers/net/ethernet/chelsio/cxgb3/cxgb3_main.c
+index a19172dbe6be..c34ea385fe4a 100644
+--- a/drivers/net/ethernet/chelsio/cxgb3/cxgb3_main.c
++++ b/drivers/net/ethernet/chelsio/cxgb3/cxgb3_main.c
+@@ -2159,6 +2159,8 @@ static int cxgb_extension_ioctl(struct net_device *dev, void __user *useraddr)
+ 			return -EPERM;
+ 		if (copy_from_user(&amp;t, useraddr, sizeof(t)))
+ 			return -EFAULT;
++		if (t.cmd != CHELSIO_SET_QSET_PARAMS)
++			return -EINVAL;
+ 		if (t.qset_idx &gt;= SGE_QSETS)
+ 			return -EINVAL;
+ 		if (!in_range(t.intr_lat, 0, M_NEWTIMER) ||
+@@ -2258,6 +2260,9 @@ static int cxgb_extension_ioctl(struct net_device *dev, void __user *useraddr)
+ 		if (copy_from_user(&amp;t, useraddr, sizeof(t)))
+ 			return -EFAULT;
+ 
++		if (t.cmd != CHELSIO_GET_QSET_PARAMS)
++			return -EINVAL;
++
+ 		/* Display qsets for all ports when offload enabled */
+ 		if (test_bit(OFFLOAD_DEVMAP_BIT, &amp;adapter-&gt;open_device_map)) {
+ 			q1 = 0;
+@@ -2303,6 +2308,8 @@ static int cxgb_extension_ioctl(struct net_device *dev, void __user *useraddr)
+ 			return -EBUSY;
+ 		if (copy_from_user(&amp;edata, useraddr, sizeof(edata)))
+ 			return -EFAULT;
++		if (edata.cmd != CHELSIO_SET_QSET_NUM)
++			return -EINVAL;
+ 		if (edata.val &lt; 1 ||
+ 			(edata.val &gt; 1 &amp;&amp; !(adapter-&gt;flags &amp; USING_MSIX)))
+ 			return -EINVAL;
+@@ -2343,6 +2350,8 @@ static int cxgb_extension_ioctl(struct net_device *dev, void __user *useraddr)
+ 			return -EPERM;
+ 		if (copy_from_user(&amp;t, useraddr, sizeof(t)))
+ 			return -EFAULT;
++		if (t.cmd != CHELSIO_LOAD_FW)
++			return -EINVAL;
+ 		/* Check t.len sanity ? */
+ 		fw_data = memdup_user(useraddr + sizeof(t), t.len);
+ 		if (IS_ERR(fw_data))
+@@ -2366,6 +2375,8 @@ static int cxgb_extension_ioctl(struct net_device *dev, void __user *useraddr)
+ 			return -EBUSY;
+ 		if (copy_from_user(&amp;m, useraddr, sizeof(m)))
+ 			return -EFAULT;
++		if (m.cmd != CHELSIO_SETMTUTAB)
++			return -EINVAL;
+ 		if (m.nmtus != NMTUS)
+ 			return -EINVAL;
+ 		if (m.mtus[0] &lt; 81)	/* accommodate SACK */
+@@ -2407,6 +2418,8 @@ static int cxgb_extension_ioctl(struct net_device *dev, void __user *useraddr)
+ 			return -EBUSY;
+ 		if (copy_from_user(&amp;m, useraddr, sizeof(m)))
+ 			return -EFAULT;
++		if (m.cmd != CHELSIO_SET_PM)
++			return -EINVAL;
+ 		if (!is_power_of_2(m.rx_pg_sz) ||
+ 			!is_power_of_2(m.tx_pg_sz))
+ 			return -EINVAL;	/* not power of 2 */
+@@ -2440,6 +2453,8 @@ static int cxgb_extension_ioctl(struct net_device *dev, void __user *useraddr)
+ 			return -EIO;	/* need the memory controllers */
+ 		if (copy_from_user(&amp;t, useraddr, sizeof(t)))
+ 			return -EFAULT;
++		if (t.cmd != CHELSIO_GET_MEM)
++			return -EINVAL;
+ 		if ((t.addr &amp; 7) || (t.len &amp; 7))
+ 			return -EINVAL;
+ 		if (t.mem_id == MEM_CM)
+@@ -2492,6 +2507,8 @@ static int cxgb_extension_ioctl(struct net_device *dev, void __user *useraddr)
+ 			return -EAGAIN;
+ 		if (copy_from_user(&amp;t, useraddr, sizeof(t)))
+ 			return -EFAULT;
++		if (t.cmd != CHELSIO_SET_TRACE_FILTER)
++			return -EINVAL;
+ 
+ 		tp = (const struct trace_params *)&amp;t.sip;
+ 		if (t.config_tx)</pre><hr><pre>commit f16b613ca8b3e4960cdc5575e9b8e1dbdd7d54d5
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Fri May 18 14:55:35 2018 -0500
+
+    crypto: chtls - fix a missing-check bug
+    
+    In do_chtls_setsockopt(), the tls crypto info is first copied from the
+    poiner 'optval' in userspace and saved to 'tmp_crypto_info'. Then the
+    'version' of the crypto info is checked. If the version is not as expected,
+    i.e., TLS_1_2_VERSION, error code -ENOTSUPP is returned to indicate that
+    the provided crypto info is not supported yet. Then, the 'cipher_type'
+    field of the 'tmp_crypto_info' is also checked to see if it is
+    TLS_CIPHER_AES_GCM_128. If it is, the whole struct of
+    tls12_crypto_info_aes_gcm_128 is copied from the pointer 'optval' and then
+    the function chtls_setkey() is invoked to set the key.
+    
+    Given that the 'optval' pointer resides in userspace, a malicious userspace
+    process can race to change the data pointed by 'optval' between the two
+    copies. For example, a user can provide a crypto info with TLS_1_2_VERSION
+    and TLS_CIPHER_AES_GCM_128. After the first copy, the user can modify the
+    'version' and the 'cipher_type' fields to any versions and/or cipher types
+    that are not allowed. This way, the user can bypass the checks, inject
+    bad data to the kernel, cause chtls_setkey() to set a wrong key or other
+    issues.
+    
+    This patch reuses the data copied in the first try so as to ensure these
+    checks will not be bypassed.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: Herbert Xu &lt;herbert@gondor.apana.org.au&gt;
+
+diff --git a/drivers/crypto/chelsio/chtls/chtls_main.c b/drivers/crypto/chelsio/chtls/chtls_main.c
+index 5b9dd582aac0..53ffb00d45bf 100644
+--- a/drivers/crypto/chelsio/chtls/chtls_main.c
++++ b/drivers/crypto/chelsio/chtls/chtls_main.c
+@@ -490,9 +490,13 @@ static int do_chtls_setsockopt(struct sock *sk, int optname,
+ 
+ 	switch (tmp_crypto_info.cipher_type) {
+ 	case TLS_CIPHER_AES_GCM_128: {
+-		rc = copy_from_user(crypto_info, optval,
+-				    sizeof(struct
+-					   tls12_crypto_info_aes_gcm_128));
++		/* Obtain version and type from previous copy */
++		crypto_info[0] = tmp_crypto_info;
++		/* Now copy the following data */
++		rc = copy_from_user((char *)crypto_info + sizeof(*crypto_info),
++				optval + sizeof(*crypto_info),
++				sizeof(struct tls12_crypto_info_aes_gcm_128)
++				- sizeof(*crypto_info));
+ 
+ 		if (rc) {
+ 			rc = -EFAULT;</pre><hr><pre>commit 6009d1fe6ba3bb2dab55921da60465329cc1cd89
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Mon May 21 01:58:07 2018 -0500
+
+    isdn: eicon: fix a missing-check bug
+    
+    In divasmain.c, the function divas_write() firstly invokes the function
+    diva_xdi_open_adapter() to open the adapter that matches with the adapter
+    number provided by the user, and then invokes the function diva_xdi_write()
+    to perform the write operation using the matched adapter. The two functions
+    diva_xdi_open_adapter() and diva_xdi_write() are located in diva.c.
+    
+    In diva_xdi_open_adapter(), the user command is copied to the object 'msg'
+    from the userspace pointer 'src' through the function pointer 'cp_fn',
+    which eventually calls copy_from_user() to do the copy. Then, the adapter
+    number 'msg.adapter' is used to find out a matched adapter from the
+    'adapter_queue'. A matched adapter will be returned if it is found.
+    Otherwise, NULL is returned to indicate the failure of the verification on
+    the adapter number.
+    
+    As mentioned above, if a matched adapter is returned, the function
+    diva_xdi_write() is invoked to perform the write operation. In this
+    function, the user command is copied once again from the userspace pointer
+    'src', which is the same as the 'src' pointer in diva_xdi_open_adapter() as
+    both of them are from the 'buf' pointer in divas_write(). Similarly, the
+    copy is achieved through the function pointer 'cp_fn', which finally calls
+    copy_from_user(). After the successful copy, the corresponding command
+    processing handler of the matched adapter is invoked to perform the write
+    operation.
+    
+    It is obvious that there are two copies here from userspace, one is in
+    diva_xdi_open_adapter(), and one is in diva_xdi_write(). Plus, both of
+    these two copies share the same source userspace pointer, i.e., the 'buf'
+    pointer in divas_write(). Given that a malicious userspace process can race
+    to change the content pointed by the 'buf' pointer, this can pose potential
+    security issues. For example, in the first copy, the user provides a valid
+    adapter number to pass the verification process and a valid adapter can be
+    found. Then the user can modify the adapter number to an invalid number.
+    This way, the user can bypass the verification process of the adapter
+    number and inject inconsistent data.
+    
+    This patch reuses the data copied in
+    diva_xdi_open_adapter() and passes it to diva_xdi_write(). This way, the
+    above issues can be avoided.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/isdn/hardware/eicon/diva.c b/drivers/isdn/hardware/eicon/diva.c
+index 944a7f338099..1b25d8bc153a 100644
+--- a/drivers/isdn/hardware/eicon/diva.c
++++ b/drivers/isdn/hardware/eicon/diva.c
+@@ -388,10 +388,10 @@ void divasa_xdi_driver_unload(void)
+ **  Receive and process command from user mode utility
+ */
+ void *diva_xdi_open_adapter(void *os_handle, const void __user *src,
+-			    int length,
++			    int length, void *mptr,
+ 			    divas_xdi_copy_from_user_fn_t cp_fn)
+ {
+-	diva_xdi_um_cfg_cmd_t msg;
++	diva_xdi_um_cfg_cmd_t *msg = (diva_xdi_um_cfg_cmd_t *)mptr;
+ 	diva_os_xdi_adapter_t *a = NULL;
+ 	diva_os_spin_lock_magic_t old_irql;
+ 	struct list_head *tmp;
+@@ -401,21 +401,21 @@ void *diva_xdi_open_adapter(void *os_handle, const void __user *src,
+ 			 length, sizeof(diva_xdi_um_cfg_cmd_t)))
+ 			return NULL;
+ 	}
+-	if ((*cp_fn) (os_handle, &amp;msg, src, sizeof(msg)) &lt;= 0) {
++	if ((*cp_fn) (os_handle, msg, src, sizeof(*msg)) &lt;= 0) {
+ 		DBG_ERR(("A: A(?) open, write error"))
+ 			return NULL;
+ 	}
+ 	diva_os_enter_spin_lock(&amp;adapter_lock, &amp;old_irql, "open_adapter");
+ 	list_for_each(tmp, &amp;adapter_queue) {
+ 		a = list_entry(tmp, diva_os_xdi_adapter_t, link);
+-		if (a-&gt;controller == (int)msg.adapter)
++		if (a-&gt;controller == (int)msg-&gt;adapter)
+ 			break;
+ 		a = NULL;
+ 	}
+ 	diva_os_leave_spin_lock(&amp;adapter_lock, &amp;old_irql, "open_adapter");
+ 
+ 	if (!a) {
+-		DBG_ERR(("A: A(%d) open, adapter not found", msg.adapter))
++		DBG_ERR(("A: A(%d) open, adapter not found", msg-&gt;adapter))
+ 			}
+ 
+ 	return (a);
+@@ -437,8 +437,10 @@ void diva_xdi_close_adapter(void *adapter, void *os_handle)
+ 
+ int
+ diva_xdi_write(void *adapter, void *os_handle, const void __user *src,
+-	       int length, divas_xdi_copy_from_user_fn_t cp_fn)
++	       int length, void *mptr,
++	       divas_xdi_copy_from_user_fn_t cp_fn)
+ {
++	diva_xdi_um_cfg_cmd_t *msg = (diva_xdi_um_cfg_cmd_t *)mptr;
+ 	diva_os_xdi_adapter_t *a = (diva_os_xdi_adapter_t *) adapter;
+ 	void *data;
+ 
+@@ -459,7 +461,13 @@ diva_xdi_write(void *adapter, void *os_handle, const void __user *src,
+ 			return (-2);
+ 	}
+ 
+-	length = (*cp_fn) (os_handle, data, src, length);
++	if (msg) {
++		*(diva_xdi_um_cfg_cmd_t *)data = *msg;
++		length = (*cp_fn) (os_handle, (char *)data + sizeof(*msg),
++				   src + sizeof(*msg), length - sizeof(*msg));
++	} else {
++		length = (*cp_fn) (os_handle, data, src, length);
++	}
+ 	if (length &gt; 0) {
+ 		if ((*(a-&gt;interface.cmd_proc))
+ 		    (a, (diva_xdi_um_cfg_cmd_t *) data, length)) {
+diff --git a/drivers/isdn/hardware/eicon/diva.h b/drivers/isdn/hardware/eicon/diva.h
+index b067032093a8..1ad76650fbf9 100644
+--- a/drivers/isdn/hardware/eicon/diva.h
++++ b/drivers/isdn/hardware/eicon/diva.h
+@@ -20,10 +20,11 @@ int diva_xdi_read(void *adapter, void *os_handle, void __user *dst,
+ 		  int max_length, divas_xdi_copy_to_user_fn_t cp_fn);
+ 
+ int diva_xdi_write(void *adapter, void *os_handle, const void __user *src,
+-		   int length, divas_xdi_copy_from_user_fn_t cp_fn);
++		   int length, void *msg,
++		   divas_xdi_copy_from_user_fn_t cp_fn);
+ 
+ void *diva_xdi_open_adapter(void *os_handle, const void __user *src,
+-			    int length,
++			    int length, void *msg,
+ 			    divas_xdi_copy_from_user_fn_t cp_fn);
+ 
+ void diva_xdi_close_adapter(void *adapter, void *os_handle);
+diff --git a/drivers/isdn/hardware/eicon/divasmain.c b/drivers/isdn/hardware/eicon/divasmain.c
+index b9980e84f9db..b6a3950b2564 100644
+--- a/drivers/isdn/hardware/eicon/divasmain.c
++++ b/drivers/isdn/hardware/eicon/divasmain.c
+@@ -591,19 +591,22 @@ static int divas_release(struct inode *inode, struct file *file)
+ static ssize_t divas_write(struct file *file, const char __user *buf,
+ 			   size_t count, loff_t *ppos)
+ {
++	diva_xdi_um_cfg_cmd_t msg;
+ 	int ret = -EINVAL;
+ 
+ 	if (!file-&gt;private_data) {
+ 		file-&gt;private_data = diva_xdi_open_adapter(file, buf,
+-							   count,
++							   count, &amp;msg,
+ 							   xdi_copy_from_user);
+-	}
+-	if (!file-&gt;private_data) {
+-		return (-ENODEV);
++		if (!file-&gt;private_data)
++			return (-ENODEV);
++		ret = diva_xdi_write(file-&gt;private_data, file,
++				     buf, count, &amp;msg, xdi_copy_from_user);
++	} else {
++		ret = diva_xdi_write(file-&gt;private_data, file,
++				     buf, count, NULL, xdi_copy_from_user);
+ 	}
+ 
+-	ret = diva_xdi_write(file-&gt;private_data, file,
+-			     buf, count, xdi_copy_from_user);
+ 	switch (ret) {
+ 	case -1:		/* Message should be removed from rx mailbox first */
+ 		ret = -EBUSY;
+@@ -622,11 +625,12 @@ static ssize_t divas_write(struct file *file, const char __user *buf,
+ static ssize_t divas_read(struct file *file, char __user *buf,
+ 			  size_t count, loff_t *ppos)
+ {
++	diva_xdi_um_cfg_cmd_t msg;
+ 	int ret = -EINVAL;
+ 
+ 	if (!file-&gt;private_data) {
+ 		file-&gt;private_data = diva_xdi_open_adapter(file, buf,
+-							   count,
++							   count, &amp;msg,
+ 							   xdi_copy_from_user);
+ 	}
+ 	if (!file-&gt;private_data) {</pre><hr><pre>commit 8e03477cb709b73a2c1e1f4349ee3b7b33c50416
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Sat May 5 08:02:21 2018 -0500
+
+    i2c: core: smbus: fix a potential missing-check bug
+    
+    In i2c_smbus_xfer_emulated(), the function i2c_transfer() is invoked to
+    transfer i2c messages. The number of actual transferred messages is
+    returned and saved to 'status'. If 'status' is negative, that means an
+    error occurred during the transfer process. In that case, the value of
+    'status' is an error code to indicate the reason of the transfer failure.
+    In most cases, i2c_transfer() can transfer 'num' messages with no error.
+    And so 'status' == 'num'. However, due to unexpected errors, it is probable
+    that only partial messages are transferred by i2c_transfer(). As a result,
+    'status' != 'num'. This special case is not checked after the invocation of
+    i2c_transfer() and can potentially lead to unexpected issues in the
+    following execution since it is expected that 'status' == 'num'.
+    
+    This patch checks the return value of i2c_transfer() and returns an error
+    code -EIO if the number of actual transferred messages 'status' is not
+    equal to 'num'.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: Wolfram Sang &lt;wsa@the-dreams.de&gt;
+
+diff --git a/drivers/i2c/i2c-core-smbus.c b/drivers/i2c/i2c-core-smbus.c
+index b5aec33002c3..f3f683041e7f 100644
+--- a/drivers/i2c/i2c-core-smbus.c
++++ b/drivers/i2c/i2c-core-smbus.c
+@@ -466,6 +466,8 @@ static s32 i2c_smbus_xfer_emulated(struct i2c_adapter *adapter, u16 addr,
+ 	status = i2c_transfer(adapter, msg, num);
+ 	if (status &lt; 0)
+ 		return status;
++	if (status != num)
++		return -EIO;
+ 
+ 	/* Check PEC if last message is a read */
+ 	if (i &amp;&amp; (msg[num-1].flags &amp; I2C_M_RD)) {</pre><hr><pre>commit bd23a7269834dc7c1f93e83535d16ebc44b75eba
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Tue May 8 08:50:28 2018 -0500
+
+    virt: vbox: Only copy_from_user the request-header once
+    
+    In vbg_misc_device_ioctl(), the header of the ioctl argument is copied from
+    the userspace pointer 'arg' and saved to the kernel object 'hdr'. Then the
+    'version', 'size_in', and 'size_out' fields of 'hdr' are verified.
+    
+    Before this commit, after the checks a buffer for the entire request would
+    be allocated and then all data including the verified header would be
+    copied from the userspace 'arg' pointer again.
+    
+    Given that the 'arg' pointer resides in userspace, a malicious userspace
+    process can race to change the data pointed to by 'arg' between the two
+    copies. By doing so, the user can bypass the verifications on the ioctl
+    argument.
+    
+    This commit fixes this by using the already checked copy of the header
+    to fill the header part of the allocated buffer and only copying the
+    remainder of the data from userspace.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Reviewed-by: Hans de Goede &lt;hdegoede@redhat.com&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/virt/vboxguest/vboxguest_linux.c b/drivers/virt/vboxguest/vboxguest_linux.c
+index 398d22693234..6e2a9619192d 100644
+--- a/drivers/virt/vboxguest/vboxguest_linux.c
++++ b/drivers/virt/vboxguest/vboxguest_linux.c
+@@ -121,7 +121,9 @@ static long vbg_misc_device_ioctl(struct file *filp, unsigned int req,
+ 	if (!buf)
+ 		return -ENOMEM;
+ 
+-	if (copy_from_user(buf, (void *)arg, hdr.size_in)) {
++	*((struct vbg_ioctl_hdr *)buf) = hdr;
++	if (copy_from_user(buf + sizeof(hdr), (void *)arg + sizeof(hdr),
++			   hdr.size_in - sizeof(hdr))) {
+ 		ret = -EFAULT;
+ 		goto out;
+ 	}</pre><hr><pre>commit 3f12888dfae2a48741c4caa9214885b3aaf350f9
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Sat May 5 13:38:03 2018 -0500
+
+    ALSA: control: fix a redundant-copy issue
+    
+    In snd_ctl_elem_add_compat(), the fields of the struct 'data' need to be
+    copied from the corresponding fields of the struct 'data32' in userspace.
+    This is achieved by invoking copy_from_user() and get_user() functions. The
+    problem here is that the 'type' field is copied twice. One is by
+    copy_from_user() and one is by get_user(). Given that the 'type' field is
+    not used between the two copies, the second copy is *completely* redundant
+    and should be removed for better performance and cleanup. Also, these two
+    copies can cause inconsistent data: as the struct 'data32' resides in
+    userspace and a malicious userspace process can race to change the 'type'
+    field between the two copies to cause inconsistent data. Depending on how
+    the data is used in the future, such an inconsistency may cause potential
+    security risks.
+    
+    For above reasons, we should take out the second copy.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/core/control_compat.c b/sound/core/control_compat.c
+index a848836a5de0..507fd5210c1c 100644
+--- a/sound/core/control_compat.c
++++ b/sound/core/control_compat.c
+@@ -396,8 +396,7 @@ static int snd_ctl_elem_add_compat(struct snd_ctl_file *file,
+ 	if (copy_from_user(&amp;data-&gt;id, &amp;data32-&gt;id, sizeof(data-&gt;id)) ||
+ 	    copy_from_user(&amp;data-&gt;type, &amp;data32-&gt;type, 3 * sizeof(u32)))
+ 		goto error;
+-	if (get_user(data-&gt;owner, &amp;data32-&gt;owner) ||
+-	    get_user(data-&gt;type, &amp;data32-&gt;type))
++	if (get_user(data-&gt;owner, &amp;data32-&gt;owner))
+ 		goto error;
+ 	switch (data-&gt;type) {
+ 	case SNDRV_CTL_ELEM_TYPE_BOOLEAN:</pre><hr><pre>commit 9899e4d3523faaef17c67141aa80ff2088f17871
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Mon May 7 19:54:01 2018 -0500
+
+    scsi: 3w-xxxx: fix a missing-check bug
+    
+    In tw_chrdev_ioctl(), the length of the data buffer is firstly copied
+    from the userspace pointer 'argp' and saved to the kernel object
+    'data_buffer_length'. Then a security check is performed on it to make
+    sure that the length is not more than 'TW_MAX_IOCTL_SECTORS *
+    512'. Otherwise, an error code -EINVAL is returned. If the security
+    check is passed, the entire ioctl command is copied again from the
+    'argp' pointer and saved to the kernel object 'tw_ioctl'. Then, various
+    operations are performed on 'tw_ioctl' according to the 'cmd'. Given
+    that the 'argp' pointer resides in userspace, a malicious userspace
+    process can race to change the buffer length between the two
+    copies. This way, the user can bypass the security check and inject
+    invalid data buffer length. This can cause potential security issues in
+    the following execution.
+    
+    This patch checks for capable(CAP_SYS_ADMIN) in tw_chrdev_open() to
+    avoid the above issues.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Acked-by: Adam Radford &lt;aradford@gmail.com&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/3w-xxxx.c b/drivers/scsi/3w-xxxx.c
+index 33261b690774..f6179e3d6953 100644
+--- a/drivers/scsi/3w-xxxx.c
++++ b/drivers/scsi/3w-xxxx.c
+@@ -1033,6 +1033,9 @@ static int tw_chrdev_open(struct inode *inode, struct file *file)
+ 
+ 	dprintk(KERN_WARNING "3w-xxxx: tw_ioctl_open()\n");
+ 
++	if (!capable(CAP_SYS_ADMIN))
++		return -EACCES;
++
+ 	minor_number = iminor(inode);
+ 	if (minor_number &gt;= tw_device_extension_count)
+ 		return -ENODEV;</pre><hr><pre>commit c9318a3e0218bc9dacc25be46b9eec363259536f
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Mon May 7 19:46:43 2018 -0500
+
+    scsi: 3w-9xxx: fix a missing-check bug
+    
+    In twa_chrdev_ioctl(), the ioctl driver command is firstly copied from
+    the userspace pointer 'argp' and saved to the kernel object
+    'driver_command'.  Then a security check is performed on the data buffer
+    size indicated by 'driver_command', which is
+    'driver_command.buffer_length'. If the security check is passed, the
+    entire ioctl command is copied again from the 'argp' pointer and saved
+    to the kernel object 'tw_ioctl'. Then, various operations are performed
+    on 'tw_ioctl' according to the 'cmd'. Given that the 'argp' pointer
+    resides in userspace, a malicious userspace process can race to change
+    the buffer size between the two copies. This way, the user can bypass
+    the security check and inject invalid data buffer size. This can cause
+    potential security issues in the following execution.
+    
+    This patch checks for capable(CAP_SYS_ADMIN) in twa_chrdev_open()t o
+    avoid the above issues.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Acked-by: Adam Radford &lt;aradford@gmail.com&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/3w-9xxx.c b/drivers/scsi/3w-9xxx.c
+index b42c9c479d4b..99ba4a770406 100644
+--- a/drivers/scsi/3w-9xxx.c
++++ b/drivers/scsi/3w-9xxx.c
+@@ -882,6 +882,11 @@ static int twa_chrdev_open(struct inode *inode, struct file *file)
+ 	unsigned int minor_number;
+ 	int retval = TW_IOCTL_ERROR_OS_ENODEV;
+ 
++	if (!capable(CAP_SYS_ADMIN)) {
++		retval = -EACCES;
++		goto out;
++	}
++
+ 	minor_number = iminor(inode);
+ 	if (minor_number &gt;= twa_device_extension_count)
+ 		goto out;</pre>
+    <div class="pagination">
+        <a href='7_27.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><span>[28]</span><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_29.html'>Next&gt;&gt;</a>
+    <div>
+</body>

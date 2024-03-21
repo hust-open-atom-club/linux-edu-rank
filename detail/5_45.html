@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_44.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><span>[45]</span><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_46.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit af973481f4a0902ad35726636c290f4794704948
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Sep 12 21:01:32 2005 -0500
+
+    [SCSI] iscsi: preemt fix and cleanup
+    
+    From: zhenyu.z.wang@intel.com
+    
+    Delay the head digest update until xmit time, like data digest update.
+    [To make things cleaner and avoid prempt bug]
+    
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 584e51024fd6..8751f6015559 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -129,14 +129,11 @@ iscsi_buf_left(struct iscsi_buf *ibuf)
+ }
+ 
+ static inline void
+-iscsi_buf_init_hdr(struct iscsi_conn *conn, struct iscsi_buf *ibuf,
+-		   char *vbuf, u8 *crc)
++iscsi_hdr_digest(struct iscsi_conn *conn, struct iscsi_buf *buf,
++		 u8* crc)
+ {
+-	iscsi_buf_init_virt(ibuf, vbuf, sizeof(struct iscsi_hdr));
+-	if (conn-&gt;hdrdgst_en) {
+-		crypto_digest_digest(conn-&gt;tx_tfm, &amp;ibuf-&gt;sg, 1, crc);
+-		ibuf-&gt;sg.length += sizeof(uint32_t);
+-	}
++	crypto_digest_digest(conn-&gt;tx_tfm, &amp;buf-&gt;sg, 1, crc);
++	buf-&gt;sg.length += sizeof(uint32_t);
+ }
+ 
+ static void
+@@ -427,8 +424,8 @@ iscsi_solicit_data_init(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask,
+ 
+ 	r2t-&gt;sent = 0;
+ 
+-	iscsi_buf_init_hdr(conn, &amp;r2t-&gt;headbuf, (char*)hdr,
+-			   (u8 *)dtask-&gt;hdrext);
++	iscsi_buf_init_virt(&amp;r2t-&gt;headbuf, (char*)hdr,
++			   sizeof(struct iscsi_hdr));
+ 
+ 	r2t-&gt;dtask = dtask;
+ 
+@@ -1494,8 +1491,8 @@ iscsi_solicit_data_cont(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask,
+ 	}
+ 	conn-&gt;dataout_pdus_cnt++;
+ 
+-	iscsi_buf_init_hdr(conn, &amp;r2t-&gt;headbuf, (char*)hdr,
+-			   (u8 *)dtask-&gt;hdrext);
++	iscsi_buf_init_virt(&amp;r2t-&gt;headbuf, (char*)hdr,
++			   sizeof(struct iscsi_hdr));
+ 
+ 	r2t-&gt;dtask = dtask;
+ 
+@@ -1541,8 +1538,8 @@ iscsi_unsolicit_data_init(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
+ 		hdr-&gt;flags = ISCSI_FLAG_CMD_FINAL;
+ 	}
+ 
+-	iscsi_buf_init_hdr(conn, &amp;ctask-&gt;headbuf, (char*)hdr,
+-			   (u8 *)dtask-&gt;hdrext);
++	iscsi_buf_init_virt(&amp;ctask-&gt;headbuf, (char*)hdr,
++			   sizeof(struct iscsi_hdr));
+ 
+ 	list_add(&amp;dtask-&gt;item, &amp;ctask-&gt;dataqueue);
+ 
+@@ -1662,8 +1659,8 @@ iscsi_cmd_init(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask,
+ 		zero_data(ctask-&gt;hdr.dlength);
+ 	}
+ 
+-	iscsi_buf_init_hdr(conn, &amp;ctask-&gt;headbuf, (char*)&amp;ctask-&gt;hdr,
+-			    (u8 *)ctask-&gt;hdrext);
++	iscsi_buf_init_virt(&amp;ctask-&gt;headbuf, (char*)&amp;ctask-&gt;hdr, 
++			    sizeof(struct iscsi_hdr));
+ 	conn-&gt;scsicmd_pdus_cnt++;
+ }
+ 
+@@ -1692,6 +1689,11 @@ iscsi_mtask_xmit(struct iscsi_conn *conn, struct iscsi_mgmt_task *mtask)
+ 		mtask-&gt;xmstate &amp;= ~XMSTATE_IMM_HDR;
+ 		if (mtask-&gt;data_count)
+ 			mtask-&gt;xmstate |= XMSTATE_IMM_DATA;
++		if (conn-&gt;c_stage != ISCSI_CONN_INITIAL_STAGE &amp;&amp;
++	    	    conn-&gt;stop_stage != STOP_CONN_RECOVER &amp;&amp;
++		    conn-&gt;hdrdgst_en)
++			iscsi_hdr_digest(conn, &amp;mtask-&gt;headbuf,
++					(u8*)mtask-&gt;hdrext);
+ 		if (iscsi_sendhdr(conn, &amp;mtask-&gt;headbuf, mtask-&gt;data_count)) {
+ 			mtask-&gt;xmstate |= XMSTATE_IMM_HDR;
+ 			if (mtask-&gt;data_count)
+@@ -1723,6 +1725,8 @@ static inline int
+ handle_xmstate_r_hdr(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
+ {
+ 	ctask-&gt;xmstate &amp;= ~XMSTATE_R_HDR;
++	if (conn-&gt;hdrdgst_en) 
++		iscsi_hdr_digest(conn, &amp;ctask-&gt;headbuf, (u8*)ctask-&gt;hdrext);
+ 	if (!iscsi_sendhdr(conn, &amp;ctask-&gt;headbuf, 0)) {
+ 		BUG_ON(ctask-&gt;xmstate != XMSTATE_IDLE);
+ 		return 0; /* wait for Data-In */
+@@ -1735,6 +1739,8 @@ static inline int
+ handle_xmstate_w_hdr(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
+ {
+ 	ctask-&gt;xmstate &amp;= ~XMSTATE_W_HDR;
++	if (conn-&gt;hdrdgst_en) 
++		iscsi_hdr_digest(conn, &amp;ctask-&gt;headbuf, (u8*)ctask-&gt;hdrext);
+ 	if (iscsi_sendhdr(conn, &amp;ctask-&gt;headbuf, ctask-&gt;imm_count)) {
+ 		ctask-&gt;xmstate |= XMSTATE_W_HDR;
+ 		return -EAGAIN;
+@@ -1813,7 +1819,9 @@ handle_xmstate_uns_hdr(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
+ 		iscsi_unsolicit_data_init(conn, ctask);
+ 		BUG_ON(!ctask-&gt;dtask);
+ 		dtask = ctask-&gt;dtask;
+-
++		if (conn-&gt;hdrdgst_en)
++			iscsi_hdr_digest(conn, &amp;ctask-&gt;headbuf,
++					(u8*)dtask-&gt;hdrext);
+ 		ctask-&gt;xmstate &amp;= ~XMSTATE_UNS_INIT;
+ 	}
+ 	if (iscsi_sendhdr(conn, &amp;ctask-&gt;headbuf, ctask-&gt;data_count)) {
+@@ -2118,7 +2126,9 @@ iscsi_ctask_xmit(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
+ 				    sizeof(void*));
+ solicit_head_again:
+ 		r2t = ctask-&gt;r2t;
+-
++		if (conn-&gt;hdrdgst_en)
++			iscsi_hdr_digest(conn, &amp;r2t-&gt;headbuf, 
++					(u8*)r2t-&gt;dtask-&gt;hdrext);
+ 		if (iscsi_sendhdr(conn, &amp;r2t-&gt;headbuf, r2t-&gt;data_count)) {
+ 			ctask-&gt;xmstate &amp;= ~XMSTATE_SOL_DATA;
+ 			ctask-&gt;xmstate |= XMSTATE_SOL_HDR;
+@@ -2889,14 +2899,8 @@ iscsi_conn_send_generic(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 
+ 	memcpy(&amp;mtask-&gt;hdr, hdr, sizeof(struct iscsi_hdr));
+ 
+-	if (conn-&gt;c_stage == ISCSI_CONN_INITIAL_STAGE ||
+-	    conn-&gt;stop_stage == STOP_CONN_RECOVER)
+-		iscsi_buf_init_virt(&amp;mtask-&gt;headbuf, (char*)&amp;mtask-&gt;hdr,
++	iscsi_buf_init_virt(&amp;mtask-&gt;headbuf, (char*)&amp;mtask-&gt;hdr,
+ 				    sizeof(struct iscsi_hdr));
+-	else
+-		/* this will update header digest */
+-		iscsi_buf_init_hdr(conn, &amp;mtask-&gt;headbuf, (char*)&amp;mtask-&gt;hdr,
+-				    (u8 *)mtask-&gt;hdrext);
+ 
+ 	spin_unlock_bh(&amp;session-&gt;lock);
+ </pre><hr><pre>commit b13941f635c3119eb02dc29b5248066f934f76be
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Sep 12 21:01:28 2005 -0500
+
+    [SCSI] iscsi: nodelay fix
+    
+    From: tomof@acm.org
+    
+    I'm not sure about this. I don't think that NODELAY option hurts
+    performance. However, open-iscsi does not use MSG_MORE properly with
+    sendpage, so NODELAY option hurts the open-iscsi performance.
+    
+    I've attached a patch to fix NODELAY and MSG_MORE problems and the
+    write performance results with disktest.
+    
+    I use Opteron boxes connected directly, Chelsio NICs, 1500-byte MTU,
+    64 KB I/O size, and the iSCSI parameters on open-iscsi web site.
+    
+    With only NODELAY fix, the performance drops, as you said. On the
+    other hand, NODELAY and MSG_MORE fixes improve the performance
+    overall.
+    
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 810e5e59658f..584e51024fd6 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -1385,7 +1385,7 @@ iscsi_sendpage(struct iscsi_conn *conn, struct iscsi_buf *buf,
+ 	BUG_ON(buf-&gt;sent + size &gt; buf-&gt;sg.length);
+ 	if (size &gt; *count)
+ 		size = *count;
+-	if (buf-&gt;sent + size != buf-&gt;sg.length)
++	if (buf-&gt;sent + size != buf-&gt;sg.length || *count != size)
+ 		flags |= MSG_MORE;
+ 
+ 	res = iscsi_send(sk, buf, size, flags);</pre><hr><pre>commit 6f16b5359ceb96780eac4178393b0e8a3c8aa1ea
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sat Sep 10 16:45:35 2005 -0500
+
+    [SCSI] set error value when failing commands in prep_fn
+    
+    set DID_NO_CONNECT for the BLKPREP_KILL case and correct a few
+    BLKPREP_DEFER cases that weren't checking for the need to plug the
+    queue.
+    
+    Signed-Off-By: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index d8d984841534..863bb6495daa 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -1146,7 +1146,7 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
+ 	if (unlikely(!scsi_device_online(sdev))) {
+ 		printk(KERN_ERR "scsi%d (%d:%d): rejecting I/O to offline device\n",
+ 		       sdev-&gt;host-&gt;host_no, sdev-&gt;id, sdev-&gt;lun);
+-		return BLKPREP_KILL;
++		goto kill;
+ 	}
+ 	if (unlikely(sdev-&gt;sdev_state != SDEV_RUNNING)) {
+ 		/* OK, we're not in a running state don't prep
+@@ -1156,7 +1156,7 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
+ 			 * at all allowed down */
+ 			printk(KERN_ERR "scsi%d (%d:%d): rejecting I/O to dead device\n",
+ 			       sdev-&gt;host-&gt;host_no, sdev-&gt;id, sdev-&gt;lun);
+-			return BLKPREP_KILL;
++			goto kill;
+ 		}
+ 		/* OK, we only allow special commands (i.e. not
+ 		 * user initiated ones */
+@@ -1188,11 +1188,11 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
+ 		if(unlikely(specials_only) &amp;&amp; !(req-&gt;flags &amp; REQ_SPECIAL)) {
+ 			if(specials_only == SDEV_QUIESCE ||
+ 					specials_only == SDEV_BLOCK)
+-				return BLKPREP_DEFER;
++				goto defer;
+ 			
+ 			printk(KERN_ERR "scsi%d (%d:%d): rejecting I/O to device being removed\n",
+ 			       sdev-&gt;host-&gt;host_no, sdev-&gt;id, sdev-&gt;lun);
+-			return BLKPREP_KILL;
++			goto kill;
+ 		}
+ 			
+ 			
+@@ -1210,7 +1210,7 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
+ 		cmd-&gt;tag = req-&gt;tag;
+ 	} else {
+ 		blk_dump_rq_flags(req, "SCSI bad req");
+-		return BLKPREP_KILL;
++		goto kill;
+ 	}
+ 	
+ 	/* note the overloading of req-&gt;special.  When the tag
+@@ -1248,8 +1248,13 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
+ 		 * required).
+ 		 */
+ 		ret = scsi_init_io(cmd);
+-		if (ret)	/* BLKPREP_KILL return also releases the command */
+-			return ret;
++		switch(ret) {
++		case BLKPREP_KILL:
++			/* BLKPREP_KILL return also releases the command */
++			goto kill;
++		case BLKPREP_DEFER:
++			goto defer;
++		}
+ 		
+ 		/*
+ 		 * Initialize the actual SCSI command for this request.
+@@ -1259,7 +1264,7 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
+ 			if (unlikely(!drv-&gt;init_command(cmd))) {
+ 				scsi_release_buffers(cmd);
+ 				scsi_put_command(cmd);
+-				return BLKPREP_KILL;
++				goto kill;
+ 			}
+ 		} else {
+ 			memcpy(cmd-&gt;cmnd, req-&gt;cmd, sizeof(cmd-&gt;cmnd));
+@@ -1290,6 +1295,9 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
+ 	if (sdev-&gt;device_busy == 0)
+ 		blk_plug_device(q);
+ 	return BLKPREP_DEFER;
++ kill:
++	req-&gt;errors = DID_NO_CONNECT &lt;&lt; 16;
++	return BLKPREP_KILL;
+ }
+ 
+ /*</pre><hr><pre>commit b38d950d3aedf90c8b15b3c7c799b5eb53c47c45
+Author: John Lenz &lt;lenz@cs.wisc.edu&gt;
+Date:   Thu Sep 8 14:41:54 2005 +0100
+
+    [ARM] Add suspend/resume support to locomo.c
+    
+    This adds low-level suspend/resume support to locomo.c.
+    
+    Signed-off-by: Pavel Machek &lt;pavel@suse.cz&gt;
+    Signed-off-by: Russell King &lt;rmk+kernel@arm.linux.org.uk&gt;
+
+diff --git a/arch/arm/common/locomo.c b/arch/arm/common/locomo.c
+index 51f430cc2fbf..2786f7c34b3f 100644
+--- a/arch/arm/common/locomo.c
++++ b/arch/arm/common/locomo.c
+@@ -541,6 +541,103 @@ locomo_init_one_child(struct locomo *lchip, struct locomo_dev_info *info)
+ 	return ret;
+ }
+ 
++#ifdef CONFIG_PM
++
++struct locomo_save_data {
++	u16	LCM_GPO;
++	u16	LCM_SPICT;
++	u16	LCM_GPE;
++	u16	LCM_ASD;
++	u16	LCM_SPIMD;
++};
++
++static int locomo_suspend(struct device *dev, u32 pm_message_t, u32 level)
++{
++	struct locomo *lchip = dev_get_drvdata(dev);
++	struct locomo_save_data *save;
++	unsigned long flags;
++
++	if (level != SUSPEND_DISABLE)
++		return 0;
++
++	save = kmalloc(sizeof(struct locomo_save_data), GFP_KERNEL);
++	if (!save)
++		return -ENOMEM;
++
++	dev-&gt;power.saved_state = (void *) save;
++
++	spin_lock_irqsave(&amp;lchip-&gt;lock, flags);
++
++	save-&gt;LCM_GPO     = locomo_readl(lchip-&gt;base + LOCOMO_GPO);	/* GPIO */
++	locomo_writel(0x00, lchip-&gt;base + LOCOMO_GPO);
++	save-&gt;LCM_SPICT   = locomo_readl(lchip-&gt;base + LOCOMO_SPICT);	/* SPI */
++	locomo_writel(0x40, lchip-&gt;base + LOCOMO_SPICT);
++	save-&gt;LCM_GPE     = locomo_readl(lchip-&gt;base + LOCOMO_GPE);	/* GPIO */
++	locomo_writel(0x00, lchip-&gt;base + LOCOMO_GPE);
++	save-&gt;LCM_ASD     = locomo_readl(lchip-&gt;base + LOCOMO_ASD);	/* ADSTART */
++	locomo_writel(0x00, lchip-&gt;base + LOCOMO_ASD);
++	save-&gt;LCM_SPIMD   = locomo_readl(lchip-&gt;base + LOCOMO_SPIMD);	/* SPI */
++	locomo_writel(0x3C14, lchip-&gt;base + LOCOMO_SPIMD);
++
++	locomo_writel(0x00, lchip-&gt;base + LOCOMO_PAIF);
++	locomo_writel(0x00, lchip-&gt;base + LOCOMO_DAC);
++	locomo_writel(0x00, lchip-&gt;base + LOCOMO_BACKLIGHT + LOCOMO_TC);
++
++	if ( (locomo_readl(lchip-&gt;base + LOCOMO_LED + LOCOMO_LPT0) &amp; 0x88) &amp;&amp; (locomo_readl(lchip-&gt;base + LOCOMO_LED + LOCOMO_LPT1) &amp; 0x88) )
++		locomo_writel(0x00, lchip-&gt;base + LOCOMO_C32K); 	/* CLK32 off */
++	else
++		/* 18MHz already enabled, so no wait */
++		locomo_writel(0xc1, lchip-&gt;base + LOCOMO_C32K); 	/* CLK32 on */
++
++	locomo_writel(0x00, lchip-&gt;base + LOCOMO_TADC);		/* 18MHz clock off*/
++	locomo_writel(0x00, lchip-&gt;base + LOCOMO_AUDIO + LOCOMO_ACC);			/* 22MHz/24MHz clock off */
++	locomo_writel(0x00, lchip-&gt;base + LOCOMO_FRONTLIGHT + LOCOMO_ALS);			/* FL */
++
++	spin_unlock_irqrestore(&amp;lchip-&gt;lock, flags);
++
++	return 0;
++}
++
++static int locomo_resume(struct device *dev, u32 level)
++{
++	struct locomo *lchip = dev_get_drvdata(dev);
++	struct locomo_save_data *save;
++	unsigned long r;
++	unsigned long flags;
++	
++	if (level != RESUME_ENABLE)
++		return 0;
++
++	save = (struct locomo_save_data *) dev-&gt;power.saved_state;
++	if (!save)
++		return 0;
++
++	spin_lock_irqsave(&amp;lchip-&gt;lock, flags);
++
++	locomo_writel(save-&gt;LCM_GPO, lchip-&gt;base + LOCOMO_GPO);
++	locomo_writel(save-&gt;LCM_SPICT, lchip-&gt;base + LOCOMO_SPICT);
++	locomo_writel(save-&gt;LCM_GPE, lchip-&gt;base + LOCOMO_GPE);
++	locomo_writel(save-&gt;LCM_ASD, lchip-&gt;base + LOCOMO_ASD);
++	locomo_writel(save-&gt;LCM_SPIMD, lchip-&gt;base + LOCOMO_SPIMD);
++
++	locomo_writel(0x00, lchip-&gt;base + LOCOMO_C32K);
++	locomo_writel(0x90, lchip-&gt;base + LOCOMO_TADC);
++
++	locomo_writel(0, lchip-&gt;base + LOCOMO_KEYBOARD + LOCOMO_KSC);
++	r = locomo_readl(lchip-&gt;base + LOCOMO_KEYBOARD + LOCOMO_KIC);
++	r &amp;= 0xFEFF;
++	locomo_writel(r, lchip-&gt;base + LOCOMO_KEYBOARD + LOCOMO_KIC);
++	locomo_writel(0x1, lchip-&gt;base + LOCOMO_KEYBOARD + LOCOMO_KCMD);
++
++	spin_unlock_irqrestore(&amp;lchip-&gt;lock, flags);
++
++	dev-&gt;power.saved_state = NULL;
++	kfree(save);
++
++	return 0;
++}
++#endif
++
+ /**
+  *	locomo_probe - probe for a single LoCoMo chip.
+  *	@phys_addr: physical address of device.
+@@ -707,6 +804,10 @@ static struct device_driver locomo_device_driver = {
+ 	.bus		= &amp;platform_bus_type,
+ 	.probe		= locomo_probe,
+ 	.remove		= locomo_remove,
++#ifdef CONFIG_PM
++	.suspend	= locomo_suspend,
++	.resume		= locomo_resume,
++#endif
+ };
+ 
+ /*</pre><hr><pre>commit df46b9a44ceb5af2ea2351ce8e28ae7bd840b00f
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Jun 20 14:04:44 2005 +0200
+
+    [PATCH] Add blk_rq_map_kern()
+    
+    Add blk_rq_map_kern which takes a kernel buffer and maps it into
+    a request and bio. This can be used by the dm hw_handlers, old
+    sg_scsi_ioctl, and one day scsi special requests so all requests
+    comming into scsi will have bios. All requests having bios
+    should allow scsi to use scatter lists for all IO and allow it
+    to use block layer functions.
+    
+    Signed-off-by: Jens Axboe &lt;axboe@suse.de&gt;
+
+diff --git a/drivers/block/ll_rw_blk.c b/drivers/block/ll_rw_blk.c
+index f20eba22b14b..e30a3c93b70c 100644
+--- a/drivers/block/ll_rw_blk.c
++++ b/drivers/block/ll_rw_blk.c
+@@ -281,6 +281,7 @@ static inline void rq_init(request_queue_t *q, struct request *rq)
+ 	rq-&gt;special = NULL;
+ 	rq-&gt;data_len = 0;
+ 	rq-&gt;data = NULL;
++	rq-&gt;nr_phys_segments = 0;
+ 	rq-&gt;sense = NULL;
+ 	rq-&gt;end_io = NULL;
+ 	rq-&gt;end_io_data = NULL;
+@@ -2176,6 +2177,61 @@ int blk_rq_unmap_user(struct request *rq, struct bio *bio, unsigned int ulen)
+ 
+ EXPORT_SYMBOL(blk_rq_unmap_user);
+ 
++static int blk_rq_map_kern_endio(struct bio *bio, unsigned int bytes_done,
++				 int error)
++{
++	if (bio-&gt;bi_size)
++		return 1;
++
++	bio_put(bio);
++	return 0;
++}
++
++/**
++ * blk_rq_map_kern - map kernel data to a request, for REQ_BLOCK_PC usage
++ * @q:		request queue where request should be inserted
++ * @rw:		READ or WRITE data
++ * @kbuf:	the kernel buffer
++ * @len:	length of user data
++ */
++struct request *blk_rq_map_kern(request_queue_t *q, int rw, void *kbuf,
++				unsigned int len, unsigned int gfp_mask)
++{
++	struct request *rq;
++	struct bio *bio;
++
++	if (len &gt; (q-&gt;max_sectors &lt;&lt; 9))
++		return ERR_PTR(-EINVAL);
++	if ((!len &amp;&amp; kbuf) || (len &amp;&amp; !kbuf))
++		return ERR_PTR(-EINVAL);
++
++	rq = blk_get_request(q, rw, gfp_mask);
++	if (!rq)
++		return ERR_PTR(-ENOMEM);
++
++	bio = bio_map_kern(q, kbuf, len, gfp_mask);
++	if (!IS_ERR(bio)) {
++		if (rw)
++			bio-&gt;bi_rw |= (1 &lt;&lt; BIO_RW);
++		bio-&gt;bi_end_io = blk_rq_map_kern_endio;
++
++		rq-&gt;bio = rq-&gt;biotail = bio;
++		blk_rq_bio_prep(q, rq, bio);
++
++		rq-&gt;buffer = rq-&gt;data = NULL;
++		rq-&gt;data_len = len;
++		return rq;
++	}
++
++	/*
++	 * bio is the err-ptr
++	 */
++	blk_put_request(rq);
++	return (struct request *) bio;
++}
++
++EXPORT_SYMBOL(blk_rq_map_kern);
++
+ /**
+  * blk_execute_rq - insert a request into queue for execution
+  * @q:		queue to insert the request in
+diff --git a/fs/bio.c b/fs/bio.c
+index 3a1472acc361..707b9af2dd01 100644
+--- a/fs/bio.c
++++ b/fs/bio.c
+@@ -701,6 +701,71 @@ void bio_unmap_user(struct bio *bio)
+ 	bio_put(bio);
+ }
+ 
++static struct bio *__bio_map_kern(request_queue_t *q, void *data,
++				  unsigned int len, unsigned int gfp_mask)
++{
++	unsigned long kaddr = (unsigned long)data;
++	unsigned long end = (kaddr + len + PAGE_SIZE - 1) &gt;&gt; PAGE_SHIFT;
++	unsigned long start = kaddr &gt;&gt; PAGE_SHIFT;
++	const int nr_pages = end - start;
++	int offset, i;
++	struct bio *bio;
++
++	bio = bio_alloc(gfp_mask, nr_pages);
++	if (!bio)
++		return ERR_PTR(-ENOMEM);
++
++	offset = offset_in_page(kaddr);
++	for (i = 0; i &lt; nr_pages; i++) {
++		unsigned int bytes = PAGE_SIZE - offset;
++
++		if (len &lt;= 0)
++			break;
++
++		if (bytes &gt; len)
++			bytes = len;
++
++		if (__bio_add_page(q, bio, virt_to_page(data), bytes,
++				   offset) &lt; bytes)
++			break;
++
++		data += bytes;
++		len -= bytes;
++		offset = 0;
++	}
++
++	return bio;
++}
++
++/**
++ *	bio_map_kern	-	map kernel address into bio
++ *	@q: the request_queue_t for the bio
++ *	@data: pointer to buffer to map
++ *	@len: length in bytes
++ *	@gfp_mask: allocation flags for bio allocation
++ *
++ *	Map the kernel address into a bio suitable for io to a block
++ *	device. Returns an error pointer in case of error.
++ */
++struct bio *bio_map_kern(request_queue_t *q, void *data, unsigned int len,
++			 unsigned int gfp_mask)
++{
++	struct bio *bio;
++
++	bio = __bio_map_kern(q, data, len, gfp_mask);
++	if (IS_ERR(bio))
++		return bio;
++
++	if (bio-&gt;bi_size == len)
++		return bio;
++
++	/*
++	 * Don't support partial mappings.
++	 */
++	bio_put(bio);
++	return ERR_PTR(-EINVAL);
++}
++
+ /*
+  * bio_set_pages_dirty() and bio_check_pages_dirty() are support functions
+  * for performing direct-IO in BIOs.
+@@ -1088,6 +1153,7 @@ EXPORT_SYMBOL(bio_add_page);
+ EXPORT_SYMBOL(bio_get_nr_vecs);
+ EXPORT_SYMBOL(bio_map_user);
+ EXPORT_SYMBOL(bio_unmap_user);
++EXPORT_SYMBOL(bio_map_kern);
+ EXPORT_SYMBOL(bio_pair_release);
+ EXPORT_SYMBOL(bio_split);
+ EXPORT_SYMBOL(bio_split_pool);
+diff --git a/include/linux/bio.h b/include/linux/bio.h
+index 038022763f09..1dd2bc2e84ae 100644
+--- a/include/linux/bio.h
++++ b/include/linux/bio.h
+@@ -282,6 +282,8 @@ extern int bio_get_nr_vecs(struct block_device *);
+ extern struct bio *bio_map_user(struct request_queue *, struct block_device *,
+ 				unsigned long, unsigned int, int);
+ extern void bio_unmap_user(struct bio *);
++extern struct bio *bio_map_kern(struct request_queue *, void *, unsigned int,
++				unsigned int);
+ extern void bio_set_pages_dirty(struct bio *bio);
+ extern void bio_check_pages_dirty(struct bio *bio);
+ extern struct bio *bio_copy_user(struct request_queue *, unsigned long, unsigned int, int);
+diff --git a/include/linux/blkdev.h b/include/linux/blkdev.h
+index 4a99b76c5a33..67339bc5f6bc 100644
+--- a/include/linux/blkdev.h
++++ b/include/linux/blkdev.h
+@@ -560,6 +560,8 @@ extern void blk_run_queue(request_queue_t *);
+ extern void blk_queue_activity_fn(request_queue_t *, activity_fn *, void *);
+ extern struct request *blk_rq_map_user(request_queue_t *, int, void __user *, unsigned int);
+ extern int blk_rq_unmap_user(struct request *, struct bio *, unsigned int);
++extern struct request *blk_rq_map_kern(request_queue_t *, int, void *,
++					unsigned int, unsigned int);
+ extern int blk_execute_rq(request_queue_t *, struct gendisk *, struct request *);
+ 
+ static inline request_queue_t *bdev_get_queue(struct block_device *bdev)</pre><hr><pre>commit 69b528936b702d4c13ffa0d14215a029dc754e50
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sun May 1 14:47:15 2005 -0500
+
+    [SCSI] call correct scsi_done function in scsi_dispatch_cmd
+    
+    scsi_dispatch_cmd currently calls scsi_done when the device is in the
+    SDEV_DEL state, but at this point the command has not had a timer added
+    to it (this is done a couple lines down) so scsi_done just returns and
+    the command is lost. The attached patch made against 2.6.12-rc3 calls
+    __scsi_done in this case so the comamnd will be returned upwards.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi.c b/drivers/scsi/scsi.c
+index 05d2bd075fd4..184bcaeaf812 100644
+--- a/drivers/scsi/scsi.c
++++ b/drivers/scsi/scsi.c
+@@ -542,7 +542,7 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
+ 		 * that the device is no longer present */
+ 		cmd-&gt;result = DID_NO_CONNECT &lt;&lt; 16;
+ 		atomic_inc(&amp;cmd-&gt;device-&gt;iorequest_cnt);
+-		scsi_done(cmd);
++		__scsi_done(cmd);
+ 		/* return 0 (because the command has been processed) */
+ 		goto out;
+ 	}</pre><hr><pre>commit c4ea95d7cd08d9ffd7fa75e6c5e0332d596dd11e
+Author: Daniel Forrest &lt;dan.forrest@ssec.wisc.edu&gt;
+Date:   Tue Dec 2 15:59:42 2014 -0800
+
+    mm: fix anon_vma_clone() error treatment
+    
+    Andrew Morton noticed that the error return from anon_vma_clone() was
+    being dropped and replaced with -ENOMEM (which is not itself a bug
+    because the only error return value from anon_vma_clone() is -ENOMEM).
+    
+    I did an audit of callers of anon_vma_clone() and discovered an actual
+    bug where the error return was being lost.  In __split_vma(), between
+    Linux 3.11 and 3.12 the code was changed so the err variable is used
+    before the call to anon_vma_clone() and the default initial value of
+    -ENOMEM is overwritten.  So a failure of anon_vma_clone() will return
+    success since err at this point is now zero.
+    
+    Below is a patch which fixes this bug and also propagates the error
+    return value from anon_vma_clone() in all cases.
+    
+    Fixes: ef0855d334e1 ("mm: mempolicy: turn vma_set_policy() into vma_dup_policy()")
+    Signed-off-by: Daniel Forrest &lt;dan.forrest@ssec.wisc.edu&gt;
+    Reviewed-by: Michal Hocko &lt;mhocko@suse.cz&gt;
+    Cc: Konstantin Khlebnikov &lt;koct9i@gmail.com&gt;
+    Cc: Andrea Arcangeli &lt;aarcange@redhat.com&gt;
+    Cc: Rik van Riel &lt;riel@redhat.com&gt;
+    Cc: Tim Hartrick &lt;tim@edgecast.com&gt;
+    Cc: Hugh Dickins &lt;hughd@google.com&gt;
+    Cc: Michel Lespinasse &lt;walken@google.com&gt;
+    Cc: Vlastimil Babka &lt;vbabka@suse.cz&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;    [3.12+]
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/mm/mmap.c b/mm/mmap.c
+index 87e82b38453c..ae919891a087 100644
+--- a/mm/mmap.c
++++ b/mm/mmap.c
+@@ -776,8 +776,11 @@ again:			remove_next = 1 + (end &gt; next-&gt;vm_end);
+ 		 * shrinking vma had, to cover any anon pages imported.
+ 		 */
+ 		if (exporter &amp;&amp; exporter-&gt;anon_vma &amp;&amp; !importer-&gt;anon_vma) {
+-			if (anon_vma_clone(importer, exporter))
+-				return -ENOMEM;
++			int error;
++
++			error = anon_vma_clone(importer, exporter);
++			if (error)
++				return error;
+ 			importer-&gt;anon_vma = exporter-&gt;anon_vma;
+ 		}
+ 	}
+@@ -2469,7 +2472,8 @@ static int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
+ 	if (err)
+ 		goto out_free_vma;
+ 
+-	if (anon_vma_clone(new, vma))
++	err = anon_vma_clone(new, vma);
++	if (err)
+ 		goto out_free_mpol;
+ 
+ 	if (new-&gt;vm_file)
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 19886fb2f13a..3e4c7213210c 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -274,6 +274,7 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
+ {
+ 	struct anon_vma_chain *avc;
+ 	struct anon_vma *anon_vma;
++	int error;
+ 
+ 	/* Don't bother if the parent process has no anon_vma here. */
+ 	if (!pvma-&gt;anon_vma)
+@@ -283,8 +284,9 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
+ 	 * First, attach the new VMA to the parent VMA's anon_vmas,
+ 	 * so rmap can find non-COWed pages in child processes.
+ 	 */
+-	if (anon_vma_clone(vma, pvma))
+-		return -ENOMEM;
++	error = anon_vma_clone(vma, pvma);
++	if (error)
++		return error;
+ 
+ 	/* Then add our own anon_vma. */
+ 	anon_vma = anon_vma_alloc();</pre><hr><pre>commit 331552925d17ffa2f5c676e282d4fd37c852d9e3
+Author: Pete Wyckoff &lt;pw@osc.edu&gt;
+Date:   Tue Feb 26 13:27:53 2008 -0500
+
+    IB/fmr_pool: Flush all dirty FMRs from ib_fmr_pool_flush()
+    
+    Commit a3cd7d90 ("IB/fmr_pool: ib_fmr_pool_flush() should flush all
+    dirty FMRs") caused a regression for iSER and was reverted in
+    e5507736.
+    
+    This change attempts to redo the original patch so that all used FMR
+    entries are flushed when ib_flush_fmr_pool() is called without
+    affecting the normal FMR pool cleaning thread.  Simply move used
+    entries from the clean list onto the dirty list in ib_flush_fmr_pool()
+    before letting the cleanup thread do its job.
+    
+    Signed-off-by: Pete Wyckoff &lt;pw@osc.edu&gt;
+    Signed-off-by: Roland Dreier &lt;rolandd@cisco.com&gt;
+
+diff --git a/drivers/infiniband/core/fmr_pool.c b/drivers/infiniband/core/fmr_pool.c
+index 4044fdf62cc2..06d502c06a4d 100644
+--- a/drivers/infiniband/core/fmr_pool.c
++++ b/drivers/infiniband/core/fmr_pool.c
+@@ -398,8 +398,23 @@ EXPORT_SYMBOL(ib_destroy_fmr_pool);
+  */
+ int ib_flush_fmr_pool(struct ib_fmr_pool *pool)
+ {
+-	int serial = atomic_inc_return(&amp;pool-&gt;req_ser);
++	int serial;
++	struct ib_pool_fmr *fmr, *next;
++
++	/*
++	 * The free_list holds FMRs that may have been used
++	 * but have not been remapped enough times to be dirty.
++	 * Put them on the dirty list now so that the cleanup
++	 * thread will reap them too.
++	 */
++	spin_lock_irq(&amp;pool-&gt;pool_lock);
++	list_for_each_entry_safe(fmr, next, &amp;pool-&gt;free_list, list) {
++		if (fmr-&gt;remap_count &gt; 0)
++			list_move(&amp;fmr-&gt;list, &amp;pool-&gt;dirty_list);
++	}
++	spin_unlock_irq(&amp;pool-&gt;pool_lock);
+ 
++	serial = atomic_inc_return(&amp;pool-&gt;req_ser);
+ 	wake_up_process(pool-&gt;thread);
+ 
+ 	if (wait_event_interruptible(pool-&gt;force_wait,</pre><hr><pre>commit 35fb5340e3de5dff86923eb0cded748c3a6e05e7
+Author: Pete Wyckoff &lt;pw@osc.edu&gt;
+Date:   Tue Feb 26 13:27:31 2008 -0500
+
+    Revert "IB/fmr_pool: ib_fmr_pool_flush() should flush all dirty FMRs"
+    
+    This reverts commit a3cd7d9070be417a21905c997ee32d756d999b38.
+    
+    The original commit breaks iSER reliably, making it complain:
+    
+        iser: iser_reg_page_vec:ib_fmr_pool_map_phys failed: -11
+    
+    The FMR cleanup thread runs ib_fmr_batch_release() as dirty entries
+    build up.  This commit causes clean but used FMR entries also to be
+    purged.  During that process, another thread can see that there are no
+    free FMRs and fail, even though there should always have been enough
+    available.
+    
+    Signed-off-by: Pete Wyckoff &lt;pw@osc.edu&gt;
+    Signed-off-by: Roland Dreier &lt;rolandd@cisco.com&gt;
+
+diff --git a/drivers/infiniband/core/fmr_pool.c b/drivers/infiniband/core/fmr_pool.c
+index 7f00347364f7..4044fdf62cc2 100644
+--- a/drivers/infiniband/core/fmr_pool.c
++++ b/drivers/infiniband/core/fmr_pool.c
+@@ -139,7 +139,7 @@ static inline struct ib_pool_fmr *ib_fmr_cache_lookup(struct ib_fmr_pool *pool,
+ static void ib_fmr_batch_release(struct ib_fmr_pool *pool)
+ {
+ 	int                 ret;
+-	struct ib_pool_fmr *fmr, *next;
++	struct ib_pool_fmr *fmr;
+ 	LIST_HEAD(unmap_list);
+ 	LIST_HEAD(fmr_list);
+ 
+@@ -158,20 +158,6 @@ static void ib_fmr_batch_release(struct ib_fmr_pool *pool)
+ #endif
+ 	}
+ 
+-	/*
+-	 * The free_list may hold FMRs that have been put there
+-	 * because they haven't reached the max_remap count.
+-	 * Invalidate their mapping as well.
+-	 */
+-	list_for_each_entry_safe(fmr, next, &amp;pool-&gt;free_list, list) {
+-		if (fmr-&gt;remap_count == 0)
+-			continue;
+-		hlist_del_init(&amp;fmr-&gt;cache_node);
+-		fmr-&gt;remap_count = 0;
+-		list_add_tail(&amp;fmr-&gt;fmr-&gt;list, &amp;fmr_list);
+-		list_move(&amp;fmr-&gt;list, &amp;unmap_list);
+-	}
+-
+ 	list_splice(&amp;pool-&gt;dirty_list, &amp;unmap_list);
+ 	INIT_LIST_HEAD(&amp;pool-&gt;dirty_list);
+ 	pool-&gt;dirty_len = 0;
+@@ -384,6 +370,11 @@ void ib_destroy_fmr_pool(struct ib_fmr_pool *pool)
+ 
+ 	i = 0;
+ 	list_for_each_entry_safe(fmr, tmp, &amp;pool-&gt;free_list, list) {
++		if (fmr-&gt;remap_count) {
++			INIT_LIST_HEAD(&amp;fmr_list);
++			list_add_tail(&amp;fmr-&gt;fmr-&gt;list, &amp;fmr_list);
++			ib_unmap_fmr(&amp;fmr_list);
++		}
+ 		ib_dealloc_fmr(fmr-&gt;fmr);
+ 		list_del(&amp;fmr-&gt;list);
+ 		kfree(fmr);</pre><hr><pre>commit 482eb689169948e9f4966fbae6be4d6bc0bfa818
+Author: Pete Wyckoff &lt;pw@osc.edu&gt;
+Date:   Tue Jan 1 10:23:02 2008 -0500
+
+    block: allow queue dma_alignment of zero
+    
+    Let queue_dma_alignment return 0 if it was specifically set to 0.
+    This permits devices with no particular alignment restrictions to
+    use arbitrary user space buffers without copying.
+    
+    Signed-off-by: Pete Wyckoff &lt;pw@osc.edu&gt;
+    Signed-off-by: Jens Axboe &lt;jens.axboe@oracle.com&gt;
+
+diff --git a/include/linux/blkdev.h b/include/linux/blkdev.h
+index 49b7a4c31a6d..c7a3ab575c24 100644
+--- a/include/linux/blkdev.h
++++ b/include/linux/blkdev.h
+@@ -836,12 +836,7 @@ static inline int bdev_hardsect_size(struct block_device *bdev)
+ 
+ static inline int queue_dma_alignment(struct request_queue *q)
+ {
+-	int retval = 511;
+-
+-	if (q &amp;&amp; q-&gt;dma_alignment)
+-		retval = q-&gt;dma_alignment;
+-
+-	return retval;
++	return q ? q-&gt;dma_alignment : 511;
+ }
+ 
+ /* assumes size &gt; 256 */</pre>
+    <div class="pagination">
+        <a href='5_44.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><span>[45]</span><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_46.html'>Next&gt;&gt;</a>
+    <div>
+</body>

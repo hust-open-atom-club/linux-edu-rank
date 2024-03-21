@@ -1,0 +1,3372 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of New South Wales</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of New South Wales</h1>
+    <div class="pagination">
+        <a href='8_12.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><a href='8_12.html'>12</a><span>[13]</span><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_14.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 5f40402d96cb21df912e5bbb3fffa5e1afc81e98
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:16 2005 -0700
+
+    [PATCH] md: call bitmap_daemon_work regularly
+    
+    bitmap_daemon_work clears bits in the bitmap for blocks that haven't been
+    written to for a while.  It needs to be called regularly to make sure the
+    bitmap doesn't endup full of ones ....  but it wasn't.
+    
+    So call it from the increasingly-inaptly-named md_check_recovery
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index 52fafb820f74..b02f8d1d77e7 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -3635,7 +3635,8 @@ void md_check_recovery(mddev_t *mddev)
+ 	struct list_head *rtmp;
+ 
+ 
+-	dprintk(KERN_INFO "md: recovery thread got woken up ...\n");
++	if (mddev-&gt;bitmap)
++		bitmap_daemon_work(mddev-&gt;bitmap);
+ 
+ 	if (mddev-&gt;ro)
+ 		return;</pre><hr><pre>commit 78d742d876bdf7263d0d966fbe9593559fd904a7
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:15 2005 -0700
+
+    [PATCH] md: a couple of tidyups relating to the bitmap file.
+    
+    1/ When init from disk, it is a BUG if there is nowhere
+       to init from,
+    2/ use seq_path to print path in /proc/mdstat
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index 34ffc133db05..b43bdb2c7e64 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -769,13 +769,7 @@ static int bitmap_init_from_disk(struct bitmap *bitmap)
+ 	chunks = bitmap-&gt;chunks;
+ 	file = bitmap-&gt;file;
+ 
+-	if (!file) { /* no file, dirty all the in-memory bits */
+-		printk(KERN_INFO "%s: no bitmap file, doing full recovery\n",
+-			bmname(bitmap));
+-		bitmap_set_memory_bits(bitmap, 0,
+-				       chunks &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap), 1);
+-		return 0;
+-	}
++	BUG_ON(!file);
+ 
+ #if INJECT_FAULTS_3
+ 	outofdate = 1;
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index c402f6cc7047..52fafb820f74 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -3213,10 +3213,8 @@ static int md_seq_show(struct seq_file *seq, void *v)
+ 			seq_printf(seq, "\n       ");
+ 
+ 		if ((bitmap = mddev-&gt;bitmap)) {
+-			char *buf, *path;
+ 			unsigned long chunk_kb;
+ 			unsigned long flags;
+-			buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+ 			spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
+ 			chunk_kb = bitmap-&gt;chunksize &gt;&gt; 10;
+ 			seq_printf(seq, "bitmap: %lu/%lu pages [%luKB], "
+@@ -3227,13 +3225,14 @@ static int md_seq_show(struct seq_file *seq, void *v)
+ 					&lt;&lt; (PAGE_SHIFT - 10),
+ 				chunk_kb ? chunk_kb : bitmap-&gt;chunksize,
+ 				chunk_kb ? "KB" : "B");
+-			if (bitmap-&gt;file &amp;&amp; buf) {
+-				path = file_path(bitmap-&gt;file, buf, PAGE_SIZE);
+-				seq_printf(seq, ", file: %s", path ? path : "");
++			if (bitmap-&gt;file) {
++				seq_printf(seq, ", file: ");
++				seq_path(seq, bitmap-&gt;file-&gt;f_vfsmnt,
++					 bitmap-&gt;file-&gt;f_dentry," \t\n");
+ 			}
++
+ 			seq_printf(seq, "\n");
+ 			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+-			kfree(buf);
+ 		}
+ 
+ 		seq_printf(seq, "\n");</pre><hr><pre>commit 32a7627cf3a35396a8e834faf34e38ae9f3b1309
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:14 2005 -0700
+
+    [PATCH] md: optimised resync using Bitmap based intent logging
+    
+    With this patch, the intent to write to some block in the array can be logged
+    to a bitmap file.  Each bit represents some number of sectors and is set
+    before any update happens, and only cleared when all writes relating to all
+    sectors are complete.
+    
+    After an unclean shutdown, information in this bitmap can be used to optimise
+    resync - only sectors which could be out-of-sync need to be updated.
+    
+    Also if a drive is removed and then added back into an array, the recovery can
+    make use of the bitmap to optimise reconstruction.  This is not implemented in
+    this patch.
+    
+    Currently the bitmap is stored in a file which must (obviously) be stored on a
+    separate device.
+    
+    The patch only provided infrastructure.  It does not update any personalities
+    to bitmap intent logging.
+    
+    Md arrays can still be used with no bitmap file.  This patch has minimal
+    impact on such arrays.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/Makefile b/drivers/md/Makefile
+index 90de9c146a5f..d3efedf6a6ad 100644
+--- a/drivers/md/Makefile
++++ b/drivers/md/Makefile
+@@ -7,6 +7,7 @@ dm-mod-objs	:= dm.o dm-table.o dm-target.o dm-linear.o dm-stripe.o \
+ dm-multipath-objs := dm-hw-handler.o dm-path-selector.o dm-mpath.o
+ dm-snapshot-objs := dm-snap.o dm-exception-store.o
+ dm-mirror-objs	:= dm-log.o dm-raid1.o
++md-mod-objs     := md.o bitmap.o
+ raid6-objs	:= raid6main.o raid6algos.o raid6recov.o raid6tables.o \
+ 		   raid6int1.o raid6int2.o raid6int4.o \
+ 		   raid6int8.o raid6int16.o raid6int32.o \
+@@ -28,7 +29,7 @@ obj-$(CONFIG_MD_RAID5)		+= raid5.o xor.o
+ obj-$(CONFIG_MD_RAID6)		+= raid6.o xor.o
+ obj-$(CONFIG_MD_MULTIPATH)	+= multipath.o
+ obj-$(CONFIG_MD_FAULTY)		+= faulty.o
+-obj-$(CONFIG_BLK_DEV_MD)	+= md.o
++obj-$(CONFIG_BLK_DEV_MD)	+= md-mod.o
+ obj-$(CONFIG_BLK_DEV_DM)	+= dm-mod.o
+ obj-$(CONFIG_DM_CRYPT)		+= dm-crypt.o
+ obj-$(CONFIG_DM_MULTIPATH)	+= dm-multipath.o dm-round-robin.o
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+new file mode 100644
+index 000000000000..34ffc133db05
+--- /dev/null
++++ b/drivers/md/bitmap.c
+@@ -0,0 +1,1519 @@
++/*
++ * bitmap.c two-level bitmap (C) Peter T. Breuer (ptb@ot.uc3m.es) 2003
++ *
++ * bitmap_create  - sets up the bitmap structure
++ * bitmap_destroy - destroys the bitmap structure
++ *
++ * additions, Copyright (C) 2003-2004, Paul Clements, SteelEye Technology, Inc.:
++ * - added disk storage for bitmap
++ * - changes to allow various bitmap chunk sizes
++ * - added bitmap daemon (to asynchronously clear bitmap bits from disk)
++ */
++
++/*
++ * Still to do:
++ *
++ * flush after percent set rather than just time based. (maybe both).
++ * wait if count gets too high, wake when it drops to half.
++ * allow bitmap to be mirrored with superblock (before or after...)
++ * allow hot-add to re-instate a current device.
++ * allow hot-add of bitmap after quiessing device
++ */
++
++#include &lt;linux/module.h&gt;
++#include &lt;linux/version.h&gt;
++#include &lt;linux/errno.h&gt;
++#include &lt;linux/slab.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/config.h&gt;
++#include &lt;linux/timer.h&gt;
++#include &lt;linux/sched.h&gt;
++#include &lt;linux/list.h&gt;
++#include &lt;linux/file.h&gt;
++#include &lt;linux/mount.h&gt;
++#include &lt;linux/buffer_head.h&gt;
++#include &lt;linux/raid/md.h&gt;
++#include &lt;linux/raid/bitmap.h&gt;
++
++/* debug macros */
++
++#define DEBUG 0
++
++#if DEBUG
++/* these are for debugging purposes only! */
++
++/* define one and only one of these */
++#define INJECT_FAULTS_1 0 /* cause bitmap_alloc_page to fail always */
++#define INJECT_FAULTS_2 0 /* cause bitmap file to be kicked when first bit set*/
++#define INJECT_FAULTS_3 0 /* treat bitmap file as kicked at init time */
++#define INJECT_FAULTS_4 0 /* undef */
++#define INJECT_FAULTS_5 0 /* undef */
++#define INJECT_FAULTS_6 0
++
++/* if these are defined, the driver will fail! debug only */
++#define INJECT_FATAL_FAULT_1 0 /* fail kmalloc, causing bitmap_create to fail */
++#define INJECT_FATAL_FAULT_2 0 /* undef */
++#define INJECT_FATAL_FAULT_3 0 /* undef */
++#endif
++
++//#define DPRINTK PRINTK /* set this NULL to avoid verbose debug output */
++#define DPRINTK(x...) do { } while(0)
++
++#ifndef PRINTK
++#  if DEBUG &gt; 0
++#    define PRINTK(x...) printk(KERN_DEBUG x)
++#  else
++#    define PRINTK(x...)
++#  endif
++#endif
++
++static inline char * bmname(struct bitmap *bitmap)
++{
++	return bitmap-&gt;mddev ? mdname(bitmap-&gt;mddev) : "mdX";
++}
++
++
++/*
++ * test if the bitmap is active
++ */
++int bitmap_active(struct bitmap *bitmap)
++{
++	unsigned long flags;
++	int res = 0;
++
++	if (!bitmap)
++		return res;
++	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++	res = bitmap-&gt;flags &amp; BITMAP_ACTIVE;
++	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++	return res;
++}
++
++#define WRITE_POOL_SIZE 256
++/* mempool for queueing pending writes on the bitmap file */
++static void *write_pool_alloc(unsigned int gfp_flags, void *data)
++{
++	return kmalloc(sizeof(struct page_list), gfp_flags);
++}
++
++static void write_pool_free(void *ptr, void *data)
++{
++	kfree(ptr);
++}
++
++/*
++ * just a placeholder - calls kmalloc for bitmap pages
++ */
++static unsigned char *bitmap_alloc_page(struct bitmap *bitmap)
++{
++	unsigned char *page;
++
++#if INJECT_FAULTS_1
++	page = NULL;
++#else
++	page = kmalloc(PAGE_SIZE, GFP_NOIO);
++#endif
++	if (!page)
++		printk("%s: bitmap_alloc_page FAILED\n", bmname(bitmap));
++	else
++		printk("%s: bitmap_alloc_page: allocated page at %p\n",
++			bmname(bitmap), page);
++	return page;
++}
++
++/*
++ * for now just a placeholder -- just calls kfree for bitmap pages
++ */
++static void bitmap_free_page(struct bitmap *bitmap, unsigned char *page)
++{
++	PRINTK("%s: bitmap_free_page: free page %p\n", bmname(bitmap), page);
++	kfree(page);
++}
++
++/*
++ * check a page and, if necessary, allocate it (or hijack it if the alloc fails)
++ *
++ * 1) check to see if this page is allocated, if it's not then try to alloc
++ * 2) if the alloc fails, set the page's hijacked flag so we'll use the
++ *    page pointer directly as a counter
++ *
++ * if we find our page, we increment the page's refcount so that it stays
++ * allocated while we're using it
++ */
++static int bitmap_checkpage(struct bitmap *bitmap, unsigned long page, int create)
++{
++	unsigned char *mappage;
++
++	if (page &gt;= bitmap-&gt;pages) {
++		printk(KERN_ALERT
++			"%s: invalid bitmap page request: %lu (&gt; %lu)\n",
++			bmname(bitmap), page, bitmap-&gt;pages-1);
++		return -EINVAL;
++	}
++
++
++	if (bitmap-&gt;bp[page].hijacked) /* it's hijacked, don't try to alloc */
++		return 0;
++
++	if (bitmap-&gt;bp[page].map) /* page is already allocated, just return */
++		return 0;
++
++	if (!create)
++		return -ENOENT;
++
++	spin_unlock_irq(&amp;bitmap-&gt;lock);
++
++	/* this page has not been allocated yet */
++
++	if ((mappage = bitmap_alloc_page(bitmap)) == NULL) {
++		PRINTK("%s: bitmap map page allocation failed, hijacking\n",
++			bmname(bitmap));
++		/* failed - set the hijacked flag so that we can use the
++		 * pointer as a counter */
++		spin_lock_irq(&amp;bitmap-&gt;lock);
++		if (!bitmap-&gt;bp[page].map)
++			bitmap-&gt;bp[page].hijacked = 1;
++		goto out;
++	}
++
++	/* got a page */
++
++	spin_lock_irq(&amp;bitmap-&gt;lock);
++
++	/* recheck the page */
++
++	if (bitmap-&gt;bp[page].map || bitmap-&gt;bp[page].hijacked) {
++		/* somebody beat us to getting the page */
++		bitmap_free_page(bitmap, mappage);
++		return 0;
++	}
++
++	/* no page was in place and we have one, so install it */
++
++	memset(mappage, 0, PAGE_SIZE);
++	bitmap-&gt;bp[page].map = mappage;
++	bitmap-&gt;missing_pages--;
++out:
++	return 0;
++}
++
++
++/* if page is completely empty, put it back on the free list, or dealloc it */
++/* if page was hijacked, unmark the flag so it might get alloced next time */
++/* Note: lock should be held when calling this */
++static inline void bitmap_checkfree(struct bitmap *bitmap, unsigned long page)
++{
++	char *ptr;
++
++	if (bitmap-&gt;bp[page].count) /* page is still busy */
++		return;
++
++	/* page is no longer in use, it can be released */
++
++	if (bitmap-&gt;bp[page].hijacked) { /* page was hijacked, undo this now */
++		bitmap-&gt;bp[page].hijacked = 0;
++		bitmap-&gt;bp[page].map = NULL;
++		return;
++	}
++
++	/* normal case, free the page */
++
++#if 0
++/* actually ... let's not.  We will probably need the page again exactly when
++ * memory is tight and we are flusing to disk
++ */
++	return;
++#else
++	ptr = bitmap-&gt;bp[page].map;
++	bitmap-&gt;bp[page].map = NULL;
++	bitmap-&gt;missing_pages++;
++	bitmap_free_page(bitmap, ptr);
++	return;
++#endif
++}
++
++
++/*
++ * bitmap file handling - read and write the bitmap file and its superblock
++ */
++
++/* copy the pathname of a file to a buffer */
++char *file_path(struct file *file, char *buf, int count)
++{
++	struct dentry *d;
++	struct vfsmount *v;
++
++	if (!buf)
++		return NULL;
++
++	d = file-&gt;f_dentry;
++	v = file-&gt;f_vfsmnt;
++
++	buf = d_path(d, v, buf, count);
++
++	return IS_ERR(buf) ? NULL : buf;
++}
++
++/*
++ * basic page I/O operations
++ */
++
++/*
++ * write out a page
++ */
++static int write_page(struct page *page, int wait)
++{
++	int ret = -ENOMEM;
++
++	lock_page(page);
++
++	if (page-&gt;mapping == NULL)
++		goto unlock_out;
++	else if (i_size_read(page-&gt;mapping-&gt;host) &lt; page-&gt;index &lt;&lt; PAGE_SHIFT) {
++		ret = -ENOENT;
++		goto unlock_out;
++	}
++
++	ret = page-&gt;mapping-&gt;a_ops-&gt;prepare_write(NULL, page, 0, PAGE_SIZE);
++	if (!ret)
++		ret = page-&gt;mapping-&gt;a_ops-&gt;commit_write(NULL, page, 0,
++			PAGE_SIZE);
++	if (ret) {
++unlock_out:
++		unlock_page(page);
++		return ret;
++	}
++
++	set_page_dirty(page); /* force it to be written out */
++	return write_one_page(page, wait);
++}
++
++/* read a page from a file, pinning it into cache, and return bytes_read */
++static struct page *read_page(struct file *file, unsigned long index,
++					unsigned long *bytes_read)
++{
++	struct inode *inode = file-&gt;f_mapping-&gt;host;
++	struct page *page = NULL;
++	loff_t isize = i_size_read(inode);
++	unsigned long end_index = isize &gt;&gt; PAGE_CACHE_SHIFT;
++
++	PRINTK("read bitmap file (%dB @ %Lu)\n", (int)PAGE_CACHE_SIZE,
++			(unsigned long long)index &lt;&lt; PAGE_CACHE_SHIFT);
++
++	page = read_cache_page(inode-&gt;i_mapping, index,
++			(filler_t *)inode-&gt;i_mapping-&gt;a_ops-&gt;readpage, file);
++	if (IS_ERR(page))
++		goto out;
++	wait_on_page_locked(page);
++	if (!PageUptodate(page) || PageError(page)) {
++		page_cache_release(page);
++		page = ERR_PTR(-EIO);
++		goto out;
++	}
++
++	if (index &gt; end_index) /* we have read beyond EOF */
++		*bytes_read = 0;
++	else if (index == end_index) /* possible short read */
++		*bytes_read = isize &amp; ~PAGE_CACHE_MASK;
++	else
++		*bytes_read = PAGE_CACHE_SIZE; /* got a full page */
++out:
++	if (IS_ERR(page))
++		printk(KERN_ALERT "md: bitmap read error: (%dB @ %Lu): %ld\n",
++			(int)PAGE_CACHE_SIZE,
++			(unsigned long long)index &lt;&lt; PAGE_CACHE_SHIFT,
++			PTR_ERR(page));
++	return page;
++}
++
++/*
++ * bitmap file superblock operations
++ */
++
++/* update the event counter and sync the superblock to disk */
++int bitmap_update_sb(struct bitmap *bitmap)
++{
++	bitmap_super_t *sb;
++	unsigned long flags;
++
++	if (!bitmap || !bitmap-&gt;mddev) /* no bitmap for this array */
++		return 0;
++	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++	if (!bitmap-&gt;sb_page) { /* no superblock */
++		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++		return 0;
++	}
++	page_cache_get(bitmap-&gt;sb_page);
++	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++	sb = (bitmap_super_t *)kmap(bitmap-&gt;sb_page);
++	sb-&gt;events = cpu_to_le64(bitmap-&gt;mddev-&gt;events);
++	if (!bitmap-&gt;mddev-&gt;degraded)
++		sb-&gt;events_cleared = cpu_to_le64(bitmap-&gt;mddev-&gt;events);
++	kunmap(bitmap-&gt;sb_page);
++	write_page(bitmap-&gt;sb_page, 0);
++	return 0;
++}
++
++/* print out the bitmap file superblock */
++void bitmap_print_sb(struct bitmap *bitmap)
++{
++	bitmap_super_t *sb;
++
++	if (!bitmap || !bitmap-&gt;sb_page)
++		return;
++	sb = (bitmap_super_t *)kmap(bitmap-&gt;sb_page);
++	printk(KERN_DEBUG "%s: bitmap file superblock:\n", bmname(bitmap));
++	printk(KERN_DEBUG "       magic: %08x\n", le32_to_cpu(sb-&gt;magic));
++	printk(KERN_DEBUG "     version: %d\n", le32_to_cpu(sb-&gt;version));
++	printk(KERN_DEBUG "        uuid: %08x.%08x.%08x.%08x\n",
++					*(__u32 *)(sb-&gt;uuid+0),
++					*(__u32 *)(sb-&gt;uuid+4),
++					*(__u32 *)(sb-&gt;uuid+8),
++					*(__u32 *)(sb-&gt;uuid+12));
++	printk(KERN_DEBUG "      events: %llu\n",
++			(unsigned long long) le64_to_cpu(sb-&gt;events));
++	printk(KERN_DEBUG "events_clred: %llu\n",
++			(unsigned long long) le64_to_cpu(sb-&gt;events_cleared));
++	printk(KERN_DEBUG "       state: %08x\n", le32_to_cpu(sb-&gt;state));
++	printk(KERN_DEBUG "   chunksize: %d B\n", le32_to_cpu(sb-&gt;chunksize));
++	printk(KERN_DEBUG "daemon sleep: %ds\n", le32_to_cpu(sb-&gt;daemon_sleep));
++	printk(KERN_DEBUG "   sync size: %llu KB\n", le64_to_cpu(sb-&gt;sync_size));
++	kunmap(bitmap-&gt;sb_page);
++}
++
++/* read the superblock from the bitmap file and initialize some bitmap fields */
++static int bitmap_read_sb(struct bitmap *bitmap)
++{
++	char *reason = NULL;
++	bitmap_super_t *sb;
++	unsigned long chunksize, daemon_sleep;
++	unsigned long bytes_read;
++	unsigned long long events;
++	int err = -EINVAL;
++
++	/* page 0 is the superblock, read it... */
++	bitmap-&gt;sb_page = read_page(bitmap-&gt;file, 0, &amp;bytes_read);
++	if (IS_ERR(bitmap-&gt;sb_page)) {
++		err = PTR_ERR(bitmap-&gt;sb_page);
++		bitmap-&gt;sb_page = NULL;
++		return err;
++	}
++
++	sb = (bitmap_super_t *)kmap(bitmap-&gt;sb_page);
++
++	if (bytes_read &lt; sizeof(*sb)) { /* short read */
++		printk(KERN_INFO "%s: bitmap file superblock truncated\n",
++			bmname(bitmap));
++		err = -ENOSPC;
++		goto out;
++	}
++
++	chunksize = le32_to_cpu(sb-&gt;chunksize);
++	daemon_sleep = le32_to_cpu(sb-&gt;daemon_sleep);
++
++	/* verify that the bitmap-specific fields are valid */
++	if (sb-&gt;magic != cpu_to_le32(BITMAP_MAGIC))
++		reason = "bad magic";
++	else if (sb-&gt;version != cpu_to_le32(BITMAP_MAJOR))
++		reason = "unrecognized superblock version";
++	else if (chunksize &lt; 512 || chunksize &gt; (1024 * 1024 * 4))
++		reason = "bitmap chunksize out of range (512B - 4MB)";
++	else if ((1 &lt;&lt; ffz(~chunksize)) != chunksize)
++		reason = "bitmap chunksize not a power of 2";
++	else if (daemon_sleep &lt; 1 || daemon_sleep &gt; 15)
++		reason = "daemon sleep period out of range";
++	if (reason) {
++		printk(KERN_INFO "%s: invalid bitmap file superblock: %s\n",
++			bmname(bitmap), reason);
++		goto out;
++	}
++
++	/* keep the array size field of the bitmap superblock up to date */
++	sb-&gt;sync_size = cpu_to_le64(bitmap-&gt;mddev-&gt;resync_max_sectors);
++
++	if (!bitmap-&gt;mddev-&gt;persistent)
++		goto success;
++
++	/*
++	 * if we have a persistent array superblock, compare the
++	 * bitmap's UUID and event counter to the mddev's
++	 */
++	if (memcmp(sb-&gt;uuid, bitmap-&gt;mddev-&gt;uuid, 16)) {
++		printk(KERN_INFO "%s: bitmap superblock UUID mismatch\n",
++			bmname(bitmap));
++		goto out;
++	}
++	events = le64_to_cpu(sb-&gt;events);
++	if (events &lt; bitmap-&gt;mddev-&gt;events) {
++		printk(KERN_INFO "%s: bitmap file is out of date (%llu &lt; %llu) "
++			"-- forcing full recovery\n", bmname(bitmap), events,
++			(unsigned long long) bitmap-&gt;mddev-&gt;events);
++		sb-&gt;state |= BITMAP_STALE;
++	}
++success:
++	/* assign fields using values from superblock */
++	bitmap-&gt;chunksize = chunksize;
++	bitmap-&gt;daemon_sleep = daemon_sleep;
++	bitmap-&gt;flags |= sb-&gt;state;
++	bitmap-&gt;events_cleared = le64_to_cpu(sb-&gt;events_cleared);
++	err = 0;
++out:
++	kunmap(bitmap-&gt;sb_page);
++	if (err)
++		bitmap_print_sb(bitmap);
++	return err;
++}
++
++enum bitmap_mask_op {
++	MASK_SET,
++	MASK_UNSET
++};
++
++/* record the state of the bitmap in the superblock */
++static void bitmap_mask_state(struct bitmap *bitmap, enum bitmap_state bits,
++				enum bitmap_mask_op op)
++{
++	bitmap_super_t *sb;
++	unsigned long flags;
++
++	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++	if (!bitmap || !bitmap-&gt;sb_page) { /* can't set the state */
++		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++		return;
++	}
++	page_cache_get(bitmap-&gt;sb_page);
++	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++	sb = (bitmap_super_t *)kmap(bitmap-&gt;sb_page);
++	switch (op) {
++		case MASK_SET: sb-&gt;state |= bits;
++				break;
++		case MASK_UNSET: sb-&gt;state &amp;= ~bits;
++				break;
++		default: BUG();
++	}
++	kunmap(bitmap-&gt;sb_page);
++	page_cache_release(bitmap-&gt;sb_page);
++}
++
++/*
++ * general bitmap file operations
++ */
++
++/* calculate the index of the page that contains this bit */
++static inline unsigned long file_page_index(unsigned long chunk)
++{
++	return CHUNK_BIT_OFFSET(chunk) &gt;&gt; PAGE_BIT_SHIFT;
++}
++
++/* calculate the (bit) offset of this bit within a page */
++static inline unsigned long file_page_offset(unsigned long chunk)
++{
++	return CHUNK_BIT_OFFSET(chunk) &amp; (PAGE_BITS - 1);
++}
++
++/*
++ * return a pointer to the page in the filemap that contains the given bit
++ *
++ * this lookup is complicated by the fact that the bitmap sb might be exactly
++ * 1 page (e.g., x86) or less than 1 page -- so the bitmap might start on page
++ * 0 or page 1
++ */
++static inline struct page *filemap_get_page(struct bitmap *bitmap,
++					unsigned long chunk)
++{
++	return bitmap-&gt;filemap[file_page_index(chunk) - file_page_index(0)];
++}
++
++
++static void bitmap_file_unmap(struct bitmap *bitmap)
++{
++	struct page **map, *sb_page;
++	unsigned long *attr;
++	int pages;
++	unsigned long flags;
++
++	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++	map = bitmap-&gt;filemap;
++	bitmap-&gt;filemap = NULL;
++	attr = bitmap-&gt;filemap_attr;
++	bitmap-&gt;filemap_attr = NULL;
++	pages = bitmap-&gt;file_pages;
++	bitmap-&gt;file_pages = 0;
++	sb_page = bitmap-&gt;sb_page;
++	bitmap-&gt;sb_page = NULL;
++	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++
++	while (pages--)
++		if (map[pages]-&gt;index != 0) /* 0 is sb_page, release it below */
++			page_cache_release(map[pages]);
++	kfree(map);
++	kfree(attr);
++
++	if (sb_page)
++		page_cache_release(sb_page);
++}
++
++static void bitmap_stop_daemons(struct bitmap *bitmap);
++
++/* dequeue the next item in a page list -- don't call from irq context */
++static struct page_list *dequeue_page(struct bitmap *bitmap,
++					struct list_head *head)
++{
++	struct page_list *item = NULL;
++
++	spin_lock(&amp;bitmap-&gt;write_lock);
++	if (list_empty(head))
++		goto out;
++	item = list_entry(head-&gt;prev, struct page_list, list);
++	list_del(head-&gt;prev);
++out:
++	spin_unlock(&amp;bitmap-&gt;write_lock);
++	return item;
++}
++
++static void drain_write_queues(struct bitmap *bitmap)
++{
++	struct list_head *queues[] = { 	&amp;bitmap-&gt;complete_pages, NULL };
++	struct list_head *head;
++	struct page_list *item;
++	int i;
++
++	for (i = 0; queues[i]; i++) {
++		head = queues[i];
++		while ((item = dequeue_page(bitmap, head))) {
++			page_cache_release(item-&gt;page);
++			mempool_free(item, bitmap-&gt;write_pool);
++		}
++	}
++
++	spin_lock(&amp;bitmap-&gt;write_lock);
++	bitmap-&gt;writes_pending = 0; /* make sure waiters continue */
++	wake_up(&amp;bitmap-&gt;write_wait);
++	spin_unlock(&amp;bitmap-&gt;write_lock);
++}
++
++static void bitmap_file_put(struct bitmap *bitmap)
++{
++	struct file *file;
++	struct inode *inode;
++	unsigned long flags;
++
++	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++	file = bitmap-&gt;file;
++	bitmap-&gt;file = NULL;
++	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++
++	bitmap_stop_daemons(bitmap);
++
++	drain_write_queues(bitmap);
++
++	bitmap_file_unmap(bitmap);
++
++	if (file) {
++		inode = file-&gt;f_mapping-&gt;host;
++		spin_lock(&amp;inode-&gt;i_lock);
++		atomic_set(&amp;inode-&gt;i_writecount, 1); /* allow writes again */
++		spin_unlock(&amp;inode-&gt;i_lock);
++		fput(file);
++	}
++}
++
++
++/*
++ * bitmap_file_kick - if an error occurs while manipulating the bitmap file
++ * then it is no longer reliable, so we stop using it and we mark the file
++ * as failed in the superblock
++ */
++static void bitmap_file_kick(struct bitmap *bitmap)
++{
++	char *path, *ptr = NULL;
++
++	bitmap_mask_state(bitmap, BITMAP_STALE, MASK_SET);
++	bitmap_update_sb(bitmap);
++
++	path = kmalloc(PAGE_SIZE, GFP_KERNEL);
++	if (path)
++		ptr = file_path(bitmap-&gt;file, path, PAGE_SIZE);
++
++	printk(KERN_ALERT "%s: kicking failed bitmap file %s from array!\n",
++		bmname(bitmap), ptr ? ptr : "");
++
++	kfree(path);
++
++	bitmap_file_put(bitmap);
++
++	return;
++}
++
++enum bitmap_page_attr {
++	BITMAP_PAGE_DIRTY = 1, // there are set bits that need to be synced
++	BITMAP_PAGE_CLEAN = 2, // there are bits that might need to be cleared
++	BITMAP_PAGE_NEEDWRITE=4, // there are cleared bits that need to be synced
++};
++
++static inline void set_page_attr(struct bitmap *bitmap, struct page *page,
++				enum bitmap_page_attr attr)
++{
++	bitmap-&gt;filemap_attr[page-&gt;index] |= attr;
++}
++
++static inline void clear_page_attr(struct bitmap *bitmap, struct page *page,
++				enum bitmap_page_attr attr)
++{
++	bitmap-&gt;filemap_attr[page-&gt;index] &amp;= ~attr;
++}
++
++static inline unsigned long get_page_attr(struct bitmap *bitmap, struct page *page)
++{
++	return bitmap-&gt;filemap_attr[page-&gt;index];
++}
++
++/*
++ * bitmap_file_set_bit -- called before performing a write to the md device
++ * to set (and eventually sync) a particular bit in the bitmap file
++ *
++ * we set the bit immediately, then we record the page number so that
++ * when an unplug occurs, we can flush the dirty pages out to disk
++ */
++static void bitmap_file_set_bit(struct bitmap *bitmap, sector_t block)
++{
++	unsigned long bit;
++	struct page *page;
++	void *kaddr;
++	unsigned long chunk = block &gt;&gt; CHUNK_BLOCK_SHIFT(bitmap);
++
++	if (!bitmap-&gt;file || !bitmap-&gt;filemap) {
++		return;
++	}
++
++	page = filemap_get_page(bitmap, chunk);
++	bit = file_page_offset(chunk);
++
++
++	/* make sure the page stays cached until it gets written out */
++	if (! (get_page_attr(bitmap, page) &amp; BITMAP_PAGE_DIRTY))
++		page_cache_get(page);
++
++ 	/* set the bit */
++	kaddr = kmap_atomic(page, KM_USER0);
++	set_bit(bit, kaddr);
++	kunmap_atomic(kaddr, KM_USER0);
++	PRINTK("set file bit %lu page %lu\n", bit, page-&gt;index);
++
++	/* record page number so it gets flushed to disk when unplug occurs */
++	set_page_attr(bitmap, page, BITMAP_PAGE_DIRTY);
++
++}
++
++/* this gets called when the md device is ready to unplug its underlying
++ * (slave) device queues -- before we let any writes go down, we need to
++ * sync the dirty pages of the bitmap file to disk */
++int bitmap_unplug(struct bitmap *bitmap)
++{
++	unsigned long i, attr, flags;
++	struct page *page;
++	int wait = 0;
++
++	if (!bitmap)
++		return 0;
++
++	/* look at each page to see if there are any set bits that need to be
++	 * flushed out to disk */
++	for (i = 0; i &lt; bitmap-&gt;file_pages; i++) {
++		spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++		if (!bitmap-&gt;file || !bitmap-&gt;filemap) {
++			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++			return 0;
++		}
++		page = bitmap-&gt;filemap[i];
++		attr = get_page_attr(bitmap, page);
++		clear_page_attr(bitmap, page, BITMAP_PAGE_DIRTY);
++		clear_page_attr(bitmap, page, BITMAP_PAGE_NEEDWRITE);
++		if ((attr &amp; BITMAP_PAGE_DIRTY))
++			wait = 1;
++		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++
++		if (attr &amp; (BITMAP_PAGE_DIRTY | BITMAP_PAGE_NEEDWRITE))
++			write_page(page, 0);
++	}
++	if (wait) { /* if any writes were performed, we need to wait on them */
++		spin_lock_irq(&amp;bitmap-&gt;write_lock);
++		wait_event_lock_irq(bitmap-&gt;write_wait,
++			bitmap-&gt;writes_pending == 0, bitmap-&gt;write_lock,
++			wake_up_process(bitmap-&gt;writeback_daemon-&gt;tsk));
++		spin_unlock_irq(&amp;bitmap-&gt;write_lock);
++	}
++	return 0;
++}
++
++static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset,
++	unsigned long sectors, int set);
++/* * bitmap_init_from_disk -- called at bitmap_create time to initialize
++ * the in-memory bitmap from the on-disk bitmap -- also, sets up the
++ * memory mapping of the bitmap file
++ * Special cases:
++ *   if there's no bitmap file, or if the bitmap file had been
++ *   previously kicked from the array, we mark all the bits as
++ *   1's in order to cause a full resync.
++ */
++static int bitmap_init_from_disk(struct bitmap *bitmap)
++{
++	unsigned long i, chunks, index, oldindex, bit;
++	struct page *page = NULL, *oldpage = NULL;
++	unsigned long num_pages, bit_cnt = 0;
++	struct file *file;
++	unsigned long bytes, offset, dummy;
++	int outofdate;
++	int ret = -ENOSPC;
++
++	chunks = bitmap-&gt;chunks;
++	file = bitmap-&gt;file;
++
++	if (!file) { /* no file, dirty all the in-memory bits */
++		printk(KERN_INFO "%s: no bitmap file, doing full recovery\n",
++			bmname(bitmap));
++		bitmap_set_memory_bits(bitmap, 0,
++				       chunks &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap), 1);
++		return 0;
++	}
++
++#if INJECT_FAULTS_3
++	outofdate = 1;
++#else
++	outofdate = bitmap-&gt;flags &amp; BITMAP_STALE;
++#endif
++	if (outofdate)
++		printk(KERN_INFO "%s: bitmap file is out of date, doing full "
++			"recovery\n", bmname(bitmap));
++
++	bytes = (chunks + 7) / 8;
++	num_pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
++	if (i_size_read(file-&gt;f_mapping-&gt;host) &lt; bytes + sizeof(bitmap_super_t)) {
++		printk(KERN_INFO "%s: bitmap file too short %lu &lt; %lu\n",
++			bmname(bitmap),
++			(unsigned long) i_size_read(file-&gt;f_mapping-&gt;host),
++			bytes + sizeof(bitmap_super_t));
++		goto out;
++	}
++	num_pages++;
++	bitmap-&gt;filemap = kmalloc(sizeof(struct page *) * num_pages, GFP_KERNEL);
++	if (!bitmap-&gt;filemap) {
++		ret = -ENOMEM;
++		goto out;
++	}
++
++	bitmap-&gt;filemap_attr = kmalloc(sizeof(long) * num_pages, GFP_KERNEL);
++	if (!bitmap-&gt;filemap_attr) {
++		ret = -ENOMEM;
++		goto out;
++	}
++
++	memset(bitmap-&gt;filemap_attr, 0, sizeof(long) * num_pages);
++
++	oldindex = ~0L;
++
++	for (i = 0; i &lt; chunks; i++) {
++		index = file_page_index(i);
++		bit = file_page_offset(i);
++		if (index != oldindex) { /* this is a new page, read it in */
++			/* unmap the old page, we're done with it */
++			if (oldpage != NULL)
++				kunmap(oldpage);
++			if (index == 0) {
++				/*
++				 * if we're here then the superblock page
++				 * contains some bits (PAGE_SIZE != sizeof sb)
++				 * we've already read it in, so just use it
++				 */
++				page = bitmap-&gt;sb_page;
++				offset = sizeof(bitmap_super_t);
++			} else {
++				page = read_page(file, index, &amp;dummy);
++				if (IS_ERR(page)) { /* read error */
++					ret = PTR_ERR(page);
++					goto out;
++				}
++				offset = 0;
++			}
++			oldindex = index;
++			oldpage = page;
++			kmap(page);
++
++			if (outofdate) {
++				/*
++				 * if bitmap is out of date, dirty the
++			 	 * whole page and write it out
++				 */
++				memset(page_address(page) + offset, 0xff,
++					PAGE_SIZE - offset);
++				ret = write_page(page, 1);
++				if (ret) {
++					kunmap(page);
++					/* release, page not in filemap yet */
++					page_cache_release(page);
++					goto out;
++				}
++			}
++
++			bitmap-&gt;filemap[bitmap-&gt;file_pages++] = page;
++		}
++		if (test_bit(bit, page_address(page))) {
++			/* if the disk bit is set, set the memory bit */
++			bitmap_set_memory_bits(bitmap,
++					i &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap), 1, 1);
++			bit_cnt++;
++		}
++#if 0
++		else
++			bitmap_set_memory_bits(bitmap,
++				       i &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap), 1, 0);
++#endif
++	}
++
++ 	/* everything went OK */
++	ret = 0;
++	bitmap_mask_state(bitmap, BITMAP_STALE, MASK_UNSET);
++
++	if (page) /* unmap the last page */
++		kunmap(page);
++
++	if (bit_cnt) { /* Kick recovery if any bits were set */
++		set_bit(MD_RECOVERY_NEEDED, &amp;bitmap-&gt;mddev-&gt;recovery);
++		md_wakeup_thread(bitmap-&gt;mddev-&gt;thread);
++	}
++
++out:
++	printk(KERN_INFO "%s: bitmap initialized from disk: "
++		"read %lu/%lu pages, set %lu bits, status: %d\n",
++		bmname(bitmap), bitmap-&gt;file_pages, num_pages, bit_cnt, ret);
++
++	return ret;
++}
++
++
++static void bitmap_count_page(struct bitmap *bitmap, sector_t offset, int inc)
++{
++	sector_t chunk = offset &gt;&gt; CHUNK_BLOCK_SHIFT(bitmap);
++	unsigned long page = chunk &gt;&gt; PAGE_COUNTER_SHIFT;
++	bitmap-&gt;bp[page].count += inc;
++/*
++	if (page == 0) printk("count page 0, offset %llu: %d gives %d\n",
++			      (unsigned long long)offset, inc, bitmap-&gt;bp[page].count);
++*/
++	bitmap_checkfree(bitmap, page);
++}
++static bitmap_counter_t *bitmap_get_counter(struct bitmap *bitmap,
++					    sector_t offset, int *blocks,
++					    int create);
++
++/*
++ * bitmap daemon -- periodically wakes up to clean bits and flush pages
++ *			out to disk
++ */
++
++int bitmap_daemon_work(struct bitmap *bitmap)
++{
++	unsigned long bit, j;
++	unsigned long flags;
++	struct page *page = NULL, *lastpage = NULL;
++	int err = 0;
++	int blocks;
++	int attr;
++
++	if (bitmap == NULL)
++		return 0;
++	if (time_before(jiffies, bitmap-&gt;daemon_lastrun + bitmap-&gt;daemon_sleep*HZ))
++		return 0;
++	bitmap-&gt;daemon_lastrun = jiffies;
++
++	for (j = 0; j &lt; bitmap-&gt;chunks; j++) {
++		bitmap_counter_t *bmc;
++		spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++		if (!bitmap-&gt;file || !bitmap-&gt;filemap) {
++			/* error or shutdown */
++			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++			break;
++		}
++
++		page = filemap_get_page(bitmap, j);
++		/* skip this page unless it's marked as needing cleaning */
++		if (!((attr=get_page_attr(bitmap, page)) &amp; BITMAP_PAGE_CLEAN)) {
++			if (attr &amp; BITMAP_PAGE_NEEDWRITE) {
++				page_cache_get(page);
++				clear_page_attr(bitmap, page, BITMAP_PAGE_NEEDWRITE);
++			}
++			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++			if (attr &amp; BITMAP_PAGE_NEEDWRITE) {
++				if (write_page(page, 0))
++					bitmap_file_kick(bitmap);
++				page_cache_release(page);
++			}
++			continue;
++		}
++
++		bit = file_page_offset(j);
++
++		if (page != lastpage) {
++			/* grab the new page, sync and release the old */
++			page_cache_get(page);
++			if (lastpage != NULL) {
++				if (get_page_attr(bitmap, lastpage) &amp; BITMAP_PAGE_NEEDWRITE) {
++					clear_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
++					spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++					write_page(lastpage, 0);
++				} else {
++					set_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
++					spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++				}
++				kunmap(lastpage);
++				page_cache_release(lastpage);
++				if (err)
++					bitmap_file_kick(bitmap);
++			} else
++				spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++			lastpage = page;
++			kmap(page);
++/*
++			printk("bitmap clean at page %lu\n", j);
++*/
++			spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++			clear_page_attr(bitmap, page, BITMAP_PAGE_CLEAN);
++		}
++		bmc = bitmap_get_counter(bitmap, j &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap),
++					&amp;blocks, 0);
++		if (bmc) {
++/*
++  if (j &lt; 100) printk("bitmap: j=%lu, *bmc = 0x%x\n", j, *bmc);
++*/
++			if (*bmc == 2) {
++				*bmc=1; /* maybe clear the bit next time */
++				set_page_attr(bitmap, page, BITMAP_PAGE_CLEAN);
++			} else if (*bmc == 1) {
++				/* we can clear the bit */
++				*bmc = 0;
++				bitmap_count_page(bitmap, j &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap),
++						  -1);
++
++				/* clear the bit */
++				clear_bit(bit, page_address(page));
++			}
++		}
++		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++	}
++
++	/* now sync the final page */
++	if (lastpage != NULL) {
++		kunmap(lastpage);
++		spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++		if (get_page_attr(bitmap, lastpage) &amp;BITMAP_PAGE_NEEDWRITE) {
++			clear_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
++			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++			write_page(lastpage, 0);
++		} else {
++			set_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
++			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++		}
++
++		page_cache_release(lastpage);
++	}
++
++	return err;
++}
++
++static void daemon_exit(struct bitmap *bitmap, mdk_thread_t **daemon)
++{
++	mdk_thread_t *dmn;
++	unsigned long flags;
++
++	/* if no one is waiting on us, we'll free the md thread struct
++	 * and exit, otherwise we let the waiter clean things up */
++	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++	if ((dmn = *daemon)) { /* no one is waiting, cleanup and exit */
++		*daemon = NULL;
++		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++		kfree(dmn);
++		complete_and_exit(NULL, 0); /* do_exit not exported */
++	}
++	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++}
++
++static void bitmap_writeback_daemon(mddev_t *mddev)
++{
++	struct bitmap *bitmap = mddev-&gt;bitmap;
++	struct page *page;
++	struct page_list *item;
++	int err = 0;
++
++	while (1) {
++		PRINTK("%s: bitmap writeback daemon waiting...\n", bmname(bitmap));
++		down_interruptible(&amp;bitmap-&gt;write_done);
++		if (signal_pending(current)) {
++			printk(KERN_INFO
++			    "%s: bitmap writeback daemon got signal, exiting...\n",
++			    bmname(bitmap));
++			break;
++		}
++
++		PRINTK("%s: bitmap writeback daemon woke up...\n", bmname(bitmap));
++		/* wait on bitmap page writebacks */
++		while ((item = dequeue_page(bitmap, &amp;bitmap-&gt;complete_pages))) {
++			page = item-&gt;page;
++			mempool_free(item, bitmap-&gt;write_pool);
++			PRINTK("wait on page writeback: %p %lu\n", page, bitmap-&gt;writes_pending);
++			wait_on_page_writeback(page);
++			PRINTK("finished page writeback: %p %lu\n", page, bitmap-&gt;writes_pending);
++			spin_lock(&amp;bitmap-&gt;write_lock);
++			if (!--bitmap-&gt;writes_pending)
++				wake_up(&amp;bitmap-&gt;write_wait);
++			spin_unlock(&amp;bitmap-&gt;write_lock);
++			err = PageError(page);
++			page_cache_release(page);
++			if (err) {
++				printk(KERN_WARNING "%s: bitmap file writeback "
++					"failed (page %lu): %d\n",
++					bmname(bitmap), page-&gt;index, err);
++				bitmap_file_kick(bitmap);
++				goto out;
++			}
++		}
++	}
++out:
++	if (err) {
++		printk(KERN_INFO "%s: bitmap writeback daemon exiting (%d)\n",
++			bmname(bitmap), err);
++		daemon_exit(bitmap, &amp;bitmap-&gt;writeback_daemon);
++	}
++	return;
++}
++
++static int bitmap_start_daemon(struct bitmap *bitmap, mdk_thread_t **ptr,
++				void (*func)(mddev_t *), char *name)
++{
++	mdk_thread_t *daemon;
++	unsigned long flags;
++	char namebuf[32];
++
++	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++	*ptr = NULL;
++	if (!bitmap-&gt;file) /* no need for daemon if there's no backing file */
++		goto out_unlock;
++
++	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++
++#if INJECT_FATAL_FAULT_2
++	daemon = NULL;
++#else
++	sprintf(namebuf, "%%s_%s", name);
++	daemon = md_register_thread(func, bitmap-&gt;mddev, namebuf);
++#endif
++	if (!daemon) {
++		printk(KERN_ERR "%s: failed to start bitmap daemon\n",
++			bmname(bitmap));
++		return -ECHILD;
++	}
++
++	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++	*ptr = daemon;
++
++	md_wakeup_thread(daemon); /* start it running */
++
++	PRINTK("%s: %s daemon (pid %d) started...\n",
++		bmname(bitmap), name, bitmap-&gt;daemon-&gt;tsk-&gt;pid);
++out_unlock:
++	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++	return 0;
++}
++
++static int bitmap_start_daemons(struct bitmap *bitmap)
++{
++	int err = bitmap_start_daemon(bitmap, &amp;bitmap-&gt;writeback_daemon,
++					bitmap_writeback_daemon, "bitmap_wb");
++	return err;
++}
++
++static void bitmap_stop_daemon(struct bitmap *bitmap, mdk_thread_t **ptr)
++{
++	mdk_thread_t *daemon;
++	unsigned long flags;
++
++	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++	daemon = *ptr;
++	*ptr = NULL;
++	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++	if (daemon)
++		md_unregister_thread(daemon); /* destroy the thread */
++}
++
++static void bitmap_stop_daemons(struct bitmap *bitmap)
++{
++	/* the daemons can't stop themselves... they'll just exit instead... */
++	if (bitmap-&gt;writeback_daemon &amp;&amp;
++	    current-&gt;pid != bitmap-&gt;writeback_daemon-&gt;tsk-&gt;pid)
++		bitmap_stop_daemon(bitmap, &amp;bitmap-&gt;writeback_daemon);
++}
++
++static bitmap_counter_t *bitmap_get_counter(struct bitmap *bitmap,
++					    sector_t offset, int *blocks,
++					    int create)
++{
++	/* If 'create', we might release the lock and reclaim it.
++	 * The lock must have been taken with interrupts enabled.
++	 * If !create, we don't release the lock.
++	 */
++	sector_t chunk = offset &gt;&gt; CHUNK_BLOCK_SHIFT(bitmap);
++	unsigned long page = chunk &gt;&gt; PAGE_COUNTER_SHIFT;
++	unsigned long pageoff = (chunk &amp; PAGE_COUNTER_MASK) &lt;&lt; COUNTER_BYTE_SHIFT;
++	sector_t csize;
++
++	if (bitmap_checkpage(bitmap, page, create) &lt; 0) {
++		csize = ((sector_t)1) &lt;&lt; (CHUNK_BLOCK_SHIFT(bitmap));
++		*blocks = csize - (offset &amp; (csize- 1));
++		return NULL;
++	}
++	/* now locked ... */
++
++	if (bitmap-&gt;bp[page].hijacked) { /* hijacked pointer */
++		/* should we use the first or second counter field
++		 * of the hijacked pointer? */
++		int hi = (pageoff &gt; PAGE_COUNTER_MASK);
++		csize = ((sector_t)1) &lt;&lt; (CHUNK_BLOCK_SHIFT(bitmap) +
++					  PAGE_COUNTER_SHIFT - 1);
++		*blocks = csize - (offset &amp; (csize- 1));
++		return  &amp;((bitmap_counter_t *)
++			  &amp;bitmap-&gt;bp[page].map)[hi];
++	} else { /* page is allocated */
++		csize = ((sector_t)1) &lt;&lt; (CHUNK_BLOCK_SHIFT(bitmap));
++		*blocks = csize - (offset &amp; (csize- 1));
++		return (bitmap_counter_t *)
++			&amp;(bitmap-&gt;bp[page].map[pageoff]);
++	}
++}
++
++int bitmap_startwrite(struct bitmap *bitmap, sector_t offset, unsigned long sectors)
++{
++	if (!bitmap) return 0;
++	while (sectors) {
++		int blocks;
++		bitmap_counter_t *bmc;
++
++		spin_lock_irq(&amp;bitmap-&gt;lock);
++		bmc = bitmap_get_counter(bitmap, offset, &amp;blocks, 1);
++		if (!bmc) {
++			spin_unlock_irq(&amp;bitmap-&gt;lock);
++			return 0;
++		}
++
++		switch(*bmc) {
++		case 0:
++			bitmap_file_set_bit(bitmap, offset);
++			bitmap_count_page(bitmap,offset, 1);
++			blk_plug_device(bitmap-&gt;mddev-&gt;queue);
++			/* fall through */
++		case 1:
++			*bmc = 2;
++		}
++		if ((*bmc &amp; COUNTER_MAX) == COUNTER_MAX) BUG();
++		(*bmc)++;
++
++		spin_unlock_irq(&amp;bitmap-&gt;lock);
++
++		offset += blocks;
++		if (sectors &gt; blocks)
++			sectors -= blocks;
++		else sectors = 0;
++	}
++	return 0;
++}
++
++void bitmap_endwrite(struct bitmap *bitmap, sector_t offset, unsigned long sectors,
++		     int success)
++{
++	if (!bitmap) return;
++	while (sectors) {
++		int blocks;
++		unsigned long flags;
++		bitmap_counter_t *bmc;
++
++		spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++		bmc = bitmap_get_counter(bitmap, offset, &amp;blocks, 0);
++		if (!bmc) {
++			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++			return;
++		}
++
++		if (!success &amp;&amp; ! (*bmc &amp; NEEDED_MASK))
++			*bmc |= NEEDED_MASK;
++
++		(*bmc)--;
++		if (*bmc &lt;= 2) {
++			set_page_attr(bitmap,
++				      filemap_get_page(bitmap, offset &gt;&gt; CHUNK_BLOCK_SHIFT(bitmap)),
++				      BITMAP_PAGE_CLEAN);
++		}
++		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++		offset += blocks;
++		if (sectors &gt; blocks)
++			sectors -= blocks;
++		else sectors = 0;
++	}
++}
++
++int bitmap_start_sync(struct bitmap *bitmap, sector_t offset, int *blocks)
++{
++	bitmap_counter_t *bmc;
++	int rv;
++	if (bitmap == NULL) {/* FIXME or bitmap set as 'failed' */
++		*blocks = 1024;
++		return 1; /* always resync if no bitmap */
++	}
++	spin_lock_irq(&amp;bitmap-&gt;lock);
++	bmc = bitmap_get_counter(bitmap, offset, blocks, 0);
++	rv = 0;
++	if (bmc) {
++		/* locked */
++		if (RESYNC(*bmc))
++			rv = 1;
++		else if (NEEDED(*bmc)) {
++			rv = 1;
++			*bmc |= RESYNC_MASK;
++			*bmc &amp;= ~NEEDED_MASK;
++		}
++	}
++	spin_unlock_irq(&amp;bitmap-&gt;lock);
++	return rv;
++}
++
++void bitmap_end_sync(struct bitmap *bitmap, sector_t offset, int *blocks, int aborted)
++{
++	bitmap_counter_t *bmc;
++	unsigned long flags;
++/*
++	if (offset == 0) printk("bitmap_end_sync 0 (%d)\n", aborted);
++*/	if (bitmap == NULL) {
++		*blocks = 1024;
++		return;
++	}
++	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++	bmc = bitmap_get_counter(bitmap, offset, blocks, 0);
++	if (bmc == NULL)
++		goto unlock;
++	/* locked */
++/*
++	if (offset == 0) printk("bitmap_end sync found 0x%x, blocks %d\n", *bmc, *blocks);
++*/
++	if (RESYNC(*bmc)) {
++		*bmc &amp;= ~RESYNC_MASK;
++
++		if (!NEEDED(*bmc) &amp;&amp; aborted)
++			*bmc |= NEEDED_MASK;
++		else {
++			if (*bmc &lt;= 2) {
++				set_page_attr(bitmap,
++					      filemap_get_page(bitmap, offset &gt;&gt; CHUNK_BLOCK_SHIFT(bitmap)),
++					      BITMAP_PAGE_CLEAN);
++			}
++		}
++	}
++ unlock:
++	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++}
++
++void bitmap_close_sync(struct bitmap *bitmap)
++{
++	/* Sync has finished, and any bitmap chunks that weren't synced
++	 * properly have been aborted.  It remains to us to clear the
++	 * RESYNC bit wherever it is still on
++	 */
++	sector_t sector = 0;
++	int blocks;
++	if (!bitmap) return;
++	while (sector &lt; bitmap-&gt;mddev-&gt;resync_max_sectors) {
++		bitmap_end_sync(bitmap, sector, &amp;blocks, 0);
++/*
++		if (sector &lt; 500) printk("bitmap_close_sync: sec %llu blks %d\n",
++					 (unsigned long long)sector, blocks);
++*/		sector += blocks;
++	}
++}
++
++static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset,
++				   unsigned long sectors, int set)
++{
++	/* For each chunk covered by any of these sectors, set the
++	 * resync needed bit, and the counter to 1.  They should all
++	 * be 0 at this point
++	 */
++	while (sectors) {
++		int secs;
++		bitmap_counter_t *bmc;
++		spin_lock_irq(&amp;bitmap-&gt;lock);
++		bmc = bitmap_get_counter(bitmap, offset, &amp;secs, 1);
++		if (!bmc) {
++			spin_unlock_irq(&amp;bitmap-&gt;lock);
++			return;
++		}
++		if (set &amp;&amp; !NEEDED(*bmc)) {
++			BUG_ON(*bmc);
++			*bmc = NEEDED_MASK | 1;
++			bitmap_count_page(bitmap, offset, 1);
++		}
++		spin_unlock_irq(&amp;bitmap-&gt;lock);
++		if (sectors &gt; secs)
++			sectors -= secs;
++		else
++			sectors = 0;
++	}
++}
++
++/* dirty the entire bitmap */
++int bitmap_setallbits(struct bitmap *bitmap)
++{
++	unsigned long flags;
++	unsigned long j;
++
++	/* dirty the in-memory bitmap */
++	bitmap_set_memory_bits(bitmap, 0, bitmap-&gt;chunks &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap), 1);
++
++	/* dirty the bitmap file */
++	for (j = 0; j &lt; bitmap-&gt;file_pages; j++) {
++		struct page *page = bitmap-&gt;filemap[j];
++
++		spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++		page_cache_get(page);
++		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++		memset(kmap(page), 0xff, PAGE_SIZE);
++		kunmap(page);
++		write_page(page, 0);
++	}
++
++	return 0;
++}
++
++/*
++ * free memory that was allocated
++ */
++void bitmap_destroy(mddev_t *mddev)
++{
++	unsigned long k, pages;
++	struct bitmap_page *bp;
++	struct bitmap *bitmap = mddev-&gt;bitmap;
++
++	if (!bitmap) /* there was no bitmap */
++		return;
++
++	mddev-&gt;bitmap = NULL; /* disconnect from the md device */
++
++	/* release the bitmap file and kill the daemon */
++	bitmap_file_put(bitmap);
++
++	bp = bitmap-&gt;bp;
++	pages = bitmap-&gt;pages;
++
++	/* free all allocated memory */
++
++	mempool_destroy(bitmap-&gt;write_pool);
++
++	if (bp) /* deallocate the page memory */
++		for (k = 0; k &lt; pages; k++)
++			if (bp[k].map &amp;&amp; !bp[k].hijacked)
++				kfree(bp[k].map);
++	kfree(bp);
++	kfree(bitmap);
++}
++
++/*
++ * initialize the bitmap structure
++ * if this returns an error, bitmap_destroy must be called to do clean up
++ */
++int bitmap_create(mddev_t *mddev)
++{
++	struct bitmap *bitmap;
++	unsigned long blocks = mddev-&gt;resync_max_sectors;
++	unsigned long chunks;
++	unsigned long pages;
++	struct file *file = mddev-&gt;bitmap_file;
++	int err;
++
++	BUG_ON(sizeof(bitmap_super_t) != 256);
++
++	if (!file) /* bitmap disabled, nothing to do */
++		return 0;
++
++	bitmap = kmalloc(sizeof(*bitmap), GFP_KERNEL);
++	if (!bitmap)
++		return -ENOMEM;
++
++	memset(bitmap, 0, sizeof(*bitmap));
++
++	spin_lock_init(&amp;bitmap-&gt;lock);
++	bitmap-&gt;mddev = mddev;
++	mddev-&gt;bitmap = bitmap;
++
++	spin_lock_init(&amp;bitmap-&gt;write_lock);
++	init_MUTEX_LOCKED(&amp;bitmap-&gt;write_done);
++	INIT_LIST_HEAD(&amp;bitmap-&gt;complete_pages);
++	init_waitqueue_head(&amp;bitmap-&gt;write_wait);
++	bitmap-&gt;write_pool = mempool_create(WRITE_POOL_SIZE, write_pool_alloc,
++				write_pool_free, NULL);
++	if (!bitmap-&gt;write_pool)
++		return -ENOMEM;
++
++	bitmap-&gt;file = file;
++	get_file(file);
++	/* read superblock from bitmap file (this sets bitmap-&gt;chunksize) */
++	err = bitmap_read_sb(bitmap);
++	if (err)
++		return err;
++
++	bitmap-&gt;chunkshift = find_first_bit(&amp;bitmap-&gt;chunksize,
++					sizeof(bitmap-&gt;chunksize));
++
++	/* now that chunksize and chunkshift are set, we can use these macros */
++ 	chunks = (blocks + CHUNK_BLOCK_RATIO(bitmap) - 1) /
++			CHUNK_BLOCK_RATIO(bitmap);
++ 	pages = (chunks + PAGE_COUNTER_RATIO - 1) / PAGE_COUNTER_RATIO;
++
++	BUG_ON(!pages);
++
++	bitmap-&gt;chunks = chunks;
++	bitmap-&gt;pages = pages;
++	bitmap-&gt;missing_pages = pages;
++	bitmap-&gt;counter_bits = COUNTER_BITS;
++
++	bitmap-&gt;syncchunk = ~0UL;
++
++#if INJECT_FATAL_FAULT_1
++	bitmap-&gt;bp = NULL;
++#else
++	bitmap-&gt;bp = kmalloc(pages * sizeof(*bitmap-&gt;bp), GFP_KERNEL);
++#endif
++	if (!bitmap-&gt;bp)
++		return -ENOMEM;
++	memset(bitmap-&gt;bp, 0, pages * sizeof(*bitmap-&gt;bp));
++
++	bitmap-&gt;flags |= BITMAP_ACTIVE;
++
++	/* now that we have some pages available, initialize the in-memory
++	 * bitmap from the on-disk bitmap */
++	err = bitmap_init_from_disk(bitmap);
++	if (err)
++		return err;
++
++	printk(KERN_INFO "created bitmap (%lu pages) for device %s\n",
++		pages, bmname(bitmap));
++
++	/* kick off the bitmap daemons */
++	err = bitmap_start_daemons(bitmap);
++	if (err)
++		return err;
++	return bitmap_update_sb(bitmap);
++}
++
++/* the bitmap API -- for raid personalities */
++EXPORT_SYMBOL(bitmap_startwrite);
++EXPORT_SYMBOL(bitmap_endwrite);
++EXPORT_SYMBOL(bitmap_start_sync);
++EXPORT_SYMBOL(bitmap_end_sync);
++EXPORT_SYMBOL(bitmap_unplug);
++EXPORT_SYMBOL(bitmap_close_sync);
++EXPORT_SYMBOL(bitmap_daemon_work);
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index fa608a1a5c20..c402f6cc7047 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -19,6 +19,9 @@
+ 
+      Neil Brown &lt;neilb@cse.unsw.edu.au&gt;.
+ 
++   - persistent bitmap code
++     Copyright (C) 2003-2004, Paul Clements, SteelEye Technology, Inc.
++
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2, or (at your option)
+@@ -33,6 +36,7 @@
+ #include &lt;linux/config.h&gt;
+ #include &lt;linux/linkage.h&gt;
+ #include &lt;linux/raid/md.h&gt;
++#include &lt;linux/raid/bitmap.h&gt;
+ #include &lt;linux/sysctl.h&gt;
+ #include &lt;linux/devfs_fs_kernel.h&gt;
+ #include &lt;linux/buffer_head.h&gt; /* for invalidate_bdev */
+@@ -40,6 +44,8 @@
+ 
+ #include &lt;linux/init.h&gt;
+ 
++#include &lt;linux/file.h&gt;
++
+ #ifdef CONFIG_KMOD
+ #include &lt;linux/kmod.h&gt;
+ #endif
+@@ -1198,8 +1204,11 @@ void md_print_devices(void)
+ 	printk("md:	* &lt;COMPLETE RAID STATE PRINTOUT&gt; *\n");
+ 	printk("md:	**********************************\n");
+ 	ITERATE_MDDEV(mddev,tmp) {
+-		printk("%s: ", mdname(mddev));
+ 
++		if (mddev-&gt;bitmap)
++			bitmap_print_sb(mddev-&gt;bitmap);
++		else
++			printk("%s: ", mdname(mddev));
+ 		ITERATE_RDEV(mddev,rdev,tmp2)
+ 			printk("&lt;%s&gt;", bdevname(rdev-&gt;bdev,b));
+ 		printk("\n");
+@@ -1287,7 +1296,7 @@ static void md_update_sb(mddev_t * mddev)
+ 		"md: updating %s RAID superblock on device (in sync %d)\n",
+ 		mdname(mddev),mddev-&gt;in_sync);
+ 
+-	err = 0;
++	err = bitmap_update_sb(mddev-&gt;bitmap);
+ 	ITERATE_RDEV(mddev,rdev,tmp) {
+ 		char b[BDEVNAME_SIZE];
+ 		dprintk(KERN_INFO "md: ");
+@@ -1624,12 +1633,19 @@ static int do_md_run(mddev_t * mddev)
+ 
+ 	mddev-&gt;resync_max_sectors = mddev-&gt;size &lt;&lt; 1; /* may be over-ridden by personality */
+ 
+-	err = mddev-&gt;pers-&gt;run(mddev);
++	/* before we start the array running, initialise the bitmap */
++	err = bitmap_create(mddev);
++	if (err)
++		printk(KERN_ERR "%s: failed to create bitmap (%d)\n",
++			mdname(mddev), err);
++	else
++		err = mddev-&gt;pers-&gt;run(mddev);
+ 	if (err) {
+ 		printk(KERN_ERR "md: pers-&gt;run() failed ...\n");
+ 		module_put(mddev-&gt;pers-&gt;owner);
+ 		mddev-&gt;pers = NULL;
+-		return -EINVAL;
++		bitmap_destroy(mddev);
++		return err;
+ 	}
+  	atomic_set(&amp;mddev-&gt;writes_pending,0);
+ 	mddev-&gt;safemode = 0;
+@@ -1742,6 +1758,14 @@ static int do_md_stop(mddev_t * mddev, int ro)
+ 		if (ro)
+ 			set_disk_ro(disk, 1);
+ 	}
++
++	bitmap_destroy(mddev);
++	if (mddev-&gt;bitmap_file) {
++		atomic_set(&amp;mddev-&gt;bitmap_file-&gt;f_dentry-&gt;d_inode-&gt;i_writecount, 1);
++		fput(mddev-&gt;bitmap_file);
++		mddev-&gt;bitmap_file = NULL;
++	}
++
+ 	/*
+ 	 * Free resources if final stop
+ 	 */
+@@ -2000,6 +2024,42 @@ static int get_array_info(mddev_t * mddev, void __user * arg)
+ 	return 0;
+ }
+ 
++static int get_bitmap_file(mddev_t * mddev, void * arg)
++{
++	mdu_bitmap_file_t *file = NULL; /* too big for stack allocation */
++	char *ptr, *buf = NULL;
++	int err = -ENOMEM;
++
++	file = kmalloc(sizeof(*file), GFP_KERNEL);
++	if (!file)
++		goto out;
++
++	/* bitmap disabled, zero the first byte and copy out */
++	if (!mddev-&gt;bitmap || !mddev-&gt;bitmap-&gt;file) {
++		file-&gt;pathname[0] = '\0';
++		goto copy_out;
++	}
++
++	buf = kmalloc(sizeof(file-&gt;pathname), GFP_KERNEL);
++	if (!buf)
++		goto out;
++
++	ptr = file_path(mddev-&gt;bitmap-&gt;file, buf, sizeof(file-&gt;pathname));
++	if (!ptr)
++		goto out;
++
++	strcpy(file-&gt;pathname, ptr);
++
++copy_out:
++	err = 0;
++	if (copy_to_user(arg, file, sizeof(*file)))
++		err = -EFAULT;
++out:
++	kfree(buf);
++	kfree(file);
++	return err;
++}
++
+ static int get_disk_info(mddev_t * mddev, void __user * arg)
+ {
+ 	mdu_disk_info_t info;
+@@ -2275,6 +2335,48 @@ static int hot_add_disk(mddev_t * mddev, dev_t dev)
+ 	return err;
+ }
+ 
++/* similar to deny_write_access, but accounts for our holding a reference
++ * to the file ourselves */
++static int deny_bitmap_write_access(struct file * file)
++{
++	struct inode *inode = file-&gt;f_mapping-&gt;host;
++
++	spin_lock(&amp;inode-&gt;i_lock);
++	if (atomic_read(&amp;inode-&gt;i_writecount) &gt; 1) {
++		spin_unlock(&amp;inode-&gt;i_lock);
++		return -ETXTBSY;
++	}
++	atomic_set(&amp;inode-&gt;i_writecount, -1);
++	spin_unlock(&amp;inode-&gt;i_lock);
++
++	return 0;
++}
++
++static int set_bitmap_file(mddev_t *mddev, int fd)
++{
++	int err;
++
++	if (mddev-&gt;pers)
++		return -EBUSY;
++
++	mddev-&gt;bitmap_file = fget(fd);
++
++	if (mddev-&gt;bitmap_file == NULL) {
++		printk(KERN_ERR "%s: error: failed to get bitmap file\n",
++			mdname(mddev));
++		return -EBADF;
++	}
++
++	err = deny_bitmap_write_access(mddev-&gt;bitmap_file);
++	if (err) {
++		printk(KERN_ERR "%s: error: bitmap file is already in use\n",
++			mdname(mddev));
++		fput(mddev-&gt;bitmap_file);
++		mddev-&gt;bitmap_file = NULL;
++	}
++	return err;
++}
++
+ /*
+  * set_array_info is used two different ways
+  * The original usage is when creating a new array.
+@@ -2586,8 +2688,10 @@ static int md_ioctl(struct inode *inode, struct file *file,
+ 	/*
+ 	 * Commands querying/configuring an existing array:
+ 	 */
+-	/* if we are initialised yet, only ADD_NEW_DISK or STOP_ARRAY is allowed */
+-	if (!mddev-&gt;raid_disks &amp;&amp; cmd != ADD_NEW_DISK &amp;&amp; cmd != STOP_ARRAY &amp;&amp; cmd != RUN_ARRAY) {
++	/* if we are not initialised yet, only ADD_NEW_DISK, STOP_ARRAY,
++	 * RUN_ARRAY, and SET_BITMAP_FILE are allowed */
++	if (!mddev-&gt;raid_disks &amp;&amp; cmd != ADD_NEW_DISK &amp;&amp; cmd != STOP_ARRAY
++			&amp;&amp; cmd != RUN_ARRAY &amp;&amp; cmd != SET_BITMAP_FILE) {
+ 		err = -ENODEV;
+ 		goto abort_unlock;
+ 	}
+@@ -2601,6 +2705,10 @@ static int md_ioctl(struct inode *inode, struct file *file,
+ 			err = get_array_info(mddev, argp);
+ 			goto done_unlock;
+ 
++		case GET_BITMAP_FILE:
++			err = get_bitmap_file(mddev, (void *)arg);
++			goto done_unlock;
++
+ 		case GET_DISK_INFO:
+ 			err = get_disk_info(mddev, argp);
+ 			goto done_unlock;
+@@ -2681,6 +2789,10 @@ static int md_ioctl(struct inode *inode, struct file *file,
+ 			err = do_md_run (mddev);
+ 			goto done_unlock;
+ 
++		case SET_BITMAP_FILE:
++			err = set_bitmap_file(mddev, (int)arg);
++			goto done_unlock;
++
+ 		default:
+ 			if (_IOC_TYPE(cmd) == MD_MAJOR)
+ 				printk(KERN_WARNING "md: %s(pid %d) used"
+@@ -2792,8 +2904,9 @@ static int md_thread(void * arg)
+ 	while (thread-&gt;run) {
+ 		void (*run)(mddev_t *);
+ 
+-		wait_event_interruptible(thread-&gt;wqueue,
+-					 test_bit(THREAD_WAKEUP, &amp;thread-&gt;flags));
++		wait_event_interruptible_timeout(thread-&gt;wqueue,
++						 test_bit(THREAD_WAKEUP, &amp;thread-&gt;flags),
++						 thread-&gt;timeout);
+ 		if (current-&gt;flags &amp; PF_FREEZE)
+ 			refrigerator(PF_FREEZE);
+ 
+@@ -2839,6 +2952,7 @@ mdk_thread_t *md_register_thread(void (*run) (mddev_t *), mddev_t *mddev,
+ 	thread-&gt;run = run;
+ 	thread-&gt;mddev = mddev;
+ 	thread-&gt;name = name;
++	thread-&gt;timeout = MAX_SCHEDULE_TIMEOUT;
+ 	ret = kernel_thread(md_thread, thread, 0);
+ 	if (ret &lt; 0) {
+ 		kfree(thread);
+@@ -2877,13 +2991,13 @@ void md_error(mddev_t *mddev, mdk_rdev_t *rdev)
+ 
+ 	if (!rdev || rdev-&gt;faulty)
+ 		return;
+-
++/*
+ 	dprintk("md_error dev:%s, rdev:(%d:%d), (caller: %p,%p,%p,%p).\n",
+ 		mdname(mddev),
+ 		MAJOR(rdev-&gt;bdev-&gt;bd_dev), MINOR(rdev-&gt;bdev-&gt;bd_dev),
+ 		__builtin_return_address(0),__builtin_return_address(1),
+ 		__builtin_return_address(2),__builtin_return_address(3));
+-
++*/
+ 	if (!mddev-&gt;pers-&gt;error_handler)
+ 		return;
+ 	mddev-&gt;pers-&gt;error_handler(mddev,rdev);
+@@ -3037,6 +3151,7 @@ static int md_seq_show(struct seq_file *seq, void *v)
+ 	struct list_head *tmp2;
+ 	mdk_rdev_t *rdev;
+ 	int i;
++	struct bitmap *bitmap;
+ 
+ 	if (v == (void*)1) {
+ 		seq_printf(seq, "Personalities : ");
+@@ -3089,10 +3204,36 @@ static int md_seq_show(struct seq_file *seq, void *v)
+ 		if (mddev-&gt;pers) {
+ 			mddev-&gt;pers-&gt;status (seq, mddev);
+ 	 		seq_printf(seq, "\n      ");
+-			if (mddev-&gt;curr_resync &gt; 2)
++			if (mddev-&gt;curr_resync &gt; 2) {
+ 				status_resync (seq, mddev);
+-			else if (mddev-&gt;curr_resync == 1 || mddev-&gt;curr_resync == 2)
+-				seq_printf(seq, "	resync=DELAYED");
++				seq_printf(seq, "\n      ");
++			} else if (mddev-&gt;curr_resync == 1 || mddev-&gt;curr_resync == 2)
++				seq_printf(seq, "	resync=DELAYED\n      ");
++		} else
++			seq_printf(seq, "\n       ");
++
++		if ((bitmap = mddev-&gt;bitmap)) {
++			char *buf, *path;
++			unsigned long chunk_kb;
++			unsigned long flags;
++			buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
++			spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++			chunk_kb = bitmap-&gt;chunksize &gt;&gt; 10;
++			seq_printf(seq, "bitmap: %lu/%lu pages [%luKB], "
++				"%lu%s chunk",
++				bitmap-&gt;pages - bitmap-&gt;missing_pages,
++				bitmap-&gt;pages,
++				(bitmap-&gt;pages - bitmap-&gt;missing_pages)
++					&lt;&lt; (PAGE_SHIFT - 10),
++				chunk_kb ? chunk_kb : bitmap-&gt;chunksize,
++				chunk_kb ? "KB" : "B");
++			if (bitmap-&gt;file &amp;&amp; buf) {
++				path = file_path(bitmap-&gt;file, buf, PAGE_SIZE);
++				seq_printf(seq, ", file: %s", path ? path : "");
++			}
++			seq_printf(seq, "\n");
++			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++			kfree(buf);
+ 		}
+ 
+ 		seq_printf(seq, "\n");
+@@ -3328,7 +3469,8 @@ static void md_do_sync(mddev_t *mddev)
+ 	       sysctl_speed_limit_max);
+ 
+ 	is_mddev_idle(mddev); /* this also initializes IO event counters */
+-	if (test_bit(MD_RECOVERY_SYNC, &amp;mddev-&gt;recovery))
++	/* we don't use the checkpoint if there's a bitmap */
++	if (test_bit(MD_RECOVERY_SYNC, &amp;mddev-&gt;recovery) &amp;&amp; !mddev-&gt;bitmap)
+ 		j = mddev-&gt;recovery_cp;
+ 	else
+ 		j = 0;
+@@ -3673,6 +3815,8 @@ static int __init md_init(void)
+ 			" MD_SB_DISKS=%d\n",
+ 			MD_MAJOR_VERSION, MD_MINOR_VERSION,
+ 			MD_PATCHLEVEL_VERSION, MAX_MD_DEVS, MD_SB_DISKS);
++	printk(KERN_INFO "md: bitmap version %d.%d\n", BITMAP_MAJOR,
++			BITMAP_MINOR);
+ 
+ 	if (register_blkdev(MAJOR_NR, "md"))
+ 		return -1;
+diff --git a/include/linux/raid/bitmap.h b/include/linux/raid/bitmap.h
+new file mode 100644
+index 000000000000..f785cf26cbad
+--- /dev/null
++++ b/include/linux/raid/bitmap.h
+@@ -0,0 +1,280 @@
++/*
++ * bitmap.h: Copyright (C) Peter T. Breuer (ptb@ot.uc3m.es) 2003
++ *
++ * additions: Copyright (C) 2003-2004, Paul Clements, SteelEye Technology, Inc.
++ */
++#ifndef BITMAP_H
++#define BITMAP_H 1
++
++#define BITMAP_MAJOR 3
++#define BITMAP_MINOR 38
++
++/*
++ * in-memory bitmap:
++ *
++ * Use 16 bit block counters to track pending writes to each "chunk".
++ * The 2 high order bits are special-purpose, the first is a flag indicating
++ * whether a resync is needed.  The second is a flag indicating whether a
++ * resync is active.
++ * This means that the counter is actually 14 bits:
++ *
++ * +--------+--------+------------------------------------------------+
++ * | resync | resync |               counter                          |
++ * | needed | active |                                                |
++ * |  (0-1) |  (0-1) |              (0-16383)                         |
++ * +--------+--------+------------------------------------------------+
++ *
++ * The "resync needed" bit is set when:
++ *    a '1' bit is read from storage at startup.
++ *    a write request fails on some drives
++ *    a resync is aborted on a chunk with 'resync active' set
++ * It is cleared (and resync-active set) when a resync starts across all drives
++ * of the chunk.
++ *
++ *
++ * The "resync active" bit is set when:
++ *    a resync is started on all drives, and resync_needed is set.
++ *       resync_needed will be cleared (as long as resync_active wasn't already set).
++ * It is cleared when a resync completes.
++ *
++ * The counter counts pending write requests, plus the on-disk bit.
++ * When the counter is '1' and the resync bits are clear, the on-disk
++ * bit can be cleared aswell, thus setting the counter to 0.
++ * When we set a bit, or in the counter (to start a write), if the fields is
++ * 0, we first set the disk bit and set the counter to 1.
++ *
++ * If the counter is 0, the on-disk bit is clear and the stipe is clean
++ * Anything that dirties the stipe pushes the counter to 2 (at least)
++ * and sets the on-disk bit (lazily).
++ * If a periodic sweep find the counter at 2, it is decremented to 1.
++ * If the sweep find the counter at 1, the on-disk bit is cleared and the
++ * counter goes to zero.
++ *
++ * Also, we'll hijack the "map" pointer itself and use it as two 16 bit block
++ * counters as a fallback when "page" memory cannot be allocated:
++ *
++ * Normal case (page memory allocated):
++ *
++ *     page pointer (32-bit)
++ *
++ *     [ ] ------+
++ *               |
++ *               +-------&gt; [   ][   ]..[   ] (4096 byte page == 2048 counters)
++ *                          c1   c2    c2048
++ *
++ * Hijacked case (page memory allocation failed):
++ *
++ *     hijacked page pointer (32-bit)
++ *
++ *     [		  ][		  ] (no page memory allocated)
++ *      counter #1 (16-bit) counter #2 (16-bit)
++ *
++ */
++
++#ifdef __KERNEL__
++
++#define PAGE_BITS (PAGE_SIZE &lt;&lt; 3)
++#define PAGE_BIT_SHIFT (PAGE_SHIFT + 3)
++
++typedef __u16 bitmap_counter_t;
++#define COUNTER_BITS 16
++#define COUNTER_BIT_SHIFT 4
++#define COUNTER_BYTE_RATIO (COUNTER_BITS / 8)
++#define COUNTER_BYTE_SHIFT (COUNTER_BIT_SHIFT - 3)
++
++#define NEEDED_MASK ((bitmap_counter_t) (1 &lt;&lt; (COUNTER_BITS - 1)))
++#define RESYNC_MASK ((bitmap_counter_t) (1 &lt;&lt; (COUNTER_BITS - 2)))
++#define COUNTER_MAX ((bitmap_counter_t) RESYNC_MASK - 1)
++#define NEEDED(x) (((bitmap_counter_t) x) &amp; NEEDED_MASK)
++#define RESYNC(x) (((bitmap_counter_t) x) &amp; RESYNC_MASK)
++#define COUNTER(x) (((bitmap_counter_t) x) &amp; COUNTER_MAX)
++
++/* how many counters per page? */
++#define PAGE_COUNTER_RATIO (PAGE_BITS / COUNTER_BITS)
++/* same, except a shift value for more efficient bitops */
++#define PAGE_COUNTER_SHIFT (PAGE_BIT_SHIFT - COUNTER_BIT_SHIFT)
++/* same, except a mask value for more efficient bitops */
++#define PAGE_COUNTER_MASK  (PAGE_COUNTER_RATIO - 1)
++
++#define BITMAP_BLOCK_SIZE 512
++#define BITMAP_BLOCK_SHIFT 9
++
++/* how many blocks per chunk? (this is variable) */
++#define CHUNK_BLOCK_RATIO(bitmap) ((bitmap)-&gt;chunksize &gt;&gt; BITMAP_BLOCK_SHIFT)
++#define CHUNK_BLOCK_SHIFT(bitmap) ((bitmap)-&gt;chunkshift - BITMAP_BLOCK_SHIFT)
++#define CHUNK_BLOCK_MASK(bitmap) (CHUNK_BLOCK_RATIO(bitmap) - 1)
++
++/* when hijacked, the counters and bits represent even larger "chunks" */
++/* there will be 1024 chunks represented by each counter in the page pointers */
++#define PAGEPTR_BLOCK_RATIO(bitmap) \
++			(CHUNK_BLOCK_RATIO(bitmap) &lt;&lt; PAGE_COUNTER_SHIFT &gt;&gt; 1)
++#define PAGEPTR_BLOCK_SHIFT(bitmap) \
++			(CHUNK_BLOCK_SHIFT(bitmap) + PAGE_COUNTER_SHIFT - 1)
++#define PAGEPTR_BLOCK_MASK(bitmap) (PAGEPTR_BLOCK_RATIO(bitmap) - 1)
++
++/*
++ * on-disk bitmap:
++ *
++ * Use one bit per "chunk" (block set). We do the disk I/O on the bitmap
++ * file a page at a time. There's a superblock at the start of the file.
++ */
++
++/* map chunks (bits) to file pages - offset by the size of the superblock */
++#define CHUNK_BIT_OFFSET(chunk) ((chunk) + (sizeof(bitmap_super_t) &lt;&lt; 3))
++
++#endif
++
++/*
++ * bitmap structures:
++ */
++
++#define BITMAP_MAGIC 0x6d746962
++
++/* use these for bitmap-&gt;flags and bitmap-&gt;sb-&gt;state bit-fields */
++enum bitmap_state {
++	BITMAP_ACTIVE = 0x001, /* the bitmap is in use */
++	BITMAP_STALE  = 0x002  /* the bitmap file is out of date or had -EIO */
++};
++
++/* the superblock at the front of the bitmap file -- little endian */
++typedef struct bitmap_super_s {
++	__u32 magic;        /*  0  BITMAP_MAGIC */
++	__u32 version;      /*  4  the bitmap major for now, could change... */
++	__u8  uuid[16];     /*  8  128 bit uuid - must match md device uuid */
++	__u64 events;       /* 24  event counter for the bitmap (1)*/
++	__u64 events_cleared;/*32  event counter when last bit cleared (2) */
++	__u64 sync_size;    /* 40  the size of the md device's sync range(3) */
++	__u32 state;        /* 48  bitmap state information */
++	__u32 chunksize;    /* 52  the bitmap chunk size in bytes */
++	__u32 daemon_sleep; /* 56  seconds between disk flushes */
++
++	__u8  pad[256 - 60]; /* set to zero */
++} bitmap_super_t;
++
++/* notes:
++ * (1) This event counter is updated before the eventcounter in the md superblock
++ *    When a bitmap is loaded, it is only accepted if this event counter is equal
++ *    to, or one greater than, the event counter in the superblock.
++ * (2) This event counter is updated when the other one is *if*and*only*if* the
++ *    array is not degraded.  As bits are not cleared when the array is degraded,
++ *    this represents the last time that any bits were cleared.
++ *    If a device is being added that has an event count with this value or
++ *    higher, it is accepted as conforming to the bitmap.
++ * (3)This is the number of sectors represented by the bitmap, and is the range that
++ *    resync happens across.  For raid1 and raid5/6 it is the size of individual
++ *    devices.  For raid10 it is the size of the array.
++ */
++
++#ifdef __KERNEL__
++
++/* the in-memory bitmap is represented by bitmap_pages */
++struct bitmap_page {
++	/*
++	 * map points to the actual memory page
++	 */
++	char *map;
++	/*
++	 * in emergencies (when map cannot be alloced), hijack the map
++	 * pointer and use it as two counters itself
++	 */
++	unsigned int hijacked:1;
++	/*
++	 * count of dirty bits on the page
++	 */
++	unsigned int  count:31;
++};
++
++/* keep track of bitmap file pages that have pending writes on them */
++struct page_list {
++	struct list_head list;
++	struct page *page;
++};
++
++/* the main bitmap structure - one per mddev */
++struct bitmap {
++	struct bitmap_page *bp;
++	unsigned long pages; /* total number of pages in the bitmap */
++	unsigned long missing_pages; /* number of pages not yet allocated */
++
++	mddev_t *mddev; /* the md device that the bitmap is for */
++
++	int counter_bits; /* how many bits per block counter */
++
++	/* bitmap chunksize -- how much data does each bit represent? */
++	unsigned long chunksize;
++	unsigned long chunkshift; /* chunksize = 2^chunkshift (for bitops) */
++	unsigned long chunks; /* total number of data chunks for the array */
++
++	/* We hold a count on the chunk currently being synced, and drop
++	 * it when the last block is started.  If the resync is aborted
++	 * midway, we need to be able to drop that count, so we remember
++	 * the counted chunk..
++	 */
++	unsigned long syncchunk;
++
++	__u64	events_cleared;
++
++	/* bitmap spinlock */
++	spinlock_t lock;
++
++	struct file *file; /* backing disk file */
++	struct page *sb_page; /* cached copy of the bitmap file superblock */
++	struct page **filemap; /* list of cache pages for the file */
++	unsigned long *filemap_attr; /* attributes associated w/ filemap pages */
++	unsigned long file_pages; /* number of pages in the file */
++
++	unsigned long flags;
++
++	/*
++	 * the bitmap daemon - periodically wakes up and sweeps the bitmap
++	 * file, cleaning up bits and flushing out pages to disk as necessary
++	 */
++	unsigned long daemon_lastrun; /* jiffies of last run */
++	unsigned long daemon_sleep; /* how many seconds between updates? */
++
++	/*
++	 * bitmap write daemon - this daemon performs writes to the bitmap file
++	 * this thread is only needed because of a limitation in ext3 (jbd)
++	 * that does not allow a task to have two journal transactions ongoing
++	 * simultaneously (even if the transactions are for two different
++	 * filesystems) -- in the case of bitmap, that would be the filesystem
++	 * that the bitmap file resides on and the filesystem that is mounted
++	 * on the md device -- see current-&gt;journal_info in jbd/transaction.c
++	 */
++	mdk_thread_t *writeback_daemon;
++	spinlock_t write_lock;
++	struct semaphore write_ready;
++	struct semaphore write_done;
++	unsigned long writes_pending;
++	wait_queue_head_t write_wait;
++	struct list_head write_pages;
++	struct list_head complete_pages;
++	mempool_t *write_pool;
++};
++
++/* the bitmap API */
++
++/* these are used only by md/bitmap */
++int  bitmap_create(mddev_t *mddev);
++void bitmap_destroy(mddev_t *mddev);
++int  bitmap_active(struct bitmap *bitmap);
++
++char *file_path(struct file *file, char *buf, int count);
++void bitmap_print_sb(struct bitmap *bitmap);
++int bitmap_update_sb(struct bitmap *bitmap);
++
++int  bitmap_setallbits(struct bitmap *bitmap);
++
++/* these are exported */
++int bitmap_startwrite(struct bitmap *bitmap, sector_t offset, unsigned long sectors);
++void bitmap_endwrite(struct bitmap *bitmap, sector_t offset, unsigned long sectors,
++		     int success);
++int bitmap_start_sync(struct bitmap *bitmap, sector_t offset, int *blocks);
++void bitmap_end_sync(struct bitmap *bitmap, sector_t offset, int *blocks, int aborted);
++void bitmap_close_sync(struct bitmap *bitmap);
++
++int bitmap_unplug(struct bitmap *bitmap);
++int bitmap_daemon_work(struct bitmap *bitmap);
++#endif
++
++#endif
+diff --git a/include/linux/raid/md_k.h b/include/linux/raid/md_k.h
+index bce0032decff..16e94a9f0f8c 100644
+--- a/include/linux/raid/md_k.h
++++ b/include/linux/raid/md_k.h
+@@ -267,6 +267,9 @@ struct mddev_s
+ 	atomic_t			writes_pending; 
+ 	request_queue_t			*queue;	/* for plugging ... */
+ 
++	struct bitmap                   *bitmap; /* the bitmap for the device */
++	struct file			*bitmap_file; /* the bitmap file */
++
+ 	struct list_head		all_mddevs;
+ };
+ 
+@@ -341,6 +344,7 @@ typedef struct mdk_thread_s {
+ 	unsigned long           flags;
+ 	struct completion	*event;
+ 	struct task_struct	*tsk;
++	unsigned long		timeout;
+ 	const char		*name;
+ } mdk_thread_t;
+ 
+diff --git a/include/linux/raid/md_u.h b/include/linux/raid/md_u.h
+index a2df5c2a42af..81da20ccec4d 100644
+--- a/include/linux/raid/md_u.h
++++ b/include/linux/raid/md_u.h
+@@ -23,6 +23,7 @@
+ #define GET_DISK_INFO		_IOR (MD_MAJOR, 0x12, mdu_disk_info_t)
+ #define PRINT_RAID_DEBUG	_IO (MD_MAJOR, 0x13)
+ #define RAID_AUTORUN		_IO (MD_MAJOR, 0x14)
++#define GET_BITMAP_FILE		_IOR (MD_MAJOR, 0x15, mdu_bitmap_file_t)
+ 
+ /* configuration */
+ #define CLEAR_ARRAY		_IO (MD_MAJOR, 0x20)
+@@ -36,6 +37,7 @@
+ #define HOT_ADD_DISK		_IO (MD_MAJOR, 0x28)
+ #define SET_DISK_FAULTY		_IO (MD_MAJOR, 0x29)
+ #define HOT_GENERATE_ERROR	_IO (MD_MAJOR, 0x2a)
++#define SET_BITMAP_FILE		_IOW (MD_MAJOR, 0x2b, int)
+ 
+ /* usage */
+ #define RUN_ARRAY		_IOW (MD_MAJOR, 0x30, mdu_param_t)
+@@ -106,6 +108,11 @@ typedef struct mdu_start_info_s {
+ 
+ } mdu_start_info_t;
+ 
++typedef struct mdu_bitmap_file_s
++{
++	char pathname[4096];
++} mdu_bitmap_file_t;
++
+ typedef struct mdu_param_s
+ {
+ 	int			personality;	/* 1,2,3,4 */</pre><hr><pre>commit 57afd89f98a990747445f01c458ecae64263b2f8
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:13 2005 -0700
+
+    [PATCH] md: improve the interface to sync_request
+    
+    1/ change the return value (which is number-of-sectors synced)
+     from 'int' to 'sector_t'.
+     The number of sectors is usually easily small enough to fit
+     in an int, but if resync needs to abort, it may want to return
+     the total number of remaining sectors, which could be large.
+     Also errors cannot be returned as negative numbers now, so use
+     0 instead
+    2/ Add a 'skipped' return parameter to allow the array to report
+     that it skipped the sectors.  This allows md to take this into account
+     in the speed calculations.
+     Currently there is no important skipping, but the bitmap-based-resync
+     that is coming will use this.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index 177d2a7d7cea..fa608a1a5c20 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -3241,12 +3241,13 @@ static void md_do_sync(mddev_t *mddev)
+ 	mddev_t *mddev2;
+ 	unsigned int currspeed = 0,
+ 		 window;
+-	sector_t max_sectors,j;
++	sector_t max_sectors,j, io_sectors;
+ 	unsigned long mark[SYNC_MARKS];
+ 	sector_t mark_cnt[SYNC_MARKS];
+ 	int last_mark,m;
+ 	struct list_head *tmp;
+ 	sector_t last_check;
++	int skipped = 0;
+ 
+ 	/* just incase thread restarts... */
+ 	if (test_bit(MD_RECOVERY_DONE, &amp;mddev-&gt;recovery))
+@@ -3312,7 +3313,7 @@ static void md_do_sync(mddev_t *mddev)
+ 
+ 	if (test_bit(MD_RECOVERY_SYNC, &amp;mddev-&gt;recovery))
+ 		/* resync follows the size requested by the personality,
+-		 * which default to physical size, but can be virtual size
++		 * which defaults to physical size, but can be virtual size
+ 		 */
+ 		max_sectors = mddev-&gt;resync_max_sectors;
+ 	else
+@@ -3331,9 +3332,10 @@ static void md_do_sync(mddev_t *mddev)
+ 		j = mddev-&gt;recovery_cp;
+ 	else
+ 		j = 0;
++	io_sectors = 0;
+ 	for (m = 0; m &lt; SYNC_MARKS; m++) {
+ 		mark[m] = jiffies;
+-		mark_cnt[m] = j;
++		mark_cnt[m] = io_sectors;
+ 	}
+ 	last_mark = 0;
+ 	mddev-&gt;resync_mark = mark[last_mark];
+@@ -3358,21 +3360,29 @@ static void md_do_sync(mddev_t *mddev)
+ 	}
+ 
+ 	while (j &lt; max_sectors) {
+-		int sectors;
++		sector_t sectors;
+ 
+-		sectors = mddev-&gt;pers-&gt;sync_request(mddev, j, currspeed &lt; sysctl_speed_limit_min);
+-		if (sectors &lt; 0) {
++		skipped = 0;
++		sectors = mddev-&gt;pers-&gt;sync_request(mddev, j, &amp;skipped,
++					    currspeed &lt; sysctl_speed_limit_min);
++		if (sectors == 0) {
+ 			set_bit(MD_RECOVERY_ERR, &amp;mddev-&gt;recovery);
+ 			goto out;
+ 		}
+-		atomic_add(sectors, &amp;mddev-&gt;recovery_active);
++
++		if (!skipped) { /* actual IO requested */
++			io_sectors += sectors;
++			atomic_add(sectors, &amp;mddev-&gt;recovery_active);
++		}
++
+ 		j += sectors;
+ 		if (j&gt;1) mddev-&gt;curr_resync = j;
+ 
+-		if (last_check + window &gt; j || j == max_sectors)
++
++		if (last_check + window &gt; io_sectors || j == max_sectors)
+ 			continue;
+ 
+-		last_check = j;
++		last_check = io_sectors;
+ 
+ 		if (test_bit(MD_RECOVERY_INTR, &amp;mddev-&gt;recovery) ||
+ 		    test_bit(MD_RECOVERY_ERR, &amp;mddev-&gt;recovery))
+@@ -3386,7 +3396,7 @@ static void md_do_sync(mddev_t *mddev)
+ 			mddev-&gt;resync_mark = mark[next];
+ 			mddev-&gt;resync_mark_cnt = mark_cnt[next];
+ 			mark[next] = jiffies;
+-			mark_cnt[next] = j - atomic_read(&amp;mddev-&gt;recovery_active);
++			mark_cnt[next] = io_sectors - atomic_read(&amp;mddev-&gt;recovery_active);
+ 			last_mark = next;
+ 		}
+ 
+@@ -3413,7 +3423,8 @@ static void md_do_sync(mddev_t *mddev)
+ 		mddev-&gt;queue-&gt;unplug_fn(mddev-&gt;queue);
+ 		cond_resched();
+ 
+-		currspeed = ((unsigned long)(j-mddev-&gt;resync_mark_cnt))/2/((jiffies-mddev-&gt;resync_mark)/HZ +1) +1;
++		currspeed = ((unsigned long)(io_sectors-mddev-&gt;resync_mark_cnt))/2
++			/((jiffies-mddev-&gt;resync_mark)/HZ +1) +1;
+ 
+ 		if (currspeed &gt; sysctl_speed_limit_min) {
+ 			if ((currspeed &gt; sysctl_speed_limit_max) ||
+@@ -3433,7 +3444,7 @@ static void md_do_sync(mddev_t *mddev)
+ 	wait_event(mddev-&gt;recovery_wait, !atomic_read(&amp;mddev-&gt;recovery_active));
+ 
+ 	/* tell personality that we are finished */
+-	mddev-&gt;pers-&gt;sync_request(mddev, max_sectors, 1);
++	mddev-&gt;pers-&gt;sync_request(mddev, max_sectors, &amp;skipped, 1);
+ 
+ 	if (!test_bit(MD_RECOVERY_ERR, &amp;mddev-&gt;recovery) &amp;&amp;
+ 	    mddev-&gt;curr_resync &gt; 2 &amp;&amp;
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index 3f1280bbaf39..3c5c916cb09e 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -1010,7 +1010,7 @@ static int init_resync(conf_t *conf)
+  * that can be installed to exclude normal IO requests.
+  */
+ 
+-static int sync_request(mddev_t *mddev, sector_t sector_nr, int go_faster)
++static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, int go_faster)
+ {
+ 	conf_t *conf = mddev_to_conf(mddev);
+ 	mirror_info_t *mirror;
+@@ -1023,7 +1023,7 @@ static int sync_request(mddev_t *mddev, sector_t sector_nr, int go_faster)
+ 
+ 	if (!conf-&gt;r1buf_pool)
+ 		if (init_resync(conf))
+-			return -ENOMEM;
++			return 0;
+ 
+ 	max_sector = mddev-&gt;size &lt;&lt; 1;
+ 	if (sector_nr &gt;= max_sector) {
+@@ -1107,8 +1107,8 @@ static int sync_request(mddev_t *mddev, sector_t sector_nr, int go_faster)
+ 		/* There is nowhere to write, so all non-sync
+ 		 * drives must be failed - so we are finished
+ 		 */
+-		int rv = max_sector - sector_nr;
+-		md_done_sync(mddev, rv, 1);
++		sector_t rv = max_sector - sector_nr;
++		*skipped = 1;
+ 		put_buf(r1_bio);
+ 		rdev_dec_pending(conf-&gt;mirrors[disk].rdev, mddev);
+ 		return rv;
+diff --git a/drivers/md/raid10.c b/drivers/md/raid10.c
+index bfc9f52f0ecf..8476515bfdc7 100644
+--- a/drivers/md/raid10.c
++++ b/drivers/md/raid10.c
+@@ -1321,7 +1321,7 @@ static int init_resync(conf_t *conf)
+  *
+  */
+ 
+-static int sync_request(mddev_t *mddev, sector_t sector_nr, int go_faster)
++static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, int go_faster)
+ {
+ 	conf_t *conf = mddev_to_conf(mddev);
+ 	r10bio_t *r10_bio;
+@@ -1335,7 +1335,7 @@ static int sync_request(mddev_t *mddev, sector_t sector_nr, int go_faster)
+ 
+ 	if (!conf-&gt;r10buf_pool)
+ 		if (init_resync(conf))
+-			return -ENOMEM;
++			return 0;
+ 
+  skipped:
+ 	max_sector = mddev-&gt;size &lt;&lt; 1;
+@@ -1343,15 +1343,15 @@ static int sync_request(mddev_t *mddev, sector_t sector_nr, int go_faster)
+ 		max_sector = mddev-&gt;resync_max_sectors;
+ 	if (sector_nr &gt;= max_sector) {
+ 		close_sync(conf);
++		*skipped = 1;
+ 		return sectors_skipped;
+ 	}
+ 	if (chunks_skipped &gt;= conf-&gt;raid_disks) {
+ 		/* if there has been nothing to do on any drive,
+ 		 * then there is nothing to do at all..
+ 		 */
+-		sector_t sec = max_sector - sector_nr;
+-		md_done_sync(mddev, sec, 1);
+-		return sec + sectors_skipped;
++		*skipped = 1;
++		return (max_sector - sector_nr) + sectors_skipped;
+ 	}
+ 
+ 	/* make sure whole request will fit in a chunk - if chunks
+@@ -1565,17 +1565,22 @@ static int sync_request(mddev_t *mddev, sector_t sector_nr, int go_faster)
+ 		}
+ 	}
+ 
++	if (sectors_skipped)
++		/* pretend they weren't skipped, it makes
++		 * no important difference in this case
++		 */
++		md_done_sync(mddev, sectors_skipped, 1);
++
+ 	return sectors_skipped + nr_sectors;
+  giveup:
+ 	/* There is nowhere to write, so all non-sync
+ 	 * drives must be failed, so try the next chunk...
+ 	 */
+ 	{
+-	int sec = max_sector - sector_nr;
++	sector_t sec = max_sector - sector_nr;
+ 	sectors_skipped += sec;
+ 	chunks_skipped ++;
+ 	sector_nr = max_sector;
+-	md_done_sync(mddev, sec, 1);
+ 	goto skipped;
+ 	}
+ }
+diff --git a/drivers/md/raid5.c b/drivers/md/raid5.c
+index 677ce49078da..1ce3f5aaa984 100644
+--- a/drivers/md/raid5.c
++++ b/drivers/md/raid5.c
+@@ -1477,7 +1477,7 @@ static int make_request (request_queue_t *q, struct bio * bi)
+ }
+ 
+ /* FIXME go_faster isn't used */
+-static int sync_request (mddev_t *mddev, sector_t sector_nr, int go_faster)
++static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, int go_faster)
+ {
+ 	raid5_conf_t *conf = (raid5_conf_t *) mddev-&gt;private;
+ 	struct stripe_head *sh;
+@@ -1500,8 +1500,8 @@ static int sync_request (mddev_t *mddev, sector_t sector_nr, int go_faster)
+ 	 * nothing we can do.
+ 	 */
+ 	if (mddev-&gt;degraded &gt;= 1 &amp;&amp; test_bit(MD_RECOVERY_SYNC, &amp;mddev-&gt;recovery)) {
+-		int rv = (mddev-&gt;size &lt;&lt; 1) - sector_nr;
+-		md_done_sync(mddev, rv, 1);
++		sector_t rv = (mddev-&gt;size &lt;&lt; 1) - sector_nr;
++		*skipped = 1;
+ 		return rv;
+ 	}
+ 
+diff --git a/drivers/md/raid6main.c b/drivers/md/raid6main.c
+index fede16c4e8f3..d9c385496dc5 100644
+--- a/drivers/md/raid6main.c
++++ b/drivers/md/raid6main.c
+@@ -1636,7 +1636,7 @@ static int make_request (request_queue_t *q, struct bio * bi)
+ }
+ 
+ /* FIXME go_faster isn't used */
+-static int sync_request (mddev_t *mddev, sector_t sector_nr, int go_faster)
++static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, int go_faster)
+ {
+ 	raid6_conf_t *conf = (raid6_conf_t *) mddev-&gt;private;
+ 	struct stripe_head *sh;
+@@ -1659,8 +1659,8 @@ static int sync_request (mddev_t *mddev, sector_t sector_nr, int go_faster)
+ 	 * nothing we can do.
+ 	 */
+ 	if (mddev-&gt;degraded &gt;= 2 &amp;&amp; test_bit(MD_RECOVERY_SYNC, &amp;mddev-&gt;recovery)) {
+-		int rv = (mddev-&gt;size &lt;&lt; 1) - sector_nr;
+-		md_done_sync(mddev, rv, 1);
++		sector_t rv = (mddev-&gt;size &lt;&lt; 1) - sector_nr;
++		*skipped = 1;
+ 		return rv;
+ 	}
+ 
+diff --git a/include/linux/raid/md_k.h b/include/linux/raid/md_k.h
+index d92db54255a3..bce0032decff 100644
+--- a/include/linux/raid/md_k.h
++++ b/include/linux/raid/md_k.h
+@@ -298,7 +298,7 @@ struct mdk_personality_s
+ 	int (*hot_add_disk) (mddev_t *mddev, mdk_rdev_t *rdev);
+ 	int (*hot_remove_disk) (mddev_t *mddev, int number);
+ 	int (*spare_active) (mddev_t *mddev);
+-	int (*sync_request)(mddev_t *mddev, sector_t sector_nr, int go_faster);
++	sector_t (*sync_request)(mddev_t *mddev, sector_t sector_nr, int *skipped, int go_faster);
+ 	int (*resize) (mddev_t *mddev, sector_t sectors);
+ 	int (*reshape) (mddev_t *mddev, int raid_disks);
+ 	int (*reconfig) (mddev_t *mddev, int layout, int chunk_size);</pre><hr><pre>commit 06d91a5fe0b50c9060e70bdf7786f8a3c66249db
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:12 2005 -0700
+
+    [PATCH] md: improve locking on 'safemode' and move superblock writes
+    
+    When md marks the superblock dirty before a write, it calls
+    generic_make_request (to write the superblock) from within
+    generic_make_request (to write the first dirty block), which could cause
+    problems later.
+    
+    With this patch, the superblock write is always done by the helper thread, and
+    write request are delayed until that write completes.
+    
+    Also, the locking around marking the array dirty and writing the superblock is
+    improved to avoid possible races.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index c842e34d850e..177d2a7d7cea 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -218,6 +218,8 @@ static mddev_t * mddev_find(dev_t unit)
+ 	INIT_LIST_HEAD(&amp;new-&gt;all_mddevs);
+ 	init_timer(&amp;new-&gt;safemode_timer);
+ 	atomic_set(&amp;new-&gt;active, 1);
++	bio_list_init(&amp;new-&gt;write_list);
++	spin_lock_init(&amp;new-&gt;write_lock);
+ 
+ 	new-&gt;queue = blk_alloc_queue(GFP_KERNEL);
+ 	if (!new-&gt;queue) {
+@@ -1251,9 +1253,11 @@ static void md_update_sb(mddev_t * mddev)
+ 	int err, count = 100;
+ 	struct list_head *tmp;
+ 	mdk_rdev_t *rdev;
++	int sync_req;
+ 
+-	mddev-&gt;sb_dirty = 0;
+ repeat:
++	spin_lock(&amp;mddev-&gt;write_lock);
++	sync_req = mddev-&gt;in_sync;
+ 	mddev-&gt;utime = get_seconds();
+ 	mddev-&gt;events ++;
+ 
+@@ -1272,8 +1276,12 @@ static void md_update_sb(mddev_t * mddev)
+ 	 * do not write anything to disk if using
+ 	 * nonpersistent superblocks
+ 	 */
+-	if (!mddev-&gt;persistent)
++	if (!mddev-&gt;persistent) {
++		mddev-&gt;sb_dirty = 0;
++		spin_unlock(&amp;mddev-&gt;write_lock);
+ 		return;
++	}
++	spin_unlock(&amp;mddev-&gt;write_lock);
+ 
+ 	dprintk(KERN_INFO 
+ 		"md: updating %s RAID superblock on device (in sync %d)\n",
+@@ -1304,6 +1312,15 @@ static void md_update_sb(mddev_t * mddev)
+ 		printk(KERN_ERR \
+ 			"md: excessive errors occurred during superblock update, exiting\n");
+ 	}
++	spin_lock(&amp;mddev-&gt;write_lock);
++	if (mddev-&gt;in_sync != sync_req) {
++		/* have to write it out again */
++		spin_unlock(&amp;mddev-&gt;write_lock);
++		goto repeat;
++	}
++	mddev-&gt;sb_dirty = 0;
++	spin_unlock(&amp;mddev-&gt;write_lock);
++
+ }
+ 
+ /*
+@@ -3178,19 +3195,31 @@ void md_done_sync(mddev_t *mddev, int blocks, int ok)
+ }
+ 
+ 
+-void md_write_start(mddev_t *mddev)
++/* md_write_start(mddev, bi)
++ * If we need to update some array metadata (e.g. 'active' flag
++ * in superblock) before writing, queue bi for later writing
++ * and return 0, else return 1 and it will be written now
++ */
++int md_write_start(mddev_t *mddev, struct bio *bi)
+ {
+-	if (!atomic_read(&amp;mddev-&gt;writes_pending)) {
+-		mddev_lock_uninterruptible(mddev);
+-		if (mddev-&gt;in_sync) {
+-			mddev-&gt;in_sync = 0;
+- 			del_timer(&amp;mddev-&gt;safemode_timer);
+-			md_update_sb(mddev);
+-		}
+-		atomic_inc(&amp;mddev-&gt;writes_pending);
+-		mddev_unlock(mddev);
+-	} else
+-		atomic_inc(&amp;mddev-&gt;writes_pending);
++	if (bio_data_dir(bi) != WRITE)
++		return 1;
++
++	atomic_inc(&amp;mddev-&gt;writes_pending);
++	spin_lock(&amp;mddev-&gt;write_lock);
++	if (mddev-&gt;in_sync == 0 &amp;&amp; mddev-&gt;sb_dirty == 0) {
++		spin_unlock(&amp;mddev-&gt;write_lock);
++		return 1;
++	}
++	bio_list_add(&amp;mddev-&gt;write_list, bi);
++
++	if (mddev-&gt;in_sync) {
++		mddev-&gt;in_sync = 0;
++		mddev-&gt;sb_dirty = 1;
++	}
++	spin_unlock(&amp;mddev-&gt;write_lock);
++	md_wakeup_thread(mddev-&gt;thread);
++	return 0;
+ }
+ 
+ void md_write_end(mddev_t *mddev)
+@@ -3472,6 +3501,7 @@ void md_check_recovery(mddev_t *mddev)
+ 		mddev-&gt;sb_dirty ||
+ 		test_bit(MD_RECOVERY_NEEDED, &amp;mddev-&gt;recovery) ||
+ 		test_bit(MD_RECOVERY_DONE, &amp;mddev-&gt;recovery) ||
++		mddev-&gt;write_list.head ||
+ 		(mddev-&gt;safemode == 1) ||
+ 		(mddev-&gt;safemode == 2 &amp;&amp; ! atomic_read(&amp;mddev-&gt;writes_pending)
+ 		 &amp;&amp; !mddev-&gt;in_sync &amp;&amp; mddev-&gt;recovery_cp == MaxSector)
+@@ -3480,7 +3510,9 @@ void md_check_recovery(mddev_t *mddev)
+ 
+ 	if (mddev_trylock(mddev)==0) {
+ 		int spares =0;
++		struct bio *blist;
+ 
++		spin_lock(&amp;mddev-&gt;write_lock);
+ 		if (mddev-&gt;safemode &amp;&amp; !atomic_read(&amp;mddev-&gt;writes_pending) &amp;&amp;
+ 		    !mddev-&gt;in_sync &amp;&amp; mddev-&gt;recovery_cp == MaxSector) {
+ 			mddev-&gt;in_sync = 1;
+@@ -3488,9 +3520,22 @@ void md_check_recovery(mddev_t *mddev)
+ 		}
+ 		if (mddev-&gt;safemode == 1)
+ 			mddev-&gt;safemode = 0;
++		blist = bio_list_get(&amp;mddev-&gt;write_list);
++		spin_unlock(&amp;mddev-&gt;write_lock);
+ 
+ 		if (mddev-&gt;sb_dirty)
+ 			md_update_sb(mddev);
++
++		while (blist) {
++			struct bio *b = blist;
++			blist = blist-&gt;bi_next;
++			b-&gt;bi_next = NULL;
++			generic_make_request(b);
++			/* we already counted this, so need to un-count */
++			md_write_end(mddev);
++		}
++
++
+ 		if (test_bit(MD_RECOVERY_RUNNING, &amp;mddev-&gt;recovery) &amp;&amp;
+ 		    !test_bit(MD_RECOVERY_DONE, &amp;mddev-&gt;recovery)) {
+ 			/* resync/recovery still happening */
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index b34ad56362df..3f1280bbaf39 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -530,6 +530,8 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	 * thread has put up a bar for new requests.
+ 	 * Continue immediately if no resync is active currently.
+ 	 */
++	if (md_write_start(mddev, bio)==0)
++		return 0;
+ 	spin_lock_irq(&amp;conf-&gt;resync_lock);
+ 	wait_event_lock_irq(conf-&gt;wait_resume, !conf-&gt;barrier, conf-&gt;resync_lock, );
+ 	conf-&gt;nr_pending++;
+@@ -611,7 +613,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	rcu_read_unlock();
+ 
+ 	atomic_set(&amp;r1_bio-&gt;remaining, 1);
+-	md_write_start(mddev);
++
+ 	for (i = 0; i &lt; disks; i++) {
+ 		struct bio *mbio;
+ 		if (!r1_bio-&gt;bios[i])
+diff --git a/drivers/md/raid10.c b/drivers/md/raid10.c
+index 9ae21504db8a..bfc9f52f0ecf 100644
+--- a/drivers/md/raid10.c
++++ b/drivers/md/raid10.c
+@@ -700,6 +700,9 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 		return 0;
+ 	}
+ 
++	if (md_write_start(mddev, bio) == 0)
++		return 0;
++
+ 	/*
+ 	 * Register the new request and wait if the reconstruction
+ 	 * thread has put up a bar for new requests.
+@@ -774,7 +777,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	rcu_read_unlock();
+ 
+ 	atomic_set(&amp;r10_bio-&gt;remaining, 1);
+-	md_write_start(mddev);
++
+ 	for (i = 0; i &lt; conf-&gt;copies; i++) {
+ 		struct bio *mbio;
+ 		int d = r10_bio-&gt;devs[i].devnum;
+diff --git a/drivers/md/raid5.c b/drivers/md/raid5.c
+index 63b1c59d36ff..677ce49078da 100644
+--- a/drivers/md/raid5.c
++++ b/drivers/md/raid5.c
+@@ -1411,6 +1411,9 @@ static int make_request (request_queue_t *q, struct bio * bi)
+ 	sector_t logical_sector, last_sector;
+ 	struct stripe_head *sh;
+ 
++	if (md_write_start(mddev, bi)==0)
++		return 0;
++
+ 	if (bio_data_dir(bi)==WRITE) {
+ 		disk_stat_inc(mddev-&gt;gendisk, writes);
+ 		disk_stat_add(mddev-&gt;gendisk, write_sectors, bio_sectors(bi));
+@@ -1423,8 +1426,7 @@ static int make_request (request_queue_t *q, struct bio * bi)
+ 	last_sector = bi-&gt;bi_sector + (bi-&gt;bi_size&gt;&gt;9);
+ 	bi-&gt;bi_next = NULL;
+ 	bi-&gt;bi_phys_segments = 1;	/* over-loaded to count active stripes */
+-	if ( bio_data_dir(bi) == WRITE )
+-		md_write_start(mddev);
++
+ 	for (;logical_sector &lt; last_sector; logical_sector += STRIPE_SECTORS) {
+ 		DEFINE_WAIT(w);
+ 		
+diff --git a/drivers/md/raid6main.c b/drivers/md/raid6main.c
+index 9d0e0e42a3be..fede16c4e8f3 100644
+--- a/drivers/md/raid6main.c
++++ b/drivers/md/raid6main.c
+@@ -1570,6 +1570,9 @@ static int make_request (request_queue_t *q, struct bio * bi)
+ 	sector_t logical_sector, last_sector;
+ 	struct stripe_head *sh;
+ 
++	if (md_write_start(mddev, bi)==0)
++		return 0;
++
+ 	if (bio_data_dir(bi)==WRITE) {
+ 		disk_stat_inc(mddev-&gt;gendisk, writes);
+ 		disk_stat_add(mddev-&gt;gendisk, write_sectors, bio_sectors(bi));
+@@ -1583,8 +1586,7 @@ static int make_request (request_queue_t *q, struct bio * bi)
+ 
+ 	bi-&gt;bi_next = NULL;
+ 	bi-&gt;bi_phys_segments = 1;	/* over-loaded to count active stripes */
+-	if ( bio_data_dir(bi) == WRITE )
+-		md_write_start(mddev);
++
+ 	for (;logical_sector &lt; last_sector; logical_sector += STRIPE_SECTORS) {
+ 		DEFINE_WAIT(w);
+ 
+diff --git a/include/linux/raid/md.h b/include/linux/raid/md.h
+index a6a67d102bfa..cfde8f497d6d 100644
+--- a/include/linux/raid/md.h
++++ b/include/linux/raid/md.h
+@@ -69,7 +69,7 @@ extern mdk_thread_t * md_register_thread (void (*run) (mddev_t *mddev),
+ extern void md_unregister_thread (mdk_thread_t *thread);
+ extern void md_wakeup_thread(mdk_thread_t *thread);
+ extern void md_check_recovery(mddev_t *mddev);
+-extern void md_write_start(mddev_t *mddev);
++extern int md_write_start(mddev_t *mddev, struct bio *bi);
+ extern void md_write_end(mddev_t *mddev);
+ extern void md_handle_safemode(mddev_t *mddev);
+ extern void md_done_sync(mddev_t *mddev, int blocks, int ok);
+diff --git a/include/linux/raid/md_k.h b/include/linux/raid/md_k.h
+index c9a0d4013be7..d92db54255a3 100644
+--- a/include/linux/raid/md_k.h
++++ b/include/linux/raid/md_k.h
+@@ -15,6 +15,9 @@
+ #ifndef _MD_K_H
+ #define _MD_K_H
+ 
++/* and dm-bio-list.h is not under include/linux because.... ??? */
++#include "../../../drivers/md/dm-bio-list.h"
++
+ #define MD_RESERVED       0UL
+ #define LINEAR            1UL
+ #define RAID0             2UL
+@@ -252,6 +255,10 @@ struct mddev_s
+ 	atomic_t			recovery_active; /* blocks scheduled, but not written */
+ 	wait_queue_head_t		recovery_wait;
+ 	sector_t			recovery_cp;
++
++	spinlock_t			write_lock;
++	struct bio_list			write_list;
++
+ 	unsigned int			safemode;	/* if set, update "clean" superblock
+ 							 * when no writes pending.
+ 							 */ </pre><hr><pre>commit fca4d848f0e6fafdc2b25f8a0cf1e76935f13ac2
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:11 2005 -0700
+
+    [PATCH] md: merge md_enter_safemode into md_check_recovery
+    
+    md_enter_safemode checks if it is time to mark the md superblock as 'clean'.
+    i.e.  if all writes have completed and a suitable delay has passed.
+    
+    This is currently called from md_handle_safemode which in-turn is called
+    (almost) every time md_check_recovery is called, and from the end of
+    md_do_sync which causes the mddev-&gt;thread to run, which will always call
+    md_check_recovery as well.
+    
+    So it doesn't need to be a separate function and fits quite well into
+    md_check_recovery.
+    
+    The "almost" is because multipathd calls md_check_recovery but not
+    md_handle_safemode.  This is OK because the code from md_enter_safemode is a
+    no-op if mddev-&gt;safemode == 0, which it always is for a multipathd (providing
+    we don't allow it to be set to 2 on a signal...)
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index 60835dfd058e..c842e34d850e 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -3203,37 +3203,6 @@ void md_write_end(mddev_t *mddev)
+ 	}
+ }
+ 
+-static inline void md_enter_safemode(mddev_t *mddev)
+-{
+-	if (!mddev-&gt;safemode) return;
+-	if (mddev-&gt;safemode == 2 &amp;&amp;
+-	    (atomic_read(&amp;mddev-&gt;writes_pending) || mddev-&gt;in_sync ||
+-		    mddev-&gt;recovery_cp != MaxSector))
+-		return; /* avoid the lock */
+-	mddev_lock_uninterruptible(mddev);
+-	if (mddev-&gt;safemode &amp;&amp; !atomic_read(&amp;mddev-&gt;writes_pending) &amp;&amp;
+-	    !mddev-&gt;in_sync &amp;&amp; mddev-&gt;recovery_cp == MaxSector) {
+-		mddev-&gt;in_sync = 1;
+-		md_update_sb(mddev);
+-	}
+-	mddev_unlock(mddev);
+-
+-	if (mddev-&gt;safemode == 1)
+-		mddev-&gt;safemode = 0;
+-}
+-
+-void md_handle_safemode(mddev_t *mddev)
+-{
+-	if (signal_pending(current)) {
+-		printk(KERN_INFO "md: %s in immediate safe mode\n",
+-			mdname(mddev));
+-		mddev-&gt;safemode = 2;
+-		flush_signals(current);
+-	}
+-	md_enter_safemode(mddev);
+-}
+-
+-
+ static DECLARE_WAIT_QUEUE_HEAD(resync_wait);
+ 
+ #define SYNC_MARKS	10
+@@ -3449,7 +3418,6 @@ static void md_do_sync(mddev_t *mddev)
+ 			mddev-&gt;recovery_cp = MaxSector;
+ 	}
+ 
+-	md_enter_safemode(mddev);
+  skip:
+ 	mddev-&gt;curr_resync = 0;
+ 	wake_up(&amp;resync_wait);
+@@ -3490,14 +3458,37 @@ void md_check_recovery(mddev_t *mddev)
+ 
+ 	if (mddev-&gt;ro)
+ 		return;
++
++	if (signal_pending(current)) {
++		if (mddev-&gt;pers-&gt;sync_request) {
++			printk(KERN_INFO "md: %s in immediate safe mode\n",
++			       mdname(mddev));
++			mddev-&gt;safemode = 2;
++		}
++		flush_signals(current);
++	}
++
+ 	if ( ! (
+ 		mddev-&gt;sb_dirty ||
+ 		test_bit(MD_RECOVERY_NEEDED, &amp;mddev-&gt;recovery) ||
+-		test_bit(MD_RECOVERY_DONE, &amp;mddev-&gt;recovery)
++		test_bit(MD_RECOVERY_DONE, &amp;mddev-&gt;recovery) ||
++		(mddev-&gt;safemode == 1) ||
++		(mddev-&gt;safemode == 2 &amp;&amp; ! atomic_read(&amp;mddev-&gt;writes_pending)
++		 &amp;&amp; !mddev-&gt;in_sync &amp;&amp; mddev-&gt;recovery_cp == MaxSector)
+ 		))
+ 		return;
++
+ 	if (mddev_trylock(mddev)==0) {
+ 		int spares =0;
++
++		if (mddev-&gt;safemode &amp;&amp; !atomic_read(&amp;mddev-&gt;writes_pending) &amp;&amp;
++		    !mddev-&gt;in_sync &amp;&amp; mddev-&gt;recovery_cp == MaxSector) {
++			mddev-&gt;in_sync = 1;
++			mddev-&gt;sb_dirty = 1;
++		}
++		if (mddev-&gt;safemode == 1)
++			mddev-&gt;safemode = 0;
++
+ 		if (mddev-&gt;sb_dirty)
+ 			md_update_sb(mddev);
+ 		if (test_bit(MD_RECOVERY_RUNNING, &amp;mddev-&gt;recovery) &amp;&amp;
+@@ -3741,7 +3732,6 @@ EXPORT_SYMBOL(md_error);
+ EXPORT_SYMBOL(md_done_sync);
+ EXPORT_SYMBOL(md_write_start);
+ EXPORT_SYMBOL(md_write_end);
+-EXPORT_SYMBOL(md_handle_safemode);
+ EXPORT_SYMBOL(md_register_thread);
+ EXPORT_SYMBOL(md_unregister_thread);
+ EXPORT_SYMBOL(md_wakeup_thread);
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index 4947f599b652..b34ad56362df 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -931,7 +931,6 @@ static void raid1d(mddev_t *mddev)
+ 	mdk_rdev_t *rdev;
+ 
+ 	md_check_recovery(mddev);
+-	md_handle_safemode(mddev);
+ 	
+ 	for (;;) {
+ 		char b[BDEVNAME_SIZE];
+diff --git a/drivers/md/raid10.c b/drivers/md/raid10.c
+index 3c37be6423d7..9ae21504db8a 100644
+--- a/drivers/md/raid10.c
++++ b/drivers/md/raid10.c
+@@ -1216,7 +1216,6 @@ static void raid10d(mddev_t *mddev)
+ 	mdk_rdev_t *rdev;
+ 
+ 	md_check_recovery(mddev);
+-	md_handle_safemode(mddev);
+ 
+ 	for (;;) {
+ 		char b[BDEVNAME_SIZE];
+diff --git a/drivers/md/raid5.c b/drivers/md/raid5.c
+index 3cb11ac232fa..63b1c59d36ff 100644
+--- a/drivers/md/raid5.c
++++ b/drivers/md/raid5.c
+@@ -1546,7 +1546,6 @@ static void raid5d (mddev_t *mddev)
+ 	PRINTK("+++ raid5d active\n");
+ 
+ 	md_check_recovery(mddev);
+-	md_handle_safemode(mddev);
+ 
+ 	handled = 0;
+ 	spin_lock_irq(&amp;conf-&gt;device_lock);
+diff --git a/drivers/md/raid6main.c b/drivers/md/raid6main.c
+index 908edd78a792..9d0e0e42a3be 100644
+--- a/drivers/md/raid6main.c
++++ b/drivers/md/raid6main.c
+@@ -1705,7 +1705,6 @@ static void raid6d (mddev_t *mddev)
+ 	PRINTK("+++ raid6d active\n");
+ 
+ 	md_check_recovery(mddev);
+-	md_handle_safemode(mddev);
+ 
+ 	handled = 0;
+ 	spin_lock_irq(&amp;conf-&gt;device_lock);</pre><hr><pre>commit c361777fb9347a4d16b82272f7d3b234e94bef2d
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:10 2005 -0700
+
+    [PATCH] md: make sure recovery happens when add_new_disk is used for hot_add
+    
+    Currently if add_new_disk is used to hot-add a drive to a degraded array,
+    recovery doesn't start ...  because we didn't tell it to.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index d899204d3743..60835dfd058e 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -2083,6 +2083,8 @@ static int add_new_disk(mddev_t * mddev, mdu_disk_info_t *info)
+ 		err = bind_rdev_to_array(rdev, mddev);
+ 		if (err)
+ 			export_rdev(rdev);
++
++		set_bit(MD_RECOVERY_NEEDED, &amp;mddev-&gt;recovery);
+ 		if (mddev-&gt;thread)
+ 			md_wakeup_thread(mddev-&gt;thread);
+ 		return err;</pre><hr><pre>commit 6ea9c07c6c6d1c14d9757dd8470dc4c85bbe9f28
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:09 2005 -0700
+
+    [PATCH] md: cause md/raid1 to "repack" working devices when number of drives is changed
+    
+    i.e.  missing or failed drives are moved to the end of the list.  The means
+    a 3 drive md array with the first drive missing can be shrunk to a two
+    drive array.  Currently that isn't possible.
+    
+    Also, the "last_used" device number might be out-of-range after the number
+    of devices is reduced, so we set it to 0.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index 1db5de52d376..4947f599b652 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -1349,17 +1349,26 @@ static int raid1_reshape(mddev_t *mddev, int raid_disks)
+ 	 * We allocate a new r1bio_pool if we can.
+ 	 * Then raise a device barrier and wait until all IO stops.
+ 	 * Then resize conf-&gt;mirrors and swap in the new r1bio pool.
++	 *
++	 * At the same time, we "pack" the devices so that all the missing
++	 * devices have the higher raid_disk numbers.
+ 	 */
+ 	mempool_t *newpool, *oldpool;
+ 	struct pool_info *newpoolinfo;
+ 	mirror_info_t *newmirrors;
+ 	conf_t *conf = mddev_to_conf(mddev);
++	int cnt;
+ 
+-	int d;
++	int d, d2;
+ 
+-	for (d= raid_disks; d &lt; conf-&gt;raid_disks; d++)
+-		if (conf-&gt;mirrors[d].rdev)
++	if (raid_disks &lt; conf-&gt;raid_disks) {
++		cnt=0;
++		for (d= 0; d &lt; conf-&gt;raid_disks; d++)
++			if (conf-&gt;mirrors[d].rdev)
++				cnt++;
++		if (cnt &gt; raid_disks)
+ 			return -EBUSY;
++	}
+ 
+ 	newpoolinfo = kmalloc(sizeof(*newpoolinfo), GFP_KERNEL);
+ 	if (!newpoolinfo)
+@@ -1390,8 +1399,12 @@ static int raid1_reshape(mddev_t *mddev, int raid_disks)
+ 	/* ok, everything is stopped */
+ 	oldpool = conf-&gt;r1bio_pool;
+ 	conf-&gt;r1bio_pool = newpool;
+-	for (d=0; d &lt; raid_disks &amp;&amp; d &lt; conf-&gt;raid_disks; d++)
+-		newmirrors[d] = conf-&gt;mirrors[d];
++
++	for (d=d2=0; d &lt; conf-&gt;raid_disks; d++)
++		if (conf-&gt;mirrors[d].rdev) {
++			conf-&gt;mirrors[d].rdev-&gt;raid_disk = d2;
++			newmirrors[d2++].rdev = conf-&gt;mirrors[d].rdev;
++		}
+ 	kfree(conf-&gt;mirrors);
+ 	conf-&gt;mirrors = newmirrors;
+ 	kfree(conf-&gt;poolinfo);
+@@ -1400,6 +1413,7 @@ static int raid1_reshape(mddev_t *mddev, int raid_disks)
+ 	mddev-&gt;degraded += (raid_disks - conf-&gt;raid_disks);
+ 	conf-&gt;raid_disks = mddev-&gt;raid_disks = raid_disks;
+ 
++	conf-&gt;last_used = 0; /* just make sure it is in-range */
+ 	spin_lock_irq(&amp;conf-&gt;resync_lock);
+ 	conf-&gt;barrier--;
+ 	spin_unlock_irq(&amp;conf-&gt;resync_lock);</pre><hr><pre>commit 7a5febe9ffeecd1e78c5b505260ccc1ef18021b4
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Mon May 16 21:53:16 2005 -0700
+
+    [PATCH] md: set the unplug_fn and issue_flush_fn for md devices *after* committed to creation
+    
+    We we set the too early, they may still be in place and possibly get called
+    even though the array didn't get set up properly.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/multipath.c b/drivers/md/multipath.c
+index 4e4bfde3db5d..2ae2d709cb15 100644
+--- a/drivers/md/multipath.c
++++ b/drivers/md/multipath.c
+@@ -462,10 +462,6 @@ static int multipath_run (mddev_t *mddev)
+ 	}
+ 	memset(conf-&gt;multipaths, 0, sizeof(struct multipath_info)*mddev-&gt;raid_disks);
+ 
+-	mddev-&gt;queue-&gt;unplug_fn = multipath_unplug;
+-
+-	mddev-&gt;queue-&gt;issue_flush_fn = multipath_issue_flush;
+-
+ 	conf-&gt;working_disks = 0;
+ 	ITERATE_RDEV(mddev,rdev,tmp) {
+ 		disk_idx = rdev-&gt;raid_disk;
+@@ -528,6 +524,10 @@ static int multipath_run (mddev_t *mddev)
+ 	 * Ok, everything is just fine now
+ 	 */
+ 	mddev-&gt;array_size = mddev-&gt;size;
++
++	mddev-&gt;queue-&gt;unplug_fn = multipath_unplug;
++	mddev-&gt;queue-&gt;issue_flush_fn = multipath_issue_flush;
++
+ 	return 0;
+ 
+ out_free_conf:
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index 83380b5d6593..1db5de52d376 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -1197,10 +1197,6 @@ static int run(mddev_t *mddev)
+ 	if (!conf-&gt;r1bio_pool)
+ 		goto out_no_mem;
+ 
+-	mddev-&gt;queue-&gt;unplug_fn = raid1_unplug;
+-
+-	mddev-&gt;queue-&gt;issue_flush_fn = raid1_issue_flush;
+-
+ 	ITERATE_RDEV(mddev, rdev, tmp) {
+ 		disk_idx = rdev-&gt;raid_disk;
+ 		if (disk_idx &gt;= mddev-&gt;raid_disks
+@@ -1282,6 +1278,9 @@ static int run(mddev_t *mddev)
+ 	 */
+ 	mddev-&gt;array_size = mddev-&gt;size;
+ 
++	mddev-&gt;queue-&gt;unplug_fn = raid1_unplug;
++	mddev-&gt;queue-&gt;issue_flush_fn = raid1_issue_flush;
++
+ 	return 0;
+ 
+ out_no_mem:
+diff --git a/drivers/md/raid10.c b/drivers/md/raid10.c
+index e9dc2876a626..3c37be6423d7 100644
+--- a/drivers/md/raid10.c
++++ b/drivers/md/raid10.c
+@@ -1639,9 +1639,6 @@ static int run(mddev_t *mddev)
+ 			mdname(mddev));
+ 		goto out_free_conf;
+ 	}
+-	mddev-&gt;queue-&gt;unplug_fn = raid10_unplug;
+-
+-	mddev-&gt;queue-&gt;issue_flush_fn = raid10_issue_flush;
+ 
+ 	ITERATE_RDEV(mddev, rdev, tmp) {
+ 		disk_idx = rdev-&gt;raid_disk;
+@@ -1713,6 +1710,9 @@ static int run(mddev_t *mddev)
+ 	mddev-&gt;array_size = size/2;
+ 	mddev-&gt;resync_max_sectors = size;
+ 
++	mddev-&gt;queue-&gt;unplug_fn = raid10_unplug;
++	mddev-&gt;queue-&gt;issue_flush_fn = raid10_issue_flush;
++
+ 	/* Calculate max read-ahead size.
+ 	 * We need to readahead at least twice a whole stripe....
+ 	 * maybe...
+diff --git a/drivers/md/raid5.c b/drivers/md/raid5.c
+index e96e2a10a9c9..3cb11ac232fa 100644
+--- a/drivers/md/raid5.c
++++ b/drivers/md/raid5.c
+@@ -1620,9 +1620,6 @@ static int run (mddev_t *mddev)
+ 	atomic_set(&amp;conf-&gt;active_stripes, 0);
+ 	atomic_set(&amp;conf-&gt;preread_active_stripes, 0);
+ 
+-	mddev-&gt;queue-&gt;unplug_fn = raid5_unplug_device;
+-	mddev-&gt;queue-&gt;issue_flush_fn = raid5_issue_flush;
+-
+ 	PRINTK("raid5: run(%s) called.\n", mdname(mddev));
+ 
+ 	ITERATE_RDEV(mddev,rdev,tmp) {
+@@ -1728,6 +1725,10 @@ memory = conf-&gt;max_nr_stripes * (sizeof(struct stripe_head) +
+ 	}
+ 
+ 	/* Ok, everything is just fine now */
++
++	mddev-&gt;queue-&gt;unplug_fn = raid5_unplug_device;
++	mddev-&gt;queue-&gt;issue_flush_fn = raid5_issue_flush;
++
+ 	mddev-&gt;array_size =  mddev-&gt;size * (mddev-&gt;raid_disks - 1);
+ 	return 0;
+ abort:
+diff --git a/drivers/md/raid6main.c b/drivers/md/raid6main.c
+index 8a33f351e092..908edd78a792 100644
+--- a/drivers/md/raid6main.c
++++ b/drivers/md/raid6main.c
+@@ -1779,9 +1779,6 @@ static int run (mddev_t *mddev)
+ 	atomic_set(&amp;conf-&gt;active_stripes, 0);
+ 	atomic_set(&amp;conf-&gt;preread_active_stripes, 0);
+ 
+-	mddev-&gt;queue-&gt;unplug_fn = raid6_unplug_device;
+-	mddev-&gt;queue-&gt;issue_flush_fn = raid6_issue_flush;
+-
+ 	PRINTK("raid6: run(%s) called.\n", mdname(mddev));
+ 
+ 	ITERATE_RDEV(mddev,rdev,tmp) {
+@@ -1895,6 +1892,9 @@ static int run (mddev_t *mddev)
+ 
+ 	/* Ok, everything is just fine now */
+ 	mddev-&gt;array_size =  mddev-&gt;size * (mddev-&gt;raid_disks - 2);
++
++	mddev-&gt;queue-&gt;unplug_fn = raid6_unplug_device;
++	mddev-&gt;queue-&gt;issue_flush_fn = raid6_issue_flush;
+ 	return 0;
+ abort:
+ 	if (conf) {</pre><hr><pre>commit 29ac8e056f2016a8404edc02749d095019aa1f82
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Mon May 16 21:53:15 2005 -0700
+
+    [PATCH] md: fix splitting of md/linear request that cross a device boundary
+    
+    When a request crosses a boundary between devices, it needs to be split.
+    But where we should calculate the amount of the request before the boundary
+    to find the split-point, we care currently calculating the amount that is
+    *after* the boundary !!!
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/linear.c b/drivers/md/linear.c
+index 161e9aa87291..b1941b887f46 100644
+--- a/drivers/md/linear.c
++++ b/drivers/md/linear.c
+@@ -269,9 +269,8 @@ static int linear_make_request (request_queue_t *q, struct bio *bio)
+ 		 * split it.
+ 		 */
+ 		struct bio_pair *bp;
+-		bp = bio_split(bio, bio_split_pool, 
+-			       (bio-&gt;bi_sector + (bio-&gt;bi_size &gt;&gt; 9) -
+-				(tmp_dev-&gt;offset + tmp_dev-&gt;size))&lt;&lt;1);
++		bp = bio_split(bio, bio_split_pool,
++			       ((tmp_dev-&gt;offset + tmp_dev-&gt;size)&lt;&lt;1) - bio-&gt;bi_sector);
+ 		if (linear_make_request(q, &amp;bp-&gt;bio1))
+ 			generic_make_request(&amp;bp-&gt;bio1);
+ 		if (linear_make_request(q, &amp;bp-&gt;bio2))</pre>
+    <div class="pagination">
+        <a href='8_12.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><a href='8_12.html'>12</a><span>[13]</span><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_14.html'>Next&gt;&gt;</a>
+    <div>
+</body>

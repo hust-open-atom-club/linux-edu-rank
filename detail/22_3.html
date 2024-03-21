@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Maine System</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Maine System</h1>
+    <div class="pagination">
+        <a href='22_2.html'>&lt;&lt;Prev</a><a href='22.html'>1</a><a href='22_2.html'>2</a><span>[3]</span><a href='22_4.html'>4</a><a href='22_4.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 274481de6cb69abdb49403ff32abb63c23743413
+Author: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+Date:   Fri Aug 23 15:51:03 2013 -0400
+
+    perf: Export struct perf_branch_entry to userspace
+    
+    If PERF_SAMPLE_BRANCH_STACK is enabled then samples are returned
+    with the format { u64 from, to, flags } but the flags layout
+    is not specified.
+    
+    This field has the type struct perf_branch_entry; move this
+    definition into include/uapi/linux/perf_event.h so users can
+    access these fields.
+    
+    This is similar to the existing inclusion of perf_mem_data_src in
+    the include/uapi/linux/perf_event.h file.
+    
+    Signed-off-by: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+    Acked-by: Stephane Eranian &lt;eranian@google.com&gt;
+    Signed-off-by: Peter Zijlstra &lt;peterz@infradead.org&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.10.1308231544420.1889@vincent-weaver-1.um.maine.edu
+    Signed-off-by: Ingo Molnar &lt;mingo@kernel.org&gt;
+
+diff --git a/include/linux/perf_event.h b/include/linux/perf_event.h
+index c43f6eabad5b..4019d82c3d03 100644
+--- a/include/linux/perf_event.h
++++ b/include/linux/perf_event.h
+@@ -63,30 +63,6 @@ struct perf_raw_record {
+ 	void				*data;
+ };
+ 
+-/*
+- * single taken branch record layout:
+- *
+- *      from: source instruction (may not always be a branch insn)
+- *        to: branch target
+- *   mispred: branch target was mispredicted
+- * predicted: branch target was predicted
+- *
+- * support for mispred, predicted is optional. In case it
+- * is not supported mispred = predicted = 0.
+- *
+- *     in_tx: running in a hardware transaction
+- *     abort: aborting a hardware transaction
+- */
+-struct perf_branch_entry {
+-	__u64	from;
+-	__u64	to;
+-	__u64	mispred:1,  /* target mispredicted */
+-		predicted:1,/* target predicted */
+-		in_tx:1,    /* in transaction */
+-		abort:1,    /* transaction abort */
+-		reserved:60;
+-};
+-
+ /*
+  * branch stack layout:
+  *  nr: number of taken branches stored in entries[]
+diff --git a/include/uapi/linux/perf_event.h b/include/uapi/linux/perf_event.h
+index a77f43af72b8..408b8c730731 100644
+--- a/include/uapi/linux/perf_event.h
++++ b/include/uapi/linux/perf_event.h
+@@ -757,4 +757,28 @@ union perf_mem_data_src {
+ #define PERF_MEM_S(a, s) \
+ 	(((u64)PERF_MEM_##a##_##s) &lt;&lt; PERF_MEM_##a##_SHIFT)
+ 
++/*
++ * single taken branch record layout:
++ *
++ *      from: source instruction (may not always be a branch insn)
++ *        to: branch target
++ *   mispred: branch target was mispredicted
++ * predicted: branch target was predicted
++ *
++ * support for mispred, predicted is optional. In case it
++ * is not supported mispred = predicted = 0.
++ *
++ *     in_tx: running in a hardware transaction
++ *     abort: aborting a hardware transaction
++ */
++struct perf_branch_entry {
++	__u64	from;
++	__u64	to;
++	__u64	mispred:1,  /* target mispredicted */
++		predicted:1,/* target predicted */
++		in_tx:1,    /* in transaction */
++		abort:1,    /* transaction abort */
++		reserved:60;
++};
++
+ #endif /* _UAPI_LINUX_PERF_EVENT_H */</pre><hr><pre>commit c9601247f8f3fdc18aed7ed7e490e8dfcd07f122
+Author: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+Date:   Fri Aug 2 10:47:34 2013 -0400
+
+    perf/x86: Fix intel QPI uncore event definitions
+    
+    John McCalpin reports that the "drs_data" and "ncb_data" QPI
+    uncore events are missing the "extra bit" and always return zero
+    values unless the bit is properly set.
+    
+    More details from him:
+    
+     According to the Xeon E5-2600 Product Family Uncore Performance
+     Monitoring Guide, Table 2-94, about 1/2 of the QPI Link Layer events
+     (including the ones that "perf" calls "drs_data" and "ncb_data") require
+     that the "extra bit" be set.
+    
+     This was confusing for a while -- a note at the bottom of page 94 says
+     that the "extra bit" is bit 16 of the control register.
+     Unfortunately, Table 2-86 clearly says that bit 16 is reserved and must
+     be zero.  Looking around a bit, I found that bit 21 appears to be the
+     correct "extra bit", and further investigation shows that "perf" actually
+     agrees with me:
+            [root@c560-003.stampede]# cat /sys/bus/event_source/devices/uncore_qpi_0/format/event
+            config:0-7,21
+    
+     So the command
+            # perf -e "uncore_qpi_0/event=drs_data/"
+     Is the same as
+            # perf -e "uncore_qpi_0/event=0x02,umask=0x08/"
+     While it should be
+            # perf -e "uncore_qpi_0/event=0x102,umask=0x08/"
+    
+     I confirmed that this last version gives results that agree with the
+     amount of data that I expected the STREAM benchmark to move across the QPI
+     link in the second (cross-chip) test of the original script.
+    
+    Reported-by: John McCalpin &lt;mccalpin@tacc.utexas.edu&gt;
+    Signed-off-by: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+    Cc: zheng.z.yan@intel.com
+    Cc: Peter Zijlstra &lt;peterz@infradead.org&gt;
+    Cc: Arnaldo Carvalho de Melo &lt;acme@ghostprotocols.net&gt;
+    Cc: Paul Mackerras &lt;paulus@samba.org&gt;
+    Cc: &lt;stable@kernel.org&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.10.1308021037280.26119@vincent-weaver-1.um.maine.edu
+    Signed-off-by: Ingo Molnar &lt;mingo@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/cpu/perf_event_intel_uncore.c b/arch/x86/kernel/cpu/perf_event_intel_uncore.c
+index cad791dbde95..1fb6c72717bd 100644
+--- a/arch/x86/kernel/cpu/perf_event_intel_uncore.c
++++ b/arch/x86/kernel/cpu/perf_event_intel_uncore.c
+@@ -314,8 +314,8 @@ static struct uncore_event_desc snbep_uncore_imc_events[] = {
+ static struct uncore_event_desc snbep_uncore_qpi_events[] = {
+ 	INTEL_UNCORE_EVENT_DESC(clockticks,       "event=0x14"),
+ 	INTEL_UNCORE_EVENT_DESC(txl_flits_active, "event=0x00,umask=0x06"),
+-	INTEL_UNCORE_EVENT_DESC(drs_data,         "event=0x02,umask=0x08"),
+-	INTEL_UNCORE_EVENT_DESC(ncb_data,         "event=0x03,umask=0x04"),
++	INTEL_UNCORE_EVENT_DESC(drs_data,         "event=0x102,umask=0x08"),
++	INTEL_UNCORE_EVENT_DESC(ncb_data,         "event=0x103,umask=0x04"),
+ 	{ /* end: all zeroes */ },
+ };
+ </pre><hr><pre>commit 9a6bc14350b130427725f33e371e86212fa56c85
+Author: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+Date:   Mon Apr 29 15:52:27 2013 -0400
+
+    perf/x86/intel: Add support for IvyBridge model 58 Uncore
+    
+    According to Intel Vol3b 18.9, the IvyBridge model 58 uncore is
+    the same as that of SandyBridge.
+    
+    I've done some simple tests and with this patch things seem to
+    work on my mac-mini.
+    
+    Signed-off-by: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+    Cc: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Cc: Paul Mackerras &lt;paulus@samba.org&gt;
+    Cc: Arnaldo Carvalho de Melo &lt;acme@ghostprotocols.net&gt;
+    Cc: Stephane Eranian &lt;eranian@gmail.com&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.02.1304291549320.15827@vincent-weaver-1.um.maine.edu
+    Cc: &lt;stable@kernel.org&gt;
+    Signed-off-by: Ingo Molnar &lt;mingo@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/cpu/perf_event_intel_uncore.c b/arch/x86/kernel/cpu/perf_event_intel_uncore.c
+index 0d5ec6d6d335..22ebaa89af10 100644
+--- a/arch/x86/kernel/cpu/perf_event_intel_uncore.c
++++ b/arch/x86/kernel/cpu/perf_event_intel_uncore.c
+@@ -2853,6 +2853,7 @@ static int __init uncore_cpu_init(void)
+ 		msr_uncores = nhm_msr_uncores;
+ 		break;
+ 	case 42: /* Sandy Bridge */
++	case 58: /* Ivy Bridge */
+ 		if (snb_uncore_cbox.num_boxes &gt; max_cores)
+ 			snb_uncore_cbox.num_boxes = max_cores;
+ 		msr_uncores = snb_msr_uncores;</pre><hr><pre>commit 80e217e9ca98a99d6ee95c8f4473b7ebf6d1b8ca
+Author: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+Date:   Mon Apr 29 15:49:28 2013 -0400
+
+    perf/x86/intel: Fix typo in perf_event_intel_uncore.c
+    
+    Sandy Bridge was misspelled.  Either that or the Intel marketing
+    names are getting even more obscure.
+    
+    Signed-off-by: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+    Cc: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Cc: Paul Mackerras &lt;paulus@samba.org&gt;
+    Cc: Arnaldo Carvalho de Melo &lt;acme@ghostprotocols.net&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.02.1304291546590.15827@vincent-weaver-1.um.maine.edu
+    [ Haha ]
+    Signed-off-by: Ingo Molnar &lt;mingo@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/cpu/perf_event_intel_uncore.c b/arch/x86/kernel/cpu/perf_event_intel_uncore.c
+index b43200dbfe7e..0d5ec6d6d335 100644
+--- a/arch/x86/kernel/cpu/perf_event_intel_uncore.c
++++ b/arch/x86/kernel/cpu/perf_event_intel_uncore.c
+@@ -2857,7 +2857,7 @@ static int __init uncore_cpu_init(void)
+ 			snb_uncore_cbox.num_boxes = max_cores;
+ 		msr_uncores = snb_msr_uncores;
+ 		break;
+-	case 45: /* Sandy Birdge-EP */
++	case 45: /* Sandy Bridge-EP */
+ 		if (snbep_uncore_cbox.num_boxes &gt; max_cores)
+ 			snbep_uncore_cbox.num_boxes = max_cores;
+ 		msr_uncores = snbep_msr_uncores;</pre><hr><pre>commit b878e7fb22ea48b0585bbbbef249f7efc6d42748
+Author: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+Date:   Tue Jan 8 14:44:25 2013 -0500
+
+    perf: Missing field in PERF_RECORD_SAMPLE documentation
+    
+    While trying to write a perf_event/mmap test for my perf_event
+    test-suite I came across a missing field description in the
+    PERF_RECORD_SAMPLE documentation in perf_event.h
+    
+    Signed-off-by: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+    Cc: Ingo Molnar &lt;mingo@redhat.com&gt;
+    Cc: Paul Mackerras &lt;paulus@samba.org&gt;
+    Cc: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.02.1301081439300.24507@vincent-weaver-1.um.maine.edu
+    Signed-off-by: Arnaldo Carvalho de Melo &lt;acme@redhat.com&gt;
+
+diff --git a/include/uapi/linux/perf_event.h b/include/uapi/linux/perf_event.h
+index 4f63c05d27c9..9fa9c622a7f4 100644
+--- a/include/uapi/linux/perf_event.h
++++ b/include/uapi/linux/perf_event.h
+@@ -579,7 +579,8 @@ enum perf_event_type {
+ 	 *	{ u32			size;
+ 	 *	  char                  data[size];}&amp;&amp; PERF_SAMPLE_RAW
+ 	 *
+-	 *	{ u64 from, to, flags } lbr[nr];} &amp;&amp; PERF_SAMPLE_BRANCH_STACK
++	 *	{ u64                   nr;
++	 *        { u64 from, to, flags } lbr[nr];} &amp;&amp; PERF_SAMPLE_BRANCH_STACK
+ 	 *
+ 	 * 	{ u64			abi; # enum perf_sample_regs_abi
+ 	 * 	  u64			regs[weight(mask)]; } &amp;&amp; PERF_SAMPLE_REGS_USER</pre><hr><pre>commit e4074b3049f99c6ad6e1a33e6d93d8ec0652e2c1
+Author: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+Date:   Wed Oct 17 13:05:45 2012 -0400
+
+    perf/x86: Enable overflow on Intel KNC with a custom knc_pmu_handle_irq()
+    
+    Although based on the Intel P6 design, the interrupt mechnanism
+    for KNC more closely resembles the Intel architectural
+    perfmon one.
+    
+    We can't just re-use that code though, because KNC has different
+    MSR numbers for the status and ack registers.
+    
+    In this case we just cut-and paste from perf_event_intel.c
+    with some minor changes, as it looks like it would not be
+    worth the trouble to change that code to be MSR-configurable.
+    
+    Signed-off-by: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+    Cc: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Cc: Paul Mackerras &lt;paulus@samba.org&gt;
+    Cc: Arnaldo Carvalho de Melo &lt;acme@ghostprotocols.net&gt;
+    Cc: eranian@gmail.com
+    Cc: Meadows Lawrence F &lt;lawrence.f.meadows@intel.com&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.02.1210171304410.23243@vincent-weaver-1.um.maine.edu
+    [ Small stylistic edits. ]
+    Signed-off-by: Ingo Molnar &lt;mingo@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/cpu/perf_event_knc.c b/arch/x86/kernel/cpu/perf_event_knc.c
+index f3a2af41552d..4b7731bf23a8 100644
+--- a/arch/x86/kernel/cpu/perf_event_knc.c
++++ b/arch/x86/kernel/cpu/perf_event_knc.c
+@@ -3,6 +3,8 @@
+ #include &lt;linux/perf_event.h&gt;
+ #include &lt;linux/types.h&gt;
+ 
++#include &lt;asm/hardirq.h&gt;
++
+ #include "perf_event.h"
+ 
+ static const u64 knc_perfmon_event_map[] =
+@@ -193,6 +195,80 @@ static void knc_pmu_enable_event(struct perf_event *event)
+ 	(void)wrmsrl_safe(hwc-&gt;config_base + hwc-&gt;idx, val);
+ }
+ 
++static inline u64 knc_pmu_get_status(void)
++{
++	u64 status;
++
++	rdmsrl(MSR_KNC_IA32_PERF_GLOBAL_STATUS, status);
++
++	return status;
++}
++
++static inline void knc_pmu_ack_status(u64 ack)
++{
++	wrmsrl(MSR_KNC_IA32_PERF_GLOBAL_OVF_CONTROL, ack);
++}
++
++static int knc_pmu_handle_irq(struct pt_regs *regs)
++{
++	struct perf_sample_data data;
++	struct cpu_hw_events *cpuc;
++	int handled = 0;
++	int bit, loops;
++	u64 status;
++
++	cpuc = &amp;__get_cpu_var(cpu_hw_events);
++
++	knc_pmu_disable_all();
++
++	status = knc_pmu_get_status();
++	if (!status) {
++		knc_pmu_enable_all(0);
++		return handled;
++	}
++
++	loops = 0;
++again:
++	knc_pmu_ack_status(status);
++	if (++loops &gt; 100) {
++		WARN_ONCE(1, "perf: irq loop stuck!\n");
++		perf_event_print_debug();
++		goto done;
++	}
++
++	inc_irq_stat(apic_perf_irqs);
++
++	for_each_set_bit(bit, (unsigned long *)&amp;status, X86_PMC_IDX_MAX) {
++		struct perf_event *event = cpuc-&gt;events[bit];
++
++		handled++;
++
++		if (!test_bit(bit, cpuc-&gt;active_mask))
++			continue;
++
++		if (!intel_pmu_save_and_restart(event))
++			continue;
++
++		perf_sample_data_init(&amp;data, 0, event-&gt;hw.last_period);
++
++		if (perf_event_overflow(event, &amp;data, regs))
++			x86_pmu_stop(event, 0);
++	}
++
++	/*
++	 * Repeat if there is more work to be done:
++	 */
++	status = knc_pmu_get_status();
++	if (status)
++		goto again;
++
++done:
++	knc_pmu_enable_all(0);
++
++	return handled;
++}
++
++
+ PMU_FORMAT_ATTR(event,	"config:0-7"	);
+ PMU_FORMAT_ATTR(umask,	"config:8-15"	);
+ PMU_FORMAT_ATTR(edge,	"config:18"	);
+@@ -210,7 +286,7 @@ static struct attribute *intel_knc_formats_attr[] = {
+ 
+ static __initconst struct x86_pmu knc_pmu = {
+ 	.name			= "knc",
+-	.handle_irq		= x86_pmu_handle_irq,
++	.handle_irq		= knc_pmu_handle_irq,
+ 	.disable_all		= knc_pmu_disable_all,
+ 	.enable_all		= knc_pmu_enable_all,
+ 	.enable			= knc_pmu_enable_event,</pre><hr><pre>commit 7d011962afbaa6e572cd8e0dbb7abf773e166e64
+Author: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+Date:   Wed Oct 17 13:04:33 2012 -0400
+
+    perf/x86: Remove cpuc-&gt;enable check on Intl KNC event enable/disable
+    
+    x86_pmu.enable() is called from x86_pmu_enable() with
+    cpuc-&gt;enabled set to 0.  This means we weren't re-enabling the
+    counters after a context switch.
+    
+    This patch just removes the check, as it should't be necessary
+    (and the equivelent x86_ generic code does not have the checks).
+    
+    The origin of this problem is the KNC driver being based on the
+    P6 one.   The P6 driver also has this issue, but works anyway
+    due to various lucky accidents.
+    
+    Signed-off-by: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+    Cc: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Cc: Paul Mackerras &lt;paulus@samba.org&gt;
+    Cc: Arnaldo Carvalho de Melo &lt;acme@ghostprotocols.net&gt;
+    Cc: eranian@gmail.com
+    Cc: Meadows
+    Cc: Lawrence F &lt;lawrence.f.meadows@intel.com&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.02.1210171303290.23243@vincent-weaver-1.um.maine.edu
+    Signed-off-by: Ingo Molnar &lt;mingo@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/cpu/perf_event_knc.c b/arch/x86/kernel/cpu/perf_event_knc.c
+index 73bcfbdedd50..f3a2af41552d 100644
+--- a/arch/x86/kernel/cpu/perf_event_knc.c
++++ b/arch/x86/kernel/cpu/perf_event_knc.c
+@@ -173,26 +173,22 @@ static void knc_pmu_enable_all(int added)
+ static inline void
+ knc_pmu_disable_event(struct perf_event *event)
+ {
+-	struct cpu_hw_events *cpuc = &amp;__get_cpu_var(cpu_hw_events);
+ 	struct hw_perf_event *hwc = &amp;event-&gt;hw;
+ 	u64 val;
+ 
+ 	val = hwc-&gt;config;
+-	if (cpuc-&gt;enabled)
+-		val &amp;= ~ARCH_PERFMON_EVENTSEL_ENABLE;
++	val &amp;= ~ARCH_PERFMON_EVENTSEL_ENABLE;
+ 
+ 	(void)wrmsrl_safe(hwc-&gt;config_base + hwc-&gt;idx, val);
+ }
+ 
+ static void knc_pmu_enable_event(struct perf_event *event)
+ {
+-	struct cpu_hw_events *cpuc = &amp;__get_cpu_var(cpu_hw_events);
+ 	struct hw_perf_event *hwc = &amp;event-&gt;hw;
+ 	u64 val;
+ 
+ 	val = hwc-&gt;config;
+-	if (cpuc-&gt;enabled)
+-		val |= ARCH_PERFMON_EVENTSEL_ENABLE;
++	val |= ARCH_PERFMON_EVENTSEL_ENABLE;
+ 
+ 	(void)wrmsrl_safe(hwc-&gt;config_base + hwc-&gt;idx, val);
+ }</pre><hr><pre>commit ae5ba47a990a18c869d66916fd72fb334c45cf91
+Author: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+Date:   Wed Oct 17 13:03:21 2012 -0400
+
+    perf/x86: Make Intel KNC use full 40-bit width of counters
+    
+    Early versions of Intel KNC chips have a bug where bits above 32
+    were not properly set.  We worked around this by only using the
+    bottom 32 bits (out of 40 that should be available).
+    
+    It turns out this workaround breaks overflow handling.
+    
+    The buggy silicon will in theory never be used in production
+    systems, so remove this workaround so we get proper overflow
+    support.
+    
+    Signed-off-by: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+    Cc: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Cc: Paul Mackerras &lt;paulus@samba.org&gt;
+    Cc: Arnaldo Carvalho de Melo &lt;acme@ghostprotocols.net&gt;
+    Cc: eranian@gmail.com
+    Cc: Meadows Lawrence F &lt;lawrence.f.meadows@intel.com&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.02.1210171302140.23243@vincent-weaver-1.um.maine.edu
+    Signed-off-by: Ingo Molnar &lt;mingo@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/cpu/perf_event_knc.c b/arch/x86/kernel/cpu/perf_event_knc.c
+index 7c46bfdbc373..73bcfbdedd50 100644
+--- a/arch/x86/kernel/cpu/perf_event_knc.c
++++ b/arch/x86/kernel/cpu/perf_event_knc.c
+@@ -226,12 +226,11 @@ static __initconst struct x86_pmu knc_pmu = {
+ 	.event_map		= knc_pmu_event_map,
+ 	.max_events             = ARRAY_SIZE(knc_perfmon_event_map),
+ 	.apic			= 1,
+-	.max_period		= (1ULL &lt;&lt; 31) - 1,
++	.max_period		= (1ULL &lt;&lt; 39) - 1,
+ 	.version		= 0,
+ 	.num_counters		= 2,
+-	/* in theory 40 bits, early silicon is buggy though */
+-	.cntval_bits		= 32,
+-	.cntval_mask		= (1ULL &lt;&lt; 32) - 1,
++	.cntval_bits		= 40,
++	.cntval_mask		= (1ULL &lt;&lt; 40) - 1,
+ 	.get_event_constraints	= x86_get_event_constraints,
+ 	.event_constraints	= knc_event_constraints,
+ 	.format_attrs		= intel_knc_formats_attr,</pre><hr><pre>commit 58e9eaf06f5476cb2192ec1d012674ce5e79dd21
+Author: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+Date:   Fri Oct 19 17:33:38 2012 -0400
+
+    perf/x86: Remove P6 cpuc-&gt;enabled check
+    
+    Between 2.6.33 and 2.6.34 the PMU code was made modular.
+    
+    The x86_pmu_enable() call was extended to disable cpuc-&gt;enabled
+    and iterate the counters, enabling one at a time, before calling
+    enable_all() at the end, followed by re-enabling cpuc-&gt;enabled.
+    
+    Since cpuc-&gt;enabled was set to 0, that change effectively caused
+    the "val |= ARCH_PERFMON_EVENTSEL_ENABLE;" code in p6_pmu_enable_event()
+    and p6_pmu_disable_event() to be dead code that was never called.
+    
+    This change removes this code (which was confusing) and adds some
+    extra commentary to make it more clear what is going on.
+    
+    Signed-off-by: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+    Signed-off-by: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.02.1210191732000.14552@vincent-weaver-1.um.maine.edu
+    Signed-off-by: Ingo Molnar &lt;mingo@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/cpu/perf_event_p6.c b/arch/x86/kernel/cpu/perf_event_p6.c
+index 9582fcbcd8ec..7d0270bd793e 100644
+--- a/arch/x86/kernel/cpu/perf_event_p6.c
++++ b/arch/x86/kernel/cpu/perf_event_p6.c
+@@ -157,25 +157,25 @@ static void p6_pmu_enable_all(int added)
+ static inline void
+ p6_pmu_disable_event(struct perf_event *event)
+ {
+-	struct cpu_hw_events *cpuc = &amp;__get_cpu_var(cpu_hw_events);
+ 	struct hw_perf_event *hwc = &amp;event-&gt;hw;
+ 	u64 val = P6_NOP_EVENT;
+ 
+-	if (cpuc-&gt;enabled)
+-		val |= ARCH_PERFMON_EVENTSEL_ENABLE;
+-
+ 	(void)wrmsrl_safe(hwc-&gt;config_base, val);
+ }
+ 
+ static void p6_pmu_enable_event(struct perf_event *event)
+ {
+-	struct cpu_hw_events *cpuc = &amp;__get_cpu_var(cpu_hw_events);
+ 	struct hw_perf_event *hwc = &amp;event-&gt;hw;
+ 	u64 val;
+ 
+ 	val = hwc-&gt;config;
+-	if (cpuc-&gt;enabled)
+-		val |= ARCH_PERFMON_EVENTSEL_ENABLE;
++
++	/*
++	 * p6 only has a global event enable, set on PerfEvtSel0
++	 * We "disable" events by programming P6_NOP_EVENT
++	 * and we rely on p6_pmu_enable_all() being called
++	 * to actually enable the events.
++	 */
+ 
+ 	(void)wrmsrl_safe(hwc-&gt;config_base, val);
+ }</pre><hr><pre>commit e09df47885d767e418902067ce1885aafa3b27db
+Author: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+Date:   Fri Oct 19 17:31:54 2012 -0400
+
+    perf/x86: Update/fix generic events on P6 PMU
+    
+    This patch updates the generic events on p6, including some new
+    extended cache events.
+    
+    Values for these events were taken from the equivelant PAPI
+    predefined events.
+    
+    Tested on a Pentium II.
+    
+    Signed-off-by: Vince Weaver &lt;vincent.weaver@maine.edu&gt;
+    Signed-off-by: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.02.1210191730080.14552@vincent-weaver-1.um.maine.edu
+    Signed-off-by: Ingo Molnar &lt;mingo@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/cpu/perf_event_p6.c b/arch/x86/kernel/cpu/perf_event_p6.c
+index 0ff5f7fb64cd..9582fcbcd8ec 100644
+--- a/arch/x86/kernel/cpu/perf_event_p6.c
++++ b/arch/x86/kernel/cpu/perf_event_p6.c
+@@ -8,13 +8,106 @@
+  */
+ static const u64 p6_perfmon_event_map[] =
+ {
+-  [PERF_COUNT_HW_CPU_CYCLES]		= 0x0079,
+-  [PERF_COUNT_HW_INSTRUCTIONS]		= 0x00c0,
+-  [PERF_COUNT_HW_CACHE_REFERENCES]	= 0x0f2e,
+-  [PERF_COUNT_HW_CACHE_MISSES]		= 0x012e,
+-  [PERF_COUNT_HW_BRANCH_INSTRUCTIONS]	= 0x00c4,
+-  [PERF_COUNT_HW_BRANCH_MISSES]		= 0x00c5,
+-  [PERF_COUNT_HW_BUS_CYCLES]		= 0x0062,
++  [PERF_COUNT_HW_CPU_CYCLES]		= 0x0079,	/* CPU_CLK_UNHALTED */
++  [PERF_COUNT_HW_INSTRUCTIONS]		= 0x00c0,	/* INST_RETIRED     */
++  [PERF_COUNT_HW_CACHE_REFERENCES]	= 0x0f2e,	/* L2_RQSTS:M:E:S:I */
++  [PERF_COUNT_HW_CACHE_MISSES]		= 0x012e,	/* L2_RQSTS:I       */
++  [PERF_COUNT_HW_BRANCH_INSTRUCTIONS]	= 0x00c4,	/* BR_INST_RETIRED  */
++  [PERF_COUNT_HW_BRANCH_MISSES]		= 0x00c5,	/* BR_MISS_PRED_RETIRED */
++  [PERF_COUNT_HW_BUS_CYCLES]		= 0x0062,	/* BUS_DRDY_CLOCKS  */
++  [PERF_COUNT_HW_STALLED_CYCLES_FRONTEND] = 0x00a2,	/* RESOURCE_STALLS  */
++
++};
++
++static __initconst u64 p6_hw_cache_event_ids
++				[PERF_COUNT_HW_CACHE_MAX]
++				[PERF_COUNT_HW_CACHE_OP_MAX]
++				[PERF_COUNT_HW_CACHE_RESULT_MAX] =
++{
++ [ C(L1D) ] = {
++	[ C(OP_READ) ] = {
++		[ C(RESULT_ACCESS) ] = 0x0043,	/* DATA_MEM_REFS       */
++                [ C(RESULT_MISS)   ] = 0x0045,	/* DCU_LINES_IN        */
++	},
++	[ C(OP_WRITE) ] = {
++		[ C(RESULT_ACCESS) ] = 0,
++		[ C(RESULT_MISS)   ] = 0x0f29,	/* L2_LD:M:E:S:I       */
++	},
++        [ C(OP_PREFETCH) ] = {
++		[ C(RESULT_ACCESS) ] = 0,
++		[ C(RESULT_MISS)   ] = 0,
++        },
++ },
++ [ C(L1I ) ] = {
++	[ C(OP_READ) ] = {
++		[ C(RESULT_ACCESS) ] = 0x0080,	/* IFU_IFETCH         */
++		[ C(RESULT_MISS)   ] = 0x0f28,	/* L2_IFETCH:M:E:S:I  */
++	},
++	[ C(OP_WRITE) ] = {
++		[ C(RESULT_ACCESS) ] = -1,
++		[ C(RESULT_MISS)   ] = -1,
++	},
++	[ C(OP_PREFETCH) ] = {
++		[ C(RESULT_ACCESS) ] = 0,
++		[ C(RESULT_MISS)   ] = 0,
++	},
++ },
++ [ C(LL  ) ] = {
++	[ C(OP_READ) ] = {
++		[ C(RESULT_ACCESS) ] = 0,
++		[ C(RESULT_MISS)   ] = 0,
++	},
++	[ C(OP_WRITE) ] = {
++		[ C(RESULT_ACCESS) ] = 0,
++		[ C(RESULT_MISS)   ] = 0x0025,	/* L2_M_LINES_INM     */
++	},
++	[ C(OP_PREFETCH) ] = {
++		[ C(RESULT_ACCESS) ] = 0,
++		[ C(RESULT_MISS)   ] = 0,
++	},
++ },
++ [ C(DTLB) ] = {
++	[ C(OP_READ) ] = {
++		[ C(RESULT_ACCESS) ] = 0x0043,	/* DATA_MEM_REFS      */
++		[ C(RESULT_MISS)   ] = 0,
++	},
++	[ C(OP_WRITE) ] = {
++		[ C(RESULT_ACCESS) ] = 0,
++		[ C(RESULT_MISS)   ] = 0,
++	},
++	[ C(OP_PREFETCH) ] = {
++		[ C(RESULT_ACCESS) ] = 0,
++		[ C(RESULT_MISS)   ] = 0,
++	},
++ },
++ [ C(ITLB) ] = {
++	[ C(OP_READ) ] = {
++		[ C(RESULT_ACCESS) ] = 0x0080,	/* IFU_IFETCH         */
++		[ C(RESULT_MISS)   ] = 0x0085,	/* ITLB_MISS          */
++	},
++	[ C(OP_WRITE) ] = {
++		[ C(RESULT_ACCESS) ] = -1,
++		[ C(RESULT_MISS)   ] = -1,
++	},
++	[ C(OP_PREFETCH) ] = {
++		[ C(RESULT_ACCESS) ] = -1,
++		[ C(RESULT_MISS)   ] = -1,
++	},
++ },
++ [ C(BPU ) ] = {
++	[ C(OP_READ) ] = {
++		[ C(RESULT_ACCESS) ] = 0x00c4,	/* BR_INST_RETIRED      */
++		[ C(RESULT_MISS)   ] = 0x00c5,	/* BR_MISS_PRED_RETIRED */
++        },
++	[ C(OP_WRITE) ] = {
++		[ C(RESULT_ACCESS) ] = -1,
++		[ C(RESULT_MISS)   ] = -1,
++	},
++	[ C(OP_PREFETCH) ] = {
++		[ C(RESULT_ACCESS) ] = -1,
++		[ C(RESULT_MISS)   ] = -1,
++	},
++ },
+ };
+ 
+ static u64 p6_pmu_event_map(int hw_event)
+@@ -158,5 +251,9 @@ __init int p6_pmu_init(void)
+ 
+ 	x86_pmu = p6_pmu;
+ 
++	memcpy(hw_cache_event_ids, p6_hw_cache_event_ids,
++		sizeof(hw_cache_event_ids));
++
++
+ 	return 0;
+ }</pre>
+    <div class="pagination">
+        <a href='22_2.html'>&lt;&lt;Prev</a><a href='22.html'>1</a><a href='22_2.html'>2</a><span>[3]</span><a href='22_4.html'>4</a><a href='22_4.html'>Next&gt;&gt;</a>
+    <div>
+</body>

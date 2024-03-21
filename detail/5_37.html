@@ -1,0 +1,1287 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_36.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><span>[37]</span><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_38.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit ffd0436ed2e5a741c8d30062b489b989acf0a526
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu Aug 31 18:09:24 2006 -0400
+
+    [SCSI] libiscsi, iscsi_tcp, iscsi_iser: check that burst lengths are valid.
+    
+    iSCSI RFC states that the first burst length must be smaller than the
+    max burst length. We currently assume targets will be good, but that may
+    not be the case, so this patch adds a check.
+    
+    This patch also moves the unsol data out offset to the lib so the LLDs
+    do not have to track it.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/infiniband/ulp/iser/iscsi_iser.c b/drivers/infiniband/ulp/iser/iscsi_iser.c
+index 1437d7ee3b19..101e407eaa43 100644
+--- a/drivers/infiniband/ulp/iser/iscsi_iser.c
++++ b/drivers/infiniband/ulp/iser/iscsi_iser.c
+@@ -141,18 +141,11 @@ iscsi_iser_cmd_init(struct iscsi_cmd_task *ctask)
+ 
+ 	if (sc-&gt;sc_data_direction == DMA_TO_DEVICE) {
+ 		BUG_ON(ctask-&gt;total_length == 0);
+-		/* bytes to be sent via RDMA operations */
+-		iser_ctask-&gt;rdma_data_count = ctask-&gt;total_length -
+-					 ctask-&gt;imm_count -
+-					 ctask-&gt;unsol_count;
+ 
+-		debug_scsi("cmd [itt %x total %d imm %d unsol_data %d "
+-			   "rdma_data %d]\n",
++		debug_scsi("cmd [itt %x total %d imm %d unsol_data %d\n",
+ 			   ctask-&gt;itt, ctask-&gt;total_length, ctask-&gt;imm_count,
+-			   ctask-&gt;unsol_count, iser_ctask-&gt;rdma_data_count);
+-	} else
+-		/* bytes to be sent via RDMA operations */
+-		iser_ctask-&gt;rdma_data_count = ctask-&gt;total_length;
++			   ctask-&gt;unsol_count);
++	}
+ 
+ 	iser_ctask_rdma_init(iser_ctask);
+ }
+@@ -196,13 +189,10 @@ iscsi_iser_ctask_xmit_unsol_data(struct iscsi_conn *conn,
+ {
+ 	struct iscsi_data  hdr;
+ 	int error = 0;
+-	struct iscsi_iser_cmd_task *iser_ctask = ctask-&gt;dd_data;
+ 
+ 	/* Send data-out PDUs while there's still unsolicited data to send */
+ 	while (ctask-&gt;unsol_count &gt; 0) {
+-		iscsi_prep_unsolicit_data_pdu(ctask, &amp;hdr,
+-					      iser_ctask-&gt;rdma_data_count);
+-
++		iscsi_prep_unsolicit_data_pdu(ctask, &amp;hdr);
+ 		debug_scsi("Sending data-out: itt 0x%x, data count %d\n",
+ 			   hdr.itt, ctask-&gt;data_count);
+ 
+diff --git a/drivers/infiniband/ulp/iser/iscsi_iser.h b/drivers/infiniband/ulp/iser/iscsi_iser.h
+index 3350ba690cfe..7c3d0c96d889 100644
+--- a/drivers/infiniband/ulp/iser/iscsi_iser.h
++++ b/drivers/infiniband/ulp/iser/iscsi_iser.h
+@@ -257,7 +257,6 @@ struct iscsi_iser_conn {
+ struct iscsi_iser_cmd_task {
+ 	struct iser_desc             desc;
+ 	struct iscsi_iser_conn	     *iser_conn;
+-	int			     rdma_data_count;/* RDMA bytes           */
+ 	enum iser_task_status 	     status;
+ 	int                          command_sent;  /* set if command  sent  */
+ 	int                          dir[ISER_DIRS_NUM];      /* set if dir use*/
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 058f094f945a..a97a3a4e99eb 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -1264,19 +1264,6 @@ iscsi_solicit_data_cont(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask,
+ 			    r2t-&gt;data_count);
+ }
+ 
+-static void
+-iscsi_unsolicit_data_init(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
+-{
+-	struct iscsi_tcp_cmd_task *tcp_ctask = ctask-&gt;dd_data;
+-	struct iscsi_data_task *dtask;
+-
+-	dtask = tcp_ctask-&gt;dtask = &amp;tcp_ctask-&gt;unsol_dtask;
+-	iscsi_prep_unsolicit_data_pdu(ctask, &amp;dtask-&gt;hdr,
+-				      tcp_ctask-&gt;r2t_data_count);
+-	iscsi_buf_init_iov(&amp;tcp_ctask-&gt;headbuf, (char*)&amp;dtask-&gt;hdr,
+-			   sizeof(struct iscsi_hdr));
+-}
+-
+ /**
+  * iscsi_tcp_cmd_init - Initialize iSCSI SCSI_READ or SCSI_WRITE commands
+  * @conn: iscsi connection
+@@ -1326,14 +1313,11 @@ iscsi_tcp_cmd_init(struct iscsi_cmd_task *ctask)
+ 		if (ctask-&gt;unsol_count)
+ 			tcp_ctask-&gt;xmstate |= XMSTATE_UNS_HDR |
+ 						XMSTATE_UNS_INIT;
+-		tcp_ctask-&gt;r2t_data_count = ctask-&gt;total_length -
+-				    ctask-&gt;imm_count -
+-				    ctask-&gt;unsol_count;
+ 
+-		debug_scsi("cmd [itt 0x%x total %d imm %d imm_data %d "
+-			   "r2t_data %d]\n",
++		debug_scsi("cmd [itt 0x%x total %d imm_data %d "
++			   "unsol count %d, unsol offset %d]\n",
+ 			   ctask-&gt;itt, ctask-&gt;total_length, ctask-&gt;imm_count,
+-			   ctask-&gt;unsol_count, tcp_ctask-&gt;r2t_data_count);
++			   ctask-&gt;unsol_count, ctask-&gt;unsol_offset);
+ 	} else
+ 		tcp_ctask-&gt;xmstate = XMSTATE_R_HDR;
+ 
+@@ -1531,8 +1515,10 @@ handle_xmstate_uns_hdr(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
+ 
+ 	tcp_ctask-&gt;xmstate |= XMSTATE_UNS_DATA;
+ 	if (tcp_ctask-&gt;xmstate &amp; XMSTATE_UNS_INIT) {
+-		iscsi_unsolicit_data_init(conn, ctask);
+-		dtask = tcp_ctask-&gt;dtask;
++		dtask = tcp_ctask-&gt;dtask = &amp;tcp_ctask-&gt;unsol_dtask;
++		iscsi_prep_unsolicit_data_pdu(ctask, &amp;dtask-&gt;hdr);
++		iscsi_buf_init_iov(&amp;tcp_ctask-&gt;headbuf, (char*)&amp;dtask-&gt;hdr,
++				   sizeof(struct iscsi_hdr));
+ 		if (conn-&gt;hdrdgst_en)
+ 			iscsi_hdr_digest(conn, &amp;tcp_ctask-&gt;headbuf,
+ 					(u8*)dtask-&gt;hdrext);
+@@ -1720,7 +1706,6 @@ handle_xmstate_sol_data(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
+ 	 * Done with this R2T. Check if there are more
+ 	 * outstanding R2Ts ready to be processed.
+ 	 */
+-	BUG_ON(tcp_ctask-&gt;r2t_data_count - r2t-&gt;data_length &lt; 0);
+ 	if (conn-&gt;datadgst_en) {
+ 		rc = iscsi_digest_final_send(conn, ctask, &amp;dtask-&gt;digestbuf,
+ 					    &amp;dtask-&gt;digest, 1);
+@@ -1732,7 +1717,6 @@ handle_xmstate_sol_data(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
+ 		debug_tcp("r2t done dout digest 0x%x\n", dtask-&gt;digest);
+ 	}
+ 
+-	tcp_ctask-&gt;r2t_data_count -= r2t-&gt;data_length;
+ 	tcp_ctask-&gt;r2t = NULL;
+ 	spin_lock_bh(&amp;session-&gt;lock);
+ 	__kfifo_put(tcp_ctask-&gt;r2tpool.queue, (void*)&amp;r2t, sizeof(void*));
+diff --git a/drivers/scsi/iscsi_tcp.h b/drivers/scsi/iscsi_tcp.h
+index 6a4ee704e46e..aace8f70dfd7 100644
+--- a/drivers/scsi/iscsi_tcp.h
++++ b/drivers/scsi/iscsi_tcp.h
+@@ -157,7 +157,6 @@ struct iscsi_tcp_cmd_task {
+ 	struct scatterlist	*bad_sg;		/* assert statement */
+ 	int			sg_count;		/* SG's to process  */
+ 	uint32_t		exp_r2tsn;
+-	int			r2t_data_count;		/* R2T Data-Out bytes */
+ 	int			data_offset;
+ 	struct iscsi_r2t_info	*r2t;			/* in progress R2T    */
+ 	struct iscsi_queue	r2tpool;
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 5884cd26d53a..a7c6e70f4ef8 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -68,8 +68,7 @@ iscsi_check_assign_cmdsn(struct iscsi_session *session, struct iscsi_nopin *hdr)
+ EXPORT_SYMBOL_GPL(iscsi_check_assign_cmdsn);
+ 
+ void iscsi_prep_unsolicit_data_pdu(struct iscsi_cmd_task *ctask,
+-				   struct iscsi_data *hdr,
+-				   int transport_data_cnt)
++				   struct iscsi_data *hdr)
+ {
+ 	struct iscsi_conn *conn = ctask-&gt;conn;
+ 
+@@ -82,14 +81,12 @@ void iscsi_prep_unsolicit_data_pdu(struct iscsi_cmd_task *ctask,
+ 
+ 	hdr-&gt;itt = ctask-&gt;hdr-&gt;itt;
+ 	hdr-&gt;exp_statsn = cpu_to_be32(conn-&gt;exp_statsn);
+-
+-	hdr-&gt;offset = cpu_to_be32(ctask-&gt;total_length -
+-				  transport_data_cnt -
+-				  ctask-&gt;unsol_count);
++	hdr-&gt;offset = cpu_to_be32(ctask-&gt;unsol_offset);
+ 
+ 	if (ctask-&gt;unsol_count &gt; conn-&gt;max_xmit_dlength) {
+ 		hton24(hdr-&gt;dlength, conn-&gt;max_xmit_dlength);
+ 		ctask-&gt;data_count = conn-&gt;max_xmit_dlength;
++		ctask-&gt;unsol_offset += ctask-&gt;data_count;
+ 		hdr-&gt;flags = 0;
+ 	} else {
+ 		hton24(hdr-&gt;dlength, ctask-&gt;unsol_count);
+@@ -125,6 +122,7 @@ static void iscsi_prep_scsi_cmd_pdu(struct iscsi_cmd_task *ctask)
+         memcpy(hdr-&gt;cdb, sc-&gt;cmnd, sc-&gt;cmd_len);
+         memset(&amp;hdr-&gt;cdb[sc-&gt;cmd_len], 0, MAX_COMMAND_SIZE - sc-&gt;cmd_len);
+ 
++	ctask-&gt;data_count = 0;
+ 	if (sc-&gt;sc_data_direction == DMA_TO_DEVICE) {
+ 		hdr-&gt;flags |= ISCSI_FLAG_CMD_WRITE;
+ 		/*
+@@ -143,6 +141,7 @@ static void iscsi_prep_scsi_cmd_pdu(struct iscsi_cmd_task *ctask)
+ 		 */
+ 		ctask-&gt;imm_count = 0;
+ 		ctask-&gt;unsol_count = 0;
++		ctask-&gt;unsol_offset = 0;
+ 		ctask-&gt;unsol_datasn = 0;
+ 
+ 		if (session-&gt;imm_data_en) {
+@@ -156,9 +155,12 @@ static void iscsi_prep_scsi_cmd_pdu(struct iscsi_cmd_task *ctask)
+ 		} else
+ 			zero_data(ctask-&gt;hdr-&gt;dlength);
+ 
+-		if (!session-&gt;initial_r2t_en)
++		if (!session-&gt;initial_r2t_en) {
+ 			ctask-&gt;unsol_count = min(session-&gt;first_burst,
+ 				ctask-&gt;total_length) - ctask-&gt;imm_count;
++			ctask-&gt;unsol_offset = ctask-&gt;imm_count;
++		}
++
+ 		if (!ctask-&gt;unsol_count)
+ 			/* No unsolicit Data-Out's */
+ 			ctask-&gt;hdr-&gt;flags |= ISCSI_FLAG_CMD_FINAL;
+@@ -1520,11 +1522,18 @@ int iscsi_conn_start(struct iscsi_cls_conn *cls_conn)
+ 	struct iscsi_conn *conn = cls_conn-&gt;dd_data;
+ 	struct iscsi_session *session = conn-&gt;session;
+ 
+-	if (session == NULL) {
++	if (!session) {
+ 		printk(KERN_ERR "iscsi: can't start unbound connection\n");
+ 		return -EPERM;
+ 	}
+ 
++	if (session-&gt;first_burst &gt; session-&gt;max_burst) {
++		printk("iscsi: invalid burst lengths: "
++		       "first_burst %d max_burst %d\n",
++		       session-&gt;first_burst, session-&gt;max_burst);
++		return -EINVAL;
++	}
++
+ 	spin_lock_bh(&amp;session-&gt;lock);
+ 	conn-&gt;c_stage = ISCSI_CONN_STARTED;
+ 	session-&gt;state = ISCSI_STATE_LOGGED_IN;
+diff --git a/include/scsi/libiscsi.h b/include/scsi/libiscsi.h
+index 41904f611d12..4900650bd081 100644
+--- a/include/scsi/libiscsi.h
++++ b/include/scsi/libiscsi.h
+@@ -102,6 +102,8 @@ struct iscsi_cmd_task {
+ 	uint32_t		unsol_datasn;
+ 	int			imm_count;	/* imm-data (bytes)   */
+ 	int			unsol_count;	/* unsolicited (bytes)*/
++	/* offset in unsolicited stream (bytes); */
++	int			unsol_offset;
+ 	int			data_count;	/* remaining Data-Out */
+ 	struct scsi_cmnd	*sc;		/* associated SCSI cmd*/
+ 	int			total_length;
+@@ -290,8 +292,7 @@ extern int iscsi_conn_get_param(struct iscsi_cls_conn *cls_conn,
+ extern int iscsi_check_assign_cmdsn(struct iscsi_session *,
+ 				    struct iscsi_nopin *);
+ extern void iscsi_prep_unsolicit_data_pdu(struct iscsi_cmd_task *,
+-					struct iscsi_data *hdr,
+-					int transport_data_cnt);
++					struct iscsi_data *hdr);
+ extern int iscsi_conn_send_pdu(struct iscsi_cls_conn *, struct iscsi_hdr *,
+ 				char *, uint32_t);
+ extern int iscsi_complete_pdu(struct iscsi_conn *, struct iscsi_hdr *,</pre><hr><pre>commit 0db99e3359234be181590463184b9959059a9ea9
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sat Aug 26 03:00:22 2006 -0400
+
+    [SCSI] fix scsi_send_eh_cmnd regression
+    
+    The callers of scsi_send_eh_cmnd are setting the cmnd buffer,
+    and then scsi_send_eh_cmnd is copying that updated buffer to
+    the old_cmnd variable. Then after the command runs, we end up
+    copying that old_cmnd var which has the new cmnd to the scsi
+    command buffer. When this command gets recent, all types of fun
+    things happen like getting TUR or START_STOP commands with
+    data and scatterlists.
+    
+    This patch made against scsi-rc-fixes, has the callers of
+    scsi_send_eh_cmnd pass in the command so scsi_send_eh_cmnd
+    can do the right thing. This should go into 2.6.18 since this
+    fixes a regression added when we removed some of the scsi_cmnd
+    fields and replaced them with local variables.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_error.c b/drivers/scsi/scsi_error.c
+index 6a5b731bd5ba..a8ed5a22009d 100644
+--- a/drivers/scsi/scsi_error.c
++++ b/drivers/scsi/scsi_error.c
+@@ -460,7 +460,8 @@ static void scsi_eh_done(struct scsi_cmnd *scmd)
+  * Return value:
+  *    SUCCESS or FAILED or NEEDS_RETRY
+  **/
+-static int scsi_send_eh_cmnd(struct scsi_cmnd *scmd, int timeout, int copy_sense)
++static int scsi_send_eh_cmnd(struct scsi_cmnd *scmd, unsigned char *cmnd,
++			     int cmnd_size, int timeout, int copy_sense)
+ {
+ 	struct scsi_device *sdev = scmd-&gt;device;
+ 	struct Scsi_Host *shost = sdev-&gt;host;
+@@ -490,6 +491,9 @@ static int scsi_send_eh_cmnd(struct scsi_cmnd *scmd, int timeout, int copy_sense
+ 	old_cmd_len = scmd-&gt;cmd_len;
+ 	old_use_sg = scmd-&gt;use_sg;
+ 
++	memset(scmd-&gt;cmnd, 0, sizeof(scmd-&gt;cmnd));
++	memcpy(scmd-&gt;cmnd, cmnd, cmnd_size);
++
+ 	if (copy_sense) {
+ 		int gfp_mask = GFP_ATOMIC;
+ 
+@@ -610,8 +614,7 @@ static int scsi_request_sense(struct scsi_cmnd *scmd)
+ 	static unsigned char generic_sense[6] =
+ 		{REQUEST_SENSE, 0, 0, 0, 252, 0};
+ 
+-	memcpy(scmd-&gt;cmnd, generic_sense, sizeof(generic_sense));
+-	return scsi_send_eh_cmnd(scmd, SENSE_TIMEOUT, 1);
++	return scsi_send_eh_cmnd(scmd, generic_sense, 6, SENSE_TIMEOUT, 1);
+ }
+ 
+ /**
+@@ -736,10 +739,7 @@ static int scsi_eh_tur(struct scsi_cmnd *scmd)
+ 	int retry_cnt = 1, rtn;
+ 
+ retry_tur:
+-	memcpy(scmd-&gt;cmnd, tur_command, sizeof(tur_command));
+-
+-
+-	rtn = scsi_send_eh_cmnd(scmd, SENSE_TIMEOUT, 0);
++	rtn = scsi_send_eh_cmnd(scmd, tur_command, 6, SENSE_TIMEOUT, 0);
+ 
+ 	SCSI_LOG_ERROR_RECOVERY(3, printk("%s: scmd %p rtn %x\n",
+ 		__FUNCTION__, scmd, rtn));
+@@ -839,8 +839,8 @@ static int scsi_eh_try_stu(struct scsi_cmnd *scmd)
+ 	if (scmd-&gt;device-&gt;allow_restart) {
+ 		int rtn;
+ 
+-		memcpy(scmd-&gt;cmnd, stu_command, sizeof(stu_command));
+-		rtn = scsi_send_eh_cmnd(scmd, START_UNIT_TIMEOUT, 0);
++		rtn = scsi_send_eh_cmnd(scmd, stu_command, 6,
++					START_UNIT_TIMEOUT, 0);
+ 		if (rtn == SUCCESS)
+ 			return 0;
+ 	}</pre><hr><pre>commit f4246b33c774bb4330eb6286beed6d3c9f4373c4
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Jul 24 15:47:54 2006 -0500
+
+    [SCSI] iscsi bugfixes: update and move version number
+    
+    The version info is useful for iscsi tcp, iser and qla4xxx so move to
+    transport class.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 33534f686434..058f094f945a 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -43,13 +43,10 @@
+ 
+ #include "iscsi_tcp.h"
+ 
+-#define ISCSI_TCP_VERSION "1.0-595"
+-
+ MODULE_AUTHOR("Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;, "
+ 	      "Alex Aizman &lt;itn780@yahoo.com&gt;");
+ MODULE_DESCRIPTION("iSCSI/TCP data-path");
+ MODULE_LICENSE("GPL");
+-MODULE_VERSION(ISCSI_TCP_VERSION);
+ /* #define DEBUG_TCP */
+ #define DEBUG_ASSERT
+ 
+@@ -2317,8 +2314,7 @@ static void iscsi_tcp_session_destroy(struct iscsi_cls_session *cls_session)
+ }
+ 
+ static struct scsi_host_template iscsi_sht = {
+-	.name			= "iSCSI Initiator over TCP/IP, v"
+-				  ISCSI_TCP_VERSION,
++	.name			= "iSCSI Initiator over TCP/IP",
+ 	.queuecommand           = iscsi_queuecommand,
+ 	.change_queue_depth	= iscsi_change_queue_depth,
+ 	.can_queue		= ISCSI_XMIT_CMDS_MAX - 1,
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 30a47c133091..2ecd14188574 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -34,6 +34,7 @@
+ #define ISCSI_SESSION_ATTRS 11
+ #define ISCSI_CONN_ATTRS 11
+ #define ISCSI_HOST_ATTRS 0
++#define ISCSI_TRANSPORT_VERSION "1.1-646"
+ 
+ struct iscsi_internal {
+ 	int daemon_pid;
+@@ -1613,6 +1614,9 @@ static __init int iscsi_transport_init(void)
+ {
+ 	int err;
+ 
++	printk(KERN_INFO "Loading iSCSI transport class v%s.",
++		ISCSI_TRANSPORT_VERSION);
++
+ 	err = class_register(&amp;iscsi_transport_class);
+ 	if (err)
+ 		return err;
+@@ -1678,3 +1682,4 @@ MODULE_AUTHOR("Mike Christie &lt;michaelc@cs.wisc.edu&gt;, "
+ 	      "Alex Aizman &lt;itn780@yahoo.com&gt;");
+ MODULE_DESCRIPTION("iSCSI Transport Interface");
+ MODULE_LICENSE("GPL");
++MODULE_VERSION(ISCSI_TRANSPORT_VERSION);</pre><hr><pre>commit f3ff0c3627df90aa28be98803b10289bb348e4e6
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Jul 24 15:47:50 2006 -0500
+
+    [SCSI] iscsi bugfixes: fix mem leaks in libiscsi
+    
+    We were leaking some strings. This patch just frees them.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index c628c63c51a8..5884cd26d53a 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -1357,6 +1357,8 @@ void iscsi_session_teardown(struct iscsi_cls_session *cls_session)
+ 	iscsi_pool_free(&amp;session-&gt;mgmtpool, (void**)session-&gt;mgmt_cmds);
+ 	iscsi_pool_free(&amp;session-&gt;cmdpool, (void**)session-&gt;cmds);
+ 
++	kfree(session-&gt;targetname);
++
+ 	iscsi_destroy_session(cls_session);
+ 	scsi_host_put(shost);
+ 	module_put(owner);
+@@ -1491,6 +1493,7 @@ void iscsi_conn_teardown(struct iscsi_cls_conn *cls_conn)
+ 
+ 	spin_lock_bh(&amp;session-&gt;lock);
+ 	kfree(conn-&gt;data);
++	kfree(conn-&gt;persistent_address);
+ 	__kfifo_put(session-&gt;mgmtpool.queue, (void*)&amp;conn-&gt;login_mtask,
+ 		    sizeof(void*));
+ 	list_del(&amp;conn-&gt;item);</pre><hr><pre>commit 40527afea1a3b18ee5754e17d6f807176e03f1f2
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Jul 24 15:47:45 2006 -0500
+
+    [SCSI] iscsi bugfixes: pass errors from complete_pdu to caller
+    
+    Must pass ISCSI_ERR values from the recv path and propogate them
+    upwards.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index aa20adc79f02..33534f686434 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -885,7 +885,7 @@ iscsi_tcp_data_recv(read_descriptor_t *rd_desc, struct sk_buff *skb,
+ 			}
+ 			tcp_conn-&gt;in_progress = IN_PROGRESS_DATA_RECV;
+ 		} else if (rc) {
+-			iscsi_conn_failure(conn, ISCSI_ERR_CONN_FAILED);
++			iscsi_conn_failure(conn, rc);
+ 			return 0;
+ 		}
+ 	}
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 03b3dee49009..c628c63c51a8 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -372,7 +372,8 @@ int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 			 * login related PDU's exp_statsn is handled in
+ 			 * userspace
+ 			 */
+-			rc = iscsi_recv_pdu(conn-&gt;cls_conn, hdr, data, datalen);
++			if (iscsi_recv_pdu(conn-&gt;cls_conn, hdr, data, datalen))
++				rc = ISCSI_ERR_CONN_FAILED;
+ 			list_del(&amp;mtask-&gt;running);
+ 			if (conn-&gt;login_mtask != mtask)
+ 				__kfifo_put(session-&gt;mgmtpool.queue,
+@@ -393,7 +394,8 @@ int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 			}
+ 			conn-&gt;exp_statsn = be32_to_cpu(hdr-&gt;statsn) + 1;
+ 
+-			rc = iscsi_recv_pdu(conn-&gt;cls_conn, hdr, data, datalen);
++			if (iscsi_recv_pdu(conn-&gt;cls_conn, hdr, data, datalen))
++				rc = ISCSI_ERR_CONN_FAILED;
+ 			list_del(&amp;mtask-&gt;running);
+ 			if (conn-&gt;login_mtask != mtask)
+ 				__kfifo_put(session-&gt;mgmtpool.queue,
+@@ -406,14 +408,21 @@ int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 	} else if (itt == ISCSI_RESERVED_TAG) {
+ 		switch(opcode) {
+ 		case ISCSI_OP_NOOP_IN:
+-			if (!datalen) {
+-				rc = iscsi_check_assign_cmdsn(session,
+-						 (struct iscsi_nopin*)hdr);
+-				if (!rc &amp;&amp; hdr-&gt;ttt != ISCSI_RESERVED_TAG)
+-					rc = iscsi_recv_pdu(conn-&gt;cls_conn,
+-							    hdr, NULL, 0);
+-			} else
++			if (datalen) {
+ 				rc = ISCSI_ERR_PROTO;
++				break;
++			}
++
++			rc = iscsi_check_assign_cmdsn(session,
++						 (struct iscsi_nopin*)hdr);
++			if (rc)
++				break;
++
++			if (hdr-&gt;ttt == ISCSI_RESERVED_TAG)
++				break;
++
++			if (iscsi_recv_pdu(conn-&gt;cls_conn, hdr, NULL, 0))
++				rc = ISCSI_ERR_CONN_FAILED;
+ 			break;
+ 		case ISCSI_OP_REJECT:
+ 			/* we need sth like iscsi_reject_rsp()*/</pre><hr><pre>commit c8dc1e523b0f1e6dd71cdabd8c7d7587c6dc27f9
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Jul 24 15:47:39 2006 -0500
+
+    [SCSI] iscsi bugfixes: reduce memory allocations
+    
+    We currently try to allocate a max_recv_data_segment_length
+    which can be very large (default is 64K), and common uses
+    are up to 1MB. It is very very difficult to allocte this
+    much contiguous memory and it turns out we never even use it.
+    We really only need a couple of pages, so this patch has us
+    allocates just what we know what we need today.
+    
+    Later if vendors start adding vendor specific data and
+    we need to handle large buffers we can do this, but for
+    the last 4 years we have not seen anyone do this or request
+    it.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index b6c68be6b866..aa20adc79f02 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -511,13 +511,28 @@ iscsi_tcp_hdr_recv(struct iscsi_conn *conn)
+ 		break;
+ 	case ISCSI_OP_LOGIN_RSP:
+ 	case ISCSI_OP_TEXT_RSP:
+-	case ISCSI_OP_LOGOUT_RSP:
+-	case ISCSI_OP_NOOP_IN:
+ 	case ISCSI_OP_REJECT:
+ 	case ISCSI_OP_ASYNC_EVENT:
++		/*
++		 * It is possible that we could get a PDU with a buffer larger
++		 * than 8K, but there are no targets that currently do this.
++		 * For now we fail until we find a vendor that needs it
++		 */
++		if (DEFAULT_MAX_RECV_DATA_SEGMENT_LENGTH &lt;
++		    tcp_conn-&gt;in.datalen) {
++			printk(KERN_ERR "iscsi_tcp: received buffer of len %u "
++			      "but conn buffer is only %u (opcode %0x)\n",
++			      tcp_conn-&gt;in.datalen,
++			      DEFAULT_MAX_RECV_DATA_SEGMENT_LENGTH, opcode);
++			rc = ISCSI_ERR_PROTO;
++			break;
++		}
++
+ 		if (tcp_conn-&gt;in.datalen)
+ 			goto copy_hdr;
+ 	/* fall through */
++	case ISCSI_OP_LOGOUT_RSP:
++	case ISCSI_OP_NOOP_IN:
+ 	case ISCSI_OP_SCSI_TMFUNC_RSP:
+ 		rc = iscsi_complete_pdu(conn, hdr, NULL, 0);
+ 		break;
+@@ -625,9 +640,9 @@ iscsi_ctask_copy(struct iscsi_tcp_conn *tcp_conn, struct iscsi_cmd_task *ctask,
+  *	byte counters.
+  **/
+ static inline int
+-iscsi_tcp_copy(struct iscsi_tcp_conn *tcp_conn)
++iscsi_tcp_copy(struct iscsi_conn *conn)
+ {
+-	void *buf = tcp_conn-&gt;data;
++	struct iscsi_tcp_conn *tcp_conn = conn-&gt;dd_data;
+ 	int buf_size = tcp_conn-&gt;in.datalen;
+ 	int buf_left = buf_size - tcp_conn-&gt;data_copied;
+ 	int size = min(tcp_conn-&gt;in.copy, buf_left);
+@@ -638,7 +653,7 @@ iscsi_tcp_copy(struct iscsi_tcp_conn *tcp_conn)
+ 	BUG_ON(size &lt;= 0);
+ 
+ 	rc = skb_copy_bits(tcp_conn-&gt;in.skb, tcp_conn-&gt;in.offset,
+-			   (char*)buf + tcp_conn-&gt;data_copied, size);
++			   (char*)conn-&gt;data + tcp_conn-&gt;data_copied, size);
+ 	BUG_ON(rc);
+ 
+ 	tcp_conn-&gt;in.offset += size;
+@@ -785,22 +800,21 @@ iscsi_data_recv(struct iscsi_conn *conn)
+ 		spin_unlock(&amp;conn-&gt;session-&gt;lock);
+ 	case ISCSI_OP_TEXT_RSP:
+ 	case ISCSI_OP_LOGIN_RSP:
+-	case ISCSI_OP_NOOP_IN:
+ 	case ISCSI_OP_ASYNC_EVENT:
+ 	case ISCSI_OP_REJECT:
+ 		/*
+ 		 * Collect data segment to the connection's data
+ 		 * placeholder
+ 		 */
+-		if (iscsi_tcp_copy(tcp_conn)) {
++		if (iscsi_tcp_copy(conn)) {
+ 			rc = -EAGAIN;
+ 			goto exit;
+ 		}
+ 
+-		rc = iscsi_complete_pdu(conn, tcp_conn-&gt;in.hdr, tcp_conn-&gt;data,
++		rc = iscsi_complete_pdu(conn, tcp_conn-&gt;in.hdr, conn-&gt;data,
+ 					tcp_conn-&gt;in.datalen);
+ 		if (!rc &amp;&amp; conn-&gt;datadgst_en &amp;&amp; opcode != ISCSI_OP_LOGIN_RSP)
+-			iscsi_recv_digest_update(tcp_conn, tcp_conn-&gt;data,
++			iscsi_recv_digest_update(tcp_conn, conn-&gt;data,
+ 			  			tcp_conn-&gt;in.datalen);
+ 		break;
+ 	default:
+@@ -1911,21 +1925,9 @@ iscsi_tcp_conn_create(struct iscsi_cls_session *cls_session, uint32_t conn_idx)
+ 	tcp_conn-&gt;in_progress = IN_PROGRESS_WAIT_HEADER;
+ 	/* initial operational parameters */
+ 	tcp_conn-&gt;hdr_size = sizeof(struct iscsi_hdr);
+-	tcp_conn-&gt;data_size = DEFAULT_MAX_RECV_DATA_SEGMENT_LENGTH;
+-
+-	/* allocate initial PDU receive place holder */
+-	if (tcp_conn-&gt;data_size &lt;= PAGE_SIZE)
+-		tcp_conn-&gt;data = kmalloc(tcp_conn-&gt;data_size, GFP_KERNEL);
+-	else
+-		tcp_conn-&gt;data = (void*)__get_free_pages(GFP_KERNEL,
+-					get_order(tcp_conn-&gt;data_size));
+-	if (!tcp_conn-&gt;data)
+-		goto max_recv_dlenght_alloc_fail;
+ 
+ 	return cls_conn;
+ 
+-max_recv_dlenght_alloc_fail:
+-	kfree(tcp_conn);
+ tcp_conn_alloc_fail:
+ 	iscsi_conn_teardown(cls_conn);
+ 	return NULL;
+@@ -1973,12 +1975,6 @@ iscsi_tcp_conn_destroy(struct iscsi_cls_conn *cls_conn)
+ 			crypto_free_tfm(tcp_conn-&gt;data_rx_tfm);
+ 	}
+ 
+-	/* free conn-&gt;data, size = MaxRecvDataSegmentLength */
+-	if (tcp_conn-&gt;data_size &lt;= PAGE_SIZE)
+-		kfree(tcp_conn-&gt;data);
+-	else
+-		free_pages((unsigned long)tcp_conn-&gt;data,
+-			   get_order(tcp_conn-&gt;data_size));
+ 	kfree(tcp_conn);
+ }
+ 
+@@ -2131,39 +2127,6 @@ iscsi_conn_set_param(struct iscsi_cls_conn *cls_conn, enum iscsi_param param,
+ 	int value;
+ 
+ 	switch(param) {
+-	case ISCSI_PARAM_MAX_RECV_DLENGTH: {
+-		char *saveptr = tcp_conn-&gt;data;
+-		gfp_t flags = GFP_KERNEL;
+-
+-		sscanf(buf, "%d", &amp;value);
+-		if (tcp_conn-&gt;data_size &gt;= value) {
+-			iscsi_set_param(cls_conn, param, buf, buflen);
+-			break;
+-		}
+-
+-		spin_lock_bh(&amp;session-&gt;lock);
+-		if (conn-&gt;stop_stage == STOP_CONN_RECOVER)
+-			flags = GFP_ATOMIC;
+-		spin_unlock_bh(&amp;session-&gt;lock);
+-
+-		if (value &lt;= PAGE_SIZE)
+-			tcp_conn-&gt;data = kmalloc(value, flags);
+-		else
+-			tcp_conn-&gt;data = (void*)__get_free_pages(flags,
+-							     get_order(value));
+-		if (tcp_conn-&gt;data == NULL) {
+-			tcp_conn-&gt;data = saveptr;
+-			return -ENOMEM;
+-		}
+-		if (tcp_conn-&gt;data_size &lt;= PAGE_SIZE)
+-			kfree(saveptr);
+-		else
+-			free_pages((unsigned long)saveptr,
+-				   get_order(tcp_conn-&gt;data_size));
+-		iscsi_set_param(cls_conn, param, buf, buflen);
+-		tcp_conn-&gt;data_size = value;
+-		break;
+-		}
+ 	case ISCSI_PARAM_HDRDGST_EN:
+ 		iscsi_set_param(cls_conn, param, buf, buflen);
+ 		tcp_conn-&gt;hdr_size = sizeof(struct iscsi_hdr);
+diff --git a/drivers/scsi/iscsi_tcp.h b/drivers/scsi/iscsi_tcp.h
+index 808302832e68..6a4ee704e46e 100644
+--- a/drivers/scsi/iscsi_tcp.h
++++ b/drivers/scsi/iscsi_tcp.h
+@@ -78,8 +78,6 @@ struct iscsi_tcp_conn {
+ 	char			hdrext[4*sizeof(__u16) +
+ 				    sizeof(__u32)];
+ 	int			data_copied;
+-	char			*data;		/* data placeholder */
+-	int			data_size;	/* actual recv_dlength */
+ 	int			stop_stage;	/* conn_stop() flag: *
+ 						 * stop to recover,  *
+ 						 * stop to terminate */
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index c989bc6180b3..03b3dee49009 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -360,6 +360,10 @@ int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 
+ 		switch(opcode) {
+ 		case ISCSI_OP_LOGOUT_RSP:
++			if (datalen) {
++				rc = ISCSI_ERR_PROTO;
++				break;
++			}
+ 			conn-&gt;exp_statsn = be32_to_cpu(hdr-&gt;statsn) + 1;
+ 			/* fall through */
+ 		case ISCSI_OP_LOGIN_RSP:
+@@ -383,7 +387,7 @@ int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 			iscsi_tmf_rsp(conn, hdr);
+ 			break;
+ 		case ISCSI_OP_NOOP_IN:
+-			if (hdr-&gt;ttt != ISCSI_RESERVED_TAG) {
++			if (hdr-&gt;ttt != ISCSI_RESERVED_TAG || datalen) {
+ 				rc = ISCSI_ERR_PROTO;
+ 				break;
+ 			}
+@@ -1405,7 +1409,7 @@ iscsi_conn_setup(struct iscsi_cls_session *cls_session, uint32_t conn_idx)
+ 	data = kmalloc(DEFAULT_MAX_RECV_DATA_SEGMENT_LENGTH, GFP_KERNEL);
+ 	if (!data)
+ 		goto login_mtask_data_alloc_fail;
+-	conn-&gt;login_mtask-&gt;data = data;
++	conn-&gt;login_mtask-&gt;data = conn-&gt;data = data;
+ 
+ 	init_timer(&amp;conn-&gt;tmabort_timer);
+ 	mutex_init(&amp;conn-&gt;xmitmutex);
+@@ -1477,7 +1481,7 @@ void iscsi_conn_teardown(struct iscsi_cls_conn *cls_conn)
+ 	}
+ 
+ 	spin_lock_bh(&amp;session-&gt;lock);
+-	kfree(conn-&gt;login_mtask-&gt;data);
++	kfree(conn-&gt;data);
+ 	__kfifo_put(session-&gt;mgmtpool.queue, (void*)&amp;conn-&gt;login_mtask,
+ 		    sizeof(void*));
+ 	list_del(&amp;conn-&gt;item);
+diff --git a/include/scsi/libiscsi.h b/include/scsi/libiscsi.h
+index 3f69f7e58f89..41904f611d12 100644
+--- a/include/scsi/libiscsi.h
++++ b/include/scsi/libiscsi.h
+@@ -135,6 +135,14 @@ struct iscsi_conn {
+ 	int			id;		/* CID */
+ 	struct list_head	item;		/* maintains list of conns */
+ 	int			c_stage;	/* connection state */
++	/*
++	 * Preallocated buffer for pdus that have data but do not
++	 * originate from scsi-ml. We never have two pdus using the
++	 * buffer at the same time. It is only allocated to
++	 * the default max recv size because the pdus we support
++	 * should always fit in this buffer
++	 */
++	char			*data;
+ 	struct iscsi_mgmt_task	*login_mtask;	/* mtask used for login/text */
+ 	struct iscsi_mgmt_task	*mtask;		/* xmit mtask in progress */
+ 	struct iscsi_cmd_task	*ctask;		/* xmit ctask in progress */</pre><hr><pre>commit 9aaa2b4621280b6de1ecfb6dd7cd5cbe59fd1264
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Jul 24 15:47:34 2006 -0500
+
+    [SCSI] iscsi bugfixes: dont use GFP_KERNEL for sending errors
+    
+    iscsi_tcp can send error events from soft irq context so we
+    cannot use GFP_KERNEL.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 7b9e8fa1a4e0..30a47c133091 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -634,13 +634,13 @@ mempool_zone_get_skb(struct mempool_zone *zone)
+ }
+ 
+ static int
+-iscsi_broadcast_skb(struct mempool_zone *zone, struct sk_buff *skb)
++iscsi_broadcast_skb(struct mempool_zone *zone, struct sk_buff *skb, gfp_t gfp)
+ {
+ 	unsigned long flags;
+ 	int rc;
+ 
+ 	skb_get(skb);
+-	rc = netlink_broadcast(nls, skb, 0, 1, GFP_KERNEL);
++	rc = netlink_broadcast(nls, skb, 0, 1, gfp);
+ 	if (rc &lt; 0) {
+ 		mempool_free(skb, zone-&gt;pool);
+ 		printk(KERN_ERR "iscsi: can not broadcast skb (%d)\n", rc);
+@@ -749,7 +749,7 @@ void iscsi_conn_error(struct iscsi_cls_conn *conn, enum iscsi_err error)
+ 	ev-&gt;r.connerror.cid = conn-&gt;cid;
+ 	ev-&gt;r.connerror.sid = iscsi_conn_get_sid(conn);
+ 
+-	iscsi_broadcast_skb(conn-&gt;z_error, skb);
++	iscsi_broadcast_skb(conn-&gt;z_error, skb, GFP_ATOMIC);
+ 
+ 	dev_printk(KERN_INFO, &amp;conn-&gt;dev, "iscsi: detected conn error (%d)\n",
+ 		   error);
+@@ -895,7 +895,7 @@ int iscsi_if_destroy_session_done(struct iscsi_cls_conn *conn)
+ 	 * this will occur if the daemon is not up, so we just warn
+ 	 * the user and when the daemon is restarted it will handle it
+ 	 */
+-	rc = iscsi_broadcast_skb(conn-&gt;z_pdu, skb);
++	rc = iscsi_broadcast_skb(conn-&gt;z_pdu, skb, GFP_KERNEL);
+ 	if (rc &lt; 0)
+ 		dev_printk(KERN_ERR, &amp;conn-&gt;dev, "Cannot notify userspace of "
+ 			  "session destruction event. Check iscsi daemon\n");
+@@ -958,7 +958,7 @@ int iscsi_if_create_session_done(struct iscsi_cls_conn *conn)
+ 	 * this will occur if the daemon is not up, so we just warn
+ 	 * the user and when the daemon is restarted it will handle it
+ 	 */
+-	rc = iscsi_broadcast_skb(conn-&gt;z_pdu, skb);
++	rc = iscsi_broadcast_skb(conn-&gt;z_pdu, skb, GFP_KERNEL);
+ 	if (rc &lt; 0)
+ 		dev_printk(KERN_ERR, &amp;conn-&gt;dev, "Cannot notify userspace of "
+ 			  "session creation event. Check iscsi daemon\n");</pre><hr><pre>commit 63f75cc8a7e6ce453e38a7b90cdcae83d63f1ea7
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Jul 24 15:47:29 2006 -0500
+
+    [SCSI] iscsi bugfixes: fix oops when removing session
+    
+    We are touching the cls_session after we have freed
+    it. This causes a oops.
+    
+    Signed-off-by: Or Gerlitz  &lt;ogerlitz@voltaire.com&gt;
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 36f520b9260e..c989bc6180b3 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -1337,6 +1337,7 @@ void iscsi_session_teardown(struct iscsi_cls_session *cls_session)
+ {
+ 	struct Scsi_Host *shost = iscsi_session_to_shost(cls_session);
+ 	struct iscsi_session *session = iscsi_hostdata(shost-&gt;hostdata);
++	struct module *owner = cls_session-&gt;transport-&gt;owner;
+ 
+ 	scsi_remove_host(shost);
+ 
+@@ -1345,7 +1346,7 @@ void iscsi_session_teardown(struct iscsi_cls_session *cls_session)
+ 
+ 	iscsi_destroy_session(cls_session);
+ 	scsi_host_put(shost);
+-	module_put(cls_session-&gt;transport-&gt;owner);
++	module_put(owner);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_session_teardown);
+ </pre><hr><pre>commit 1c83469d36a9dd30dbf1fb9fc5ca3be3a0e64ff4
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Jul 24 15:47:26 2006 -0500
+
+    [SCSI] iscsi bugfixes: fix oops when iser is flushing io
+    
+    When we enter recovery and flush the running commands
+    we cannot freee the connection before flushing the commands.
+    Some commands may have a reference to the connection
+    that needs to be released before. iscsi_stop was forcing
+    the term and suspend too early and was causing a oops
+    in iser, so this patch removes those callbacks all together
+    and allows the LLD to handle that detail.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/infiniband/ulp/iser/iscsi_iser.c b/drivers/infiniband/ulp/iser/iscsi_iser.c
+index 34b0da5cfa0a..1437d7ee3b19 100644
+--- a/drivers/infiniband/ulp/iser/iscsi_iser.c
++++ b/drivers/infiniband/ulp/iser/iscsi_iser.c
+@@ -378,21 +378,6 @@ iscsi_iser_conn_start(struct iscsi_cls_conn *cls_conn)
+ 	return iser_conn_set_full_featured_mode(conn);
+ }
+ 
+-static void
+-iscsi_iser_conn_terminate(struct iscsi_conn *conn)
+-{
+-	struct iscsi_iser_conn *iser_conn = conn-&gt;dd_data;
+-	struct iser_conn *ib_conn = iser_conn-&gt;ib_conn;
+-
+-	BUG_ON(!ib_conn);
+-	/* starts conn teardown process, waits until all previously   *
+-	 * posted buffers get flushed, deallocates all conn resources */
+-	iser_conn_terminate(ib_conn);
+-	iser_conn-&gt;ib_conn = NULL;
+-	conn-&gt;recv_lock = NULL;
+-}
+-
+-
+ static struct iscsi_transport iscsi_iser_transport;
+ 
+ static struct iscsi_cls_session *
+@@ -555,13 +540,13 @@ iscsi_iser_ep_poll(__u64 ep_handle, int timeout_ms)
+ static void
+ iscsi_iser_ep_disconnect(__u64 ep_handle)
+ {
+-	struct iser_conn *ib_conn = iscsi_iser_ib_conn_lookup(ep_handle);
++	struct iser_conn *ib_conn;
+ 
++	ib_conn = iscsi_iser_ib_conn_lookup(ep_handle);
+ 	if (!ib_conn)
+ 		return;
+ 
+ 	iser_err("ib conn %p state %d\n",ib_conn, ib_conn-&gt;state);
+-
+ 	iser_conn_terminate(ib_conn);
+ }
+ 
+@@ -614,9 +599,6 @@ static struct iscsi_transport iscsi_iser_transport = {
+ 	.get_session_param	= iscsi_session_get_param,
+ 	.start_conn             = iscsi_iser_conn_start,
+ 	.stop_conn              = iscsi_conn_stop,
+-	/* these are called as part of conn recovery */
+-	.suspend_conn_recv	= NULL, /* FIXME is/how this relvant to iser? */
+-	.terminate_conn		= iscsi_iser_conn_terminate,
+ 	/* IO */
+ 	.send_pdu		= iscsi_conn_send_pdu,
+ 	.get_stats		= iscsi_iser_conn_get_stats,
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 7d784596a1ea..b6c68be6b866 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -1040,9 +1040,8 @@ iscsi_conn_set_callbacks(struct iscsi_conn *conn)
+ }
+ 
+ static void
+-iscsi_conn_restore_callbacks(struct iscsi_conn *conn)
++iscsi_conn_restore_callbacks(struct iscsi_tcp_conn *tcp_conn)
+ {
+-	struct iscsi_tcp_conn *tcp_conn = conn-&gt;dd_data;
+ 	struct sock *sk = tcp_conn-&gt;sock-&gt;sk;
+ 
+ 	/* restore socket callbacks, see also: iscsi_conn_set_callbacks() */
+@@ -1932,6 +1931,23 @@ iscsi_tcp_conn_create(struct iscsi_cls_session *cls_session, uint32_t conn_idx)
+ 	return NULL;
+ }
+ 
++static void
++iscsi_tcp_release_conn(struct iscsi_conn *conn)
++{
++	struct iscsi_tcp_conn *tcp_conn = conn-&gt;dd_data;
++
++	if (!tcp_conn-&gt;sock)
++		return;
++
++	sock_hold(tcp_conn-&gt;sock-&gt;sk);
++	iscsi_conn_restore_callbacks(tcp_conn);
++	sock_put(tcp_conn-&gt;sock-&gt;sk);
++
++	sock_release(tcp_conn-&gt;sock);
++	tcp_conn-&gt;sock = NULL;
++	conn-&gt;recv_lock = NULL;
++}
++
+ static void
+ iscsi_tcp_conn_destroy(struct iscsi_cls_conn *cls_conn)
+ {
+@@ -1942,6 +1958,7 @@ iscsi_tcp_conn_destroy(struct iscsi_cls_conn *cls_conn)
+ 	if (conn-&gt;hdrdgst_en || conn-&gt;datadgst_en)
+ 		digest = 1;
+ 
++	iscsi_tcp_release_conn(conn);
+ 	iscsi_conn_teardown(cls_conn);
+ 
+ 	/* now free tcp_conn */
+@@ -1965,6 +1982,15 @@ iscsi_tcp_conn_destroy(struct iscsi_cls_conn *cls_conn)
+ 	kfree(tcp_conn);
+ }
+ 
++static void
++iscsi_tcp_conn_stop(struct iscsi_cls_conn *cls_conn, int flag)
++{
++	struct iscsi_conn *conn = cls_conn-&gt;dd_data;
++
++	iscsi_conn_stop(cls_conn, flag);
++	iscsi_tcp_release_conn(conn);
++}
++
+ static int
+ iscsi_tcp_conn_bind(struct iscsi_cls_session *cls_session,
+ 		    struct iscsi_cls_conn *cls_conn, uint64_t transport_eph,
+@@ -2013,38 +2039,6 @@ iscsi_tcp_conn_bind(struct iscsi_cls_session *cls_session,
+ 	return 0;
+ }
+ 
+-static void
+-iscsi_tcp_suspend_conn_rx(struct iscsi_conn *conn)
+-{
+-	struct iscsi_tcp_conn *tcp_conn = conn-&gt;dd_data;
+-	struct sock *sk;
+-
+-	if (!tcp_conn-&gt;sock)
+-		return;
+-
+-	sk = tcp_conn-&gt;sock-&gt;sk;
+-	write_lock_bh(&amp;sk-&gt;sk_callback_lock);
+-	set_bit(ISCSI_SUSPEND_BIT, &amp;conn-&gt;suspend_rx);
+-	write_unlock_bh(&amp;sk-&gt;sk_callback_lock);
+-}
+-
+-static void
+-iscsi_tcp_terminate_conn(struct iscsi_conn *conn)
+-{
+-	struct iscsi_tcp_conn *tcp_conn = conn-&gt;dd_data;
+-
+-	if (!tcp_conn-&gt;sock)
+-		return;
+-
+-	sock_hold(tcp_conn-&gt;sock-&gt;sk);
+-	iscsi_conn_restore_callbacks(conn);
+-	sock_put(tcp_conn-&gt;sock-&gt;sk);
+-
+-	sock_release(tcp_conn-&gt;sock);
+-	tcp_conn-&gt;sock = NULL;
+-	conn-&gt;recv_lock = NULL;
+-}
+-
+ /* called with host lock */
+ static void
+ iscsi_tcp_mgmt_init(struct iscsi_conn *conn, struct iscsi_mgmt_task *mtask,
+@@ -2413,10 +2407,7 @@ static struct iscsi_transport iscsi_tcp_transport = {
+ 	.get_conn_param		= iscsi_tcp_conn_get_param,
+ 	.get_session_param	= iscsi_session_get_param,
+ 	.start_conn		= iscsi_conn_start,
+-	.stop_conn		= iscsi_conn_stop,
+-	/* these are called as part of conn recovery */
+-	.suspend_conn_recv	= iscsi_tcp_suspend_conn_rx,
+-	.terminate_conn		= iscsi_tcp_terminate_conn,
++	.stop_conn		= iscsi_tcp_conn_stop,
+ 	/* IO */
+ 	.send_pdu		= iscsi_conn_send_pdu,
+ 	.get_stats		= iscsi_conn_get_stats,
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 4e2ca8f7d9a1..36f520b9260e 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -1440,12 +1440,6 @@ void iscsi_conn_teardown(struct iscsi_cls_conn *cls_conn)
+ 
+ 	set_bit(ISCSI_SUSPEND_BIT, &amp;conn-&gt;suspend_tx);
+ 	mutex_lock(&amp;conn-&gt;xmitmutex);
+-	if (conn-&gt;c_stage == ISCSI_CONN_INITIAL_STAGE) {
+-		if (session-&gt;tt-&gt;suspend_conn_recv)
+-			session-&gt;tt-&gt;suspend_conn_recv(conn);
+-
+-		session-&gt;tt-&gt;terminate_conn(conn);
+-	}
+ 
+ 	spin_lock_bh(&amp;session-&gt;lock);
+ 	conn-&gt;c_stage = ISCSI_CONN_CLEANUP_WAIT;
+@@ -1622,8 +1616,9 @@ static void iscsi_start_session_recovery(struct iscsi_session *session,
+ 	set_bit(ISCSI_SUSPEND_BIT, &amp;conn-&gt;suspend_tx);
+ 	spin_unlock_bh(&amp;session-&gt;lock);
+ 
+-	if (session-&gt;tt-&gt;suspend_conn_recv)
+-		session-&gt;tt-&gt;suspend_conn_recv(conn);
++	write_lock_bh(conn-&gt;recv_lock);
++	set_bit(ISCSI_SUSPEND_BIT, &amp;conn-&gt;suspend_rx);
++	write_unlock_bh(conn-&gt;recv_lock);
+ 
+ 	mutex_lock(&amp;conn-&gt;xmitmutex);
+ 	/*
+@@ -1642,7 +1637,6 @@ static void iscsi_start_session_recovery(struct iscsi_session *session,
+ 		}
+ 	}
+ 
+-	session-&gt;tt-&gt;terminate_conn(conn);
+ 	/*
+ 	 * flush queues.
+ 	 */
+diff --git a/include/scsi/scsi_transport_iscsi.h b/include/scsi/scsi_transport_iscsi.h
+index 5a3df1d7085f..39e833260bd0 100644
+--- a/include/scsi/scsi_transport_iscsi.h
++++ b/include/scsi/scsi_transport_iscsi.h
+@@ -57,8 +57,6 @@ struct sockaddr;
+  * @stop_conn:		suspend/recover/terminate connection
+  * @send_pdu:		send iSCSI PDU, Login, Logout, NOP-Out, Reject, Text.
+  * @session_recovery_timedout: notify LLD a block during recovery timed out
+- * @suspend_conn_recv:	susepend the recv side of the connection
+- * @termincate_conn:	destroy socket connection. Called with mutex lock.
+  * @init_cmd_task:	Initialize a iscsi_cmd_task and any internal structs.
+  *			Called from queuecommand with session lock held.
+  * @init_mgmt_task:	Initialize a iscsi_mgmt_task and any internal structs.
+@@ -112,8 +110,6 @@ struct iscsi_transport {
+ 			 char *data, uint32_t data_size);
+ 	void (*get_stats) (struct iscsi_cls_conn *conn,
+ 			   struct iscsi_stats *stats);
+-	void (*suspend_conn_recv) (struct iscsi_conn *conn);
+-	void (*terminate_conn) (struct iscsi_conn *conn);
+ 	void (*init_cmd_task) (struct iscsi_cmd_task *ctask);
+ 	void (*init_mgmt_task) (struct iscsi_conn *conn,
+ 				struct iscsi_mgmt_task *mtask,</pre><hr><pre>commit 7ea8b82847293c2311cf08fc3ed31ab0e452a27e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Jul 24 15:47:22 2006 -0500
+
+    [SCSI] iscsi bugfixes: fix abort handling
+    
+    Abort handler fixes.
+    
+    If a connection is dropped and reconnected while an abort is
+    running then we should assume the recovery code will clean up
+    the abort. Not doing so causes a oops.
+    
+    And if a command completes then we get the status for the abort, we do not
+    need to call into the LLD to cleanup the resources. Doing this causes
+    and oops in iser because it ends up freeing some resources twice.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 1a8cd20f484f..4e2ca8f7d9a1 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -276,6 +276,25 @@ static int iscsi_scsi_cmd_rsp(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 	return rc;
+ }
+ 
++static void iscsi_tmf_rsp(struct iscsi_conn *conn, struct iscsi_hdr *hdr)
++{
++	struct iscsi_tm_rsp *tmf = (struct iscsi_tm_rsp *)hdr;
++
++	conn-&gt;exp_statsn = be32_to_cpu(hdr-&gt;statsn) + 1;
++	conn-&gt;tmfrsp_pdus_cnt++;
++
++	if (conn-&gt;tmabort_state != TMABORT_INITIAL)
++		return;
++
++	if (tmf-&gt;response == ISCSI_TMF_RSP_COMPLETE)
++		conn-&gt;tmabort_state = TMABORT_SUCCESS;
++	else if (tmf-&gt;response == ISCSI_TMF_RSP_NO_TASK)
++		conn-&gt;tmabort_state = TMABORT_NOT_FOUND;
++	else
++		conn-&gt;tmabort_state = TMABORT_FAILED;
++	wake_up(&amp;conn-&gt;ehwait);
++}
++
+ /**
+  * __iscsi_complete_pdu - complete pdu
+  * @conn: iscsi conn
+@@ -361,16 +380,7 @@ int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 				break;
+ 			}
+ 
+-			conn-&gt;exp_statsn = be32_to_cpu(hdr-&gt;statsn) + 1;
+-			conn-&gt;tmfrsp_pdus_cnt++;
+-			if (conn-&gt;tmabort_state == TMABORT_INITIAL) {
+-				conn-&gt;tmabort_state =
+-					((struct iscsi_tm_rsp *)hdr)-&gt;
+-					response == ISCSI_TMF_RSP_COMPLETE ?
+-						TMABORT_SUCCESS:TMABORT_FAILED;
+-				/* unblock eh_abort() */
+-				wake_up(&amp;conn-&gt;ehwait);
+-			}
++			iscsi_tmf_rsp(conn, hdr);
+ 			break;
+ 		case ISCSI_OP_NOOP_IN:
+ 			if (hdr-&gt;ttt != ISCSI_RESERVED_TAG) {
+@@ -1029,12 +1039,13 @@ static void fail_command(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask,
+ {
+ 	struct scsi_cmnd *sc;
+ 
+-	conn-&gt;session-&gt;tt-&gt;cleanup_cmd_task(conn, ctask);
+-	iscsi_ctask_mtask_cleanup(ctask);
+-
+ 	sc = ctask-&gt;sc;
+ 	if (!sc)
+ 		return;
++
++	conn-&gt;session-&gt;tt-&gt;cleanup_cmd_task(conn, ctask);
++	iscsi_ctask_mtask_cleanup(ctask);
++
+ 	sc-&gt;result = err;
+ 	sc-&gt;resid = sc-&gt;request_bufflen;
+ 	iscsi_complete_command(conn-&gt;session, ctask);
+@@ -1062,8 +1073,11 @@ int iscsi_eh_abort(struct scsi_cmnd *sc)
+ 		goto failed;
+ 
+ 	/* ctask completed before time out */
+-	if (!ctask-&gt;sc)
+-		goto success;
++	if (!ctask-&gt;sc) {
++		spin_unlock_bh(&amp;session-&gt;lock);
++		debug_scsi("sc completed while abort in progress\n");
++		goto success_rel_mutex;
++	}
+ 
+ 	/* what should we do here ? */
+ 	if (conn-&gt;ctask == ctask) {
+@@ -1073,7 +1087,7 @@ int iscsi_eh_abort(struct scsi_cmnd *sc)
+ 	}
+ 
+ 	if (ctask-&gt;state == ISCSI_TASK_PENDING)
+-		goto success;
++		goto success_cleanup;
+ 
+ 	conn-&gt;tmabort_state = TMABORT_INITIAL;
+ 
+@@ -1081,25 +1095,31 @@ int iscsi_eh_abort(struct scsi_cmnd *sc)
+ 	rc = iscsi_exec_abort_task(sc, ctask);
+ 	spin_lock_bh(&amp;session-&gt;lock);
+ 
+-	iscsi_ctask_mtask_cleanup(ctask);
+ 	if (rc || sc-&gt;SCp.phase != session-&gt;age ||
+ 	    session-&gt;state != ISCSI_STATE_LOGGED_IN)
+ 		goto failed;
++	iscsi_ctask_mtask_cleanup(ctask);
+ 
+-	/* ctask completed before tmf abort response */
+-	if (!ctask-&gt;sc) {
+-		debug_scsi("sc completed while abort in progress\n");
+-		goto success;
+-	}
+-
+-	if (conn-&gt;tmabort_state != TMABORT_SUCCESS) {
++	switch (conn-&gt;tmabort_state) {
++	case TMABORT_SUCCESS:
++		goto success_cleanup;
++	case TMABORT_NOT_FOUND:
++		if (!ctask-&gt;sc) {
++			/* ctask completed before tmf abort response */
++			spin_unlock_bh(&amp;session-&gt;lock);
++			debug_scsi("sc completed while abort in progress\n");
++			goto success_rel_mutex;
++		}
++		/* fall through */
++	default:
++		/* timedout or failed */
+ 		spin_unlock_bh(&amp;session-&gt;lock);
+ 		iscsi_conn_failure(conn, ISCSI_ERR_CONN_FAILED);
+ 		spin_lock_bh(&amp;session-&gt;lock);
+ 		goto failed;
+ 	}
+ 
+-success:
++success_cleanup:
+ 	debug_scsi("abort success [sc %lx itt 0x%x]\n", (long)sc, ctask-&gt;itt);
+ 	spin_unlock_bh(&amp;session-&gt;lock);
+ 
+@@ -1113,6 +1133,7 @@ int iscsi_eh_abort(struct scsi_cmnd *sc)
+ 	spin_unlock(&amp;session-&gt;lock);
+ 	write_unlock_bh(conn-&gt;recv_lock);
+ 
++success_rel_mutex:
+ 	mutex_unlock(&amp;conn-&gt;xmitmutex);
+ 	return SUCCESS;
+ 
+diff --git a/include/scsi/libiscsi.h b/include/scsi/libiscsi.h
+index e71d6e96eca6..3f69f7e58f89 100644
+--- a/include/scsi/libiscsi.h
++++ b/include/scsi/libiscsi.h
+@@ -60,6 +60,7 @@ struct iscsi_nopin;
+ #define TMABORT_SUCCESS			0x1
+ #define TMABORT_FAILED			0x2
+ #define TMABORT_TIMEDOUT		0x3
++#define TMABORT_NOT_FOUND		0x4
+ 
+ /* Connection suspend "bit" */
+ #define ISCSI_SUSPEND_BIT		1</pre>
+    <div class="pagination">
+        <a href='5_36.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><span>[37]</span><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_38.html'>Next&gt;&gt;</a>
+    <div>
+</body>

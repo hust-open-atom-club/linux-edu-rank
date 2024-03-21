@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_27.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><span>[28]</span><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_29.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit e712804ae4bd858bd89272aa3fc1a577294c0940
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 23 16:09:47 2008 -0500
+
+    rpc: call release_pipe only on last close
+    
+    I can't see any reason we need to call this until either the kernel or
+    the last gssd closes the pipe.
+    
+    Also, this allows to guarantee that open_pipe and release_pipe are
+    called strictly in pairs; open_pipe on gssd's first open, release_pipe
+    on gssd's last close (or on the close of the kernel side of the pipe, if
+    that comes first).
+    
+    That will make it very easy for the gss code to keep track of which
+    pipes gssd is using.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/rpc_pipe.c b/net/sunrpc/rpc_pipe.c
+index c9b57f47108c..3105efbb182d 100644
+--- a/net/sunrpc/rpc_pipe.c
++++ b/net/sunrpc/rpc_pipe.c
+@@ -126,13 +126,14 @@ rpc_close_pipes(struct inode *inode)
+ {
+ 	struct rpc_inode *rpci = RPC_I(inode);
+ 	struct rpc_pipe_ops *ops;
++	int need_release;
+ 
+ 	mutex_lock(&amp;inode-&gt;i_mutex);
+ 	ops = rpci-&gt;ops;
+ 	if (ops != NULL) {
+ 		LIST_HEAD(free_list);
+-
+ 		spin_lock(&amp;inode-&gt;i_lock);
++		need_release = rpci-&gt;nreaders != 0 || rpci-&gt;nwriters != 0;
+ 		rpci-&gt;nreaders = 0;
+ 		list_splice_init(&amp;rpci-&gt;in_upcall, &amp;free_list);
+ 		list_splice_init(&amp;rpci-&gt;pipe, &amp;free_list);
+@@ -141,7 +142,7 @@ rpc_close_pipes(struct inode *inode)
+ 		spin_unlock(&amp;inode-&gt;i_lock);
+ 		rpc_purge_list(rpci, &amp;free_list, ops-&gt;destroy_msg, -EPIPE);
+ 		rpci-&gt;nwriters = 0;
+-		if (ops-&gt;release_pipe)
++		if (need_release &amp;&amp; ops-&gt;release_pipe)
+ 			ops-&gt;release_pipe(inode);
+ 		cancel_delayed_work_sync(&amp;rpci-&gt;queue_timeout);
+ 	}
+@@ -196,6 +197,7 @@ rpc_pipe_release(struct inode *inode, struct file *filp)
+ {
+ 	struct rpc_inode *rpci = RPC_I(inode);
+ 	struct rpc_pipe_msg *msg;
++	int last_close;
+ 
+ 	mutex_lock(&amp;inode-&gt;i_mutex);
+ 	if (rpci-&gt;ops == NULL)
+@@ -222,7 +224,8 @@ rpc_pipe_release(struct inode *inode, struct file *filp)
+ 					rpci-&gt;ops-&gt;destroy_msg, -EAGAIN);
+ 		}
+ 	}
+-	if (rpci-&gt;ops-&gt;release_pipe)
++	last_close = rpci-&gt;nwriters == 0 &amp;&amp; rpci-&gt;nreaders == 0;
++	if (last_close &amp;&amp; rpci-&gt;ops-&gt;release_pipe)
+ 		rpci-&gt;ops-&gt;release_pipe(inode);
+ out:
+ 	mutex_unlock(&amp;inode-&gt;i_mutex);</pre><hr><pre>commit c381060869317b3c84430d4f54965d409cbfe65f
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 23 16:08:32 2008 -0500
+
+    rpc: add an rpc_pipe_open method
+    
+    We want to transition to a new gssd upcall which is text-based and more
+    easily extensible.
+    
+    To simplify upgrades, as well as testing and debugging, it will help if
+    we can upgrade gssd (to a version which understands the new upcall)
+    without having to choose at boot (or module-load) time whether we want
+    the new or the old upcall.
+    
+    We will do this by providing two different pipes: one named, as
+    currently, after the mechanism (normally "krb5"), and supporting the
+    old upcall.  One named "gssd" and supporting the new upcall version.
+    
+    We allow gssd to indicate which version it supports by its choice of
+    which pipe to open.
+    
+    As we have no interest in supporting *simultaneous* use of both
+    versions, we'll forbid opening both pipes at the same time.
+    
+    So, add a new pipe_open callback to the rpc_pipefs api, which the gss
+    code can use to track which pipes have been open, and to refuse opens of
+    incompatible pipes.
+    
+    We only need this to be called on the first open of a given pipe.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/include/linux/sunrpc/rpc_pipe_fs.h b/include/linux/sunrpc/rpc_pipe_fs.h
+index 51b977a4ca20..cea764c2359f 100644
+--- a/include/linux/sunrpc/rpc_pipe_fs.h
++++ b/include/linux/sunrpc/rpc_pipe_fs.h
+@@ -15,6 +15,7 @@ struct rpc_pipe_ops {
+ 	ssize_t (*upcall)(struct file *, struct rpc_pipe_msg *, char __user *, size_t);
+ 	ssize_t (*downcall)(struct file *, const char __user *, size_t);
+ 	void (*release_pipe)(struct inode *);
++	int (*open_pipe)(struct inode *);
+ 	void (*destroy_msg)(struct rpc_pipe_msg *);
+ };
+ 
+diff --git a/net/sunrpc/rpc_pipe.c b/net/sunrpc/rpc_pipe.c
+index 55b2049834c4..c9b57f47108c 100644
+--- a/net/sunrpc/rpc_pipe.c
++++ b/net/sunrpc/rpc_pipe.c
+@@ -169,16 +169,24 @@ static int
+ rpc_pipe_open(struct inode *inode, struct file *filp)
+ {
+ 	struct rpc_inode *rpci = RPC_I(inode);
++	int first_open;
+ 	int res = -ENXIO;
+ 
+ 	mutex_lock(&amp;inode-&gt;i_mutex);
+-	if (rpci-&gt;ops != NULL) {
+-		if (filp-&gt;f_mode &amp; FMODE_READ)
+-			rpci-&gt;nreaders ++;
+-		if (filp-&gt;f_mode &amp; FMODE_WRITE)
+-			rpci-&gt;nwriters ++;
+-		res = 0;
++	if (rpci-&gt;ops == NULL)
++		goto out;
++	first_open = rpci-&gt;nreaders == 0 &amp;&amp; rpci-&gt;nwriters == 0;
++	if (first_open &amp;&amp; rpci-&gt;ops-&gt;open_pipe) {
++		res = rpci-&gt;ops-&gt;open_pipe(inode);
++		if (res)
++			goto out;
+ 	}
++	if (filp-&gt;f_mode &amp; FMODE_READ)
++		rpci-&gt;nreaders++;
++	if (filp-&gt;f_mode &amp; FMODE_WRITE)
++		rpci-&gt;nwriters++;
++	res = 0;
++out:
+ 	mutex_unlock(&amp;inode-&gt;i_mutex);
+ 	return res;
+ }
+@@ -748,7 +756,7 @@ rpc_rmdir(struct dentry *dentry)
+  * @name: name of pipe
+  * @private: private data to associate with the pipe, for the caller's use
+  * @ops: operations defining the behavior of the pipe: upcall, downcall,
+- *	release_pipe, and destroy_msg.
++ *	release_pipe, open_pipe, and destroy_msg.
+  * @flags: rpc_inode flags
+  *
+  * Data is made available for userspace to read by calls to</pre><hr><pre>commit db75b3d6b5b0dad29860370618ea94d2726641b4
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 23 16:07:13 2008 -0500
+
+    rpc: minor gss_alloc_msg cleanup
+    
+    I want to add a little more code here, so it'll be convenient to have
+    this flatter.
+    
+    Also, I'll want to add another error condition, so it'll be more
+    convenient to return -ENOMEM than NULL in the error case.  The only
+    caller is already converting NULL to -ENOMEM anyway.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index 0fe35664c687..bc512fff8a41 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -329,16 +329,16 @@ gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid)
+ 	struct gss_upcall_msg *gss_msg;
+ 
+ 	gss_msg = kzalloc(sizeof(*gss_msg), GFP_NOFS);
+-	if (gss_msg != NULL) {
+-		INIT_LIST_HEAD(&amp;gss_msg-&gt;list);
+-		rpc_init_wait_queue(&amp;gss_msg-&gt;rpc_waitqueue, "RPCSEC_GSS upcall waitq");
+-		init_waitqueue_head(&amp;gss_msg-&gt;waitqueue);
+-		atomic_set(&amp;gss_msg-&gt;count, 1);
+-		gss_msg-&gt;msg.data = &amp;gss_msg-&gt;uid;
+-		gss_msg-&gt;msg.len = sizeof(gss_msg-&gt;uid);
+-		gss_msg-&gt;uid = uid;
+-		gss_msg-&gt;auth = gss_auth;
+-	}
++	if (gss_msg == NULL)
++		return ERR_PTR(-ENOMEM);
++	INIT_LIST_HEAD(&amp;gss_msg-&gt;list);
++	rpc_init_wait_queue(&amp;gss_msg-&gt;rpc_waitqueue, "RPCSEC_GSS upcall waitq");
++	init_waitqueue_head(&amp;gss_msg-&gt;waitqueue);
++	atomic_set(&amp;gss_msg-&gt;count, 1);
++	gss_msg-&gt;msg.data = &amp;gss_msg-&gt;uid;
++	gss_msg-&gt;msg.len = sizeof(gss_msg-&gt;uid);
++	gss_msg-&gt;uid = uid;
++	gss_msg-&gt;auth = gss_auth;
+ 	return gss_msg;
+ }
+ 
+@@ -355,8 +355,8 @@ gss_setup_upcall(struct rpc_clnt *clnt, struct gss_auth *gss_auth, struct rpc_cr
+ 		uid = 0;
+ 
+ 	gss_new = gss_alloc_msg(gss_auth, uid);
+-	if (gss_new == NULL)
+-		return ERR_PTR(-ENOMEM);
++	if (IS_ERR(gss_new))
++		return gss_new;
+ 	gss_msg = gss_add_msg(gss_auth, gss_new);
+ 	if (gss_msg == gss_new) {
+ 		int res = rpc_queue_upcall(gss_auth-&gt;dentry-&gt;d_inode, &amp;gss_new-&gt;msg);</pre><hr><pre>commit b03568c32226163cb3588ea8993adb268ed497a5
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 23 16:06:55 2008 -0500
+
+    rpc: factor out warning code from gss_pipe_destroy_msg
+    
+    We'll want to call this from elsewhere soon.  And this is a bit nicer
+    anyway.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index ea4567fae5dd..0fe35664c687 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -369,6 +369,18 @@ gss_setup_upcall(struct rpc_clnt *clnt, struct gss_auth *gss_auth, struct rpc_cr
+ 	return gss_msg;
+ }
+ 
++static void warn_gssd(void)
++{
++	static unsigned long ratelimit;
++	unsigned long now = jiffies;
++
++	if (time_after(now, ratelimit)) {
++		printk(KERN_WARNING "RPC: AUTH_GSS upcall timed out.\n"
++				"Please check user daemon is running.\n");
++		ratelimit = now + 15*HZ;
++	}
++}
++
+ static inline int
+ gss_refresh_upcall(struct rpc_task *task)
+ {
+@@ -568,21 +580,14 @@ static void
+ gss_pipe_destroy_msg(struct rpc_pipe_msg *msg)
+ {
+ 	struct gss_upcall_msg *gss_msg = container_of(msg, struct gss_upcall_msg, msg);
+-	static unsigned long ratelimit;
+ 
+ 	if (msg-&gt;errno &lt; 0) {
+ 		dprintk("RPC:       gss_pipe_destroy_msg releasing msg %p\n",
+ 				gss_msg);
+ 		atomic_inc(&amp;gss_msg-&gt;count);
+ 		gss_unhash_msg(gss_msg);
+-		if (msg-&gt;errno == -ETIMEDOUT) {
+-			unsigned long now = jiffies;
+-			if (time_after(now, ratelimit)) {
+-				printk(KERN_WARNING "RPC: AUTH_GSS upcall timed out.\n"
+-						    "Please check user daemon is running!\n");
+-				ratelimit = now + 15*HZ;
+-			}
+-		}
++		if (msg-&gt;errno == -ETIMEDOUT)
++			warn_gssd();
+ 		gss_release_msg(gss_msg);
+ 	}
+ }</pre><hr><pre>commit 99db35636842ede13bf3b6bf1a8d8f4f1c4c93bf
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 23 16:06:33 2008 -0500
+
+    rpc: remove unnecessary assignment
+    
+    We're just about to kfree() gss_auth, so there's no point to setting any
+    of its fields.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index cb19c9ded1fa..ea4567fae5dd 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -650,7 +650,6 @@ static void
+ gss_free(struct gss_auth *gss_auth)
+ {
+ 	rpc_unlink(gss_auth-&gt;dentry);
+-	gss_auth-&gt;dentry = NULL;
+ 	gss_mech_put(gss_auth-&gt;mech);
+ 
+ 	kfree(gss_auth);</pre><hr><pre>commit a4f4d6df537368297a84e6b9444f403f99bf59f6
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Dec 8 18:24:18 2008 -0500
+
+    EXPORTFS: handle NULL returns from fh_to_dentry()/fh_to_parent()
+    
+    While 440037287c5 "[PATCH] switch all filesystems over to
+    d_obtain_alias" removed some cases where fh_to_dentry() and
+    fh_to_parent() could return NULL, there are still a few NULL returns
+    left in individual filesystems.  Thus it was a mistake for that commit
+    to remove the handling of NULL returns in the callers.
+    
+    Revert those parts of 440037287c5 which removed the NULL handling.
+    
+    (We could, alternatively, modify all implementations to return -ESTALE
+    instead of NULL, but that proves to require fixing a number of
+    filesystems, and in some cases it's arguably more natural to return
+    NULL.)
+    
+    Thanks to David for original patch and Linus, Christoph, and Hugh for
+    review.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: David Howells &lt;dhowells@redhat.com&gt;
+    Cc: Christoph Hellwig &lt;hch@infradead.org&gt;
+    Cc: Hugh Dickins &lt;hugh@veritas.com&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/exportfs/expfs.c b/fs/exportfs/expfs.c
+index 80246bad1b7f..890e01828817 100644
+--- a/fs/exportfs/expfs.c
++++ b/fs/exportfs/expfs.c
+@@ -367,6 +367,8 @@ struct dentry *exportfs_decode_fh(struct vfsmount *mnt, struct fid *fid,
+ 	 * Try to get any dentry for the given file handle from the filesystem.
+ 	 */
+ 	result = nop-&gt;fh_to_dentry(mnt-&gt;mnt_sb, fid, fh_len, fileid_type);
++	if (!result)
++		result = ERR_PTR(-ESTALE);
+ 	if (IS_ERR(result))
+ 		return result;
+ 
+@@ -420,6 +422,8 @@ struct dentry *exportfs_decode_fh(struct vfsmount *mnt, struct fid *fid,
+ 
+ 		target_dir = nop-&gt;fh_to_parent(mnt-&gt;mnt_sb, fid,
+ 				fh_len, fileid_type);
++		if (!target_dir)
++			goto err_result;
+ 		err = PTR_ERR(target_dir);
+ 		if (IS_ERR(target_dir))
+ 			goto err_result;</pre><hr><pre>commit e4625eb826de4f6774ee602c442ba23b686bdcc7
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Nov 24 10:32:46 2008 -0600
+
+    nfsd: use of unitialized list head on error exit in nfs4recover.c
+    
+    Thanks to Matthew Dodd for this bug report:
+    
+    A file label issue while running SELinux in MLS mode provoked the
+    following bug, which is a result of use before init on a 'struct list_head'.
+    
+    In nfsd4_list_rec_dir() if the call to dentry_open() fails the 'goto
+    out' skips INIT_LIST_HEAD() which results in the normally improbable
+    case where list_entry() returns NULL.
+    
+    Trace follows.
+    
+    NFSD: Using /var/lib/nfs/v4recovery as the NFSv4 state recovery directory
+    SELinux:  Context unconfined_t:object_r:var_lib_nfs_t:s0 is not valid
+    (left unmapped).
+    type=1400 audit(1227298063.609:282): avc:  denied  { read } for
+    pid=1890 comm="rpc.nfsd" name="v4recovery" dev=dm-0 ino=148726
+    scontext=system_u:system_r:nfsd_t:s0-s15:c0.c1023
+    tcontext=system_u:object_r:unlabeled_t:s15:c0.c1023 tclass=dir
+    BUG: unable to handle kernel NULL pointer dereference at 00000004
+    IP: [&lt;c050894e&gt;] list_del+0x6/0x60
+    *pde = 0d9ce067 *pte = 00000000
+    Oops: 0000 [#1] SMP
+    Modules linked in: nfsd lockd nfs_acl auth_rpcgss exportfs autofs4
+    sunrpc ipv6 dm_multipath scsi_dh ppdev parport_pc sg parport floppy
+    ata_piix pata_acpi ata_generic libata pcnet32 i2c_piix4 mii pcspkr
+    i2c_core dm_snapshot dm_zero dm_mirror dm_log dm_mod BusLogic sd_mod
+    scsi_mod crc_t10dif ext3 jbd mbcache uhci_hcd ohci_hcd ehci_hcd [last
+    unloaded: microcode]
+    
+    Pid: 1890, comm: rpc.nfsd Not tainted (2.6.27.5-37.fc9.i686 #1)
+    EIP: 0060:[&lt;c050894e&gt;] EFLAGS: 00010217 CPU: 0
+    EIP is at list_del+0x6/0x60
+    EAX: 00000000 EBX: 00000000 ECX: 00000000 EDX: cd99e480
+    ESI: cf9caed8 EDI: 00000000 EBP: cf9caebc ESP: cf9caeb8
+      DS: 007b ES: 007b FS: 00d8 GS: 0033 SS: 0068
+    Process rpc.nfsd (pid: 1890, ti=cf9ca000 task=cf4de580 task.ti=cf9ca000)
+    Stack: 00000000 cf9caef0 d0a9f139 c0496d04 d0a9f217 fffffff3 00000000
+    00000000
+            00000000 00000000 cf32b220 00000000 00000008 00000801 cf9caefc
+    d0a9f193
+            00000000 cf9caf08 d0a9b6ea 00000000 cf9caf1c d0a874f2 cf9c3004
+    00000008
+    Call Trace:
+      [&lt;d0a9f139&gt;] ? nfsd4_list_rec_dir+0xf3/0x13a [nfsd]
+      [&lt;c0496d04&gt;] ? do_path_lookup+0x12d/0x175
+      [&lt;d0a9f217&gt;] ? load_recdir+0x0/0x26 [nfsd]
+      [&lt;d0a9f193&gt;] ? nfsd4_recdir_load+0x13/0x34 [nfsd]
+      [&lt;d0a9b6ea&gt;] ? nfs4_state_start+0x2a/0xc5 [nfsd]
+      [&lt;d0a874f2&gt;] ? nfsd_svc+0x51/0xff [nfsd]
+      [&lt;d0a87f2d&gt;] ? write_svc+0x0/0x1e [nfsd]
+      [&lt;d0a87f48&gt;] ? write_svc+0x1b/0x1e [nfsd]
+      [&lt;d0a87854&gt;] ? nfsctl_transaction_write+0x3a/0x61 [nfsd]
+      [&lt;c04b6a4e&gt;] ? sys_nfsservctl+0x116/0x154
+      [&lt;c04975c1&gt;] ? putname+0x24/0x2f
+      [&lt;c04975c1&gt;] ? putname+0x24/0x2f
+      [&lt;c048d49f&gt;] ? do_sys_open+0xad/0xb7
+      [&lt;c048d337&gt;] ? filp_close+0x50/0x5a
+      [&lt;c048d4eb&gt;] ? sys_open+0x1e/0x26
+      [&lt;c0403cca&gt;] ? syscall_call+0x7/0xb
+      [&lt;c064007b&gt;] ? init_cyrix+0x185/0x490
+      =======================
+    Code: 75 e1 8b 53 08 8d 4b 04 8d 46 04 e8 75 00 00 00 8b 53 10 8d 4b 0c
+    8d 46 0c e8 67 00 00 00 5b 5e 5f 5d c3 90 90 55 89 e5 53 89 c3 &lt;8b&gt; 40
+    04 8b 00 39 d8 74 16 50 53 68 3e d6 6f c0 6a 30 68 78 d6
+    EIP: [&lt;c050894e&gt;] list_del+0x6/0x60 SS:ESP 0068:cf9caeb8
+    ---[ end trace a89c4ad091c4ad53 ]---
+    
+    Cc: Matthew N. Dodd &lt;Matthew.Dodd@spart.com&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4recover.c b/fs/nfsd/nfs4recover.c
+index bb93946ace22..b79ec930d9f1 100644
+--- a/fs/nfsd/nfs4recover.c
++++ b/fs/nfsd/nfs4recover.c
+@@ -225,12 +225,12 @@ nfsd4_list_rec_dir(struct dentry *dir, recdir_func *f)
+ 		return 0;
+ 
+ 	nfs4_save_user(&amp;uid, &amp;gid);
++	INIT_LIST_HEAD(dentries);
+ 
+ 	filp = dentry_open(dget(dir), mntget(rec_dir.mnt), O_RDONLY);
+ 	status = PTR_ERR(filp);
+ 	if (IS_ERR(filp))
+ 		goto out;
+-	INIT_LIST_HEAD(dentries);
+ 	status = vfs_readdir(filp, nfsd4_build_dentrylist, &amp;dla);
+ 	fput(filp);
+ 	while (!list_empty(dentries)) {</pre><hr><pre>commit 2c5e76158fcea6e3b9536a74efa7b5e2e846d374
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Nov 20 14:36:17 2008 -0600
+
+    nfsd: clean up grace period on early exit
+    
+    If nfsd was shut down before the grace period ended, we could end up
+    with a freed object still on grace_list.  Thanks to Jeff Moyer for
+    reporting the resulting list corruption warnings.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Tested-by: Jeff Moyer &lt;jmoyer@redhat.com&gt;
+
+diff --git a/fs/lockd/svc.c b/fs/lockd/svc.c
+index c631a83931ce..56b076736b56 100644
+--- a/fs/lockd/svc.c
++++ b/fs/lockd/svc.c
+@@ -181,6 +181,7 @@ lockd(void *vrqstp)
+ 	}
+ 	flush_signals(current);
+ 	cancel_delayed_work_sync(&amp;grace_period_end);
++	locks_end_grace(&amp;lockd_manager);
+ 	if (nlmsvc_ops)
+ 		nlmsvc_invalidate_all();
+ 	nlm_shutdown_hosts();
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index b0bebc552a11..1a052ac2bde9 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -3261,6 +3261,7 @@ nfs4_state_shutdown(void)
+ {
+ 	cancel_rearming_delayed_workqueue(laundry_wq, &amp;laundromat_work);
+ 	destroy_workqueue(laundry_wq);
++	locks_end_grace(&amp;nfsd4_manager);
+ 	nfs4_lock_state();
+ 	nfs4_release_reclaim();
+ 	__nfs4_state_shutdown();</pre><hr><pre>commit 8d7c4203c681a3ec359eccff4e53bc8c0ccf403b
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Oct 30 13:48:33 2008 -0400
+
+    nfsd: fix failure to set eof in readdir in some situations
+    
+    Before 14f7dd632011bb89c035722edd6ea0d90ca6b078 "[PATCH] Copy XFS
+    readdir hack into nfsd code", readdir_cd-&gt;err was reset to eof before
+    each call to vfs_readdir; afterwards, it is set only once.  Similarly,
+    c002a6c7977320f95b5edede5ce4e0eeecf291ff "[PATCH] Optimise NFS readdir
+    hack slightly", can cause us to exit without nfserr_eof set.  Fix this.
+    
+    This ensures the "eof" bit is set when needed in readdir replies.  (The
+    particular case I saw was an nfsv4 readdir of an empty directory, which
+    returned with no entries (the protocol requires "." and ".." to be
+    filtered out), but with eof unset.)
+    
+    Cc: David Woodhouse &lt;David.Woodhouse@intel.com&gt;
+    Cc: Al Viro &lt;viro@zeniv.linux.org.uk&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 0bc56f6d9276..848a03e83a42 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -1912,6 +1912,7 @@ static int nfsd_buffered_readdir(struct file *file, filldir_t func,
+ 			de = (struct buffered_dirent *)((char *)de + reclen);
+ 		}
+ 		offset = vfs_llseek(file, 0, SEEK_CUR);
++		cdp-&gt;err = nfserr_eof;
+ 		if (!buf.full)
+ 			break;
+ 	}</pre><hr><pre>commit 30bc4dfd3b64eb1fbefe2c63e30d8fc129273e20
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Oct 20 16:34:21 2008 -0400
+
+    nfsd: clean up expkey_parse error cases
+    
+    We might as well do all of these at the end.  Fix up a couple minor
+    style nits while we're there.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/export.c b/fs/nfsd/export.c
+index 7ce2c6e4e23e..5cd882b8871a 100644
+--- a/fs/nfsd/export.c
++++ b/fs/nfsd/export.c
+@@ -99,7 +99,7 @@ static int expkey_parse(struct cache_detail *cd, char *mesg, int mlen)
+ 	int fsidtype;
+ 	char *ep;
+ 	struct svc_expkey key;
+-	struct svc_expkey *ek;
++	struct svc_expkey *ek = NULL;
+ 
+ 	if (mesg[mlen-1] != '\n')
+ 		return -EINVAL;
+@@ -107,7 +107,8 @@ static int expkey_parse(struct cache_detail *cd, char *mesg, int mlen)
+ 
+ 	buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+ 	err = -ENOMEM;
+-	if (!buf) goto out;
++	if (!buf)
++		goto out;
+ 
+ 	err = -EINVAL;
+ 	if ((len=qword_get(&amp;mesg, buf, PAGE_SIZE)) &lt;= 0)
+@@ -151,38 +152,34 @@ static int expkey_parse(struct cache_detail *cd, char *mesg, int mlen)
+ 
+ 	/* now we want a pathname, or empty meaning NEGATIVE  */
+ 	err = -EINVAL;
+-	if ((len=qword_get(&amp;mesg, buf, PAGE_SIZE)) &lt; 0) {
+-		cache_put(&amp;ek-&gt;h, &amp;svc_expkey_cache);
++	len = qword_get(&amp;mesg, buf, PAGE_SIZE);
++	if (len &lt; 0)
+ 		goto out;
+-	}
+ 	dprintk("Path seems to be &lt;%s&gt;\n", buf);
+ 	err = 0;
+ 	if (len == 0) {
+ 		set_bit(CACHE_NEGATIVE, &amp;key.h.flags);
+ 		ek = svc_expkey_update(&amp;key, ek);
+-		if (ek)
+-			cache_put(&amp;ek-&gt;h, &amp;svc_expkey_cache);
+-		else err = -ENOMEM;
++		if (!ek)
++			err = -ENOMEM;
+ 	} else {
+ 		struct nameidata nd;
+ 		err = path_lookup(buf, 0, &amp;nd);
+-		if (err) {
+-			cache_put(&amp;ek-&gt;h, &amp;svc_expkey_cache);
++		if (err)
+ 			goto out;
+-		}
+ 
+ 		dprintk("Found the path %s\n", buf);
+ 		key.ek_path = nd.path;
+ 
+ 		ek = svc_expkey_update(&amp;key, ek);
+-		if (ek)
+-			cache_put(&amp;ek-&gt;h, &amp;svc_expkey_cache);
+-		else
++		if (!ek)
+ 			err = -ENOMEM;
+ 		path_put(&amp;nd.path);
+ 	}
+ 	cache_flush();
+  out:
++	if (ek)
++		cache_put(&amp;ek-&gt;h, &amp;svc_expkey_cache);
+ 	if (dom)
+ 		auth_domain_put(dom);
+ 	kfree(buf);</pre>
+    <div class="pagination">
+        <a href='4_27.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><span>[28]</span><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_29.html'>Next&gt;&gt;</a>
+    <div>
+</body>

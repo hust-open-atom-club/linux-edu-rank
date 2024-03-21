@@ -1,0 +1,1315 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_21.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><span>[22]</span><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_23.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit e5bd7b54e93ef7151469a12b8c28d863b9f8a088
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Sep 24 11:46:10 2008 -0500
+
+    [SCSI] libiscsi: Support drivers initiating session removal
+    
+    If the driver knows when hardware is removed like with cxgb3i,
+    bnx2i, qla4xxx and iser then we will want to remove the sessions/devices
+    that are bound to that device before removing the host.
+    
+    cxgb3i and in the future bnx2i will remove the host and that will
+    remove all the sessions on the hba. iser can call iscsi_kill_session
+    when it gets an event that indicates that a hca is removed.
+    And when qla4xxx is hooked in to the lib (it is only hooked into
+    the class right now) it can call iscsi remove host like the
+    partial offload card drivers.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/infiniband/ulp/iser/iscsi_iser.c b/drivers/infiniband/ulp/iser/iscsi_iser.c
+index 5a1cf2580e16..0474da173eb1 100644
+--- a/drivers/infiniband/ulp/iser/iscsi_iser.c
++++ b/drivers/infiniband/ulp/iser/iscsi_iser.c
+@@ -378,6 +378,7 @@ static void iscsi_iser_session_destroy(struct iscsi_cls_session *cls_session)
+ {
+ 	struct Scsi_Host *shost = iscsi_session_to_shost(cls_session);
+ 
++	iscsi_session_teardown(cls_session);
+ 	iscsi_host_remove(shost);
+ 	iscsi_host_free(shost);
+ }
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index e960f00da93a..752f42884cc1 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -1885,6 +1885,7 @@ static void iscsi_tcp_session_destroy(struct iscsi_cls_session *cls_session)
+ 	struct Scsi_Host *shost = iscsi_session_to_shost(cls_session);
+ 
+ 	iscsi_r2tpool_free(cls_session-&gt;dd_data);
++	iscsi_session_teardown(cls_session);
+ 
+ 	iscsi_host_remove(shost);
+ 	iscsi_host_free(shost);
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index f9539af28f02..390781894be9 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -983,6 +983,38 @@ struct iscsi_task *iscsi_itt_to_ctask(struct iscsi_conn *conn, itt_t itt)
+ }
+ EXPORT_SYMBOL_GPL(iscsi_itt_to_ctask);
+ 
++void iscsi_session_failure(struct iscsi_cls_session *cls_session,
++			   enum iscsi_err err)
++{
++	struct iscsi_session *session = cls_session-&gt;dd_data;
++	struct iscsi_conn *conn;
++	struct device *dev;
++	unsigned long flags;
++
++	spin_lock_irqsave(&amp;session-&gt;lock, flags);
++	conn = session-&gt;leadconn;
++	if (session-&gt;state == ISCSI_STATE_TERMINATE || !conn) {
++		spin_unlock_irqrestore(&amp;session-&gt;lock, flags);
++		return;
++	}
++
++	dev = get_device(&amp;conn-&gt;cls_conn-&gt;dev);
++	spin_unlock_irqrestore(&amp;session-&gt;lock, flags);
++	if (!dev)
++	        return;
++	/*
++	 * if the host is being removed bypass the connection
++	 * recovery initialization because we are going to kill
++	 * the session.
++	 */
++	if (err == ISCSI_ERR_INVALID_HOST)
++		iscsi_conn_error_event(conn-&gt;cls_conn, err);
++	else
++		iscsi_conn_failure(conn, err);
++	put_device(dev);
++}
++EXPORT_SYMBOL_GPL(iscsi_session_failure);
++
+ void iscsi_conn_failure(struct iscsi_conn *conn, enum iscsi_err err)
+ {
+ 	struct iscsi_session *session = conn-&gt;session;
+@@ -997,9 +1029,10 @@ void iscsi_conn_failure(struct iscsi_conn *conn, enum iscsi_err err)
+ 	if (conn-&gt;stop_stage == 0)
+ 		session-&gt;state = ISCSI_STATE_FAILED;
+ 	spin_unlock_irqrestore(&amp;session-&gt;lock, flags);
++
+ 	set_bit(ISCSI_SUSPEND_BIT, &amp;conn-&gt;suspend_tx);
+ 	set_bit(ISCSI_SUSPEND_BIT, &amp;conn-&gt;suspend_rx);
+-	iscsi_conn_error(conn-&gt;cls_conn, err);
++	iscsi_conn_error_event(conn-&gt;cls_conn, err);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_conn_failure);
+ 
+@@ -1905,6 +1938,7 @@ struct Scsi_Host *iscsi_host_alloc(struct scsi_host_template *sht,
+ 				   int dd_data_size, uint16_t qdepth)
+ {
+ 	struct Scsi_Host *shost;
++	struct iscsi_host *ihost;
+ 
+ 	shost = scsi_host_alloc(sht, sizeof(struct iscsi_host) + dd_data_size);
+ 	if (!shost)
+@@ -1919,22 +1953,43 @@ struct Scsi_Host *iscsi_host_alloc(struct scsi_host_template *sht,
+ 		qdepth = ISCSI_DEF_CMD_PER_LUN;
+ 	}
+ 	shost-&gt;cmd_per_lun = qdepth;
++
++	ihost = shost_priv(shost);
++	spin_lock_init(&amp;ihost-&gt;lock);
++	ihost-&gt;state = ISCSI_HOST_SETUP;
++	ihost-&gt;num_sessions = 0;
++	init_waitqueue_head(&amp;ihost-&gt;session_removal_wq);
+ 	return shost;
+ }
+ EXPORT_SYMBOL_GPL(iscsi_host_alloc);
+ 
++static void iscsi_notify_host_removed(struct iscsi_cls_session *cls_session)
++{
++	iscsi_session_failure(cls_session, ISCSI_ERR_INVALID_HOST);
++}
++
+ /**
+  * iscsi_host_remove - remove host and sessions
+  * @shost: scsi host
+  *
+- * This will also remove any sessions attached to the host, but if userspace
+- * is managing the session at the same time this will break. TODO: add
+- * refcounting to the netlink iscsi interface so a rmmod or host hot unplug
+- * does not remove the memory from under us.
++ * If there are any sessions left, this will initiate the removal and wait
++ * for the completion.
+  */
+ void iscsi_host_remove(struct Scsi_Host *shost)
+ {
+-	iscsi_host_for_each_session(shost, iscsi_session_teardown);
++	struct iscsi_host *ihost = shost_priv(shost);
++	unsigned long flags;
++
++	spin_lock_irqsave(&amp;ihost-&gt;lock, flags);
++	ihost-&gt;state = ISCSI_HOST_REMOVED;
++	spin_unlock_irqrestore(&amp;ihost-&gt;lock, flags);
++
++	iscsi_host_for_each_session(shost, iscsi_notify_host_removed);
++	wait_event_interruptible(ihost-&gt;session_removal_wq,
++				 ihost-&gt;num_sessions == 0);
++	if (signal_pending(current))
++		flush_signals(current);
++
+ 	scsi_remove_host(shost);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_host_remove);
+@@ -1950,6 +2005,27 @@ void iscsi_host_free(struct Scsi_Host *shost)
+ }
+ EXPORT_SYMBOL_GPL(iscsi_host_free);
+ 
++static void iscsi_host_dec_session_cnt(struct Scsi_Host *shost)
++{
++	struct iscsi_host *ihost = shost_priv(shost);
++	unsigned long flags;
++
++	shost = scsi_host_get(shost);
++	if (!shost) {
++		printk(KERN_ERR "Invalid state. Cannot notify host removal "
++		      "of session teardown event because host already "
++		      "removed.\n");
++		return;
++	}
++
++	spin_lock_irqsave(&amp;ihost-&gt;lock, flags);
++	ihost-&gt;num_sessions--;
++	if (ihost-&gt;num_sessions == 0)
++		wake_up(&amp;ihost-&gt;session_removal_wq);
++	spin_unlock_irqrestore(&amp;ihost-&gt;lock, flags);
++	scsi_host_put(shost);
++}
++
+ /**
+  * iscsi_session_setup - create iscsi cls session and host and session
+  * @iscsit: iscsi transport template
+@@ -1970,9 +2046,19 @@ iscsi_session_setup(struct iscsi_transport *iscsit, struct Scsi_Host *shost,
+ 		    uint16_t cmds_max, int cmd_task_size,
+ 		    uint32_t initial_cmdsn, unsigned int id)
+ {
++	struct iscsi_host *ihost = shost_priv(shost);
+ 	struct iscsi_session *session;
+ 	struct iscsi_cls_session *cls_session;
+ 	int cmd_i, scsi_cmds, total_cmds = cmds_max;
++	unsigned long flags;
++
++	spin_lock_irqsave(&amp;ihost-&gt;lock, flags);
++	if (ihost-&gt;state == ISCSI_HOST_REMOVED) {
++		spin_unlock_irqrestore(&amp;ihost-&gt;lock, flags);
++		return NULL;
++	}
++	ihost-&gt;num_sessions++;
++	spin_unlock_irqrestore(&amp;ihost-&gt;lock, flags);
+ 
+ 	if (!total_cmds)
+ 		total_cmds = ISCSI_DEF_XMIT_CMDS_MAX;
+@@ -1985,7 +2071,7 @@ iscsi_session_setup(struct iscsi_transport *iscsit, struct Scsi_Host *shost,
+ 		printk(KERN_ERR "iscsi: invalid can_queue of %d. can_queue "
+ 		       "must be a power of two that is at least %d.\n",
+ 		       total_cmds, ISCSI_TOTAL_CMDS_MIN);
+-		return NULL;
++		goto dec_session_count;
+ 	}
+ 
+ 	if (total_cmds &gt; ISCSI_TOTAL_CMDS_MAX) {
+@@ -2009,7 +2095,7 @@ iscsi_session_setup(struct iscsi_transport *iscsit, struct Scsi_Host *shost,
+ 	cls_session = iscsi_alloc_session(shost, iscsit,
+ 					  sizeof(struct iscsi_session));
+ 	if (!cls_session)
+-		return NULL;
++		goto dec_session_count;
+ 	session = cls_session-&gt;dd_data;
+ 	session-&gt;cls_session = cls_session;
+ 	session-&gt;host = shost;
+@@ -2048,6 +2134,7 @@ iscsi_session_setup(struct iscsi_transport *iscsit, struct Scsi_Host *shost,
+ 
+ 	if (iscsi_add_session(cls_session, id))
+ 		goto cls_session_fail;
++
+ 	return cls_session;
+ 
+ cls_session_fail:
+@@ -2056,6 +2143,8 @@ iscsi_session_setup(struct iscsi_transport *iscsit, struct Scsi_Host *shost,
+ 	iscsi_pool_free(&amp;session-&gt;cmdpool);
+ cmdpool_alloc_fail:
+ 	iscsi_free_session(cls_session);
++dec_session_count:
++	iscsi_host_dec_session_cnt(shost);
+ 	return NULL;
+ }
+ EXPORT_SYMBOL_GPL(iscsi_session_setup);
+@@ -2071,6 +2160,7 @@ void iscsi_session_teardown(struct iscsi_cls_session *cls_session)
+ {
+ 	struct iscsi_session *session = cls_session-&gt;dd_data;
+ 	struct module *owner = cls_session-&gt;transport-&gt;owner;
++	struct Scsi_Host *shost = session-&gt;host;
+ 
+ 	iscsi_pool_free(&amp;session-&gt;cmdpool);
+ 
+@@ -2083,6 +2173,7 @@ void iscsi_session_teardown(struct iscsi_cls_session *cls_session)
+ 	kfree(session-&gt;ifacename);
+ 
+ 	iscsi_destroy_session(cls_session);
++	iscsi_host_dec_session_cnt(shost);
+ 	module_put(owner);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_session_teardown);
+diff --git a/drivers/scsi/qla4xxx/ql4_os.c b/drivers/scsi/qla4xxx/ql4_os.c
+index 4255b36ff968..db7ea3bb4e83 100644
+--- a/drivers/scsi/qla4xxx/ql4_os.c
++++ b/drivers/scsi/qla4xxx/ql4_os.c
+@@ -353,7 +353,7 @@ void qla4xxx_mark_device_missing(struct scsi_qla_host *ha,
+ 		      ha-&gt;host_no, ddb_entry-&gt;bus, ddb_entry-&gt;target,
+ 		      ddb_entry-&gt;fw_ddb_index));
+ 	iscsi_block_session(ddb_entry-&gt;sess);
+-	iscsi_conn_error(ddb_entry-&gt;conn, ISCSI_ERR_CONN_FAILED);
++	iscsi_conn_error_event(ddb_entry-&gt;conn, ISCSI_ERR_CONN_FAILED);
+ }
+ 
+ static struct srb* qla4xxx_get_new_srb(struct scsi_qla_host *ha,
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index cbaae48f47ed..f9e45f83e467 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -1010,7 +1010,7 @@ int iscsi_recv_pdu(struct iscsi_cls_conn *conn, struct iscsi_hdr *hdr,
+ 
+ 	skb = alloc_skb(len, GFP_ATOMIC);
+ 	if (!skb) {
+-		iscsi_conn_error(conn, ISCSI_ERR_CONN_FAILED);
++		iscsi_conn_error_event(conn, ISCSI_ERR_CONN_FAILED);
+ 		iscsi_cls_conn_printk(KERN_ERR, conn, "can not deliver "
+ 				      "control PDU: OOM\n");
+ 		return -ENOMEM;
+@@ -1031,7 +1031,7 @@ int iscsi_recv_pdu(struct iscsi_cls_conn *conn, struct iscsi_hdr *hdr,
+ }
+ EXPORT_SYMBOL_GPL(iscsi_recv_pdu);
+ 
+-void iscsi_conn_error(struct iscsi_cls_conn *conn, enum iscsi_err error)
++void iscsi_conn_error_event(struct iscsi_cls_conn *conn, enum iscsi_err error)
+ {
+ 	struct nlmsghdr	*nlh;
+ 	struct sk_buff	*skb;
+@@ -1063,7 +1063,7 @@ void iscsi_conn_error(struct iscsi_cls_conn *conn, enum iscsi_err error)
+ 	iscsi_cls_conn_printk(KERN_INFO, conn, "detected conn error (%d)\n",
+ 			      error);
+ }
+-EXPORT_SYMBOL_GPL(iscsi_conn_error);
++EXPORT_SYMBOL_GPL(iscsi_conn_error_event);
+ 
+ static int
+ iscsi_if_send_reply(int pid, int seq, int type, int done, int multi,
+diff --git a/include/scsi/iscsi_if.h b/include/scsi/iscsi_if.h
+index 16be12f1cbe8..f274d248a91f 100644
+--- a/include/scsi/iscsi_if.h
++++ b/include/scsi/iscsi_if.h
+@@ -213,6 +213,7 @@ enum iscsi_err {
+ 	ISCSI_ERR_DATA_DGST		= ISCSI_ERR_BASE + 15,
+ 	ISCSI_ERR_PARAM_NOT_FOUND	= ISCSI_ERR_BASE + 16,
+ 	ISCSI_ERR_NO_SCSI_CMD		= ISCSI_ERR_BASE + 17,
++	ISCSI_ERR_INVALID_HOST		= ISCSI_ERR_BASE + 18,
+ };
+ 
+ /*
+diff --git a/include/scsi/libiscsi.h b/include/scsi/libiscsi.h
+index 5e75bb7f311c..7d8cd159f592 100644
+--- a/include/scsi/libiscsi.h
++++ b/include/scsi/libiscsi.h
+@@ -287,6 +287,11 @@ struct iscsi_session {
+ 	struct iscsi_pool	cmdpool;	/* PDU's pool */
+ };
+ 
++enum {
++	ISCSI_HOST_SETUP,
++	ISCSI_HOST_REMOVED,
++};
++
+ struct iscsi_host {
+ 	char			*initiatorname;
+ 	/* hw address or netdev iscsi connection is bound to */
+@@ -295,6 +300,12 @@ struct iscsi_host {
+ 	/* local address */
+ 	int			local_port;
+ 	char			local_address[ISCSI_ADDRESS_BUF_LEN];
++
++	wait_queue_head_t	session_removal_wq;
++	/* protects sessions and state */
++	spinlock_t		lock;
++	int			num_sessions;
++	int			state;
+ };
+ 
+ /*
+@@ -351,6 +362,8 @@ extern void iscsi_conn_stop(struct iscsi_cls_conn *, int);
+ extern int iscsi_conn_bind(struct iscsi_cls_session *, struct iscsi_cls_conn *,
+ 			   int);
+ extern void iscsi_conn_failure(struct iscsi_conn *conn, enum iscsi_err err);
++extern void iscsi_session_failure(struct iscsi_cls_session *cls_session,
++				  enum iscsi_err err);
+ extern int iscsi_conn_get_param(struct iscsi_cls_conn *cls_conn,
+ 				enum iscsi_param param, char *buf);
+ extern void iscsi_suspend_tx(struct iscsi_conn *conn);
+diff --git a/include/scsi/scsi_transport_iscsi.h b/include/scsi/scsi_transport_iscsi.h
+index 8b6c91df4c7a..8749d4d8e244 100644
+--- a/include/scsi/scsi_transport_iscsi.h
++++ b/include/scsi/scsi_transport_iscsi.h
+@@ -135,7 +135,8 @@ extern int iscsi_unregister_transport(struct iscsi_transport *tt);
+ /*
+  * control plane upcalls
+  */
+-extern void iscsi_conn_error(struct iscsi_cls_conn *conn, enum iscsi_err error);
++extern void iscsi_conn_error_event(struct iscsi_cls_conn *conn,
++				   enum iscsi_err error);
+ extern int iscsi_recv_pdu(struct iscsi_cls_conn *conn, struct iscsi_hdr *hdr,
+ 			  char *data, uint32_t data_size);
+ </pre><hr><pre>commit 1d9edf0270cb5a434d32e95279ce9493581906b3
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Sep 24 11:46:09 2008 -0500
+
+    [SCSI] libiscsi: fix data corruption when target has to resend data-in packets
+    
+    iscsi_tcp was updating the exp_statsn (exp_statsn acknowledges
+    status and tells the target it is ok to let the resources for
+    a iscsi pdu to be reused) before it got all the data for pdu read
+    into OS buffers. Data corruption was occuring if something happens
+    to a packet and the network layer requests a retransmit, and the
+    initiator has told the target about the udpated exp_statsn ack,
+    then the target may be sending data from a buffer it has reused
+    for a new iscsi pdu. This fixes the problem by having the LLD
+    (iscsi_tcp in this case) just handle the transferring of data, and
+    has libiscsi handle the processing of status (libiscsi completion
+    processing is done after LLD data transfers are complete).
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 2a2f0094570f..e960f00da93a 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -523,22 +523,20 @@ iscsi_tcp_cleanup_task(struct iscsi_conn *conn, struct iscsi_task *task)
+ }
+ 
+ /**
+- * iscsi_data_rsp - SCSI Data-In Response processing
++ * iscsi_data_in - SCSI Data-In Response processing
+  * @conn: iscsi connection
+  * @task: scsi command task
+  **/
+ static int
+-iscsi_data_rsp(struct iscsi_conn *conn, struct iscsi_task *task)
++iscsi_data_in(struct iscsi_conn *conn, struct iscsi_task *task)
+ {
+ 	struct iscsi_tcp_conn *tcp_conn = conn-&gt;dd_data;
+ 	struct iscsi_tcp_task *tcp_task = task-&gt;dd_data;
+ 	struct iscsi_data_rsp *rhdr = (struct iscsi_data_rsp *)tcp_conn-&gt;in.hdr;
+-	struct iscsi_session *session = conn-&gt;session;
+-	struct scsi_cmnd *sc = task-&gt;sc;
+ 	int datasn = be32_to_cpu(rhdr-&gt;datasn);
+-	unsigned total_in_length = scsi_in(sc)-&gt;length;
++	unsigned total_in_length = scsi_in(task-&gt;sc)-&gt;length;
+ 
+-	iscsi_update_cmdsn(session, (struct iscsi_nopin*)rhdr);
++	iscsi_update_cmdsn(conn-&gt;session, (struct iscsi_nopin*)rhdr);
+ 	if (tcp_conn-&gt;in.datalen == 0)
+ 		return 0;
+ 
+@@ -558,23 +556,6 @@ iscsi_data_rsp(struct iscsi_conn *conn, struct iscsi_task *task)
+ 		return ISCSI_ERR_DATA_OFFSET;
+ 	}
+ 
+-	if (rhdr-&gt;flags &amp; ISCSI_FLAG_DATA_STATUS) {
+-		sc-&gt;result = (DID_OK &lt;&lt; 16) | rhdr-&gt;cmd_status;
+-		conn-&gt;exp_statsn = be32_to_cpu(rhdr-&gt;statsn) + 1;
+-		if (rhdr-&gt;flags &amp; (ISCSI_FLAG_DATA_UNDERFLOW |
+-		                   ISCSI_FLAG_DATA_OVERFLOW)) {
+-			int res_count = be32_to_cpu(rhdr-&gt;residual_count);
+-
+-			if (res_count &gt; 0 &amp;&amp;
+-			    (rhdr-&gt;flags &amp; ISCSI_FLAG_CMD_OVERFLOW ||
+-			     res_count &lt;= total_in_length))
+-				scsi_in(sc)-&gt;resid = res_count;
+-			else
+-				sc-&gt;result = (DID_BAD_TARGET &lt;&lt; 16) |
+-					rhdr-&gt;cmd_status;
+-		}
+-	}
+-
+ 	conn-&gt;datain_pdus_cnt++;
+ 	return 0;
+ }
+@@ -774,7 +755,7 @@ iscsi_tcp_hdr_dissect(struct iscsi_conn *conn, struct iscsi_hdr *hdr)
+ 		if (!task)
+ 			rc = ISCSI_ERR_BAD_ITT;
+ 		else
+-			rc = iscsi_data_rsp(conn, task);
++			rc = iscsi_data_in(conn, task);
+ 		if (rc) {
+ 			spin_unlock(&amp;conn-&gt;session-&gt;lock);
+ 			break;
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 0e8f26baca6e..f9539af28f02 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -633,6 +633,40 @@ static void iscsi_scsi_cmd_rsp(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 	__iscsi_put_task(task);
+ }
+ 
++/**
++ * iscsi_data_in_rsp - SCSI Data-In Response processing
++ * @conn: iscsi connection
++ * @hdr:  iscsi pdu
++ * @task: scsi command task
++ **/
++static void
++iscsi_data_in_rsp(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
++		  struct iscsi_task *task)
++{
++	struct iscsi_data_rsp *rhdr = (struct iscsi_data_rsp *)hdr;
++	struct scsi_cmnd *sc = task-&gt;sc;
++
++	if (!(rhdr-&gt;flags &amp; ISCSI_FLAG_DATA_STATUS))
++		return;
++
++	sc-&gt;result = (DID_OK &lt;&lt; 16) | rhdr-&gt;cmd_status;
++	conn-&gt;exp_statsn = be32_to_cpu(rhdr-&gt;statsn) + 1;
++	if (rhdr-&gt;flags &amp; (ISCSI_FLAG_DATA_UNDERFLOW |
++	                   ISCSI_FLAG_DATA_OVERFLOW)) {
++		int res_count = be32_to_cpu(rhdr-&gt;residual_count);
++
++		if (res_count &gt; 0 &amp;&amp;
++		    (rhdr-&gt;flags &amp; ISCSI_FLAG_CMD_OVERFLOW ||
++		     res_count &lt;= scsi_in(sc)-&gt;length))
++			scsi_in(sc)-&gt;resid = res_count;
++		else
++			sc-&gt;result = (DID_BAD_TARGET &lt;&lt; 16) | rhdr-&gt;cmd_status;
++	}
++
++	conn-&gt;scsirsp_pdus_cnt++;
++	__iscsi_put_task(task);
++}
++
+ static void iscsi_tmf_rsp(struct iscsi_conn *conn, struct iscsi_hdr *hdr)
+ {
+ 	struct iscsi_tm_rsp *tmf = (struct iscsi_tm_rsp *)hdr;
+@@ -818,12 +852,7 @@ int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 		iscsi_scsi_cmd_rsp(conn, hdr, task, data, datalen);
+ 		break;
+ 	case ISCSI_OP_SCSI_DATA_IN:
+-		if (hdr-&gt;flags &amp; ISCSI_FLAG_DATA_STATUS) {
+-			conn-&gt;scsirsp_pdus_cnt++;
+-			iscsi_update_cmdsn(session,
+-					   (struct iscsi_nopin*) hdr);
+-			__iscsi_put_task(task);
+-		}
++		iscsi_data_in_rsp(conn, hdr, task);
+ 		break;
+ 	case ISCSI_OP_LOGOUT_RSP:
+ 		iscsi_update_cmdsn(session, (struct iscsi_nopin*)hdr);</pre><hr><pre>commit 64f84bc1cf49aa5e0c4b945b434e5d4b74e0831d
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sat Sep 6 08:39:16 2008 -0500
+
+    [SCSI] scsi_dh_alua: remove REQ_NOMERGE
+    
+    We do not need to set REQ_NOMERGE because when the module calls
+    blk_execute_rq -&gt; blk_execute_rq_nowait, blk_execute_rq_nowait sets
+    it for us. This brings all the modules in sync for those bits.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/device_handler/scsi_dh_alua.c b/drivers/scsi/device_handler/scsi_dh_alua.c
+index cb8aa3b58c22..e356b43753ff 100644
+--- a/drivers/scsi/device_handler/scsi_dh_alua.c
++++ b/drivers/scsi/device_handler/scsi_dh_alua.c
+@@ -110,7 +110,7 @@ static struct request *get_alua_req(struct scsi_device *sdev,
+ 
+ 	rq-&gt;cmd_type = REQ_TYPE_BLOCK_PC;
+ 	rq-&gt;cmd_flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
+-			 REQ_FAILFAST_DRIVER | REQ_NOMERGE;
++			 REQ_FAILFAST_DRIVER;
+ 	rq-&gt;retries = ALUA_FAILOVER_RETRIES;
+ 	rq-&gt;timeout = ALUA_FAILOVER_TIMEOUT;
+ </pre><hr><pre>commit 4a27446f3e39b06c28d1c8e31d33a5340826ed5c
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Aug 19 18:45:31 2008 -0500
+
+    [SCSI] modify scsi to handle new fail fast flags.
+    
+    This checks the errors the scsi-ml determined were retryable
+    and returns if we should fast fail it based on the request
+    fail fast flags.
+    
+    Without the patch, drivers like lpfc, qla2xxx and fcoe would return
+    DID_ERROR for what it determines is a temporary communication problem.
+    There is no loss of connectivity at that time and the driver thinks
+    that it would be fast to retry at the driver level. SCSI-ml will however
+    sees fast fail on the request and DID_ERROR and will fast fail the io.
+    This will then cause dm-multipath to fail the path and possibley switch
+    target controllers when we should be retrying at the scsi layer.
+    
+    We also were fast failing device errors to dm multiapth when
+    unless the scsi_dh modules think otherwis we want to retry at
+    the scsi layer because multipath can only retry the IO like scsi
+    should have done. multipath is a little dumber though because it
+    does not what the error was for and assumes that it should fail
+    the paths.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/scsi_error.c b/drivers/scsi/scsi_error.c
+index 5bf8be21a165..ad019ece2139 100644
+--- a/drivers/scsi/scsi_error.c
++++ b/drivers/scsi/scsi_error.c
+@@ -1218,6 +1218,40 @@ static void scsi_eh_offline_sdevs(struct list_head *work_q,
+ 	return;
+ }
+ 
++/**
++ * scsi_noretry_cmd - determinte if command should be failed fast
++ * @scmd:	SCSI cmd to examine.
++ */
++int scsi_noretry_cmd(struct scsi_cmnd *scmd)
++{
++	switch (host_byte(scmd-&gt;result)) {
++	case DID_OK:
++		break;
++	case DID_BUS_BUSY:
++		return blk_failfast_transport(scmd-&gt;request);
++	case DID_PARITY:
++		return blk_failfast_dev(scmd-&gt;request);
++	case DID_ERROR:
++		if (msg_byte(scmd-&gt;result) == COMMAND_COMPLETE &amp;&amp;
++		    status_byte(scmd-&gt;result) == RESERVATION_CONFLICT)
++			return 0;
++		/* fall through */
++	case DID_SOFT_ERROR:
++		return blk_failfast_driver(scmd-&gt;request);
++	}
++
++	switch (status_byte(scmd-&gt;result)) {
++	case CHECK_CONDITION:
++		/*
++		 * assume caller has checked sense and determinted
++		 * the check condition was retryable.
++		 */
++		return blk_failfast_dev(scmd-&gt;request);
++	}
++
++	return 0;
++}
++
+ /**
+  * scsi_decide_disposition - Disposition a cmd on return from LLD.
+  * @scmd:	SCSI cmd to examine.
+@@ -1396,7 +1430,7 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
+ 	 * even if the request is marked fast fail, we still requeue
+ 	 * for queue congestion conditions (QUEUE_FULL or BUSY) */
+ 	if ((++scmd-&gt;retries) &lt;= scmd-&gt;allowed
+-	    &amp;&amp; !blk_noretry_request(scmd-&gt;request)) {
++	    &amp;&amp; !scsi_noretry_cmd(scmd)) {
+ 		return NEEDS_RETRY;
+ 	} else {
+ 		/*
+@@ -1521,7 +1555,7 @@ void scsi_eh_flush_done_q(struct list_head *done_q)
+ 	list_for_each_entry_safe(scmd, next, done_q, eh_entry) {
+ 		list_del_init(&amp;scmd-&gt;eh_entry);
+ 		if (scsi_device_online(scmd-&gt;device) &amp;&amp;
+-		    !blk_noretry_request(scmd-&gt;request) &amp;&amp;
++		    !scsi_noretry_cmd(scmd) &amp;&amp;
+ 		    (++scmd-&gt;retries &lt;= scmd-&gt;allowed)) {
+ 			SCSI_LOG_ERROR_RECOVERY(3, printk("%s: flush"
+ 							  " retry cmd: %p\n",
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index 91c74c55aa5e..e5a9526d2037 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -706,7 +706,7 @@ static struct scsi_cmnd *scsi_end_request(struct scsi_cmnd *cmd, int error,
+ 			leftover = req-&gt;data_len;
+ 
+ 		/* kill remainder if no retrys */
+-		if (error &amp;&amp; blk_noretry_request(req))
++		if (error &amp;&amp; scsi_noretry_cmd(cmd))
+ 			blk_end_request(req, error, leftover);
+ 		else {
+ 			if (requeue) {
+diff --git a/drivers/scsi/scsi_priv.h b/drivers/scsi/scsi_priv.h
+index 6cddd5dd323c..e1850904ff73 100644
+--- a/drivers/scsi/scsi_priv.h
++++ b/drivers/scsi/scsi_priv.h
+@@ -59,6 +59,7 @@ void scsi_eh_ready_devs(struct Scsi_Host *shost,
+ 			struct list_head *done_q);
+ int scsi_eh_get_sense(struct list_head *work_q,
+ 		      struct list_head *done_q);
++int scsi_noretry_cmd(struct scsi_cmnd *scmd);
+ 
+ /* scsi_lib.c */
+ extern int scsi_maybe_unblock_host(struct scsi_device *sdev);</pre><hr><pre>commit 6000a368cd8e6da1caf101411bdb494cd6fb8b09
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Aug 19 18:45:30 2008 -0500
+
+    [SCSI] block: separate failfast into multiple bits.
+    
+    Multipath is best at handling transport errors. If it gets a device
+    error then there is not much the multipath layer can do. It will just
+    access the same device but from a different path.
+    
+    This patch breaks up failfast into device, transport and driver errors.
+    The multipath layers (md and dm mutlipath) only ask the lower levels to
+    fast fail transport errors. The user of failfast, read ahead, will ask
+    to fast fail on all errors.
+    
+    Note that blk_noretry_request will return true if any failfast bit
+    is set. This allows drivers that do not support the multipath failfast
+    bits to continue to fail on any failfast error like before. Drivers
+    like scsi that are able to fail fast specific errors can check
+    for the specific fail fast type. In the next patch I will convert
+    scsi.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Cc: Jens Axboe &lt;jens.axboe@oracle.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/block/blk-core.c b/block/blk-core.c
+index 2d053b584410..9e79a485e4f3 100644
+--- a/block/blk-core.c
++++ b/block/blk-core.c
+@@ -1075,8 +1075,15 @@ void init_request_from_bio(struct request *req, struct bio *bio)
+ 	/*
+ 	 * inherit FAILFAST from bio (for read-ahead, and explicit FAILFAST)
+ 	 */
+-	if (bio_rw_ahead(bio) || bio_failfast(bio))
+-		req-&gt;cmd_flags |= REQ_FAILFAST;
++	if (bio_rw_ahead(bio))
++		req-&gt;cmd_flags |= (REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
++				   REQ_FAILFAST_DRIVER);
++	if (bio_failfast_dev(bio))
++		req-&gt;cmd_flags |= REQ_FAILFAST_DEV;
++	if (bio_failfast_transport(bio))
++		req-&gt;cmd_flags |= REQ_FAILFAST_TRANSPORT;
++	if (bio_failfast_driver(bio))
++		req-&gt;cmd_flags |= REQ_FAILFAST_DRIVER;
+ 
+ 	/*
+ 	 * REQ_BARRIER implies no merging, but lets make it explicit
+diff --git a/drivers/md/dm-mpath.c b/drivers/md/dm-mpath.c
+index 103304c1e3b0..9bf3460c5540 100644
+--- a/drivers/md/dm-mpath.c
++++ b/drivers/md/dm-mpath.c
+@@ -849,7 +849,7 @@ static int multipath_map(struct dm_target *ti, struct bio *bio,
+ 	dm_bio_record(&amp;mpio-&gt;details, bio);
+ 
+ 	map_context-&gt;ptr = mpio;
+-	bio-&gt;bi_rw |= (1 &lt;&lt; BIO_RW_FAILFAST);
++	bio-&gt;bi_rw |= (1 &lt;&lt; BIO_RW_FAILFAST_TRANSPORT);
+ 	r = map_io(m, bio, mpio, 0);
+ 	if (r &lt; 0 || r == DM_MAPIO_REQUEUE)
+ 		mempool_free(mpio, m-&gt;mpio_pool);
+diff --git a/drivers/md/multipath.c b/drivers/md/multipath.c
+index 8bb8794129b3..7ae33ebaf7ec 100644
+--- a/drivers/md/multipath.c
++++ b/drivers/md/multipath.c
+@@ -176,7 +176,7 @@ static int multipath_make_request (struct request_queue *q, struct bio * bio)
+ 	mp_bh-&gt;bio = *bio;
+ 	mp_bh-&gt;bio.bi_sector += multipath-&gt;rdev-&gt;data_offset;
+ 	mp_bh-&gt;bio.bi_bdev = multipath-&gt;rdev-&gt;bdev;
+-	mp_bh-&gt;bio.bi_rw |= (1 &lt;&lt; BIO_RW_FAILFAST);
++	mp_bh-&gt;bio.bi_rw |= (1 &lt;&lt; BIO_RW_FAILFAST_TRANSPORT);
+ 	mp_bh-&gt;bio.bi_end_io = multipath_end_request;
+ 	mp_bh-&gt;bio.bi_private = mp_bh;
+ 	generic_make_request(&amp;mp_bh-&gt;bio);
+@@ -402,7 +402,7 @@ static void multipathd (mddev_t *mddev)
+ 			*bio = *(mp_bh-&gt;master_bio);
+ 			bio-&gt;bi_sector += conf-&gt;multipaths[mp_bh-&gt;path].rdev-&gt;data_offset;
+ 			bio-&gt;bi_bdev = conf-&gt;multipaths[mp_bh-&gt;path].rdev-&gt;bdev;
+-			bio-&gt;bi_rw |= (1 &lt;&lt; BIO_RW_FAILFAST);
++			bio-&gt;bi_rw |= (1 &lt;&lt; BIO_RW_FAILFAST_TRANSPORT);
+ 			bio-&gt;bi_end_io = multipath_end_request;
+ 			bio-&gt;bi_private = mp_bh;
+ 			generic_make_request(bio);
+diff --git a/drivers/s390/block/dasd_diag.c b/drivers/s390/block/dasd_diag.c
+index 85fcb4371054..7844461a995b 100644
+--- a/drivers/s390/block/dasd_diag.c
++++ b/drivers/s390/block/dasd_diag.c
+@@ -544,7 +544,7 @@ static struct dasd_ccw_req *dasd_diag_build_cp(struct dasd_device *memdev,
+ 	}
+ 	cqr-&gt;retries = DIAG_MAX_RETRIES;
+ 	cqr-&gt;buildclk = get_clock();
+-	if (req-&gt;cmd_flags &amp; REQ_FAILFAST)
++	if (blk_noretry_request(req))
+ 		set_bit(DASD_CQR_FLAGS_FAILFAST, &amp;cqr-&gt;flags);
+ 	cqr-&gt;startdev = memdev;
+ 	cqr-&gt;memdev = memdev;
+diff --git a/drivers/s390/block/dasd_eckd.c b/drivers/s390/block/dasd_eckd.c
+index 49f9d221e23d..2e60d5f968c8 100644
+--- a/drivers/s390/block/dasd_eckd.c
++++ b/drivers/s390/block/dasd_eckd.c
+@@ -1700,7 +1700,7 @@ static struct dasd_ccw_req *dasd_eckd_build_cp(struct dasd_device *startdev,
+ 			recid++;
+ 		}
+ 	}
+-	if (req-&gt;cmd_flags &amp; REQ_FAILFAST)
++	if (blk_noretry_request(req))
+ 		set_bit(DASD_CQR_FLAGS_FAILFAST, &amp;cqr-&gt;flags);
+ 	cqr-&gt;startdev = startdev;
+ 	cqr-&gt;memdev = startdev;
+diff --git a/drivers/s390/block/dasd_fba.c b/drivers/s390/block/dasd_fba.c
+index 93d9b6452a94..7d442aeff3d1 100644
+--- a/drivers/s390/block/dasd_fba.c
++++ b/drivers/s390/block/dasd_fba.c
+@@ -355,7 +355,7 @@ static struct dasd_ccw_req *dasd_fba_build_cp(struct dasd_device * memdev,
+ 			recid++;
+ 		}
+ 	}
+-	if (req-&gt;cmd_flags &amp; REQ_FAILFAST)
++	if (blk_noretry_request(req))
+ 		set_bit(DASD_CQR_FLAGS_FAILFAST, &amp;cqr-&gt;flags);
+ 	cqr-&gt;startdev = memdev;
+ 	cqr-&gt;memdev = memdev;
+diff --git a/drivers/scsi/device_handler/scsi_dh_alua.c b/drivers/scsi/device_handler/scsi_dh_alua.c
+index 708e475896b9..cb8aa3b58c22 100644
+--- a/drivers/scsi/device_handler/scsi_dh_alua.c
++++ b/drivers/scsi/device_handler/scsi_dh_alua.c
+@@ -109,7 +109,8 @@ static struct request *get_alua_req(struct scsi_device *sdev,
+ 	}
+ 
+ 	rq-&gt;cmd_type = REQ_TYPE_BLOCK_PC;
+-	rq-&gt;cmd_flags |= REQ_FAILFAST | REQ_NOMERGE;
++	rq-&gt;cmd_flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
++			 REQ_FAILFAST_DRIVER | REQ_NOMERGE;
+ 	rq-&gt;retries = ALUA_FAILOVER_RETRIES;
+ 	rq-&gt;timeout = ALUA_FAILOVER_TIMEOUT;
+ 
+diff --git a/drivers/scsi/device_handler/scsi_dh_emc.c b/drivers/scsi/device_handler/scsi_dh_emc.c
+index 8f45570a8a01..0e572d2c5b0a 100644
+--- a/drivers/scsi/device_handler/scsi_dh_emc.c
++++ b/drivers/scsi/device_handler/scsi_dh_emc.c
+@@ -303,7 +303,8 @@ static struct request *get_req(struct scsi_device *sdev, int cmd,
+ 
+ 	rq-&gt;cmd[4] = len;
+ 	rq-&gt;cmd_type = REQ_TYPE_BLOCK_PC;
+-	rq-&gt;cmd_flags |= REQ_FAILFAST;
++	rq-&gt;cmd_flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
++			 REQ_FAILFAST_DRIVER;
+ 	rq-&gt;timeout = CLARIION_TIMEOUT;
+ 	rq-&gt;retries = CLARIION_RETRIES;
+ 
+diff --git a/drivers/scsi/device_handler/scsi_dh_hp_sw.c b/drivers/scsi/device_handler/scsi_dh_hp_sw.c
+index 5e93c88ad66b..9aec4ca64e56 100644
+--- a/drivers/scsi/device_handler/scsi_dh_hp_sw.c
++++ b/drivers/scsi/device_handler/scsi_dh_hp_sw.c
+@@ -112,7 +112,8 @@ static int hp_sw_tur(struct scsi_device *sdev, struct hp_sw_dh_data *h)
+ 		return SCSI_DH_RES_TEMP_UNAVAIL;
+ 
+ 	req-&gt;cmd_type = REQ_TYPE_BLOCK_PC;
+-	req-&gt;cmd_flags |= REQ_FAILFAST;
++	req-&gt;cmd_flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
++			  REQ_FAILFAST_DRIVER;
+ 	req-&gt;cmd_len = COMMAND_SIZE(TEST_UNIT_READY);
+ 	req-&gt;cmd[0] = TEST_UNIT_READY;
+ 	req-&gt;timeout = HP_SW_TIMEOUT;
+@@ -204,7 +205,8 @@ static int hp_sw_start_stop(struct scsi_device *sdev, struct hp_sw_dh_data *h)
+ 		return SCSI_DH_RES_TEMP_UNAVAIL;
+ 
+ 	req-&gt;cmd_type = REQ_TYPE_BLOCK_PC;
+-	req-&gt;cmd_flags |= REQ_FAILFAST;
++	req-&gt;cmd_flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
++			  REQ_FAILFAST_DRIVER;
+ 	req-&gt;cmd_len = COMMAND_SIZE(START_STOP);
+ 	req-&gt;cmd[0] = START_STOP;
+ 	req-&gt;cmd[4] = 1;	/* Start spin cycle */
+diff --git a/drivers/scsi/device_handler/scsi_dh_rdac.c b/drivers/scsi/device_handler/scsi_dh_rdac.c
+index 50bf95f3b5c4..a43c3ed4df28 100644
+--- a/drivers/scsi/device_handler/scsi_dh_rdac.c
++++ b/drivers/scsi/device_handler/scsi_dh_rdac.c
+@@ -226,7 +226,8 @@ static struct request *get_rdac_req(struct scsi_device *sdev,
+ 	}
+ 
+ 	rq-&gt;cmd_type = REQ_TYPE_BLOCK_PC;
+-	rq-&gt;cmd_flags |= REQ_FAILFAST | REQ_NOMERGE;
++	rq-&gt;cmd_flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
++			 REQ_FAILFAST_DRIVER;
+ 	rq-&gt;retries = RDAC_RETRIES;
+ 	rq-&gt;timeout = RDAC_TIMEOUT;
+ 
+diff --git a/drivers/scsi/scsi_transport_spi.c b/drivers/scsi/scsi_transport_spi.c
+index b29360ed0bdc..7c2d28924d2a 100644
+--- a/drivers/scsi/scsi_transport_spi.c
++++ b/drivers/scsi/scsi_transport_spi.c
+@@ -109,7 +109,9 @@ static int spi_execute(struct scsi_device *sdev, const void *cmd,
+ 	for(i = 0; i &lt; DV_RETRIES; i++) {
+ 		result = scsi_execute(sdev, cmd, dir, buffer, bufflen,
+ 				      sense, DV_TIMEOUT, /* retries */ 1,
+-				      REQ_FAILFAST);
++				      REQ_FAILFAST_DEV |
++				      REQ_FAILFAST_TRANSPORT |
++				      REQ_FAILFAST_DRIVER);
+ 		if (result &amp; DRIVER_SENSE) {
+ 			struct scsi_sense_hdr sshdr_tmp;
+ 			if (!sshdr)
+diff --git a/include/linux/bio.h b/include/linux/bio.h
+index ff5b4cf9e2da..1beda208cbfb 100644
+--- a/include/linux/bio.h
++++ b/include/linux/bio.h
+@@ -129,25 +129,30 @@ struct bio {
+  * bit 2 -- barrier
+  *	Insert a serialization point in the IO queue, forcing previously
+  *	submitted IO to be completed before this oen is issued.
+- * bit 3 -- fail fast, don't want low level driver retries
+- * bit 4 -- synchronous I/O hint: the block layer will unplug immediately
++ * bit 3 -- synchronous I/O hint: the block layer will unplug immediately
+  *	Note that this does NOT indicate that the IO itself is sync, just
+  *	that the block layer will not postpone issue of this IO by plugging.
+- * bit 5 -- metadata request
++ * bit 4 -- metadata request
+  *	Used for tracing to differentiate metadata and data IO. May also
+  *	get some preferential treatment in the IO scheduler
+- * bit 6 -- discard sectors
++ * bit 5 -- discard sectors
+  *	Informs the lower level device that this range of sectors is no longer
+  *	used by the file system and may thus be freed by the device. Used
+  *	for flash based storage.
++ * bit 6 -- fail fast device errors
++ * bit 7 -- fail fast transport errors
++ * bit 8 -- fail fast driver errors
++ *	Don't want driver retries for any fast fail whatever the reason.
+  */
+ #define BIO_RW		0	/* Must match RW in req flags (blkdev.h) */
+ #define BIO_RW_AHEAD	1	/* Must match FAILFAST in req flags */
+ #define BIO_RW_BARRIER	2
+-#define BIO_RW_FAILFAST	3
+-#define BIO_RW_SYNC	4
+-#define BIO_RW_META	5
+-#define BIO_RW_DISCARD	6
++#define BIO_RW_SYNC	3
++#define BIO_RW_META	4
++#define BIO_RW_DISCARD	5
++#define BIO_RW_FAILFAST_DEV		6
++#define BIO_RW_FAILFAST_TRANSPORT	7
++#define BIO_RW_FAILFAST_DRIVER		8
+ 
+ /*
+  * upper 16 bits of bi_rw define the io priority of this bio
+@@ -174,7 +179,10 @@ struct bio {
+ #define bio_sectors(bio)	((bio)-&gt;bi_size &gt;&gt; 9)
+ #define bio_barrier(bio)	((bio)-&gt;bi_rw &amp; (1 &lt;&lt; BIO_RW_BARRIER))
+ #define bio_sync(bio)		((bio)-&gt;bi_rw &amp; (1 &lt;&lt; BIO_RW_SYNC))
+-#define bio_failfast(bio)	((bio)-&gt;bi_rw &amp; (1 &lt;&lt; BIO_RW_FAILFAST))
++#define bio_failfast_dev(bio)	((bio)-&gt;bi_rw &amp;	(1 &lt;&lt; BIO_RW_FAILFAST_DEV))
++#define bio_failfast_transport(bio)	\
++	((bio)-&gt;bi_rw &amp; (1 &lt;&lt; BIO_RW_FAILFAST_TRANSPORT))
++#define bio_failfast_driver(bio) ((bio)-&gt;bi_rw &amp; (1 &lt;&lt; BIO_RW_FAILFAST_DRIVER))
+ #define bio_rw_ahead(bio)	((bio)-&gt;bi_rw &amp; (1 &lt;&lt; BIO_RW_AHEAD))
+ #define bio_rw_meta(bio)	((bio)-&gt;bi_rw &amp; (1 &lt;&lt; BIO_RW_META))
+ #define bio_discard(bio)	((bio)-&gt;bi_rw &amp; (1 &lt;&lt; BIO_RW_DISCARD))
+diff --git a/include/linux/blkdev.h b/include/linux/blkdev.h
+index a92d9e4ea96e..f3491d225268 100644
+--- a/include/linux/blkdev.h
++++ b/include/linux/blkdev.h
+@@ -87,7 +87,9 @@ enum {
+  */
+ enum rq_flag_bits {
+ 	__REQ_RW,		/* not set, read. set, write */
+-	__REQ_FAILFAST,		/* no low level driver retries */
++	__REQ_FAILFAST_DEV,	/* no driver retries of device errors */
++	__REQ_FAILFAST_TRANSPORT, /* no driver retries of transport errors */
++	__REQ_FAILFAST_DRIVER,	/* no driver retries of driver errors */
+ 	__REQ_DISCARD,		/* request to discard sectors */
+ 	__REQ_SORTED,		/* elevator knows about this request */
+ 	__REQ_SOFTBARRIER,	/* may not be passed by ioscheduler */
+@@ -111,8 +113,10 @@ enum rq_flag_bits {
+ };
+ 
+ #define REQ_RW		(1 &lt;&lt; __REQ_RW)
++#define REQ_FAILFAST_DEV	(1 &lt;&lt; __REQ_FAILFAST_DEV)
++#define REQ_FAILFAST_TRANSPORT	(1 &lt;&lt; __REQ_FAILFAST_TRANSPORT)
++#define REQ_FAILFAST_DRIVER	(1 &lt;&lt; __REQ_FAILFAST_DRIVER)
+ #define REQ_DISCARD	(1 &lt;&lt; __REQ_DISCARD)
+-#define REQ_FAILFAST	(1 &lt;&lt; __REQ_FAILFAST)
+ #define REQ_SORTED	(1 &lt;&lt; __REQ_SORTED)
+ #define REQ_SOFTBARRIER	(1 &lt;&lt; __REQ_SOFTBARRIER)
+ #define REQ_HARDBARRIER	(1 &lt;&lt; __REQ_HARDBARRIER)
+@@ -560,7 +564,12 @@ enum {
+ #define blk_special_request(rq)	((rq)-&gt;cmd_type == REQ_TYPE_SPECIAL)
+ #define blk_sense_request(rq)	((rq)-&gt;cmd_type == REQ_TYPE_SENSE)
+ 
+-#define blk_noretry_request(rq)	((rq)-&gt;cmd_flags &amp; REQ_FAILFAST)
++#define blk_failfast_dev(rq)	((rq)-&gt;cmd_flags &amp; REQ_FAILFAST_DEV)
++#define blk_failfast_transport(rq) ((rq)-&gt;cmd_flags &amp; REQ_FAILFAST_TRANSPORT)
++#define blk_failfast_driver(rq)	((rq)-&gt;cmd_flags &amp; REQ_FAILFAST_DRIVER)
++#define blk_noretry_request(rq)	(blk_failfast_dev(rq) ||	\
++				 blk_failfast_transport(rq) ||	\
++				 blk_failfast_driver(rq))
+ #define blk_rq_started(rq)	((rq)-&gt;cmd_flags &amp; REQ_STARTED)
+ 
+ #define blk_account_rq(rq)	(blk_rq_started(rq) &amp;&amp; (blk_fs_request(rq) || blk_discard_rq(rq))) </pre><hr><pre>commit 056a44834950ffa51fafa6c76a720fa32e86851a
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Aug 19 18:45:29 2008 -0500
+
+    [SCSI] qla2xxx: use new host byte transport errors.
+    
+    This has qla2xxx use the new transport error values instead of
+    DID_BUS_BUSY. I am not sure if all the errors
+    in qla_isr.c I changed are transport related. We end up blocking/deleting
+    the rport for all of them so it is better to use the new transport error since
+    the fc classs will decide when to fail the IO.
+    
+    With this patch if I pull a cable then IO that had reached
+    the driver, will be failed with DID_TRANSPORT_DISRUPTED (not including
+    tape). The fc class will then fail the IO when the fast io fail tmo
+    has fired, and the driver will flush any other commands running.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Cc: Andrew Vasquez &lt;andrew.vasquez@qlogic.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/qla2xxx/qla_isr.c b/drivers/scsi/qla2xxx/qla_isr.c
+index fc4bfa7f839c..a76efd99d007 100644
+--- a/drivers/scsi/qla2xxx/qla_isr.c
++++ b/drivers/scsi/qla2xxx/qla_isr.c
+@@ -1187,7 +1187,12 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
+ 		    cp-&gt;serial_number, comp_status,
+ 		    atomic_read(&amp;fcport-&gt;state)));
+ 
+-		cp-&gt;result = DID_BUS_BUSY &lt;&lt; 16;
++		/*
++		 * We are going to have the fc class block the rport
++		 * while we try to recover so instruct the mid layer
++		 * to requeue until the class decides how to handle this.
++		 */
++		cp-&gt;result = DID_TRANSPORT_DISRUPTED &lt;&lt; 16;
+ 		if (atomic_read(&amp;fcport-&gt;state) == FCS_ONLINE)
+ 			qla2x00_mark_device_lost(fcport-&gt;ha, fcport, 1, 1);
+ 		break;
+@@ -1214,7 +1219,12 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
+ 		break;
+ 
+ 	case CS_TIMEOUT:
+-		cp-&gt;result = DID_BUS_BUSY &lt;&lt; 16;
++		/*
++		 * We are going to have the fc class block the rport
++		 * while we try to recover so instruct the mid layer
++		 * to requeue until the class decides how to handle this.
++		 */
++		cp-&gt;result = DID_TRANSPORT_DISRUPTED &lt;&lt; 16;
+ 
+ 		if (IS_FWI2_CAPABLE(ha)) {
+ 			DEBUG2(printk(KERN_INFO</pre><hr><pre>commit f46e307da925a7b71a0018c0510cdc6e588b87fc
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Aug 19 18:45:27 2008 -0500
+
+    [SCSI] fc class: Add support for new transport errors
+    
+    If the target is blocked and fast io fail tmo has not fired
+    then we requeue with DID_TRANSPORT_DISRUPTED. Once that
+    tmo fires we fail with DID_TRANSPORT_FAILFAST.
+    
+    v2
+    - seperate from
+    "fc class: unblock target after calling terminate callback"
+    to make it easier to review.
+    - Add JamesS's ack from list.
+    v2
+    - initial patch
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: James Smart &lt;James.Smart@emulex.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/include/scsi/scsi_transport_fc.h b/include/scsi/scsi_transport_fc.h
+index fb8d01370663..49d8913c4f86 100644
+--- a/include/scsi/scsi_transport_fc.h
++++ b/include/scsi/scsi_transport_fc.h
+@@ -679,15 +679,15 @@ fc_remote_port_chkready(struct fc_rport *rport)
+ 		if (rport-&gt;roles &amp; FC_PORT_ROLE_FCP_TARGET)
+ 			result = 0;
+ 		else if (rport-&gt;flags &amp; FC_RPORT_DEVLOSS_PENDING)
+-			result = DID_IMM_RETRY &lt;&lt; 16;
++			result = DID_TRANSPORT_DISRUPTED &lt;&lt; 16;
+ 		else
+ 			result = DID_NO_CONNECT &lt;&lt; 16;
+ 		break;
+ 	case FC_PORTSTATE_BLOCKED:
+ 		if (rport-&gt;flags &amp; FC_RPORT_FAST_FAIL_TIMEDOUT)
+-			result = DID_NO_CONNECT &lt;&lt; 16;
++			result = DID_TRANSPORT_FAILFAST &lt;&lt; 16;
+ 		else
+-			result = DID_IMM_RETRY &lt;&lt; 16;
++			result = DID_TRANSPORT_DISRUPTED &lt;&lt; 16;
+ 		break;
+ 	default:
+ 		result = DID_NO_CONNECT &lt;&lt; 16;</pre><hr><pre>commit 56d7fcfa815564b40a1b0ec7a30ea8cb3bc0713e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Aug 19 18:45:26 2008 -0500
+
+    [SCSI] iscsi class, libiscsi and qla4xxx: convert to new transport host byte values
+    
+    This patch converts the iscsi drivers to the new host byte values.
+    
+    v2
+    Drop some conversions. Want to avoid conflicts with other patches.
+    v1
+    initial patch.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 521dbf7e521d..0e8f26baca6e 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -1200,7 +1200,7 @@ int iscsi_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 			goto reject;
+ 		case ISCSI_STATE_RECOVERY_FAILED:
+ 			reason = FAILURE_SESSION_RECOVERY_TIMEOUT;
+-			sc-&gt;result = DID_NO_CONNECT &lt;&lt; 16;
++			sc-&gt;result = DID_TRANSPORT_FAILFAST &lt;&lt; 16;
+ 			break;
+ 		case ISCSI_STATE_TERMINATE:
+ 			reason = FAILURE_SESSION_TERMINATE;
+@@ -2333,8 +2333,10 @@ static void iscsi_start_session_recovery(struct iscsi_session *session,
+ 	 * flush queues.
+ 	 */
+ 	spin_lock_bh(&amp;session-&gt;lock);
+-	fail_all_commands(conn, -1,
+-			STOP_CONN_RECOVER ? DID_BUS_BUSY : DID_ERROR);
++	if (STOP_CONN_RECOVER)
++		fail_all_commands(conn, -1, DID_TRANSPORT_DISRUPTED);
++	else
++		fail_all_commands(conn, -1, DID_ERROR);
+ 	flush_control_queues(session, conn);
+ 	spin_unlock_bh(&amp;session-&gt;lock);
+ 	mutex_unlock(&amp;session-&gt;eh_mutex);
+diff --git a/drivers/scsi/qla4xxx/ql4_isr.c b/drivers/scsi/qla4xxx/ql4_isr.c
+index a91a57c57bff..799120fcb9be 100644
+--- a/drivers/scsi/qla4xxx/ql4_isr.c
++++ b/drivers/scsi/qla4xxx/ql4_isr.c
+@@ -139,7 +139,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
+ 			      ha-&gt;host_no, cmd-&gt;device-&gt;channel,
+ 			      cmd-&gt;device-&gt;id, cmd-&gt;device-&gt;lun));
+ 
+-		cmd-&gt;result = DID_BUS_BUSY &lt;&lt; 16;
++		cmd-&gt;result = DID_TRANSPORT_DISRUPTED &lt;&lt; 16;
+ 
+ 		/*
+ 		 * Mark device missing so that we won't continue to send
+@@ -243,7 +243,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
+ 		if (atomic_read(&amp;ddb_entry-&gt;state) == DDB_STATE_ONLINE)
+ 			qla4xxx_mark_device_missing(ha, ddb_entry);
+ 
+-		cmd-&gt;result = DID_BUS_BUSY &lt;&lt; 16;
++		cmd-&gt;result = DID_TRANSPORT_DISRUPTED &lt;&lt; 16;
+ 		break;
+ 
+ 	case SCS_QUEUE_FULL:
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 0ce5f7cdfe2a..cbaae48f47ed 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -374,10 +374,10 @@ int iscsi_session_chkready(struct iscsi_cls_session *session)
+ 		err = 0;
+ 		break;
+ 	case ISCSI_SESSION_FAILED:
+-		err = DID_IMM_RETRY &lt;&lt; 16;
++		err = DID_TRANSPORT_DISRUPTED &lt;&lt; 16;
+ 		break;
+ 	case ISCSI_SESSION_FREE:
+-		err = DID_NO_CONNECT &lt;&lt; 16;
++		err = DID_TRANSPORT_FAILFAST &lt;&lt; 16;
+ 		break;
+ 	default:
+ 		err = DID_NO_CONNECT &lt;&lt; 16;</pre><hr><pre>commit a4dfaa6f2e55b736adf2719133996f7e7dc309bc
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Aug 19 18:45:25 2008 -0500
+
+    [SCSI] scsi: add transport host byte errors (v3)
+    
+    Currently, if there is a transport problem the iscsi drivers will return
+    outstanding commands (commands being exeucted by the driver/fw/hw) with
+    DID_BUS_BUSY and block the session so no new commands can be queued.
+    Commands that are caught between the failure handling and blocking are
+    failed with DID_IMM_RETRY or one of the scsi ml queuecommand return values.
+    When the recovery_timeout fires, the iscsi drivers then fail IO with
+    DID_NO_CONNECT.
+    
+    For fcp, some drivers will fail some outstanding IO (disk but possibly not
+    tape) with DID_BUS_BUSY or DID_ERROR or some other value that causes a retry
+    and hits the scsi_error.c failfast check, block the rport, and commands
+    caught in the race are failed with DID_IMM_RETRY. Other drivers, may
+    hold onto all IO and wait for the terminate_rport_io or dev_loss_tmo_callbk
+    to be called.
+    
+    The following patches attempt to unify what upper layers will see drivers
+    like multipath can make a good guess. This relies on drivers being
+    hooked into their transport class.
+    
+    This first patch just defines two new host byte errors so drivers can
+    return the same value for when a rport/session is blocked and for
+    when the fast_io_fail_tmo fires.
+    
+    The idea is that if the LLD/class detects a problem and is going to block
+    a rport/session, then if the LLD wants or must return the command to scsi-ml,
+    then it can return it with DID_TRANSPORT_DISRUPTED. This will requeue
+    the IO into the same scsi queue it came from, until the fast io fail timer
+    fires and the class decides what to do.
+    
+    When using multipath and the fast_io_fail_tmo fires then the class
+    can fail commands with DID_TRANSPORT_FAILFAST or drivers can use
+    DID_TRANSPORT_FAILFAST in their terminate_rport_io callbacks or
+    the equivlent in iscsi if we ever implement more advanced recovery methods.
+    A LLD, like lpfc, could continue to return DID_ERROR and then it will hit
+    the normal failfast path, so drivers do not have fully be ported to
+    work better. The point of the patches is that upper layers will
+    not see a failure that could be recovered from while the rport/session is
+    blocked until fast_io_fail_tmo/recovery_timeout fires.
+    
+    V3
+    Remove some comments.
+    V2
+    Fixed patch/diff errors and renamed DID_TRANSPORT_BLOCKED to
+    DID_TRANSPORT_DISRUPTED.
+    V1
+    initial patch.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/constants.c b/drivers/scsi/constants.c
+index 9785d7384199..4003deefb7d8 100644
+--- a/drivers/scsi/constants.c
++++ b/drivers/scsi/constants.c
+@@ -1364,7 +1364,8 @@ EXPORT_SYMBOL(scsi_print_sense);
+ static const char * const hostbyte_table[]={
+ "DID_OK", "DID_NO_CONNECT", "DID_BUS_BUSY", "DID_TIME_OUT", "DID_BAD_TARGET",
+ "DID_ABORT", "DID_PARITY", "DID_ERROR", "DID_RESET", "DID_BAD_INTR",
+-"DID_PASSTHROUGH", "DID_SOFT_ERROR", "DID_IMM_RETRY", "DID_REQUEUE"};
++"DID_PASSTHROUGH", "DID_SOFT_ERROR", "DID_IMM_RETRY", "DID_REQUEUE",
++"DID_TRANSPORT_DISRUPTED", "DID_TRANSPORT_FAILFAST" };
+ #define NUM_HOSTBYTE_STRS ARRAY_SIZE(hostbyte_table)
+ 
+ static const char * const driverbyte_table[]={
+diff --git a/drivers/scsi/scsi_error.c b/drivers/scsi/scsi_error.c
+index fecefa05cb62..5bf8be21a165 100644
+--- a/drivers/scsi/scsi_error.c
++++ b/drivers/scsi/scsi_error.c
+@@ -1290,7 +1290,20 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
+ 
+ 	case DID_REQUEUE:
+ 		return ADD_TO_MLQUEUE;
+-
++	case DID_TRANSPORT_DISRUPTED:
++		/*
++		 * LLD/transport was disrupted during processing of the IO.
++		 * The transport class is now blocked/blocking,
++		 * and the transport will decide what to do with the IO
++		 * based on its timers and recovery capablilities.
++		 */
++		return ADD_TO_MLQUEUE;
++	case DID_TRANSPORT_FAILFAST:
++		/*
++		 * The transport decided to failfast the IO (most likely
++		 * the fast io fail tmo fired), so send IO directly upwards.
++		 */
++		return SUCCESS;
+ 	case DID_ERROR:
+ 		if (msg_byte(scmd-&gt;result) == COMMAND_COMPLETE &amp;&amp;
+ 		    status_byte(scmd-&gt;result) == RESERVATION_CONFLICT)
+diff --git a/include/scsi/scsi.h b/include/scsi/scsi.h
+index 3a5662b2817e..a109165714d6 100644
+--- a/include/scsi/scsi.h
++++ b/include/scsi/scsi.h
+@@ -381,6 +381,11 @@ static inline int scsi_is_wlun(unsigned int lun)
+ #define DID_IMM_RETRY   0x0c	/* Retry without decrementing retry count  */
+ #define DID_REQUEUE	0x0d	/* Requeue command (no immediate retry) also
+ 				 * without decrementing the retry count	   */
++#define DID_TRANSPORT_DISRUPTED 0x0e /* Transport error disrupted execution
++				      * and the driver blocked the port to
++				      * recover the link. Transport class will
++				      * retry or fail IO */
++#define DID_TRANSPORT_FAILFAST	0x0f /* Transport class fastfailed the io */
+ #define DRIVER_OK       0x00	/* Driver status                           */
+ 
+ /*</pre><hr><pre>commit 9cc328f502eacfcc52ab1c1bf9a7729cf12f14be
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Aug 19 18:45:24 2008 -0500
+
+    [SCSI] ibmvfc, qla2xxx, lpfc: remove scsi_target_unblock calls in terminate callbacks
+    
+    The fc class now calls scsi_target_unblock after calling the
+    terminate callback, so this patch removes the calls from the
+    drivers.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/ibmvscsi/ibmvfc.c b/drivers/scsi/ibmvscsi/ibmvfc.c
+index 4e0b7c8eb32e..7650707a40de 100644
+--- a/drivers/scsi/ibmvscsi/ibmvfc.c
++++ b/drivers/scsi/ibmvscsi/ibmvfc.c
+@@ -2031,8 +2031,6 @@ static void ibmvfc_terminate_rport_io(struct fc_rport *rport)
+ 		spin_unlock_irqrestore(shost-&gt;host_lock, flags);
+ 	} else
+ 		ibmvfc_issue_fc_host_lip(shost);
+-
+-	scsi_target_unblock(&amp;rport-&gt;dev);
+ 	LEAVE;
+ }
+ 
+diff --git a/drivers/scsi/lpfc/lpfc_hbadisc.c b/drivers/scsi/lpfc/lpfc_hbadisc.c
+index a98d11bf3576..aaf398e5c93f 100644
+--- a/drivers/scsi/lpfc/lpfc_hbadisc.c
++++ b/drivers/scsi/lpfc/lpfc_hbadisc.c
+@@ -88,14 +88,6 @@ lpfc_terminate_rport_io(struct fc_rport *rport)
+ 			&amp;phba-&gt;sli.ring[phba-&gt;sli.fcp_ring],
+ 			ndlp-&gt;nlp_sid, 0, LPFC_CTX_TGT);
+ 	}
+-
+-	/*
+-	 * A device is normally blocked for rediscovery and unblocked when
+-	 * devloss timeout happens.  In case a vport is removed or driver
+-	 * unloaded before devloss timeout happens, we need to unblock here.
+-	 */
+-	scsi_target_unblock(&amp;rport-&gt;dev);
+-	return;
+ }
+ 
+ /*
+diff --git a/drivers/scsi/qla2xxx/qla_attr.c b/drivers/scsi/qla2xxx/qla_attr.c
+index 0ddfe7106b3b..ed731968f15f 100644
+--- a/drivers/scsi/qla2xxx/qla_attr.c
++++ b/drivers/scsi/qla2xxx/qla_attr.c
+@@ -1006,7 +1006,6 @@ qla2x00_terminate_rport_io(struct fc_rport *rport)
+ 	}
+ 
+ 	qla2x00_abort_fcport_cmds(fcport);
+-	scsi_target_unblock(&amp;rport-&gt;dev);
+ }
+ 
+ static int</pre>
+    <div class="pagination">
+        <a href='5_21.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><span>[22]</span><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_23.html'>Next&gt;&gt;</a>
+    <div>
+</body>

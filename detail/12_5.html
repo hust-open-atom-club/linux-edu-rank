@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Science and Technology of China</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Science and Technology of China</h1>
+    <div class="pagination">
+        <a href='12_4.html'>&lt;&lt;Prev</a><a href='12.html'>1</a><a href='12_2.html'>2</a><a href='12_3.html'>3</a><a href='12_4.html'>4</a><span>[5]</span><a href='12_6.html'>6</a><a href='12_7.html'>7</a><a href='12_8.html'>8</a><a href='12_9.html'>9</a><a href='12_6.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 35f1790e6c6a7e4cae57b616cf36444d27fa6b28
+Author: He Chunhui &lt;hchunhui@mail.ustc.edu.cn&gt;
+Date:   Wed Feb 1 00:48:28 2012 +0800
+
+    x86, boot: Fix port argument to inl() function
+    
+    "u32 port" in inl() should be "u16 port".
+    
+    [ hpa: it's a bug, but it doesn't produce incorrect code, so no need
+      to put this into urgent or stable. ]
+    
+    Signed-off-by: He Chunhui &lt;hchunhui@mail.ustc.edu.cn&gt;
+    Link: http://lkml.kernel.org/r/32892299.2931391328028508117.JavaMail.coremail@mailweb
+    Signed-off-by: H. Peter Anvin &lt;hpa@linux.intel.com&gt;
+
+diff --git a/arch/x86/boot/boot.h b/arch/x86/boot/boot.h
+index c7093bd9f2d3..18997e5a1053 100644
+--- a/arch/x86/boot/boot.h
++++ b/arch/x86/boot/boot.h
+@@ -67,7 +67,7 @@ static inline void outl(u32 v, u16 port)
+ {
+ 	asm volatile("outl %0,%1" : : "a" (v), "dN" (port));
+ }
+-static inline u32 inl(u32 port)
++static inline u32 inl(u16 port)
+ {
+ 	u32 v;
+ 	asm volatile("inl %1,%0" : "=a" (v) : "dN" (port));</pre><hr><pre>commit f9543d0ab6392a9a5bff0034622688dc10d9d225
+Author: JiSheng Zhang &lt;jszhang3@mail.ustc.edu.cn&gt;
+Date:   Sat Jul 19 15:35:41 2008 +0800
+
+    firewire: queue the right number of data
+    
+    There will be 4 padding bytes in struct fw_cdev_event_response on some platforms
+    The member:__u32 data will point to these padding bytes. While queue the
+    response and data in complete_transaction in fw-cdev.c, it will queue like this:
+    |response(excluding padding bytes)|4 padding bytes|4 padding bytes|data.
+    It queue 4 extra bytes. That is to say it use "&amp;response + sizeof(response)"
+    while other place of kernel and userspace library use "&amp;response + offsetof
+    (typeof(response), data)". So it will lost the last 4 bytes of data. This patch
+    can fix it while not changing the struct definition.
+    
+    Signed-off-by: JiSheng Zhang &lt;jszhang3@mail.ustc.edu.cn&gt;
+    
+    This fixes responses to outbound block read requests on 64bit architectures.
+    Tested on i686, x86-64, and x86-64 with i686 userland, using firecontrol and
+    gscanbus.
+    
+    Signed-off-by: Stefan Richter &lt;stefanr@s5r6.in-berlin.de&gt;
+
+diff --git a/drivers/firewire/fw-cdev.c b/drivers/firewire/fw-cdev.c
+index c639915fc3cb..bc81d6fcd2fd 100644
+--- a/drivers/firewire/fw-cdev.c
++++ b/drivers/firewire/fw-cdev.c
+@@ -382,9 +382,9 @@ complete_transaction(struct fw_card *card, int rcode,
+ 
+ 	response-&gt;response.type   = FW_CDEV_EVENT_RESPONSE;
+ 	response-&gt;response.rcode  = rcode;
+-	queue_event(client, &amp;response-&gt;event,
+-		    &amp;response-&gt;response, sizeof(response-&gt;response),
+-		    response-&gt;response.data, response-&gt;response.length);
++	queue_event(client, &amp;response-&gt;event, &amp;response-&gt;response,
++		    sizeof(response-&gt;response) + response-&gt;response.length,
++		    NULL, 0);
+ }
+ 
+ static int ioctl_send_request(struct client *client, void *buffer)</pre><hr><pre>commit 8bc3be2751b4f74ab90a446da1912fd8204d53f7
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Mon Feb 4 22:29:36 2008 -0800
+
+    writeback: speed up writeback of big dirty files
+    
+    After making dirty a 100M file, the normal behavior is to start the
+    writeback for all data after 30s delays.  But sometimes the following
+    happens instead:
+    
+            - after 30s:    ~4M
+            - after 5s:     ~4M
+            - after 5s:     all remaining 92M
+    
+    Some analyze shows that the internal io dispatch queues goes like this:
+    
+                    s_io            s_more_io
+                    -------------------------
+            1)      100M,1K         0
+            2)      1K              96M
+            3)      0               96M
+    1) initial state with a 100M file and a 1K file
+    
+    2) 4M written, nr_to_write &lt;= 0, so write more
+    
+    3) 1K written, nr_to_write &gt; 0, no more writes(BUG)
+    
+    nr_to_write &gt; 0 in (3) fools the upper layer to think that data have all
+    been written out.  The big dirty file is actually still sitting in
+    s_more_io.  We cannot simply splice s_more_io back to s_io as soon as s_io
+    becomes empty, and let the loop in generic_sync_sb_inodes() continue: this
+    may starve newly expired inodes in s_dirty.  It is also not an option to
+    draw inodes from both s_more_io and s_dirty, an let the loop go on: this
+    might lead to live locks, and might also starve other superblocks in sync
+    time(well kupdate may still starve some superblocks, that's another bug).
+    
+    We have to return when a full scan of s_io completes.  So nr_to_write &gt; 0
+    does not necessarily mean that "all data are written".  This patch
+    introduces a flag writeback_control.more_io to indicate that more io should
+    be done.  With it the big dirty file no longer has to wait for the next
+    kupdate invokation 5s later.
+    
+    In sync_sb_inodes() we only set more_io on super_blocks we actually
+    visited.  This avoids the interaction between two pdflush deamons.
+    
+    Also in __sync_single_inode() we don't blindly keep requeuing the io if the
+    filesystem cannot progress.  Failing to do so may lead to 100% iowait.
+    
+    Tested-by: Mike Snitzer &lt;snitzer@gmail.com&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Cc: Michael Rubin &lt;mrubin@google.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/fs-writeback.c b/fs/fs-writeback.c
+index 3fe782d70a71..0b3064079fa5 100644
+--- a/fs/fs-writeback.c
++++ b/fs/fs-writeback.c
+@@ -284,7 +284,17 @@ __sync_single_inode(struct inode *inode, struct writeback_control *wbc)
+ 				 * soon as the queue becomes uncongested.
+ 				 */
+ 				inode-&gt;i_state |= I_DIRTY_PAGES;
+-				requeue_io(inode);
++				if (wbc-&gt;nr_to_write &lt;= 0) {
++					/*
++					 * slice used up: queue for next turn
++					 */
++					requeue_io(inode);
++				} else {
++					/*
++					 * somehow blocked: retry later
++					 */
++					redirty_tail(inode);
++				}
+ 			} else {
+ 				/*
+ 				 * Otherwise fully redirty the inode so that
+@@ -468,8 +478,12 @@ sync_sb_inodes(struct super_block *sb, struct writeback_control *wbc)
+ 		iput(inode);
+ 		cond_resched();
+ 		spin_lock(&amp;inode_lock);
+-		if (wbc-&gt;nr_to_write &lt;= 0)
++		if (wbc-&gt;nr_to_write &lt;= 0) {
++			wbc-&gt;more_io = 1;
+ 			break;
++		}
++		if (!list_empty(&amp;sb-&gt;s_more_io))
++			wbc-&gt;more_io = 1;
+ 	}
+ 	return;		/* Leave any unwritten inodes on s_io */
+ }
+diff --git a/include/linux/writeback.h b/include/linux/writeback.h
+index b2cd826a8c90..b7b3362f7717 100644
+--- a/include/linux/writeback.h
++++ b/include/linux/writeback.h
+@@ -62,6 +62,7 @@ struct writeback_control {
+ 	unsigned for_reclaim:1;		/* Invoked from the page allocator */
+ 	unsigned for_writepages:1;	/* This is a writepages() call */
+ 	unsigned range_cyclic:1;	/* range_start is cyclic */
++	unsigned more_io:1;		/* more io to be dispatched */
+ };
+ 
+ /*
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index a4ca162666c5..5e00f1772c20 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -567,6 +567,7 @@ static void background_writeout(unsigned long _min_pages)
+ 			global_page_state(NR_UNSTABLE_NFS) &lt; background_thresh
+ 				&amp;&amp; min_pages &lt;= 0)
+ 			break;
++		wbc.more_io = 0;
+ 		wbc.encountered_congestion = 0;
+ 		wbc.nr_to_write = MAX_WRITEBACK_PAGES;
+ 		wbc.pages_skipped = 0;
+@@ -574,8 +575,9 @@ static void background_writeout(unsigned long _min_pages)
+ 		min_pages -= MAX_WRITEBACK_PAGES - wbc.nr_to_write;
+ 		if (wbc.nr_to_write &gt; 0 || wbc.pages_skipped &gt; 0) {
+ 			/* Wrote less than expected */
+-			congestion_wait(WRITE, HZ/10);
+-			if (!wbc.encountered_congestion)
++			if (wbc.encountered_congestion || wbc.more_io)
++				congestion_wait(WRITE, HZ/10);
++			else
+ 				break;
+ 		}
+ 	}
+@@ -640,11 +642,12 @@ static void wb_kupdate(unsigned long arg)
+ 			global_page_state(NR_UNSTABLE_NFS) +
+ 			(inodes_stat.nr_inodes - inodes_stat.nr_unused);
+ 	while (nr_to_write &gt; 0) {
++		wbc.more_io = 0;
+ 		wbc.encountered_congestion = 0;
+ 		wbc.nr_to_write = MAX_WRITEBACK_PAGES;
+ 		writeback_inodes(&amp;wbc);
+ 		if (wbc.nr_to_write &gt; 0) {
+-			if (wbc.encountered_congestion)
++			if (wbc.encountered_congestion || wbc.more_io)
+ 				congestion_wait(WRITE, HZ/10);
+ 			else
+ 				break;	/* All the old data is written */</pre><hr><pre>commit ec4dd3eb35759f9fbeb5c1abb01403b2fde64cc9
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Mon Feb 4 22:28:56 2008 -0800
+
+    maps4: add proportional set size accounting in smaps
+    
+    The "proportional set size" (PSS) of a process is the count of pages it has
+    in memory, where each page is divided by the number of processes sharing
+    it.  So if a process has 1000 pages all to itself, and 1000 shared with one
+    other process, its PSS will be 1500.
+    
+                   - lwn.net: "ELC: How much memory are applications really using?"
+    
+    The PSS proposed by Matt Mackall is a very nice metic for measuring an
+    process's memory footprint.  So collect and export it via
+    /proc/&lt;pid&gt;/smaps.
+    
+    Matt Mackall's pagemap/kpagemap and John Berthels's exmap can also do the
+    job.  They are comprehensive tools.  But for PSS, let's do it in the simple
+    way.
+    
+    Cc: John Berthels &lt;jjberthels@gmail.com&gt;
+    Cc: Bernardo Innocenti &lt;bernie@codewiz.org&gt;
+    Cc: Padraig Brady &lt;P@draigBrady.com&gt;
+    Cc: Denys Vlasenko &lt;vda.linux@googlemail.com&gt;
+    Cc: Balbir Singh &lt;balbir@linux.vnet.ibm.com&gt;
+    Signed-off-by: Matt Mackall &lt;mpm@selenic.com&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Cc: Hugh Dickins &lt;hugh@veritas.com&gt;
+    Cc: Dave Hansen &lt;haveblue@us.ibm.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index 8043a3eab52c..8952ce70315e 100644
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -114,6 +114,25 @@ static void pad_len_spaces(struct seq_file *m, int len)
+ 	seq_printf(m, "%*c", len, ' ');
+ }
+ 
++/*
++ * Proportional Set Size(PSS): my share of RSS.
++ *
++ * PSS of a process is the count of pages it has in memory, where each
++ * page is divided by the number of processes sharing it.  So if a
++ * process has 1000 pages all to itself, and 1000 shared with one other
++ * process, its PSS will be 1500.
++ *
++ * To keep (accumulated) division errors low, we adopt a 64bit
++ * fixed-point pss counter to minimize division errors. So (pss &gt;&gt;
++ * PSS_SHIFT) would be the real byte count.
++ *
++ * A shift of 12 before division means (assuming 4K page size):
++ * 	- 1M 3-user-pages add up to 8KB errors;
++ * 	- supports mapcount up to 2^24, or 16M;
++ * 	- supports PSS up to 2^52 bytes, or 4PB.
++ */
++#define PSS_SHIFT 12
++
+ struct mem_size_stats
+ {
+ 	unsigned long resident;
+@@ -122,6 +141,7 @@ struct mem_size_stats
+ 	unsigned long private_clean;
+ 	unsigned long private_dirty;
+ 	unsigned long referenced;
++	u64 pss;
+ };
+ 
+ struct pmd_walker {
+@@ -195,6 +215,7 @@ static int show_map_internal(struct seq_file *m, void *v, struct mem_size_stats
+ 		seq_printf(m,
+ 			   "Size:           %8lu kB\n"
+ 			   "Rss:            %8lu kB\n"
++			   "Pss:            %8lu kB\n"
+ 			   "Shared_Clean:   %8lu kB\n"
+ 			   "Shared_Dirty:   %8lu kB\n"
+ 			   "Private_Clean:  %8lu kB\n"
+@@ -202,6 +223,7 @@ static int show_map_internal(struct seq_file *m, void *v, struct mem_size_stats
+ 			   "Referenced:     %8lu kB\n",
+ 			   (vma-&gt;vm_end - vma-&gt;vm_start) &gt;&gt; 10,
+ 			   mss-&gt;resident &gt;&gt; 10,
++			   (unsigned long)(mss-&gt;pss &gt;&gt; (10 + PSS_SHIFT)),
+ 			   mss-&gt;shared_clean  &gt;&gt; 10,
+ 			   mss-&gt;shared_dirty  &gt;&gt; 10,
+ 			   mss-&gt;private_clean &gt;&gt; 10,
+@@ -226,6 +248,7 @@ static void smaps_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
+ 	pte_t *pte, ptent;
+ 	spinlock_t *ptl;
+ 	struct page *page;
++	int mapcount;
+ 
+ 	pte = pte_offset_map_lock(vma-&gt;vm_mm, pmd, addr, &amp;ptl);
+ 	for (; addr != end; pte++, addr += PAGE_SIZE) {
+@@ -242,16 +265,19 @@ static void smaps_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
+ 		/* Accumulate the size in pages that have been accessed. */
+ 		if (pte_young(ptent) || PageReferenced(page))
+ 			mss-&gt;referenced += PAGE_SIZE;
+-		if (page_mapcount(page) &gt;= 2) {
++		mapcount = page_mapcount(page);
++		if (mapcount &gt;= 2) {
+ 			if (pte_dirty(ptent))
+ 				mss-&gt;shared_dirty += PAGE_SIZE;
+ 			else
+ 				mss-&gt;shared_clean += PAGE_SIZE;
++			mss-&gt;pss += (PAGE_SIZE &lt;&lt; PSS_SHIFT) / mapcount;
+ 		} else {
+ 			if (pte_dirty(ptent))
+ 				mss-&gt;private_dirty += PAGE_SIZE;
+ 			else
+ 				mss-&gt;private_clean += PAGE_SIZE;
++			mss-&gt;pss += (PAGE_SIZE &lt;&lt; PSS_SHIFT);
+ 		}
+ 	}
+ 	pte_unmap_unlock(pte - 1, ptl);</pre><hr><pre>commit 28bc44d7d1d967b8251214dd7a130d523b5ba5ee
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Sun Feb 3 18:04:10 2008 +0200
+
+    do_invalidatepage() comment typo fix
+    
+    Fix a typo in the comment for do_invalidatepage().
+    
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Signed-off-by: Adrian Bunk &lt;bunk@kernel.org&gt;
+
+diff --git a/mm/truncate.c b/mm/truncate.c
+index cadc15653dde..c3123b08ff6d 100644
+--- a/mm/truncate.c
++++ b/mm/truncate.c
+@@ -21,7 +21,7 @@
+ 
+ 
+ /**
+- * do_invalidatepage - invalidate part of all of a page
++ * do_invalidatepage - invalidate part or all of a page
+  * @page: the page which is affected
+  * @offset: the index of the truncation point
+  *</pre><hr><pre>commit 70d215c4a7dfbddc138a2dd726d8f80f3e6d2622
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Fri Dec 7 16:35:14 2007 +0800
+
+    HID: the `bit' in hidinput_mapping_quirks() is an out parameter
+    
+    Fix a panic, by changing
+            hidinput_mapping_quirks(,, unsigned long *bit,)
+    to
+            hidinput_mapping_quirks(,, unsigned long **bit,)
+    
+    The `bit' in this function is an out parameter.
+    
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Jiri Kosina &lt;jkosina@suse.cz&gt;
+
+diff --git a/drivers/hid/hid-input-quirks.c b/drivers/hid/hid-input-quirks.c
+index fbe8b6de1a63..4bcdc9bb658e 100644
+--- a/drivers/hid/hid-input-quirks.c
++++ b/drivers/hid/hid-input-quirks.c
+@@ -16,16 +16,16 @@
+ #include &lt;linux/input.h&gt;
+ #include &lt;linux/hid.h&gt;
+ 
+-#define map_abs(c)      do { usage-&gt;code = c; usage-&gt;type = EV_ABS; bit = input-&gt;absbit; *max = ABS_MAX; } while (0)
+-#define map_rel(c)      do { usage-&gt;code = c; usage-&gt;type = EV_REL; bit = input-&gt;relbit; *max = REL_MAX; } while (0)
+-#define map_key(c)      do { usage-&gt;code = c; usage-&gt;type = EV_KEY; bit = input-&gt;keybit; *max = KEY_MAX; } while (0)
+-#define map_led(c)      do { usage-&gt;code = c; usage-&gt;type = EV_LED; bit = input-&gt;ledbit; *max = LED_MAX; } while (0)
++#define map_abs(c)      do { usage-&gt;code = c; usage-&gt;type = EV_ABS; *bit = input-&gt;absbit; *max = ABS_MAX; } while (0)
++#define map_rel(c)      do { usage-&gt;code = c; usage-&gt;type = EV_REL; *bit = input-&gt;relbit; *max = REL_MAX; } while (0)
++#define map_key(c)      do { usage-&gt;code = c; usage-&gt;type = EV_KEY; *bit = input-&gt;keybit; *max = KEY_MAX; } while (0)
++#define map_led(c)      do { usage-&gt;code = c; usage-&gt;type = EV_LED; *bit = input-&gt;ledbit; *max = LED_MAX; } while (0)
+ 
+-#define map_abs_clear(c)        do { map_abs(c); clear_bit(c, bit); } while (0)
+-#define map_key_clear(c)        do { map_key(c); clear_bit(c, bit); } while (0)
++#define map_abs_clear(c)        do { map_abs(c); clear_bit(c, *bit); } while (0)
++#define map_key_clear(c)        do { map_key(c); clear_bit(c, *bit); } while (0)
+ 
+ static int quirk_belkin_wkbd(struct hid_usage *usage, struct input_dev *input,
+-			      unsigned long *bit, int *max)
++			      unsigned long **bit, int *max)
+ {
+ 	if ((usage-&gt;hid &amp; HID_USAGE_PAGE) != HID_UP_CONSUMER)
+ 		return 0;
+@@ -41,7 +41,7 @@ static int quirk_belkin_wkbd(struct hid_usage *usage, struct input_dev *input,
+ }
+ 
+ static int quirk_cherry_cymotion(struct hid_usage *usage, struct input_dev *input,
+-			      unsigned long *bit, int *max)
++			      unsigned long **bit, int *max)
+ {
+ 	if ((usage-&gt;hid &amp; HID_USAGE_PAGE) != HID_UP_CONSUMER)
+ 		return 0;
+@@ -57,7 +57,7 @@ static int quirk_cherry_cymotion(struct hid_usage *usage, struct input_dev *inpu
+ }
+ 
+ static int quirk_logitech_ultrax_remote(struct hid_usage *usage, struct input_dev *input,
+-			      unsigned long *bit, int *max)
++			      unsigned long **bit, int *max)
+ {
+ 	if ((usage-&gt;hid &amp; HID_USAGE_PAGE) != HID_UP_LOGIVENDOR)
+ 		return 0;
+@@ -90,7 +90,7 @@ static int quirk_logitech_ultrax_remote(struct hid_usage *usage, struct input_de
+ }
+ 
+ static int quirk_chicony_tactical_pad(struct hid_usage *usage, struct input_dev *input,
+-			      unsigned long *bit, int *max)
++			      unsigned long **bit, int *max)
+ {
+ 	if ((usage-&gt;hid &amp; HID_USAGE_PAGE) != HID_UP_MSVENDOR)
+ 		return 0;
+@@ -115,7 +115,7 @@ static int quirk_chicony_tactical_pad(struct hid_usage *usage, struct input_dev
+ }
+ 
+ static int quirk_microsoft_ergonomy_kb(struct hid_usage *usage, struct input_dev *input,
+-			      unsigned long *bit, int *max)
++			      unsigned long **bit, int *max)
+ {
+ 	if ((usage-&gt;hid &amp; HID_USAGE_PAGE) != HID_UP_MSVENDOR)
+ 		return 0;
+@@ -138,7 +138,7 @@ static int quirk_microsoft_ergonomy_kb(struct hid_usage *usage, struct input_dev
+ }
+ 
+ static int quirk_microsoft_presenter_8k(struct hid_usage *usage, struct input_dev *input,
+-			      unsigned long *bit, int *max)
++			      unsigned long **bit, int *max)
+ {
+ 	if ((usage-&gt;hid &amp; HID_USAGE_PAGE) != HID_UP_MSVENDOR)
+ 		return 0;
+@@ -156,7 +156,7 @@ static int quirk_microsoft_presenter_8k(struct hid_usage *usage, struct input_de
+ }
+ 
+ static int quirk_petalynx_remote(struct hid_usage *usage, struct input_dev *input,
+-			      unsigned long *bit, int *max)
++			      unsigned long **bit, int *max)
+ {
+ 	if (((usage-&gt;hid &amp; HID_USAGE_PAGE) != HID_UP_LOGIVENDOR) &amp;&amp;
+ 			((usage-&gt;hid &amp; HID_USAGE_PAGE) != HID_UP_CONSUMER))
+@@ -184,7 +184,7 @@ static int quirk_petalynx_remote(struct hid_usage *usage, struct input_dev *inpu
+ }
+ 
+ static int quirk_logitech_wireless(struct hid_usage *usage, struct input_dev *input,
+-			      unsigned long *bit, int *max)
++			      unsigned long **bit, int *max)
+ {
+ 	if ((usage-&gt;hid &amp; HID_USAGE_PAGE) != HID_UP_CONSUMER)
+ 		return 0;
+@@ -236,7 +236,7 @@ static int quirk_logitech_wireless(struct hid_usage *usage, struct input_dev *in
+ }
+ 
+ static int quirk_cherry_genius_29e(struct hid_usage *usage, struct input_dev *input,
+-			      unsigned long *bit, int *max)
++			      unsigned long **bit, int *max)
+ {
+ 	if ((usage-&gt;hid &amp; HID_USAGE_PAGE) != HID_UP_CONSUMER)
+ 		return 0;
+@@ -254,7 +254,7 @@ static int quirk_cherry_genius_29e(struct hid_usage *usage, struct input_dev *in
+ }
+ 
+ static int quirk_btc_8193(struct hid_usage *usage, struct input_dev *input,
+-			      unsigned long *bit, int *max)
++			      unsigned long **bit, int *max)
+ {
+ 	if ((usage-&gt;hid &amp; HID_USAGE_PAGE) != HID_UP_CONSUMER)
+ 		return 0;
+@@ -307,7 +307,7 @@ static int quirk_btc_8193(struct hid_usage *usage, struct input_dev *input,
+ static const struct hid_input_blacklist {
+ 	__u16 idVendor;
+ 	__u16 idProduct;
+-	int (*quirk)(struct hid_usage *, struct input_dev *, unsigned long *, int *);
++	int (*quirk)(struct hid_usage *, struct input_dev *, unsigned long **, int *);
+ } hid_input_blacklist[] = {
+ 	{ VENDOR_ID_BELKIN, DEVICE_ID_BELKIN_WIRELESS_KEYBOARD, quirk_belkin_wkbd },
+ 
+@@ -335,7 +335,7 @@ static const struct hid_input_blacklist {
+ 
+ int hidinput_mapping_quirks(struct hid_usage *usage, 
+ 				   struct input_dev *input, 
+-				   unsigned long *bit, int *max)
++				   unsigned long **bit, int *max)
+ {
+ 	struct hid_device *device = input_get_drvdata(input);
+ 	int i = 0;
+diff --git a/drivers/hid/hid-input.c b/drivers/hid/hid-input.c
+index aeb018e31bfc..5325d98b4328 100644
+--- a/drivers/hid/hid-input.c
++++ b/drivers/hid/hid-input.c
+@@ -382,7 +382,7 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
+ 	}
+ 
+ 	/* handle input mappings for quirky devices */
+-	ret = hidinput_mapping_quirks(usage, input, bit, &amp;max);
++	ret = hidinput_mapping_quirks(usage, input, &amp;bit, &amp;max);
+ 	if (ret)
+ 		goto mapped;
+ 
+diff --git a/include/linux/hid.h b/include/linux/hid.h
+index 24f04cd742de..6a70b788ee9c 100644
+--- a/include/linux/hid.h
++++ b/include/linux/hid.h
+@@ -526,7 +526,7 @@ extern void hidinput_disconnect(struct hid_device *);
+ int hid_set_field(struct hid_field *, unsigned, __s32);
+ int hid_input_report(struct hid_device *, int type, u8 *, int, int);
+ int hidinput_find_field(struct hid_device *hid, unsigned int type, unsigned int code, struct hid_field **field);
+-int hidinput_mapping_quirks(struct hid_usage *, struct input_dev *, unsigned long *, int *);
++int hidinput_mapping_quirks(struct hid_usage *, struct input_dev *, unsigned long **, int *);
+ void hidinput_event_quirks(struct hid_device *, struct hid_field *, struct hid_usage *, __s32);
+ int hidinput_apple_event(struct hid_device *, struct input_dev *, struct hid_usage *, __s32);
+ void hid_input_field(struct hid_device *hid, struct hid_field *field, __u8 *data, int interrupt);</pre><hr><pre>commit c06a018fa5362fa9ed0768bd747c0fab26bc8849
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Wed Nov 14 16:59:54 2007 -0800
+
+    reiserfs: don't drop PG_dirty when releasing sub-page-sized dirty file
+    
+    This is not a new problem in 2.6.23-git17.  2.6.22/2.6.23 is buggy in the
+    same way.
+    
+    Reiserfs could accumulate dirty sub-page-size files until umount time.
+    They cannot be synced to disk by pdflush routines or explicit `sync'
+    commands.  Only `umount' can do the trick.
+    
+    The direct cause is: the dirty page's PG_dirty is wrongly _cleared_.
+    Call trace:
+             [&lt;ffffffff8027e920&gt;] cancel_dirty_page+0xd0/0xf0
+             [&lt;ffffffff8816d470&gt;] :reiserfs:reiserfs_cut_from_item+0x660/0x710
+             [&lt;ffffffff8816d791&gt;] :reiserfs:reiserfs_do_truncate+0x271/0x530
+             [&lt;ffffffff8815872d&gt;] :reiserfs:reiserfs_truncate_file+0xfd/0x3b0
+             [&lt;ffffffff8815d3d0&gt;] :reiserfs:reiserfs_file_release+0x1e0/0x340
+             [&lt;ffffffff802a187c&gt;] __fput+0xcc/0x1b0
+             [&lt;ffffffff802a1ba6&gt;] fput+0x16/0x20
+             [&lt;ffffffff8029e676&gt;] filp_close+0x56/0x90
+             [&lt;ffffffff8029fe0d&gt;] sys_close+0xad/0x110
+             [&lt;ffffffff8020c41e&gt;] system_call+0x7e/0x83
+    
+    Fix the bug by removing the cancel_dirty_page() call. Tests show that
+    it causes no bad behaviors on various write sizes.
+    
+    === for the patient ===
+    Here are more detailed demonstrations of the problem.
+    
+    1) the page has both PG_dirty(D)/PAGECACHE_TAG_DIRTY(d) after being written to;
+       and then only PAGECACHE_TAG_DIRTY(d) remains after the file is closed.
+    
+    ------------------------------ screen 0 ------------------------------
+    [T0] root /home/wfg# cat &gt; /test/tiny
+    [T1] hi
+    [T2] root /home/wfg#
+    
+    ------------------------------ screen 1 ------------------------------
+    [T1] root /home/wfg# echo /test/tiny &gt; /proc/filecache
+    [T1] root /home/wfg# cat /proc/filecache
+         # file /test/tiny
+         # flags R:referenced A:active M:mmap U:uptodate D:dirty W:writeback O:owner B:buffer d:dirty w:writeback
+         # idx   len     state   refcnt
+         0       1       ___UD__Bd_      2
+    [T2] root /home/wfg# cat /proc/filecache
+         # file /test/tiny
+         # flags R:referenced A:active M:mmap U:uptodate D:dirty W:writeback O:owner B:buffer d:dirty w:writeback
+         # idx   len     state   refcnt
+         0       1       ___U___Bd_      2
+    
+    2) note the non-zero 'cancelled_write_bytes' after /tmp/hi is copied.
+    
+    ------------------------------ screen 0 ------------------------------
+    [T0] root /home/wfg# echo hi &gt; /tmp/hi
+    [T1] root /home/wfg# cp /tmp/hi /dev/stdin /test
+    [T2] hi
+    [T3] root /home/wfg#
+    
+    ------------------------------ screen 1 ------------------------------
+    [T1] root /proc/4397# cd /proc/`pidof cp`
+    [T1] root /proc/4713# cat io
+         rchar: 8396
+         wchar: 3
+         syscr: 20
+         syscw: 1
+         read_bytes: 0
+         write_bytes: 20480
+         cancelled_write_bytes: 4096
+    [T2] root /proc/4713# cat io
+         rchar: 8399
+         wchar: 6
+         syscr: 21
+         syscw: 2
+         read_bytes: 0
+         write_bytes: 24576
+         cancelled_write_bytes: 4096
+    
+    //Question: the 'write_bytes' is a bit more than expected ;-)
+    
+    Tested-by: Maxim Levitsky &lt;maximlevitsky@gmail.com&gt;
+    Cc: Peter Zijlstra &lt;peterz@infradead.org&gt;
+    Cc: Jeff Mahoney &lt;jeffm@suse.com&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Reviewed-by: Chris Mason &lt;chris.mason@oracle.com&gt;
+    Cc: &lt;stable@kernel.org&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/reiserfs/stree.c b/fs/reiserfs/stree.c
+index ca41567d7890..d2db2417b2bd 100644
+--- a/fs/reiserfs/stree.c
++++ b/fs/reiserfs/stree.c
+@@ -1458,9 +1458,6 @@ static void unmap_buffers(struct page *page, loff_t pos)
+ 				}
+ 				bh = next;
+ 			} while (bh != head);
+-			if (PAGE_SIZE == bh-&gt;b_size) {
+-				cancel_dirty_page(page, PAGE_CACHE_SIZE);
+-			}
+ 		}
+ 	}
+ }</pre><hr><pre>commit df7c487250b17aa0caeee7d85f120330f1d31355
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Sat Oct 20 02:26:04 2007 +0200
+
+    trivial copy_data_pages() tidy up
+    
+    Change the loop style of copy_data_pages() to remove a duplicate condition.
+    
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Acked-by: Rafael J. Wysocki &lt;rjw@sisk.pl&gt;
+    Signed-off-by: Adrian Bunk &lt;bunk@kernel.org&gt;
+
+diff --git a/kernel/power/snapshot.c b/kernel/power/snapshot.c
+index ccc95ac07bed..78039b477d2b 100644
+--- a/kernel/power/snapshot.c
++++ b/kernel/power/snapshot.c
+@@ -1005,11 +1005,12 @@ copy_data_pages(struct memory_bitmap *copy_bm, struct memory_bitmap *orig_bm)
+ 	}
+ 	memory_bm_position_reset(orig_bm);
+ 	memory_bm_position_reset(copy_bm);
+-	do {
++	for(;;) {
+ 		pfn = memory_bm_next_pfn(orig_bm);
+-		if (likely(pfn != BM_END_OF_MAP))
+-			copy_data_page(memory_bm_next_pfn(copy_bm), pfn);
+-	} while (pfn != BM_END_OF_MAP);
++		if (unlikely(pfn == BM_END_OF_MAP))
++			break;
++		copy_data_page(memory_bm_next_pfn(copy_bm), pfn);
++	}
+ }
+ 
+ /* Total number of image pages */</pre><hr><pre>commit f68fd5f480248ca49e20e30a8e2387bc54694580
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Wed Oct 17 18:04:34 2007 +0200
+
+    x86: call free_init_pages() with irqs enabled in alternative_instructions()
+    
+    In alternative_instructions(), call free_init_pages() with irqs enabled.
+    
+    It fixes the warning message in smp_call_function*(), which should not be
+    called with irqs disabled.
+    
+    [    0.310000] CPU: L1 I Cache: 64K (64 bytes/line), D cache 64K (64 bytes/line)
+    [    0.310000] CPU: L2 Cache: 512K (64 bytes/line)
+    [    0.310000] CPU 0/0 -&gt; Node 0
+    [    0.310000] SMP alternatives: switching to UP code
+    [    0.310000] Freeing SMP alternatives: 25k freed
+    [    0.310000] WARNING: at arch/x86_64/kernel/smp.c:397 smp_call_function_mask()
+    [    0.310000]
+    [    0.310000] Call Trace:
+    [    0.310000]  [&lt;ffffffff8100dbde&gt;] dump_trace+0x3ee/0x4a0
+    [    0.310000]  [&lt;ffffffff8100dcd3&gt;] show_trace+0x43/0x70
+    [    0.310000]  [&lt;ffffffff8100dd15&gt;] dump_stack+0x15/0x20
+    [    0.310000]  [&lt;ffffffff8101cd44&gt;] smp_call_function_mask+0x94/0xa0
+    [    0.310000]  [&lt;ffffffff8101d0b2&gt;] smp_call_function+0x32/0x40
+    [    0.310000]  [&lt;ffffffff8104277f&gt;] on_each_cpu+0x1f/0x50
+    [    0.310000]  [&lt;ffffffff81026eac&gt;] global_flush_tlb+0x8c/0x110
+    [    0.310000]  [&lt;ffffffff81025c85&gt;] free_init_pages+0xe5/0xf0
+    [    0.310000]  [&lt;ffffffff81549b5e&gt;] alternative_instructions+0x7e/0x150
+    [    0.310000]  [&lt;ffffffff8154a2ea&gt;] check_bugs+0x1a/0x20
+    [    0.310000]  [&lt;ffffffff81540c4a&gt;] start_kernel+0x2da/0x380
+    [    0.310000]  [&lt;ffffffff81540132&gt;] _sinittext+0x132/0x140
+    [    0.310000]
+    [    0.320000] ACPI: Core revision 20070126
+    [    0.560000] Using local APIC timer interrupts.
+    [    0.590000] Detected 62.496 MHz APIC timer.
+    [    0.590000] Brought up 1 CPUs
+    
+    [ tglx: arch/x86 adaptation ]
+    
+    Cc: Laurent Vivier &lt;Laurent.Vivier@bull.net&gt;
+    Cc: Andi Kleen &lt;ak@suse.de&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Signed-off-by: Andi Kleen &lt;ak@suse.de&gt;
+    Signed-off-by: Ingo Molnar &lt;mingo@elte.hu&gt;
+    Signed-off-by: Thomas Gleixner &lt;tglx@linutronix.de&gt;
+
+diff --git a/arch/x86/kernel/alternative.c b/arch/x86/kernel/alternative.c
+index 11b03d3c6fda..dff1c9e1c2ee 100644
+--- a/arch/x86/kernel/alternative.c
++++ b/arch/x86/kernel/alternative.c
+@@ -415,9 +415,6 @@ void __init alternative_instructions(void)
+ 			alternatives_smp_unlock(__smp_locks, __smp_locks_end,
+ 						_text, _etext);
+ 		}
+-		free_init_pages("SMP alternatives",
+-				(unsigned long)__smp_locks,
+-				(unsigned long)__smp_locks_end);
+ 	} else {
+ 		alternatives_smp_module_add(NULL, "core kernel",
+ 					    __smp_locks, __smp_locks_end,
+@@ -428,6 +425,11 @@ void __init alternative_instructions(void)
+  	apply_paravirt(__parainstructions, __parainstructions_end);
+ 	local_irq_restore(flags);
+ 
++	if (smp_alt_once)
++		free_init_pages("SMP alternatives",
++				(unsigned long)__smp_locks,
++				(unsigned long)__smp_locks_end);
++
+ 	restart_nmi();
+ #ifdef CONFIG_X86_MCE
+ 	restart_mce();</pre><hr><pre>commit 369f2389e7d03022abdd25e298bffb9613cd0e54
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Tue Oct 16 23:30:45 2007 -0700
+
+    writeback: remove unnecessary wait in throttle_vm_writeout()
+    
+    We don't want to introduce pointless delays in throttle_vm_writeout() when
+    the writeback limits are not yet exceeded, do we?
+    
+    Cc: Nick Piggin &lt;nickpiggin@yahoo.com.au&gt;
+    Cc: OGAWA Hirofumi &lt;hirofumi@mail.parknet.co.jp&gt;
+    Cc: Kumar Gala &lt;galak@kernel.crashing.org&gt;
+    Cc: Pete Zaitcev &lt;zaitcev@redhat.com&gt;
+    Cc: Greg KH &lt;greg@kroah.com&gt;
+    Reviewed-by: Rik van Riel &lt;riel@redhat.com&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index d8c21e5a1bc9..7845462064f4 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -502,16 +502,6 @@ void throttle_vm_writeout(gfp_t gfp_mask)
+ 	long background_thresh;
+ 	long dirty_thresh;
+ 
+-	if ((gfp_mask &amp; (__GFP_FS|__GFP_IO)) != (__GFP_FS|__GFP_IO)) {
+-		/*
+-		 * The caller might hold locks which can prevent IO completion
+-		 * or progress in the filesystem.  So we cannot just sit here
+-		 * waiting for IO to complete.
+-		 */
+-		congestion_wait(WRITE, HZ/10);
+-		return;
+-	}
+-
+         for ( ; ; ) {
+ 		get_dirty_limits(&amp;background_thresh, &amp;dirty_thresh, NULL, NULL);
+ 
+@@ -525,6 +515,14 @@ void throttle_vm_writeout(gfp_t gfp_mask)
+ 			global_page_state(NR_WRITEBACK) &lt;= dirty_thresh)
+                         	break;
+                 congestion_wait(WRITE, HZ/10);
++
++		/*
++		 * The caller might hold locks which can prevent IO completion
++		 * or progress in the filesystem.  So we cannot just sit here
++		 * waiting for IO to complete.
++		 */
++		if ((gfp_mask &amp; (__GFP_FS|__GFP_IO)) != (__GFP_FS|__GFP_IO))
++			break;
+         }
+ }
+ </pre>
+    <div class="pagination">
+        <a href='12_4.html'>&lt;&lt;Prev</a><a href='12.html'>1</a><a href='12_2.html'>2</a><a href='12_3.html'>3</a><a href='12_4.html'>4</a><span>[5]</span><a href='12_6.html'>6</a><a href='12_7.html'>7</a><a href='12_8.html'>8</a><a href='12_9.html'>9</a><a href='12_6.html'>Next&gt;&gt;</a>
+    <div>
+</body>

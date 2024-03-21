@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_32.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><span>[33]</span><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_34.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 1d9bf13a9cf91f8faf221e98a64dd1157bcf5fa9
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed May 30 12:57:11 2007 -0500
+
+    [SCSI] iscsi class: add iscsi host set param event
+    
+    The iscsi class uses the set_param event to set session
+    and connection params. This patch adds a set_host_param
+    so we can set host level values.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 59287601bd41..3fd2da451fe1 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -967,6 +967,30 @@ iscsi_tgt_dscvr(struct iscsi_transport *transport,
+ 	return err;
+ }
+ 
++static int
++iscsi_set_host_param(struct iscsi_transport *transport,
++		     struct iscsi_uevent *ev)
++{
++	char *data = (char*)ev + sizeof(*ev);
++	struct Scsi_Host *shost;
++	int err;
++
++	if (!transport-&gt;set_host_param)
++		return -ENOSYS;
++
++	shost = scsi_host_lookup(ev-&gt;u.set_host_param.host_no);
++	if (IS_ERR(shost)) {
++		printk(KERN_ERR "set_host_param could not find host no %u\n",
++		       ev-&gt;u.set_host_param.host_no);
++		return -ENODEV;
++	}
++
++	err = transport-&gt;set_host_param(shost, ev-&gt;u.set_host_param.param,
++					data, ev-&gt;u.set_host_param.len);
++	scsi_host_put(shost);
++	return err;
++}
++
+ static int
+ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ {
+@@ -1058,8 +1082,11 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 	case ISCSI_UEVENT_TGT_DSCVR:
+ 		err = iscsi_tgt_dscvr(transport, ev);
+ 		break;
++	case ISCSI_UEVENT_SET_HOST_PARAM:
++		err = iscsi_set_host_param(transport, ev);
++		break;
+ 	default:
+-		err = -EINVAL;
++		err = -ENOSYS;
+ 		break;
+ 	}
+ 
+diff --git a/include/scsi/iscsi_if.h b/include/scsi/iscsi_if.h
+index fba211743729..3d0372e30ca1 100644
+--- a/include/scsi/iscsi_if.h
++++ b/include/scsi/iscsi_if.h
+@@ -48,6 +48,7 @@ enum iscsi_uevent_e {
+ 	ISCSI_UEVENT_TRANSPORT_EP_DISCONNECT	= UEVENT_BASE + 14,
+ 
+ 	ISCSI_UEVENT_TGT_DSCVR		= UEVENT_BASE + 15,
++	ISCSI_UEVENT_SET_HOST_PARAM	= UEVENT_BASE + 16,
+ 
+ 	/* up events */
+ 	ISCSI_KEVENT_RECV_PDU		= KEVENT_BASE + 1,
+@@ -136,6 +137,11 @@ struct iscsi_uevent {
+ 			 */
+ 			uint32_t	enable;
+ 		} tgt_dscvr;
++		struct msg_set_host_param {
++			uint32_t	host_no;
++			uint32_t	param; /* enum iscsi_host_param */
++			uint32_t	len;
++		} set_host_param;
+ 	} u;
+ 	union {
+ 		/* messages k -&gt; u */
+diff --git a/include/scsi/scsi_transport_iscsi.h b/include/scsi/scsi_transport_iscsi.h
+index 902e69f0272c..1ac450b06909 100644
+--- a/include/scsi/scsi_transport_iscsi.h
++++ b/include/scsi/scsi_transport_iscsi.h
+@@ -108,6 +108,9 @@ struct iscsi_transport {
+ 				  enum iscsi_param param, char *buf);
+ 	int (*get_host_param) (struct Scsi_Host *shost,
+ 				enum iscsi_host_param param, char *buf);
++	int (*set_host_param) (struct Scsi_Host *shost,
++			       enum iscsi_host_param param, char *buf,
++			       int buflen);
+ 	int (*send_pdu) (struct iscsi_cls_conn *conn, struct iscsi_hdr *hdr,
+ 			 char *data, uint32_t data_size);
+ 	void (*get_stats) (struct iscsi_cls_conn *conn,</pre><hr><pre>commit 2174a04ee7d8304a270de183fbc58b36dd05b395
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed May 30 12:57:10 2007 -0500
+
+    [SCSI] iscsi_transport, qla4xxx: have class lookup host for drivers
+    
+    We are going to be adding more host level sysfs attrs and
+    set_params, so this patch has them take a scsi_host instead
+    of either a scsi_host or host no.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Cc: David C Somayajulu &lt;david.somayajulu@qlogic.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/qla4xxx/ql4_os.c b/drivers/scsi/qla4xxx/ql4_os.c
+index 01308e7ef2ae..29cd4b90ebed 100644
+--- a/drivers/scsi/qla4xxx/ql4_os.c
++++ b/drivers/scsi/qla4xxx/ql4_os.c
+@@ -54,8 +54,9 @@ static void qla4xxx_config_dma_addressing(struct scsi_qla_host *ha);
+ /*
+  * iSCSI template entry points
+  */
+-static int qla4xxx_tgt_dscvr(enum iscsi_tgt_dscvr type, uint32_t host_no,
+-			     uint32_t enable, struct sockaddr *dst_addr);
++static int qla4xxx_tgt_dscvr(struct Scsi_Host *shost,
++			     enum iscsi_tgt_dscvr type, uint32_t enable,
++			     struct sockaddr *dst_addr);
+ static int qla4xxx_conn_get_param(struct iscsi_cls_conn *conn,
+ 				  enum iscsi_param param, char *buf);
+ static int qla4xxx_sess_get_param(struct iscsi_cls_session *sess,
+@@ -243,21 +244,15 @@ static int qla4xxx_conn_get_param(struct iscsi_cls_conn *conn,
+ 	return len;
+ }
+ 
+-static int qla4xxx_tgt_dscvr(enum iscsi_tgt_dscvr type, uint32_t host_no,
+-			     uint32_t enable, struct sockaddr *dst_addr)
++static int qla4xxx_tgt_dscvr(struct Scsi_Host *shost,
++			     enum iscsi_tgt_dscvr type, uint32_t enable,
++			     struct sockaddr *dst_addr)
+ {
+ 	struct scsi_qla_host *ha;
+-	struct Scsi_Host *shost;
+ 	struct sockaddr_in *addr;
+ 	struct sockaddr_in6 *addr6;
+ 	int ret = 0;
+ 
+-	shost = scsi_host_lookup(host_no);
+-	if (IS_ERR(shost)) {
+-		printk(KERN_ERR "Could not find host no %u\n", host_no);
+-		return -ENODEV;
+-	}
+-
+ 	ha = (struct scsi_qla_host *) shost-&gt;hostdata;
+ 
+ 	switch (type) {
+@@ -281,8 +276,6 @@ static int qla4xxx_tgt_dscvr(enum iscsi_tgt_dscvr type, uint32_t host_no,
+ 	default:
+ 		ret = -ENOSYS;
+ 	}
+-
+-	scsi_host_put(shost);
+ 	return ret;
+ }
+ 
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 1ba98d255fac..59287601bd41 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -945,15 +945,26 @@ static int
+ iscsi_tgt_dscvr(struct iscsi_transport *transport,
+ 		struct iscsi_uevent *ev)
+ {
++	struct Scsi_Host *shost;
+ 	struct sockaddr *dst_addr;
++	int err;
+ 
+ 	if (!transport-&gt;tgt_dscvr)
+ 		return -EINVAL;
+ 
++	shost = scsi_host_lookup(ev-&gt;u.tgt_dscvr.host_no);
++	if (IS_ERR(shost)) {
++		printk(KERN_ERR "target discovery could not find host no %u\n",
++		       ev-&gt;u.tgt_dscvr.host_no);
++		return -ENODEV;
++	}
++
++
+ 	dst_addr = (struct sockaddr *)((char*)ev + sizeof(*ev));
+-	return transport-&gt;tgt_dscvr(ev-&gt;u.tgt_dscvr.type,
+-				    ev-&gt;u.tgt_dscvr.host_no,
+-				    ev-&gt;u.tgt_dscvr.enable, dst_addr);
++	err = transport-&gt;tgt_dscvr(shost, ev-&gt;u.tgt_dscvr.type,
++				   ev-&gt;u.tgt_dscvr.enable, dst_addr);
++	scsi_host_put(shost);
++	return err;
+ }
+ 
+ static int
+diff --git a/include/scsi/scsi_transport_iscsi.h b/include/scsi/scsi_transport_iscsi.h
+index e962c5357eef..902e69f0272c 100644
+--- a/include/scsi/scsi_transport_iscsi.h
++++ b/include/scsi/scsi_transport_iscsi.h
+@@ -127,7 +127,7 @@ struct iscsi_transport {
+ 			   uint64_t *ep_handle);
+ 	int (*ep_poll) (uint64_t ep_handle, int timeout_ms);
+ 	void (*ep_disconnect) (uint64_t ep_handle);
+-	int (*tgt_dscvr) (enum iscsi_tgt_dscvr type, uint32_t host_no,
++	int (*tgt_dscvr) (struct Scsi_Host *shost, enum iscsi_tgt_dscvr type,
+ 			  uint32_t enable, struct sockaddr *dst_addr);
+ };
+ </pre><hr><pre>commit aa1e93a2fe0392588220d491454e7752d0fdb251
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed May 30 12:57:09 2007 -0500
+
+    [SCSI] qla4xxx: export mac as hw address
+    
+    Export mac as hw address.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Cc: David C Somayajulu &lt;david.somayajulu@qlogic.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/qla4xxx/ql4_os.c b/drivers/scsi/qla4xxx/ql4_os.c
+index e09fc4241970..01308e7ef2ae 100644
+--- a/drivers/scsi/qla4xxx/ql4_os.c
++++ b/drivers/scsi/qla4xxx/ql4_os.c
+@@ -60,6 +60,8 @@ static int qla4xxx_conn_get_param(struct iscsi_cls_conn *conn,
+ 				  enum iscsi_param param, char *buf);
+ static int qla4xxx_sess_get_param(struct iscsi_cls_session *sess,
+ 				  enum iscsi_param param, char *buf);
++static int qla4xxx_host_get_param(struct Scsi_Host *shost,
++				  enum iscsi_host_param param, char *buf);
+ static void qla4xxx_conn_stop(struct iscsi_cls_conn *conn, int flag);
+ static int qla4xxx_conn_start(struct iscsi_cls_conn *conn);
+ static void qla4xxx_recovery_timedout(struct iscsi_cls_session *session);
+@@ -99,16 +101,16 @@ static struct scsi_host_template qla4xxx_driver_template = {
+ static struct iscsi_transport qla4xxx_iscsi_transport = {
+ 	.owner			= THIS_MODULE,
+ 	.name			= DRIVER_NAME,
+-	.param_mask		= ISCSI_CONN_PORT |
+-				  ISCSI_CONN_ADDRESS |
+-				  ISCSI_TARGET_NAME |
+-				  ISCSI_TPGT,
++	.param_mask		= ISCSI_CONN_PORT | ISCSI_CONN_ADDRESS |
++				  ISCSI_TARGET_NAME | ISCSI_TPGT,
++	.host_param_mask	= ISCSI_HOST_HWADDRESS,
+ 	.sessiondata_size	= sizeof(struct ddb_entry),
+ 	.host_template		= &amp;qla4xxx_driver_template,
+ 
+ 	.tgt_dscvr		= qla4xxx_tgt_dscvr,
+ 	.get_conn_param		= qla4xxx_conn_get_param,
+ 	.get_session_param	= qla4xxx_sess_get_param,
++	.get_host_param		= qla4xxx_host_get_param,
+ 	.start_conn		= qla4xxx_conn_start,
+ 	.stop_conn		= qla4xxx_conn_stop,
+ 	.session_recovery_timedout = qla4xxx_recovery_timedout,
+@@ -165,6 +167,35 @@ static void qla4xxx_conn_stop(struct iscsi_cls_conn *conn, int flag)
+ 		printk(KERN_ERR "iscsi: invalid stop flag %d\n", flag);
+ }
+ 
++static ssize_t format_addr(char *buf, const unsigned char *addr, int len)
++{
++	int i;
++	char *cp = buf;
++
++	for (i = 0; i &lt; len; i++)
++		cp += sprintf(cp, "%02x%c", addr[i],
++			      i == (len - 1) ? '\n' : ':');
++	return cp - buf;
++}
++
++
++static int qla4xxx_host_get_param(struct Scsi_Host *shost,
++				  enum iscsi_host_param param, char *buf)
++{
++	struct scsi_qla_host *ha = to_qla_host(shost);
++	int len;
++
++	switch (param) {
++	case ISCSI_HOST_PARAM_HWADDRESS:
++		len = format_addr(buf, ha-&gt;my_mac, MAC_ADDR_LEN);
++		break;
++	default:
++		return -ENOSYS;
++	}
++
++	return len;
++}
++
+ static int qla4xxx_sess_get_param(struct iscsi_cls_session *sess,
+ 				  enum iscsi_param param, char *buf)
+ {</pre><hr><pre>commit 1819dc8143eff2a5850af274bcf8bcbc3e73ec76
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed May 30 12:57:08 2007 -0500
+
+    [SCSI] iscsi_transport: export hw address
+    
+    Add hw address sysfs file.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 4fbd8e1a0695..1ba98d255fac 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -32,7 +32,7 @@
+ 
+ #define ISCSI_SESSION_ATTRS 11
+ #define ISCSI_CONN_ATTRS 11
+-#define ISCSI_HOST_ATTRS 0
++#define ISCSI_HOST_ATTRS 1
+ #define ISCSI_TRANSPORT_VERSION "2.0-724"
+ 
+ struct iscsi_internal {
+@@ -1197,6 +1197,25 @@ static ISCSI_CLASS_ATTR(priv_sess, field, S_IRUGO, show_priv_session_##field, \
+ 			NULL)
+ iscsi_priv_session_attr(recovery_tmo, "%d");
+ 
++/*
++ * iSCSI host attrs
++ */
++#define iscsi_host_attr_show(param)					\
++static ssize_t								\
++show_host_param_##param(struct class_device *cdev, char *buf)		\
++{									\
++	struct Scsi_Host *shost = transport_class_to_shost(cdev);	\
++	struct iscsi_internal *priv = to_iscsi_internal(shost-&gt;transportt); \
++	return priv-&gt;iscsi_transport-&gt;get_host_param(shost, param, buf); \
++}
++
++#define iscsi_host_attr(field, param)					\
++	iscsi_host_attr_show(param)					\
++static ISCSI_CLASS_ATTR(host, field, S_IRUGO, show_host_param_##param,	\
++			NULL);
++
++iscsi_host_attr(hwaddress, ISCSI_HOST_PARAM_HWADDRESS);
++
+ #define SETUP_PRIV_SESSION_RD_ATTR(field)				\
+ do {									\
+ 	priv-&gt;session_attrs[count] = &amp;class_device_attr_priv_sess_##field; \
+@@ -1220,6 +1239,14 @@ do {									\
+ 	}								\
+ } while (0)
+ 
++#define SETUP_HOST_RD_ATTR(field, param_flag)				\
++do {									\
++	if (tt-&gt;host_param_mask &amp; param_flag) {				\
++		priv-&gt;host_attrs[count] = &amp;class_device_attr_host_##field; \
++		count++;						\
++	}								\
++} while (0)
++
+ static int iscsi_session_match(struct attribute_container *cont,
+ 			   struct device *dev)
+ {
+@@ -1321,9 +1348,13 @@ iscsi_register_transport(struct iscsi_transport *tt)
+ 	priv-&gt;t.host_attrs.ac.class = &amp;iscsi_host_class.class;
+ 	priv-&gt;t.host_attrs.ac.match = iscsi_host_match;
+ 	priv-&gt;t.host_size = sizeof(struct iscsi_host);
+-	priv-&gt;host_attrs[0] = NULL;
+ 	transport_container_register(&amp;priv-&gt;t.host_attrs);
+ 
++	SETUP_HOST_RD_ATTR(hwaddress, ISCSI_HOST_HWADDRESS);
++	BUG_ON(count &gt; ISCSI_HOST_ATTRS);
++	priv-&gt;host_attrs[count] = NULL;
++	count = 0;
++
+ 	/* connection parameters */
+ 	priv-&gt;conn_cont.ac.attrs = &amp;priv-&gt;conn_attrs[0];
+ 	priv-&gt;conn_cont.ac.class = &amp;iscsi_connection_class.class;
+diff --git a/include/scsi/iscsi_if.h b/include/scsi/iscsi_if.h
+index 55ebf035e620..fba211743729 100644
+--- a/include/scsi/iscsi_if.h
++++ b/include/scsi/iscsi_if.h
+@@ -250,6 +250,14 @@ enum iscsi_param {
+ #define ISCSI_CONN_PORT			(1 &lt;&lt; ISCSI_PARAM_CONN_PORT)
+ #define ISCSI_CONN_ADDRESS		(1 &lt;&lt; ISCSI_PARAM_CONN_ADDRESS)
+ 
++/* iSCSI HBA params */
++enum iscsi_host_param {
++	ISCSI_HOST_PARAM_HWADDRESS,
++	ISCSI_HOST_PARAM_MAX,
++};
++
++#define ISCSI_HOST_HWADDRESS		(1 &lt;&lt; ISCSI_HOST_PARAM_HWADDRESS)
++
+ #define iscsi_ptr(_handle) ((void*)(unsigned long)_handle)
+ #define iscsi_handle(_ptr) ((uint64_t)(unsigned long)_ptr)
+ #define hostdata_session(_hostdata) (iscsi_ptr(*(unsigned long *)_hostdata))
+diff --git a/include/scsi/scsi_transport_iscsi.h b/include/scsi/scsi_transport_iscsi.h
+index d5c218ddc527..e962c5357eef 100644
+--- a/include/scsi/scsi_transport_iscsi.h
++++ b/include/scsi/scsi_transport_iscsi.h
+@@ -79,7 +79,8 @@ struct iscsi_transport {
+ 	char *name;
+ 	unsigned int caps;
+ 	/* LLD sets this to indicate what values it can export to sysfs */
+-	unsigned int param_mask;
++	uint64_t param_mask;
++	uint64_t host_param_mask;
+ 	struct scsi_host_template *host_template;
+ 	/* LLD connection data size */
+ 	int conndata_size;
+@@ -105,6 +106,8 @@ struct iscsi_transport {
+ 			       enum iscsi_param param, char *buf);
+ 	int (*get_session_param) (struct iscsi_cls_session *session,
+ 				  enum iscsi_param param, char *buf);
++	int (*get_host_param) (struct Scsi_Host *shost,
++				enum iscsi_host_param param, char *buf);
+ 	int (*send_pdu) (struct iscsi_cls_conn *conn, struct iscsi_hdr *hdr,
+ 			 char *data, uint32_t data_size);
+ 	void (*get_stats) (struct iscsi_cls_conn *conn,</pre><hr><pre>commit 239a7dc2fea4d079bc3090b5514497a5ced400d3
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed May 30 12:57:07 2007 -0500
+
+    [SCSI] iscsi_transport: Check iscsi interface skb allocation return value
+    
+    Let's not oops when we cannot allocate a skb! Add a check
+    for if alloc_skb fails.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index caf1836bbeca..4fbd8e1a0695 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -609,12 +609,10 @@ iscsi_if_send_reply(int pid, int seq, int type, int done, int multi,
+ 	int t = done ? NLMSG_DONE : type;
+ 
+ 	skb = alloc_skb(len, GFP_ATOMIC);
+-	/*
+-	 * FIXME:
+-	 * user is supposed to react on iferror == -ENOMEM;
+-	 * see iscsi_if_rx().
+-	 */
+-	BUG_ON(!skb);
++	if (!skb) {
++		printk(KERN_ERR "Could not allocate skb to send reply.\n");
++		return -ENOMEM;
++	}
+ 
+ 	nlh = __nlmsg_put(skb, pid, seq, t, (len - sizeof(*nlh)), 0);
+ 	nlh-&gt;nlmsg_flags = flags;</pre><hr><pre>commit 821de3a27bf33f11ec878562577c586cd5f83c64
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue May 8 19:12:23 2007 +0200
+
+    [PATCH] ll_rw_blk: fix missing bounce in blk_rq_map_kern()
+    
+    I think we might just need the blk_map_kern users now. For the async
+    execute I added the bounce code already and the block SG_IO has it
+    atleady. I think the blk_map_kern bounce code got dropped because we
+    thought the correct gfp_t would be passed in. But I think all we need is
+    the patch below and all the paths are take care of. The patch is not
+    tested. Patch was made against scsi-misc.
+    
+    The last place that is sending non sg commands may just be md/dm-emc.c
+    but that is is just waiting on alasdair to take some patches that fix
+    that and a bunch of junk in there including adding bounce support. If
+    the patch below is ok though and dm-emc finally gets converted then it
+    will have sg and bonce buffer support.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Jens Axboe &lt;jens.axboe@oracle.com&gt;
+
+diff --git a/block/ll_rw_blk.c b/block/ll_rw_blk.c
+index 5873861e1dbb..d99d402953a3 100644
+--- a/block/ll_rw_blk.c
++++ b/block/ll_rw_blk.c
+@@ -2558,6 +2558,7 @@ int blk_rq_map_kern(request_queue_t *q, struct request *rq, void *kbuf,
+ 		bio-&gt;bi_rw |= (1 &lt;&lt; BIO_RW);
+ 
+ 	blk_rq_bio_prep(q, rq, bio);
++	blk_queue_bounce(q, &amp;rq-&gt;bio);
+ 	rq-&gt;buffer = rq-&gt;data = NULL;
+ 	return 0;
+ }</pre><hr><pre>commit 181011e04a2a32f8d5df212254239ac9a3c8ab5e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sat Mar 3 09:55:54 2007 +0900
+
+    [SCSI] tgt: rm bio hacks in scsi tgt
+    
+    scsi tgt breaks up a command into multple scatterlists
+    if we cannot fit all the data in one. This was because
+    the block rq helpers did not support large requests and
+    because we can get a command of any old size so it is
+    hard to preallocate pages for scatterlist large enough
+    (we cannot really preallocate pages with the bio map
+    user path). In 2.6.20, we added large request support to
+    the block layer helper, blk_rq_map_user. And at LSF,
+    we talked about increasing SCSI_MAX_PHYS_SEGMENTS for
+    scsi tgt if we want to support really really :) large
+    (greater than 256 * PAGE_SIZE in the worst mapping case)
+    requests.
+    
+    The only target currently implemented does not even support
+    the multiple scatterlists stuff and only supports smaller
+    requests, so this patch just coverts scsi tgt to use
+    blk_rq_map_user.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: FUJITA Tomonori &lt;fujita.tomonori@lab.ntt.co.jp&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_tgt_lib.c b/drivers/scsi/scsi_tgt_lib.c
+index d402aff5f314..47c29a98c922 100644
+--- a/drivers/scsi/scsi_tgt_lib.c
++++ b/drivers/scsi/scsi_tgt_lib.c
+@@ -28,7 +28,6 @@
+ #include &lt;scsi/scsi_device.h&gt;
+ #include &lt;scsi/scsi_host.h&gt;
+ #include &lt;scsi/scsi_tgt.h&gt;
+-#include &lt;../drivers/md/dm-bio-list.h&gt;
+ 
+ #include "scsi_tgt_priv.h"
+ 
+@@ -42,9 +41,8 @@ static struct kmem_cache *scsi_tgt_cmd_cache;
+ struct scsi_tgt_cmd {
+ 	/* TODO replace work with James b's code */
+ 	struct work_struct work;
+-	/* TODO replace the lists with a large bio */
+-	struct bio_list xfer_done_list;
+-	struct bio_list xfer_list;
++	/* TODO fix limits of some drivers */
++	struct bio *bio;
+ 
+ 	struct list_head hash_list;
+ 	struct request *rq;
+@@ -93,7 +91,12 @@ struct scsi_cmnd *scsi_host_get_command(struct Scsi_Host *shost,
+ 	if (!tcmd)
+ 		goto put_dev;
+ 
+-	rq = blk_get_request(shost-&gt;uspace_req_q, write, gfp_mask);
++	/*
++	 * The blk helpers are used to the READ/WRITE requests
++	 * transfering data from a initiator point of view. Since
++	 * we are in target mode we want the opposite.
++	 */
++	rq = blk_get_request(shost-&gt;uspace_req_q, !write, gfp_mask);
+ 	if (!rq)
+ 		goto free_tcmd;
+ 
+@@ -111,8 +114,6 @@ struct scsi_cmnd *scsi_host_get_command(struct Scsi_Host *shost,
+ 	rq-&gt;cmd_flags |= REQ_TYPE_BLOCK_PC;
+ 	rq-&gt;end_io_data = tcmd;
+ 
+-	bio_list_init(&amp;tcmd-&gt;xfer_list);
+-	bio_list_init(&amp;tcmd-&gt;xfer_done_list);
+ 	tcmd-&gt;rq = rq;
+ 
+ 	return cmd;
+@@ -157,22 +158,6 @@ void scsi_host_put_command(struct Scsi_Host *shost, struct scsi_cmnd *cmd)
+ }
+ EXPORT_SYMBOL_GPL(scsi_host_put_command);
+ 
+-static void scsi_unmap_user_pages(struct scsi_tgt_cmd *tcmd)
+-{
+-	struct bio *bio;
+-
+-	/* must call bio_endio in case bio was bounced */
+-	while ((bio = bio_list_pop(&amp;tcmd-&gt;xfer_done_list))) {
+-		bio_endio(bio, bio-&gt;bi_size, 0);
+-		bio_unmap_user(bio);
+-	}
+-
+-	while ((bio = bio_list_pop(&amp;tcmd-&gt;xfer_list))) {
+-		bio_endio(bio, bio-&gt;bi_size, 0);
+-		bio_unmap_user(bio);
+-	}
+-}
+-
+ static void cmd_hashlist_del(struct scsi_cmnd *cmd)
+ {
+ 	struct request_queue *q = cmd-&gt;request-&gt;q;
+@@ -185,6 +170,11 @@ static void cmd_hashlist_del(struct scsi_cmnd *cmd)
+ 	spin_unlock_irqrestore(&amp;qdata-&gt;cmd_hash_lock, flags);
+ }
+ 
++static void scsi_unmap_user_pages(struct scsi_tgt_cmd *tcmd)
++{
++	blk_rq_unmap_user(tcmd-&gt;bio);
++}
++
+ static void scsi_tgt_cmd_destroy(struct work_struct *work)
+ {
+ 	struct scsi_tgt_cmd *tcmd =
+@@ -193,16 +183,6 @@ static void scsi_tgt_cmd_destroy(struct work_struct *work)
+ 
+ 	dprintk("cmd %p %d %lu\n", cmd, cmd-&gt;sc_data_direction,
+ 		rq_data_dir(cmd-&gt;request));
+-	/*
+-	 * We fix rq-&gt;cmd_flags here since when we told bio_map_user
+-	 * to write vm for WRITE commands, blk_rq_bio_prep set
+-	 * rq_data_dir the flags to READ.
+-	 */
+-	if (cmd-&gt;sc_data_direction == DMA_TO_DEVICE)
+-		cmd-&gt;request-&gt;cmd_flags |= REQ_RW;
+-	else
+-		cmd-&gt;request-&gt;cmd_flags &amp;= ~REQ_RW;
+-
+ 	scsi_unmap_user_pages(tcmd);
+ 	scsi_host_put_command(scsi_tgt_cmd_to_host(cmd), cmd);
+ }
+@@ -215,6 +195,7 @@ static void init_scsi_tgt_cmd(struct request *rq, struct scsi_tgt_cmd *tcmd,
+ 	struct list_head *head;
+ 
+ 	tcmd-&gt;tag = tag;
++	tcmd-&gt;bio = NULL;
+ 	INIT_WORK(&amp;tcmd-&gt;work, scsi_tgt_cmd_destroy);
+ 	spin_lock_irqsave(&amp;qdata-&gt;cmd_hash_lock, flags);
+ 	head = &amp;qdata-&gt;cmd_hash[cmd_hashfn(tag)];
+@@ -419,52 +400,33 @@ static int scsi_map_user_pages(struct scsi_tgt_cmd *tcmd, struct scsi_cmnd *cmd,
+ 	struct request *rq = cmd-&gt;request;
+ 	void *uaddr = tcmd-&gt;buffer;
+ 	unsigned int len = tcmd-&gt;bufflen;
+-	struct bio *bio;
+ 	int err;
+ 
+-	while (len &gt; 0) {
+-		dprintk("%lx %u\n", (unsigned long) uaddr, len);
+-		bio = bio_map_user(q, NULL, (unsigned long) uaddr, len, rw);
+-		if (IS_ERR(bio)) {
+-			err = PTR_ERR(bio);
+-			dprintk("fail to map %lx %u %d %x\n",
+-				(unsigned long) uaddr, len, err, cmd-&gt;cmnd[0]);
+-			goto unmap_bios;
+-		}
+-
+-		uaddr += bio-&gt;bi_size;
+-		len -= bio-&gt;bi_size;
+-
++	dprintk("%lx %u\n", (unsigned long) uaddr, len);
++	err = blk_rq_map_user(q, rq, uaddr, len);
++	if (err) {
+ 		/*
+-		 * The first bio is added and merged. We could probably
+-		 * try to add others using scsi_merge_bio() but for now
+-		 * we keep it simple. The first bio should be pretty large
+-		 * (either hitting the 1 MB bio pages limit or a queue limit)
+-		 * already but for really large IO we may want to try and
+-		 * merge these.
++		 * TODO: need to fixup sg_tablesize, max_segment_size,
++		 * max_sectors, etc for modern HW and software drivers
++		 * where this value is bogus.
++		 *
++		 * TODO2: we can alloc a reserve buffer of max size
++		 * we can handle and do the slow copy path for really large
++		 * IO.
+ 		 */
+-		if (!rq-&gt;bio) {
+-			blk_rq_bio_prep(q, rq, bio);
+-			rq-&gt;data_len = bio-&gt;bi_size;
+-		} else
+-			/* put list of bios to transfer in next go around */
+-			bio_list_add(&amp;tcmd-&gt;xfer_list, bio);
++		eprintk("Could not handle request of size %u.\n", len);
++		return err;
+ 	}
+ 
+-	cmd-&gt;offset = 0;
++	tcmd-&gt;bio = rq-&gt;bio;
+ 	err = scsi_tgt_init_cmd(cmd, GFP_KERNEL);
+ 	if (err)
+-		goto unmap_bios;
++		goto unmap_rq;
+ 
+ 	return 0;
+ 
+-unmap_bios:
+-	if (rq-&gt;bio) {
+-		bio_unmap_user(rq-&gt;bio);
+-		while ((bio = bio_list_pop(&amp;tcmd-&gt;xfer_list)))
+-			bio_unmap_user(bio);
+-	}
+-
++unmap_rq:
++	scsi_unmap_user_pages(tcmd);
+ 	return err;
+ }
+ 
+@@ -473,12 +435,10 @@ static int scsi_tgt_transfer_data(struct scsi_cmnd *);
+ static void scsi_tgt_data_transfer_done(struct scsi_cmnd *cmd)
+ {
+ 	struct scsi_tgt_cmd *tcmd = cmd-&gt;request-&gt;end_io_data;
+-	struct bio *bio;
+ 	int err;
+ 
+ 	/* should we free resources here on error ? */
+ 	if (cmd-&gt;result) {
+-send_uspace_err:
+ 		err = scsi_tgt_uspace_send_status(cmd, tcmd-&gt;tag);
+ 		if (err &lt;= 0)
+ 			/* the tgt uspace eh will have to pick this up */
+@@ -490,34 +450,8 @@ static void scsi_tgt_data_transfer_done(struct scsi_cmnd *cmd)
+ 		cmd, cmd-&gt;request_bufflen, tcmd-&gt;bufflen);
+ 
+ 	scsi_free_sgtable(cmd-&gt;request_buffer, cmd-&gt;sglist_len);
+-	bio_list_add(&amp;tcmd-&gt;xfer_done_list, cmd-&gt;request-&gt;bio);
+-
+ 	tcmd-&gt;buffer += cmd-&gt;request_bufflen;
+-	cmd-&gt;offset += cmd-&gt;request_bufflen;
+-
+-	if (!tcmd-&gt;xfer_list.head) {
+-		scsi_tgt_transfer_response(cmd);
+-		return;
+-	}
+-
+-	dprintk("cmd2 %p request_bufflen %u bufflen %u\n",
+-		cmd, cmd-&gt;request_bufflen, tcmd-&gt;bufflen);
+-
+-	bio = bio_list_pop(&amp;tcmd-&gt;xfer_list);
+-	BUG_ON(!bio);
+-
+-	blk_rq_bio_prep(cmd-&gt;request-&gt;q, cmd-&gt;request, bio);
+-	cmd-&gt;request-&gt;data_len = bio-&gt;bi_size;
+-	err = scsi_tgt_init_cmd(cmd, GFP_ATOMIC);
+-	if (err) {
+-		cmd-&gt;result = DID_ERROR &lt;&lt; 16;
+-		goto send_uspace_err;
+-	}
+-
+-	if (scsi_tgt_transfer_data(cmd)) {
+-		cmd-&gt;result = DID_NO_CONNECT &lt;&lt; 16;
+-		goto send_uspace_err;
+-	}
++	scsi_tgt_transfer_response(cmd);
+ }
+ 
+ static int scsi_tgt_transfer_data(struct scsi_cmnd *cmd)
+@@ -617,8 +551,9 @@ int scsi_tgt_kspace_exec(int host_no, u64 tag, int result, u32 len,
+ 	}
+ 	cmd = rq-&gt;special;
+ 
+-	dprintk("cmd %p result %d len %d bufflen %u %lu %x\n", cmd,
+-		result, len, cmd-&gt;request_bufflen, rq_data_dir(rq), cmd-&gt;cmnd[0]);
++	dprintk("cmd %p scb %x result %d len %d bufflen %u %lu %x\n",
++		cmd, cmd-&gt;cmnd[0], result, len, cmd-&gt;request_bufflen,
++		rq_data_dir(rq), cmd-&gt;cmnd[0]);
+ 
+ 	if (result == TASK_ABORTED) {
+ 		scsi_tgt_abort_cmd(shost, cmd);
+diff --git a/include/scsi/scsi_cmnd.h b/include/scsi/scsi_cmnd.h
+index d6948d0e8cdb..a2e0c1032491 100644
+--- a/include/scsi/scsi_cmnd.h
++++ b/include/scsi/scsi_cmnd.h
+@@ -73,9 +73,6 @@ struct scsi_cmnd {
+ 	unsigned short use_sg;	/* Number of pieces of scatter-gather */
+ 	unsigned short sglist_len;	/* size of malloc'd scatter-gather list */
+ 
+-	/* offset in cmd we are at (for multi-transfer tgt cmds) */
+-	unsigned offset;
+-
+ 	unsigned underflow;	/* Return error if less than
+ 				   this amount is transferred */
+ </pre><hr><pre>commit 0f238418b6d41cdfc85f2f399848429ff6fbfbd0
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Feb 28 17:32:21 2007 -0600
+
+    [SCSI] iscsi_tcp: print useful error message when iscsi crc23c allocation fails
+    
+    People do not read the README and seem to like to
+    unselect the crc32c module even though iscsi_tcp selects
+    it for them. This patch spits a error that tells the user
+    that they really do need the module. Hopefully, we will
+    get fewer people asking about this now.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 861cb9be40b0..c9a3abf9e7b6 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -1777,14 +1777,24 @@ iscsi_tcp_conn_create(struct iscsi_cls_session *cls_session, uint32_t conn_idx)
+ 	tcp_conn-&gt;tx_hash.tfm = crypto_alloc_hash("crc32c", 0,
+ 						  CRYPTO_ALG_ASYNC);
+ 	tcp_conn-&gt;tx_hash.flags = 0;
+-	if (IS_ERR(tcp_conn-&gt;tx_hash.tfm))
++	if (IS_ERR(tcp_conn-&gt;tx_hash.tfm)) {
++		printk(KERN_ERR "Could not create connection due to crc32c "
++		       "loading error %ld. Make sure the crc32c module is "
++		       "built as a module or into the kernel\n",
++			PTR_ERR(tcp_conn-&gt;tx_hash.tfm));
+ 		goto free_tcp_conn;
++	}
+ 
+ 	tcp_conn-&gt;rx_hash.tfm = crypto_alloc_hash("crc32c", 0,
+ 						  CRYPTO_ALG_ASYNC);
+ 	tcp_conn-&gt;rx_hash.flags = 0;
+-	if (IS_ERR(tcp_conn-&gt;rx_hash.tfm))
++	if (IS_ERR(tcp_conn-&gt;rx_hash.tfm)) {
++		printk(KERN_ERR "Could not create connection due to crc32c "
++		       "loading error %ld. Make sure the crc32c module is "
++		       "built as a module or into the kernel\n",
++			PTR_ERR(tcp_conn-&gt;rx_hash.tfm));
+ 		goto free_tx_tfm;
++	}
+ 
+ 	return cls_conn;
+ </pre><hr><pre>commit 8231f0eddbe425cc3b54f2d723bb03531925272e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Feb 28 17:32:20 2007 -0600
+
+    [SCSI] iscsi_tcp: increase max_sectors
+    
+    For a while now, the block layer has seperated max sectors
+    and max hw sectors. Software iscsi has no limit so this patch
+    increases max hw sectors, so we can support large pass through
+    commands.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 6fd084583491..861cb9be40b0 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -2138,6 +2138,7 @@ static struct scsi_host_template iscsi_sht = {
+ 	.change_queue_depth	= iscsi_change_queue_depth,
+ 	.can_queue		= ISCSI_XMIT_CMDS_MAX - 1,
+ 	.sg_tablesize		= ISCSI_SG_TABLESIZE,
++	.max_sectors		= 0xFFFF,
+ 	.cmd_per_lun		= ISCSI_DEF_CMD_PER_LUN,
+ 	.eh_abort_handler       = iscsi_eh_abort,
+ 	.eh_host_reset_handler	= iscsi_eh_host_reset,</pre><hr><pre>commit 8eb00539d92187ade7e4cc24a1a36ab248ee8639
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Feb 28 17:32:19 2007 -0600
+
+    [SCSI] libiscsi: use get_unaligned
+    
+    Dave Miller meantioned that the data buffer in a past
+    sense fixup patch was not gauranteed to be aligned
+    properly for ia64. This patch has libiscsi use get_unalinged
+    to make sure. There are a couple more places in the
+    digest handling we may need to do this, but we are in the middle
+    of fixing that code for big endien systems so just the sense
+    access is fixed here.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 04707d667c9d..3f5b9b445b29 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -25,6 +25,7 @@
+ #include &lt;linux/mutex.h&gt;
+ #include &lt;linux/kfifo.h&gt;
+ #include &lt;linux/delay.h&gt;
++#include &lt;asm/unaligned.h&gt;
+ #include &lt;net/tcp.h&gt;
+ #include &lt;scsi/scsi_cmnd.h&gt;
+ #include &lt;scsi/scsi_device.h&gt;
+@@ -269,14 +270,14 @@ static int iscsi_scsi_cmd_rsp(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 			goto out;
+ 		}
+ 
+-		senselen = be16_to_cpu(*(__be16 *)data);
++		senselen = be16_to_cpu(get_unaligned((__be16 *) data));
+ 		if (datalen &lt; senselen)
+ 			goto invalid_datalen;
+ 
+ 		memcpy(sc-&gt;sense_buffer, data + 2,
+ 		       min_t(uint16_t, senselen, SCSI_SENSE_BUFFERSIZE));
+ 		debug_scsi("copied %d bytes of sense\n",
+-			   min(senselen, SCSI_SENSE_BUFFERSIZE));
++			   min_t(uint16_t, senselen, SCSI_SENSE_BUFFERSIZE));
+ 	}
+ 
+ 	if (sc-&gt;sc_data_direction == DMA_TO_DEVICE)</pre>
+    <div class="pagination">
+        <a href='5_32.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><span>[33]</span><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_34.html'>Next&gt;&gt;</a>
+    <div>
+</body>

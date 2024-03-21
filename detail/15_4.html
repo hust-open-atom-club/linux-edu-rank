@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Fudan University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Fudan University</h1>
+    <div class="pagination">
+        <a href='15_3.html'>&lt;&lt;Prev</a><a href='15.html'>1</a><a href='15_2.html'>2</a><a href='15_3.html'>3</a><span>[4]</span><a href='15_5.html'>5</a><a href='15_6.html'>6</a><a href='15_7.html'>7</a><a href='15_5.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit a34a0a632dd991a371fec56431d73279f9c54029
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Sun Jul 19 23:45:45 2020 +0800
+
+    drm: fix drm_dp_mst_port refcount leaks in drm_dp_mst_allocate_vcpi
+    
+    drm_dp_mst_allocate_vcpi() invokes
+    drm_dp_mst_topology_get_port_validated(), which increases the refcount
+    of the "port".
+    
+    These reference counting issues take place in two exception handling
+    paths separately. Either when “slots” is less than 0 or when
+    drm_dp_init_vcpi() returns a negative value, the function forgets to
+    reduce the refcnt increased drm_dp_mst_topology_get_port_validated(),
+    which results in a refcount leak.
+    
+    Fix these issues by pulling up the error handling when "slots" is less
+    than 0, and calling drm_dp_mst_topology_put_port() before termination
+    when drm_dp_init_vcpi() returns a negative value.
+    
+    Fixes: 1e797f556c61 ("drm/dp: Split drm_dp_mst_allocate_vcpi")
+    Cc: &lt;stable@vger.kernel.org&gt; # v4.12+
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Reviewed-by: Lyude Paul &lt;lyude@redhat.com&gt;
+    Signed-off-by: Lyude Paul &lt;lyude@redhat.com&gt;
+    Link: https://patchwork.freedesktop.org/patch/msgid/20200719154545.GA41231@xin-virtual-machine
+
+diff --git a/drivers/gpu/drm/drm_dp_mst_topology.c b/drivers/gpu/drm/drm_dp_mst_topology.c
+index 09b32289497e..b23cb2fec3f3 100644
+--- a/drivers/gpu/drm/drm_dp_mst_topology.c
++++ b/drivers/gpu/drm/drm_dp_mst_topology.c
+@@ -4308,11 +4308,11 @@ bool drm_dp_mst_allocate_vcpi(struct drm_dp_mst_topology_mgr *mgr,
+ {
+ 	int ret;
+ 
+-	port = drm_dp_mst_topology_get_port_validated(mgr, port);
+-	if (!port)
++	if (slots &lt; 0)
+ 		return false;
+ 
+-	if (slots &lt; 0)
++	port = drm_dp_mst_topology_get_port_validated(mgr, port);
++	if (!port)
+ 		return false;
+ 
+ 	if (port-&gt;vcpi.vcpi &gt; 0) {
+@@ -4328,6 +4328,7 @@ bool drm_dp_mst_allocate_vcpi(struct drm_dp_mst_topology_mgr *mgr,
+ 	if (ret) {
+ 		DRM_DEBUG_KMS("failed to init vcpi slots=%d max=63 ret=%d\n",
+ 			      DIV_ROUND_UP(pbn, mgr-&gt;pbn_div), ret);
++		drm_dp_mst_topology_put_port(port);
+ 		goto out;
+ 	}
+ 	DRM_DEBUG_KMS("initing vcpi for pbn=%d slots=%d\n",</pre><hr><pre>commit e692139e6af339a1495ef401b2d95f7f9d1c7a44
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Thu Jul 30 18:29:41 2020 +0800
+
+    net/mlx5e: fix bpf_prog reference count leaks in mlx5e_alloc_rq
+    
+    The function invokes bpf_prog_inc(), which increases the reference
+    count of a bpf_prog object "rq-&gt;xdp_prog" if the object isn't NULL.
+    
+    The refcount leak issues take place in two error handling paths. When
+    either mlx5_wq_ll_create() or mlx5_wq_cyc_create() fails, the function
+    simply returns the error code and forgets to drop the reference count
+    increased earlier, causing a reference count leak of "rq-&gt;xdp_prog".
+    
+    Fix this issue by jumping to the error handling path err_rq_wq_destroy
+    while either function fails.
+    
+    Fixes: 422d4c401edd ("net/mlx5e: RX, Split WQ objects for different RQ types")
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Saeed Mahameed &lt;saeedm@mellanox.com&gt;
+
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_main.c b/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
+index 07fdbea7ea13..3b892ec301b4 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
+@@ -419,7 +419,7 @@ static int mlx5e_alloc_rq(struct mlx5e_channel *c,
+ 		err = mlx5_wq_ll_create(mdev, &amp;rqp-&gt;wq, rqc_wq, &amp;rq-&gt;mpwqe.wq,
+ 					&amp;rq-&gt;wq_ctrl);
+ 		if (err)
+-			return err;
++			goto err_rq_wq_destroy;
+ 
+ 		rq-&gt;mpwqe.wq.db = &amp;rq-&gt;mpwqe.wq.db[MLX5_RCV_DBR];
+ 
+@@ -470,7 +470,7 @@ static int mlx5e_alloc_rq(struct mlx5e_channel *c,
+ 		err = mlx5_wq_cyc_create(mdev, &amp;rqp-&gt;wq, rqc_wq, &amp;rq-&gt;wqe.wq,
+ 					 &amp;rq-&gt;wq_ctrl);
+ 		if (err)
+-			return err;
++			goto err_rq_wq_destroy;
+ 
+ 		rq-&gt;wqe.wq.db = &amp;rq-&gt;wqe.wq.db[MLX5_RCV_DBR];
+ </pre><hr><pre>commit 51875dad43b44241b46a569493f1e4bfa0386d86
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Wed Jul 29 21:06:59 2020 +0800
+
+    atm: fix atm_dev refcnt leaks in atmtcp_remove_persistent
+    
+    atmtcp_remove_persistent() invokes atm_dev_lookup(), which returns a
+    reference of atm_dev with increased refcount or NULL if fails.
+    
+    The refcount leaks issues occur in two error handling paths. If
+    dev_data-&gt;persist is zero or PRIV(dev)-&gt;vcc isn't NULL, the function
+    returns 0 without decreasing the refcount kept by a local variable,
+    resulting in refcount leaks.
+    
+    Fix the issue by adding atm_dev_put() before returning 0 both when
+    dev_data-&gt;persist is zero or PRIV(dev)-&gt;vcc isn't NULL.
+    
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/atm/atmtcp.c b/drivers/atm/atmtcp.c
+index d9fd70280482..7f814da3c2d0 100644
+--- a/drivers/atm/atmtcp.c
++++ b/drivers/atm/atmtcp.c
+@@ -433,9 +433,15 @@ static int atmtcp_remove_persistent(int itf)
+ 		return -EMEDIUMTYPE;
+ 	}
+ 	dev_data = PRIV(dev);
+-	if (!dev_data-&gt;persist) return 0;
++	if (!dev_data-&gt;persist) {
++		atm_dev_put(dev);
++		return 0;
++	}
+ 	dev_data-&gt;persist = 0;
+-	if (PRIV(dev)-&gt;vcc) return 0;
++	if (PRIV(dev)-&gt;vcc) {
++		atm_dev_put(dev);
++		return 0;
++	}
+ 	kfree(dev_data);
+ 	atm_dev_put(dev);
+ 	atm_dev_deregister(dev);</pre><hr><pre>commit 706ec919164622ff5ce822065472d0f30a9e9dd2
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Sat Jul 25 16:02:18 2020 +0800
+
+    ipv6: Fix nexthop refcnt leak when creating ipv6 route info
+    
+    ip6_route_info_create() invokes nexthop_get(), which increases the
+    refcount of the "nh".
+    
+    When ip6_route_info_create() returns, local variable "nh" becomes
+    invalid, so the refcount should be decreased to keep refcount balanced.
+    
+    The reference counting issue happens in one exception handling path of
+    ip6_route_info_create(). When nexthops can not be used with source
+    routing, the function forgets to decrease the refcnt increased by
+    nexthop_get(), causing a refcnt leak.
+    
+    Fix this issue by pulling up the error source routing handling when
+    nexthops can not be used with source routing.
+    
+    Fixes: f88d8ea67fbd ("ipv6: Plumb support for nexthop object in a fib6_info")
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Reviewed-by: David Ahern &lt;dsahern@kernel.org&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ipv6/route.c b/net/ipv6/route.c
+index f3279810d765..4c36bd0c7930 100644
+--- a/net/ipv6/route.c
++++ b/net/ipv6/route.c
+@@ -3685,14 +3685,14 @@ static struct fib6_info *ip6_route_info_create(struct fib6_config *cfg,
+ 	rt-&gt;fib6_src.plen = cfg-&gt;fc_src_len;
+ #endif
+ 	if (nh) {
+-		if (!nexthop_get(nh)) {
+-			NL_SET_ERR_MSG(extack, "Nexthop has been deleted");
+-			goto out;
+-		}
+ 		if (rt-&gt;fib6_src.plen) {
+ 			NL_SET_ERR_MSG(extack, "Nexthops can not be used with source routing");
+ 			goto out;
+ 		}
++		if (!nexthop_get(nh)) {
++			NL_SET_ERR_MSG(extack, "Nexthop has been deleted");
++			goto out;
++		}
+ 		rt-&gt;nh = nh;
+ 		fib6_nh = nexthop_fib6_nh(rt-&gt;nh);
+ 	} else {</pre><hr><pre>commit 77577de64167aa0643d47ffbaacf3642632b321b
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Sat Jun 13 20:27:09 2020 +0800
+
+    cifs: Fix cached_fid refcnt leak in open_shroot
+    
+    open_shroot() invokes kref_get(), which increases the refcount of the
+    "tcon-&gt;crfid" object. When open_shroot() returns not zero, it means the
+    open operation failed and close_shroot() will not be called to decrement
+    the refcount of the "tcon-&gt;crfid".
+    
+    The reference counting issue happens in one normal path of
+    open_shroot(). When the cached root have been opened successfully in a
+    concurrent process, the function increases the refcount and jump to
+    "oshr_free" to return. However the current return value "rc" may not
+    equal to 0, thus the increased refcount will not be balanced outside the
+    function, causing a refcnt leak.
+    
+    Fix this issue by setting the value of "rc" to 0 before jumping to
+    "oshr_free" label.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Steve French &lt;stfrench@microsoft.com&gt;
+    CC: Stable &lt;stable@vger.kernel.org&gt;
+
+diff --git a/fs/cifs/smb2ops.c b/fs/cifs/smb2ops.c
+index 736d86b8a910..28553d45604e 100644
+--- a/fs/cifs/smb2ops.c
++++ b/fs/cifs/smb2ops.c
+@@ -763,6 +763,7 @@ int open_shroot(unsigned int xid, struct cifs_tcon *tcon,
+ 			/* close extra handle outside of crit sec */
+ 			SMB2_close(xid, tcon, fid.persistent_fid, fid.volatile_fid);
+ 		}
++		rc = 0;
+ 		goto oshr_free;
+ 	}
+ </pre><hr><pre>commit 11425c4519e2c974a100fc984867046d905b9380
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Sat Jun 13 20:30:25 2020 +0800
+
+    drm/ttm: Fix dma_fence refcnt leak when adding move fence
+    
+    ttm_bo_add_move_fence() invokes dma_fence_get(), which returns a
+    reference of the specified dma_fence object to "fence" with increased
+    refcnt.
+    
+    When ttm_bo_add_move_fence() returns, local variable "fence" becomes
+    invalid, so the refcount should be decreased to keep refcount balanced.
+    
+    The reference counting issue happens in one exception handling path of
+    ttm_bo_add_move_fence(). When no_wait_gpu flag is equals to true, the
+    function forgets to decrease the refcnt increased by dma_fence_get(),
+    causing a refcnt leak.
+    
+    Fix this issue by calling dma_fence_put() when no_wait_gpu flag is
+    equals to true.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Reviewed-by: Christian König &lt;christian.koenig@amd.com&gt;
+    Link: https://patchwork.freedesktop.org/patch/370221/
+    Signed-off-by: Christian König &lt;christian.koenig@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/ttm/ttm_bo.c b/drivers/gpu/drm/ttm/ttm_bo.c
+index 9e07c3f75156..ef5bc00c73e2 100644
+--- a/drivers/gpu/drm/ttm/ttm_bo.c
++++ b/drivers/gpu/drm/ttm/ttm_bo.c
+@@ -881,8 +881,10 @@ static int ttm_bo_add_move_fence(struct ttm_buffer_object *bo,
+ 	if (!fence)
+ 		return 0;
+ 
+-	if (no_wait_gpu)
++	if (no_wait_gpu) {
++		dma_fence_put(fence);
+ 		return -EBUSY;
++	}
+ 
+ 	dma_resv_add_shared_fence(bo-&gt;base.resv, fence);
+ </pre><hr><pre>commit 37cc4b95d13f311c04aa8e9daacca3905ad45ca7
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Sat Jun 13 20:28:38 2020 +0800
+
+    drm/ttm: Fix dma_fence refcnt leak in ttm_bo_vm_fault_reserved
+    
+    ttm_bo_vm_fault_reserved() invokes dma_fence_get(), which returns a
+    reference of the specified dma_fence object to "moving" with increased
+    refcnt.
+    
+    When ttm_bo_vm_fault_reserved() returns, local variable "moving" becomes
+    invalid, so the refcount should be decreased to keep refcount balanced.
+    
+    The reference counting issue happens in several exception handling paths
+    of ttm_bo_vm_fault_reserved(). When those error scenarios occur such as
+    "err" equals to -EBUSY, the function forgets to decrease the refcnt
+    increased by dma_fence_get(), causing a refcnt leak.
+    
+    Fix this issue by calling dma_fence_put() when no_wait_gpu flag is
+    equals to true.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Reviewed-by: Christian König &lt;christian.koenig@amd.com&gt;
+    Link: https://patchwork.freedesktop.org/patch/370219/
+    Signed-off-by: Christian König &lt;christian.koenig@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/ttm/ttm_bo_vm.c b/drivers/gpu/drm/ttm/ttm_bo_vm.c
+index 0ad30b112982..72100b84c7a9 100644
+--- a/drivers/gpu/drm/ttm/ttm_bo_vm.c
++++ b/drivers/gpu/drm/ttm/ttm_bo_vm.c
+@@ -300,8 +300,10 @@ vm_fault_t ttm_bo_vm_fault_reserved(struct vm_fault *vmf,
+ 			break;
+ 		case -EBUSY:
+ 		case -ERESTARTSYS:
++			dma_fence_put(moving);
+ 			return VM_FAULT_NOPAGE;
+ 		default:
++			dma_fence_put(moving);
+ 			return VM_FAULT_SIGBUS;
+ 		}
+ </pre><hr><pre>commit 3bbd0ef26098d241dc59ee77ba14b7dab0df0786
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Thu Apr 23 13:09:27 2020 +0800
+
+    ext4: fix buffer_head refcnt leak when ext4_iget() fails
+    
+    ext4_orphan_get() invokes ext4_read_inode_bitmap(), which returns a
+    reference of the specified buffer_head object to "bitmap_bh" with
+    increased refcnt.
+    
+    When ext4_orphan_get() returns, local variable "bitmap_bh" becomes
+    invalid, so the refcount should be decreased to keep refcount balanced.
+    
+    The reference counting issue happens in one exception handling path of
+    ext4_orphan_get(). When ext4_iget() fails, the function forgets to
+    decrease the refcnt increased by ext4_read_inode_bitmap(), causing a
+    refcnt leak.
+    
+    Fix this issue by calling brelse() when ext4_iget() fails.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Cc: stable@kernel.org
+    Link: https://lore.kernel.org/r/1587618568-13418-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Theodore Ts'o &lt;tytso@mit.edu&gt;
+
+diff --git a/fs/ext4/ialloc.c b/fs/ext4/ialloc.c
+index 4b8c9a9bdf0c..011bcb8c4770 100644
+--- a/fs/ext4/ialloc.c
++++ b/fs/ext4/ialloc.c
+@@ -1246,6 +1246,7 @@ struct inode *ext4_orphan_get(struct super_block *sb, unsigned long ino)
+ 		ext4_error_err(sb, -err,
+ 			       "couldn't read orphan inode %lu (err %d)",
+ 			       ino, err);
++		brelse(bitmap_bh);
+ 		return inode;
+ 	}
+ </pre><hr><pre>commit 36124fb19f1ae68a500cd76a76d40c6e81bee346
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Mon May 25 22:12:46 2020 +0800
+
+    ASoC: fsl_asrc_dma: Fix dma_chan leak when config DMA channel failed
+    
+    fsl_asrc_dma_hw_params() invokes dma_request_channel() or
+    fsl_asrc_get_dma_channel(), which returns a reference of the specified
+    dma_chan object to "pair-&gt;dma_chan[dir]" with increased refcnt.
+    
+    The reference counting issue happens in one exception handling path of
+    fsl_asrc_dma_hw_params(). When config DMA channel failed for Back-End,
+    the function forgets to decrease the refcnt increased by
+    dma_request_channel() or fsl_asrc_get_dma_channel(), causing a refcnt
+    leak.
+    
+    Fix this issue by calling dma_release_channel() when config DMA channel
+    failed.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Link: https://lore.kernel.org/r/1590415966-52416-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Mark Brown &lt;broonie@kernel.org&gt;
+
+diff --git a/sound/soc/fsl/fsl_asrc_dma.c b/sound/soc/fsl/fsl_asrc_dma.c
+index e5d1b218acf8..d6a3fc5f87e5 100644
+--- a/sound/soc/fsl/fsl_asrc_dma.c
++++ b/sound/soc/fsl/fsl_asrc_dma.c
+@@ -261,6 +261,7 @@ static int fsl_asrc_dma_hw_params(struct snd_soc_component *component,
+ 	ret = dmaengine_slave_config(pair-&gt;dma_chan[dir], &amp;config_be);
+ 	if (ret) {
+ 		dev_err(dev, "failed to config DMA channel for Back-End\n");
++		dma_release_channel(pair-&gt;dma_chan[dir]);
+ 		return ret;
+ 	}
+ </pre><hr><pre>commit 037e910b52b04fbd41990f643dff97c7e43b0e47
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Mon May 25 22:17:02 2020 +0800
+
+    SUNRPC: Remove unreachable error condition in rpcb_getport_async()
+    
+    rpcb_getport_async() invokes rpcb_call_async(), which return the value
+    of rpc_run_task() to "child". Since rpc_run_task() is impossible to
+    return an ERR pointer, there is no need to add the IS_ERR() condition on
+    "child" here. So we need to remove it.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@redhat.com&gt;
+
+diff --git a/net/sunrpc/rpcb_clnt.c b/net/sunrpc/rpcb_clnt.c
+index 4a020b688860..c27123e6ba80 100644
+--- a/net/sunrpc/rpcb_clnt.c
++++ b/net/sunrpc/rpcb_clnt.c
+@@ -795,12 +795,6 @@ void rpcb_getport_async(struct rpc_task *task)
+ 
+ 	child = rpcb_call_async(rpcb_clnt, map, proc);
+ 	rpc_release_client(rpcb_clnt);
+-	if (IS_ERR(child)) {
+-		/* rpcb_map_release() has freed the arguments */
+-		dprintk("RPC: %5u %s: rpc_run_task failed\n",
+-			task-&gt;tk_pid, __func__);
+-		return;
+-	}
+ 
+ 	xprt-&gt;stat.bind_count++;
+ 	rpc_put_task(child);</pre>
+    <div class="pagination">
+        <a href='15_3.html'>&lt;&lt;Prev</a><a href='15.html'>1</a><a href='15_2.html'>2</a><a href='15_3.html'>3</a><span>[4]</span><a href='15_5.html'>5</a><a href='15_6.html'>6</a><a href='15_7.html'>7</a><a href='15_5.html'>Next&gt;&gt;</a>
+    <div>
+</body>

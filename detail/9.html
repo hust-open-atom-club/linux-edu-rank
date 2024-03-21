@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by State University of New York at Stony Brook</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by State University of New York at Stony Brook</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='9_2.html'>2</a><a href='9_3.html'>3</a><a href='9_4.html'>4</a><a href='9_5.html'>5</a><a href='9_6.html'>6</a><a href='9_7.html'>7</a><a href='9_8.html'>8</a><a href='9_9.html'>9</a><a href='9_10.html'>10</a><a href='9_11.html'>11</a><a href='9_12.html'>12</a><a href='9_13.html'>13</a><a href='9_14.html'>14</a><a href='9_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 23892d383bee15b64f5463bd7195615734bb2415
+Author: Yifei Liu &lt;yifeliu@cs.stonybrook.edu&gt;
+Date:   Wed Aug 3 15:53:12 2022 +0000
+
+    jffs2: correct logic when creating a hole in jffs2_write_begin
+    
+    Bug description and fix:
+    
+    1. Write data to a file, say all 1s from offset 0 to 16.
+    
+    2. Truncate the file to a smaller size, say 8 bytes.
+    
+    3. Write new bytes (say 2s) from an offset past the original size of the
+    file, say at offset 20, for 4 bytes.  This is supposed to create a "hole"
+    in the file, meaning that the bytes from offset 8 (where it was truncated
+    above) up to the new write at offset 20, should all be 0s (zeros).
+    
+    4. Flush all caches using "echo 3 &gt; /proc/sys/vm/drop_caches" (or unmount
+    and remount) the f/s.
+    
+    5. Check the content of the file.  It is wrong.  The 1s that used to be
+    between bytes 9 and 16, before the truncation, have REAPPEARED (they should
+    be 0s).
+    
+    We wrote a script and helper C program to reproduce the bug
+    (reproduce_jffs2_write_begin_issue.sh, write_file.c, and Makefile).  We can
+    make them available to anyone.
+    
+    The above example is shown when writing a small file within the same first
+    page.  But the bug happens for larger files, as long as steps 1, 2, and 3
+    above all happen within the same page.
+    
+    The problem was traced to the jffs2_write_begin code, where it goes into an
+    'if' statement intended to handle writes past the current EOF (i.e., writes
+    that may create a hole).  The code computes a 'pageofs' that is the floor
+    of the write position (pos), aligned to the page size boundary.  In other
+    words, 'pageofs' will never be larger than 'pos'.  The code then sets the
+    internal jffs2_raw_inode-&gt;isize to the size of max(current inode size,
+    pageofs) but that is wrong: the new file size should be the 'pos', which is
+    larger than both the current inode size and pageofs.
+    
+    Similarly, the code incorrectly sets the internal jffs2_raw_inode-&gt;dsize to
+    the difference between the pageofs minus current inode size; instead it
+    should be the current pos minus the current inode size.  Finally,
+    inode-&gt;i_size was also set incorrectly.
+    
+    The patch below fixes this bug.  The bug was discovered using a new tool
+    for finding f/s bugs using model checking, called MCFS (Model Checking File
+    Systems).
+    
+    Signed-off-by: Yifei Liu &lt;yifeliu@cs.stonybrook.edu&gt;
+    Signed-off-by: Erez Zadok &lt;ezk@cs.stonybrook.edu&gt;
+    Signed-off-by: Manish Adkar &lt;madkar@cs.stonybrook.edu&gt;
+    Signed-off-by: Richard Weinberger &lt;richard@nod.at&gt;
+
+diff --git a/fs/jffs2/file.c b/fs/jffs2/file.c
+index 3cf71befa475..96b0275ce957 100644
+--- a/fs/jffs2/file.c
++++ b/fs/jffs2/file.c
+@@ -137,19 +137,18 @@ static int jffs2_write_begin(struct file *filp, struct address_space *mapping,
+ 	struct jffs2_inode_info *f = JFFS2_INODE_INFO(inode);
+ 	struct jffs2_sb_info *c = JFFS2_SB_INFO(inode-&gt;i_sb);
+ 	pgoff_t index = pos &gt;&gt; PAGE_SHIFT;
+-	uint32_t pageofs = index &lt;&lt; PAGE_SHIFT;
+ 	int ret = 0;
+ 
+ 	jffs2_dbg(1, "%s()\n", __func__);
+ 
+-	if (pageofs &gt; inode-&gt;i_size) {
+-		/* Make new hole frag from old EOF to new page */
++	if (pos &gt; inode-&gt;i_size) {
++		/* Make new hole frag from old EOF to new position */
+ 		struct jffs2_raw_inode ri;
+ 		struct jffs2_full_dnode *fn;
+ 		uint32_t alloc_len;
+ 
+-		jffs2_dbg(1, "Writing new hole frag 0x%x-0x%x between current EOF and new page\n",
+-			  (unsigned int)inode-&gt;i_size, pageofs);
++		jffs2_dbg(1, "Writing new hole frag 0x%x-0x%x between current EOF and new position\n",
++			  (unsigned int)inode-&gt;i_size, (uint32_t)pos);
+ 
+ 		ret = jffs2_reserve_space(c, sizeof(ri), &amp;alloc_len,
+ 					  ALLOC_NORMAL, JFFS2_SUMMARY_INODE_SIZE);
+@@ -169,10 +168,10 @@ static int jffs2_write_begin(struct file *filp, struct address_space *mapping,
+ 		ri.mode = cpu_to_jemode(inode-&gt;i_mode);
+ 		ri.uid = cpu_to_je16(i_uid_read(inode));
+ 		ri.gid = cpu_to_je16(i_gid_read(inode));
+-		ri.isize = cpu_to_je32(max((uint32_t)inode-&gt;i_size, pageofs));
++		ri.isize = cpu_to_je32((uint32_t)pos);
+ 		ri.atime = ri.ctime = ri.mtime = cpu_to_je32(JFFS2_NOW());
+ 		ri.offset = cpu_to_je32(inode-&gt;i_size);
+-		ri.dsize = cpu_to_je32(pageofs - inode-&gt;i_size);
++		ri.dsize = cpu_to_je32((uint32_t)pos - inode-&gt;i_size);
+ 		ri.csize = cpu_to_je32(0);
+ 		ri.compr = JFFS2_COMPR_ZERO;
+ 		ri.node_crc = cpu_to_je32(crc32(0, &amp;ri, sizeof(ri)-8));
+@@ -202,7 +201,7 @@ static int jffs2_write_begin(struct file *filp, struct address_space *mapping,
+ 			goto out_err;
+ 		}
+ 		jffs2_complete_reservation(c);
+-		inode-&gt;i_size = pageofs;
++		inode-&gt;i_size = pos;
+ 		mutex_unlock(&amp;f-&gt;sem);
+ 	}
+ </pre><hr><pre>commit 7d1fedb6e96a960aa91e4ff70714c3fb09195a5a
+Author: Vinothkumar Raja &lt;vinraja@cs.stonybrook.edu&gt;
+Date:   Thu Apr 6 22:09:38 2017 -0400
+
+    dm btree: fix for dm_btree_find_lowest_key()
+    
+    dm_btree_find_lowest_key() is giving incorrect results.  find_key()
+    traverses the btree correctly for finding the highest key, but there is
+    an error in the way it traverses the btree for retrieving the lowest
+    key.  dm_btree_find_lowest_key() fetches the first key of the rightmost
+    block of the btree instead of fetching the first key from the leftmost
+    block.
+    
+    Fix this by conditionally passing the correct parameter to value64()
+    based on the @find_highest flag.
+    
+    Cc: stable@vger.kernel.org
+    Signed-off-by: Erez Zadok &lt;ezk@fsl.cs.sunysb.edu&gt;
+    Signed-off-by: Vinothkumar Raja &lt;vinraja@cs.stonybrook.edu&gt;
+    Signed-off-by: Nidhi Panpalia &lt;npanpalia@cs.stonybrook.edu&gt;
+    Signed-off-by: Mike Snitzer &lt;snitzer@redhat.com&gt;
+
+diff --git a/drivers/md/persistent-data/dm-btree.c b/drivers/md/persistent-data/dm-btree.c
+index 02e2ee0d8a00..f21ce6a3d4cf 100644
+--- a/drivers/md/persistent-data/dm-btree.c
++++ b/drivers/md/persistent-data/dm-btree.c
+@@ -902,8 +902,12 @@ static int find_key(struct ro_spine *s, dm_block_t block, bool find_highest,
+ 		else
+ 			*result_key = le64_to_cpu(ro_node(s)-&gt;keys[0]);
+ 
+-		if (next_block || flags &amp; INTERNAL_NODE)
+-			block = value64(ro_node(s), i);
++		if (next_block || flags &amp; INTERNAL_NODE) {
++			if (find_highest)
++				block = value64(ro_node(s), i);
++			else
++				block = value64(ro_node(s), 0);
++		}
+ 
+ 	} while (flags &amp; INTERNAL_NODE);
+ </pre><hr><pre>commit ed47b062ce9546fbe1eebf9da6937df4c5035372
+Author: Ming Chen &lt;mchen@cs.stonybrook.edu&gt;
+Date:   Thu Jan 9 21:26:10 2014 +0000
+
+    nfsd: consider CLAIM_FH when handing out delegation
+    
+    CLAIM_FH was added by NFSv4.1.  It is the same as CLAIM_NULL except that it
+    uses only current FH to identify the file to be opened.
+    
+    The NFS client is using CLAIM_FH if the FH is available when opening a file.
+    Currently, we cannot get any delegation if we stat a file before open it
+    because the server delegation code does not recognize CLAIM_FH.
+    
+    We tested this patch and found delegation can be handed out now when claim is
+    CLAIM_FH.
+    
+    See http://marc.info/?l=linux-nfs&amp;m=136369847801388&amp;w=2 and
+    http://www.linux-nfs.org/wiki/index.php/Server_4.0_and_4.1_issues#New_open_claim_types
+    
+    Signed-off-by: Ming Chen &lt;mchen@cs.stonybrook.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@redhat.com&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index ed3085b2bf16..d5d070fbeb35 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -3134,6 +3134,7 @@ nfs4_open_delegation(struct net *net, struct svc_fh *fh,
+ 				goto out_no_deleg;
+ 			break;
+ 		case NFS4_OPEN_CLAIM_NULL:
++		case NFS4_OPEN_CLAIM_FH:
+ 			/*
+ 			 * Let's not give out any delegations till everyone's
+ 			 * had the chance to reclaim theirs....</pre><hr><pre>commit f45827e84186af152492c6d0dcf4105b4a605f9b
+Author: Erez Zadok &lt;ezk@fsl.cs.sunysb.edu&gt;
+Date:   Fri Oct 24 00:14:38 2014 +0200
+
+    overlayfs: implement show_options
+    
+    This is useful because of the stacking nature of overlayfs.  Users like to
+    find out (via /proc/mounts) which lower/upper directory were used at mount
+    time.
+    
+    AV: even failing ovl_parse_opt() could've done some kstrdup()
+    AV: failure of ovl_alloc_entry() should end up with ENOMEM, not EINVAL
+    
+    Signed-off-by: Erez Zadok &lt;ezk@cs.sunysb.edu&gt;
+    Signed-off-by: Miklos Szeredi &lt;mszeredi@suse.cz&gt;
+
+diff --git a/fs/overlayfs/super.c b/fs/overlayfs/super.c
+index aaf562b9f937..7dcc24e84417 100644
+--- a/fs/overlayfs/super.c
++++ b/fs/overlayfs/super.c
+@@ -17,6 +17,7 @@
+ #include &lt;linux/module.h&gt;
+ #include &lt;linux/sched.h&gt;
+ #include &lt;linux/statfs.h&gt;
++#include &lt;linux/seq_file.h&gt;
+ #include "overlayfs.h"
+ 
+ MODULE_AUTHOR("Miklos Szeredi &lt;miklos@szeredi.hu&gt;");
+@@ -25,12 +26,20 @@ MODULE_LICENSE("GPL");
+ 
+ #define OVERLAYFS_SUPER_MAGIC 0x794c764f
+ 
++struct ovl_config {
++	char *lowerdir;
++	char *upperdir;
++	char *workdir;
++};
++
+ /* private information held for overlayfs's superblock */
+ struct ovl_fs {
+ 	struct vfsmount *upper_mnt;
+ 	struct vfsmount *lower_mnt;
+ 	struct dentry *workdir;
+ 	long lower_namelen;
++	/* pathnames of lower and upper dirs, for show_options */
++	struct ovl_config config;
+ };
+ 
+ struct ovl_dir_cache;
+@@ -384,6 +393,9 @@ static void ovl_put_super(struct super_block *sb)
+ 	mntput(ufs-&gt;upper_mnt);
+ 	mntput(ufs-&gt;lower_mnt);
+ 
++	kfree(ufs-&gt;config.lowerdir);
++	kfree(ufs-&gt;config.upperdir);
++	kfree(ufs-&gt;config.workdir);
+ 	kfree(ufs);
+ }
+ 
+@@ -413,15 +425,27 @@ static int ovl_statfs(struct dentry *dentry, struct kstatfs *buf)
+ 	return err;
+ }
+ 
++/**
++ * ovl_show_options
++ *
++ * Prints the mount options for a given superblock.
++ * Returns zero; does not fail.
++ */
++static int ovl_show_options(struct seq_file *m, struct dentry *dentry)
++{
++	struct super_block *sb = dentry-&gt;d_sb;
++	struct ovl_fs *ufs = sb-&gt;s_fs_info;
++
++	seq_printf(m, ",lowerdir=%s", ufs-&gt;config.lowerdir);
++	seq_printf(m, ",upperdir=%s", ufs-&gt;config.upperdir);
++	seq_printf(m, ",workdir=%s", ufs-&gt;config.workdir);
++	return 0;
++}
++
+ static const struct super_operations ovl_super_operations = {
+ 	.put_super	= ovl_put_super,
+ 	.statfs		= ovl_statfs,
+-};
+-
+-struct ovl_config {
+-	char *lowerdir;
+-	char *upperdir;
+-	char *workdir;
++	.show_options	= ovl_show_options,
+ };
+ 
+ enum {
+@@ -442,10 +466,6 @@ static int ovl_parse_opt(char *opt, struct ovl_config *config)
+ {
+ 	char *p;
+ 
+-	config-&gt;upperdir = NULL;
+-	config-&gt;lowerdir = NULL;
+-	config-&gt;workdir = NULL;
+-
+ 	while ((p = strsep(&amp;opt, ",")) != NULL) {
+ 		int token;
+ 		substring_t args[MAX_OPT_ARGS];
+@@ -586,39 +606,40 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
+ 	struct dentry *root_dentry;
+ 	struct ovl_entry *oe;
+ 	struct ovl_fs *ufs;
+-	struct ovl_config config;
+ 	struct kstatfs statfs;
+ 	int err;
+ 
+-	err = ovl_parse_opt((char *) data, &amp;config);
+-	if (err)
++	err = -ENOMEM;
++	ufs = kzalloc(sizeof(struct ovl_fs), GFP_KERNEL);
++	if (!ufs)
+ 		goto out;
+ 
++	err = ovl_parse_opt((char *) data, &amp;ufs-&gt;config);
++	if (err)
++		goto out_free_config;
++
+ 	/* FIXME: workdir is not needed for a R/O mount */
+ 	err = -EINVAL;
+-	if (!config.upperdir || !config.lowerdir || !config.workdir) {
++	if (!ufs-&gt;config.upperdir || !ufs-&gt;config.lowerdir ||
++	    !ufs-&gt;config.workdir) {
+ 		pr_err("overlayfs: missing upperdir or lowerdir or workdir\n");
+ 		goto out_free_config;
+ 	}
+ 
+ 	err = -ENOMEM;
+-	ufs = kmalloc(sizeof(struct ovl_fs), GFP_KERNEL);
+-	if (!ufs)
+-		goto out_free_config;
+-
+ 	oe = ovl_alloc_entry();
+ 	if (oe == NULL)
+-		goto out_free_ufs;
++		goto out_free_config;
+ 
+-	err = ovl_mount_dir(config.upperdir, &amp;upperpath);
++	err = ovl_mount_dir(ufs-&gt;config.upperdir, &amp;upperpath);
+ 	if (err)
+ 		goto out_free_oe;
+ 
+-	err = ovl_mount_dir(config.lowerdir, &amp;lowerpath);
++	err = ovl_mount_dir(ufs-&gt;config.lowerdir, &amp;lowerpath);
+ 	if (err)
+ 		goto out_put_upperpath;
+ 
+-	err = ovl_mount_dir(config.workdir, &amp;workpath);
++	err = ovl_mount_dir(ufs-&gt;config.workdir, &amp;workpath);
+ 	if (err)
+ 		goto out_put_lowerpath;
+ 
+@@ -674,7 +695,7 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
+ 	err = PTR_ERR(ufs-&gt;workdir);
+ 	if (IS_ERR(ufs-&gt;workdir)) {
+ 		pr_err("overlayfs: failed to create directory %s/%s\n",
+-		       config.workdir, OVL_WORKDIR_NAME);
++		       ufs-&gt;config.workdir, OVL_WORKDIR_NAME);
+ 		goto out_put_lower_mnt;
+ 	}
+ 
+@@ -729,12 +750,11 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
+ 	path_put(&amp;upperpath);
+ out_free_oe:
+ 	kfree(oe);
+-out_free_ufs:
+-	kfree(ufs);
+ out_free_config:
+-	kfree(config.lowerdir);
+-	kfree(config.upperdir);
+-	kfree(config.workdir);
++	kfree(ufs-&gt;config.lowerdir);
++	kfree(ufs-&gt;config.upperdir);
++	kfree(ufs-&gt;config.workdir);
++	kfree(ufs);
+ out:
+ 	return err;
+ }</pre><hr><pre>commit 1a4022f88d40e1255920b017556092ab926d7f66
+Author: Erez Zadok &lt;ezk@fsl.cs.sunysb.edu&gt;
+Date:   Sat May 21 01:19:59 2011 -0400
+
+    VFS: move BUG_ON test for symlink nd-&gt;depth after current-&gt;link_count test
+    
+    This solves a serious VFS-level bug in nested_symlink (which was
+    rewritten from do_follow_link), and follows the order of depth tests
+    that existed before.
+    
+    The bug triggers a BUG_ON in fs/namei.c:1381, when running racer with
+    symlink and rename ops.
+    
+    Signed-off-by: Erez Zadok &lt;ezk@cs.sunysb.edu&gt;
+    Acked-by: Miklos Szeredi &lt;mszeredi@suse.cz&gt;
+    Cc: stable@kernel.org
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/namei.c b/fs/namei.c
+index e3c4f112ebf7..6ff858c049c0 100644
+--- a/fs/namei.c
++++ b/fs/namei.c
+@@ -1378,12 +1378,12 @@ static inline int nested_symlink(struct path *path, struct nameidata *nd)
+ {
+ 	int res;
+ 
+-	BUG_ON(nd-&gt;depth &gt;= MAX_NESTED_LINKS);
+ 	if (unlikely(current-&gt;link_count &gt;= MAX_NESTED_LINKS)) {
+ 		path_put_conditional(path, nd);
+ 		path_put(&amp;nd-&gt;path);
+ 		return -ELOOP;
+ 	}
++	BUG_ON(nd-&gt;depth &gt;= MAX_NESTED_LINKS);
+ 
+ 	nd-&gt;depth++;
+ 	current-&gt;link_count++;</pre><hr><pre>commit b3d7ae5f47a58a9f7b152deeaf7daa1fc558a8f1
+Author: Josef Sipek &lt;jsipek@fsl.cs.sunysb.edu&gt;
+Date:   Fri Dec 8 02:37:48 2006 -0800
+
+    [PATCH] struct path: convert zorro
+    
+    Signed-off-by: Josef Sipek &lt;jsipek@fsl.cs.sunysb.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/zorro/proc.c b/drivers/zorro/proc.c
+index 7aa2d3de6d37..60b05bc15642 100644
+--- a/drivers/zorro/proc.c
++++ b/drivers/zorro/proc.c
+@@ -47,7 +47,7 @@ proc_bus_zorro_lseek(struct file *file, loff_t off, int whence)
+ static ssize_t
+ proc_bus_zorro_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
+ {
+-	struct inode *ino = file-&gt;f_dentry-&gt;d_inode;
++	struct inode *ino = file-&gt;f_path.dentry-&gt;d_inode;
+ 	struct proc_dir_entry *dp = PDE(ino);
+ 	struct zorro_dev *z = dp-&gt;data;
+ 	struct ConfigDev cd;</pre><hr><pre>commit ad9a824e004067a3d888567a991603f1ac36efb2
+Author: Josef Sipek &lt;jsipek@fsl.cs.sunysb.edu&gt;
+Date:   Fri Dec 8 02:37:48 2006 -0800
+
+    [PATCH] struct path: convert video
+    
+    Signed-off-by: Josef Sipek &lt;jsipek@fsl.cs.sunysb.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/video/arcfb.c b/drivers/video/arcfb.c
+index ab34b96acc31..30a8369757e7 100644
+--- a/drivers/video/arcfb.c
++++ b/drivers/video/arcfb.c
+@@ -454,7 +454,7 @@ static ssize_t arcfb_write(struct file *file, const char __user *buf, size_t cou
+ 	unsigned int xres;
+ 
+ 	p = *ppos;
+-	inode = file-&gt;f_dentry-&gt;d_inode;
++	inode = file-&gt;f_path.dentry-&gt;d_inode;
+ 	fbidx = iminor(inode);
+ 	info = registered_fb[fbidx];
+ 
+diff --git a/drivers/video/epson1355fb.c b/drivers/video/epson1355fb.c
+index 737257d278f0..29e07c109887 100644
+--- a/drivers/video/epson1355fb.c
++++ b/drivers/video/epson1355fb.c
+@@ -405,7 +405,7 @@ static inline unsigned long copy_to_user16(void *to, const void *from,
+ static ssize_t
+ epson1355fb_read(struct file *file, char *buf, size_t count, loff_t * ppos)
+ {
+-	struct inode *inode = file-&gt;f_dentry-&gt;d_inode;
++	struct inode *inode = file-&gt;f_path.dentry-&gt;d_inode;
+ 	int fbidx = iminor(inode);
+ 	struct fb_info *info = registered_fb[fbidx];
+ 	unsigned long p = *ppos;
+@@ -437,7 +437,7 @@ static ssize_t
+ epson1355fb_write(struct file *file, const char *buf,
+ 		  size_t count, loff_t * ppos)
+ {
+-	struct inode *inode = file-&gt;f_dentry-&gt;d_inode;
++	struct inode *inode = file-&gt;f_path.dentry-&gt;d_inode;
+ 	int fbidx = iminor(inode);
+ 	struct fb_info *info = registered_fb[fbidx];
+ 	unsigned long p = *ppos;
+diff --git a/drivers/video/fbmem.c b/drivers/video/fbmem.c
+index e973a87fbb01..00a216879785 100644
+--- a/drivers/video/fbmem.c
++++ b/drivers/video/fbmem.c
+@@ -572,7 +572,7 @@ static ssize_t
+ fb_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+ {
+ 	unsigned long p = *ppos;
+-	struct inode *inode = file-&gt;f_dentry-&gt;d_inode;
++	struct inode *inode = file-&gt;f_path.dentry-&gt;d_inode;
+ 	int fbidx = iminor(inode);
+ 	struct fb_info *info = registered_fb[fbidx];
+ 	u32 *buffer, *dst;
+@@ -647,7 +647,7 @@ static ssize_t
+ fb_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+ {
+ 	unsigned long p = *ppos;
+-	struct inode *inode = file-&gt;f_dentry-&gt;d_inode;
++	struct inode *inode = file-&gt;f_path.dentry-&gt;d_inode;
+ 	int fbidx = iminor(inode);
+ 	struct fb_info *info = registered_fb[fbidx];
+ 	u32 *buffer, *src;
+@@ -1081,7 +1081,7 @@ static int fb_get_fscreeninfo(struct inode *inode, struct file *file,
+ static long
+ fb_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ {
+-	struct inode *inode = file-&gt;f_dentry-&gt;d_inode;
++	struct inode *inode = file-&gt;f_path.dentry-&gt;d_inode;
+ 	int fbidx = iminor(inode);
+ 	struct fb_info *info = registered_fb[fbidx];
+ 	struct fb_ops *fb = info-&gt;fbops;
+@@ -1121,7 +1121,7 @@ fb_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ static int 
+ fb_mmap(struct file *file, struct vm_area_struct * vma)
+ {
+-	int fbidx = iminor(file-&gt;f_dentry-&gt;d_inode);
++	int fbidx = iminor(file-&gt;f_path.dentry-&gt;d_inode);
+ 	struct fb_info *info = registered_fb[fbidx];
+ 	struct fb_ops *fb = info-&gt;fbops;
+ 	unsigned long off;</pre><hr><pre>commit 723731b2eef6599cf09af1fbfe0b12857b439e2d
+Author: Josef Sipek &lt;jsipek@fsl.cs.sunysb.edu&gt;
+Date:   Fri Dec 8 02:37:47 2006 -0800
+
+    [PATCH] struct path: convert v4l
+    
+    Signed-off-by: Josef Sipek &lt;jsipek@fsl.cs.sunysb.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/media/video/compat_ioctl32.c b/drivers/media/video/compat_ioctl32.c
+index d82a488f12a6..f065ad12cc61 100644
+--- a/drivers/media/video/compat_ioctl32.c
++++ b/drivers/media/video/compat_ioctl32.c
+@@ -118,7 +118,7 @@ static int native_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ 		ret = file-&gt;f_op-&gt;unlocked_ioctl(file, cmd, arg);
+ 	else if (file-&gt;f_op-&gt;ioctl) {
+ 		lock_kernel();
+-		ret = file-&gt;f_op-&gt;ioctl(file-&gt;f_dentry-&gt;d_inode, file, cmd, arg);
++		ret = file-&gt;f_op-&gt;ioctl(file-&gt;f_path.dentry-&gt;d_inode, file, cmd, arg);
+ 		unlock_kernel();
+ 	}
+ 
+diff --git a/drivers/media/video/videodev.c b/drivers/media/video/videodev.c
+index d424a4129d69..41ec0c4b35a2 100644
+--- a/drivers/media/video/videodev.c
++++ b/drivers/media/video/videodev.c
+@@ -105,7 +105,7 @@ static DEFINE_MUTEX(videodev_lock);
+ 
+ struct video_device* video_devdata(struct file *file)
+ {
+-	return video_device[iminor(file-&gt;f_dentry-&gt;d_inode)];
++	return video_device[iminor(file-&gt;f_path.dentry-&gt;d_inode)];
+ }
+ 
+ /*
+diff --git a/drivers/media/video/zoran_procfs.c b/drivers/media/video/zoran_procfs.c
+index c7f6f6488360..c374c76b3753 100644
+--- a/drivers/media/video/zoran_procfs.c
++++ b/drivers/media/video/zoran_procfs.c
+@@ -144,7 +144,7 @@ static int zoran_open(struct inode *inode, struct file *file)
+ static ssize_t zoran_write(struct file *file, const char __user *buffer,
+ 			size_t count, loff_t *ppos)
+ {
+-	struct zoran *zr = PDE(file-&gt;f_dentry-&gt;d_inode)-&gt;data;
++	struct zoran *zr = PDE(file-&gt;f_path.dentry-&gt;d_inode)-&gt;data;
+ 	char *string, *sp;
+ 	char *line, *ldelim, *varname, *svar, *tdelim;
+ 
+@@ -165,7 +165,7 @@ static ssize_t zoran_write(struct file *file, const char __user *buffer,
+ 	}
+ 	string[count] = 0;
+ 	dprintk(4, KERN_INFO "%s: write_proc: name=%s count=%zu zr=%p\n",
+-		ZR_DEVNAME(zr), file-&gt;f_dentry-&gt;d_name.name, count, zr);
++		ZR_DEVNAME(zr), file-&gt;f_path.dentry-&gt;d_name.name, count, zr);
+ 	ldelim = " \t\n";
+ 	tdelim = "=";
+ 	line = strpbrk(sp, ldelim);</pre><hr><pre>commit 33cb89940082c54f348062db2f8bab6cf8fed816
+Author: Josef Sipek &lt;jsipek@fsl.cs.sunysb.edu&gt;
+Date:   Fri Dec 8 02:37:46 2006 -0800
+
+    [PATCH] struct path: convert usb
+    
+    Signed-off-by: Josef Sipek &lt;jsipek@fsl.cs.sunysb.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/usb/core/inode.c b/drivers/usb/core/inode.c
+index b5d6a79af0be..11dad22da41c 100644
+--- a/drivers/usb/core/inode.c
++++ b/drivers/usb/core/inode.c
+@@ -379,7 +379,7 @@ static loff_t default_file_lseek (struct file *file, loff_t offset, int orig)
+ {
+ 	loff_t retval = -EINVAL;
+ 
+-	mutex_lock(&amp;file-&gt;f_dentry-&gt;d_inode-&gt;i_mutex);
++	mutex_lock(&amp;file-&gt;f_path.dentry-&gt;d_inode-&gt;i_mutex);
+ 	switch(orig) {
+ 	case 0:
+ 		if (offset &gt; 0) {
+@@ -396,7 +396,7 @@ static loff_t default_file_lseek (struct file *file, loff_t offset, int orig)
+ 	default:
+ 		break;
+ 	}
+-	mutex_unlock(&amp;file-&gt;f_dentry-&gt;d_inode-&gt;i_mutex);
++	mutex_unlock(&amp;file-&gt;f_path.dentry-&gt;d_inode-&gt;i_mutex);
+ 	return retval;
+ }
+ 
+diff --git a/drivers/usb/gadget/file_storage.c b/drivers/usb/gadget/file_storage.c
+index c98316ce8384..a265e262a2ee 100644
+--- a/drivers/usb/gadget/file_storage.c
++++ b/drivers/usb/gadget/file_storage.c
+@@ -1909,10 +1909,10 @@ static int fsync_sub(struct lun *curlun)
+ 	if (!filp-&gt;f_op-&gt;fsync)
+ 		return -EINVAL;
+ 
+-	inode = filp-&gt;f_dentry-&gt;d_inode;
++	inode = filp-&gt;f_path.dentry-&gt;d_inode;
+ 	mutex_lock(&amp;inode-&gt;i_mutex);
+ 	rc = filemap_fdatawrite(inode-&gt;i_mapping);
+-	err = filp-&gt;f_op-&gt;fsync(filp, filp-&gt;f_dentry, 1);
++	err = filp-&gt;f_op-&gt;fsync(filp, filp-&gt;f_path.dentry, 1);
+ 	if (!rc)
+ 		rc = err;
+ 	err = filemap_fdatawait(inode-&gt;i_mapping);
+@@ -1950,7 +1950,7 @@ static int do_synchronize_cache(struct fsg_dev *fsg)
+ static void invalidate_sub(struct lun *curlun)
+ {
+ 	struct file	*filp = curlun-&gt;filp;
+-	struct inode	*inode = filp-&gt;f_dentry-&gt;d_inode;
++	struct inode	*inode = filp-&gt;f_path.dentry-&gt;d_inode;
+ 	unsigned long	rc;
+ 
+ 	rc = invalidate_inode_pages(inode-&gt;i_mapping);
+@@ -3526,8 +3526,8 @@ static int open_backing_file(struct lun *curlun, const char *filename)
+ 	if (!(filp-&gt;f_mode &amp; FMODE_WRITE))
+ 		ro = 1;
+ 
+-	if (filp-&gt;f_dentry)
+-		inode = filp-&gt;f_dentry-&gt;d_inode;
++	if (filp-&gt;f_path.dentry)
++		inode = filp-&gt;f_path.dentry-&gt;d_inode;
+ 	if (inode &amp;&amp; S_ISBLK(inode-&gt;i_mode)) {
+ 		if (bdev_read_only(inode-&gt;i_bdev))
+ 			ro = 1;
+@@ -3606,7 +3606,7 @@ static ssize_t show_file(struct device *dev, struct device_attribute *attr, char
+ 
+ 	down_read(&amp;fsg-&gt;filesem);
+ 	if (backing_file_is_open(curlun)) {	// Get the complete pathname
+-		p = d_path(curlun-&gt;filp-&gt;f_dentry, curlun-&gt;filp-&gt;f_vfsmnt,
++		p = d_path(curlun-&gt;filp-&gt;f_path.dentry, curlun-&gt;filp-&gt;f_path.mnt,
+ 				buf, PAGE_SIZE - 1);
+ 		if (IS_ERR(p))
+ 			rc = PTR_ERR(p);
+@@ -4030,8 +4030,8 @@ static int __init fsg_bind(struct usb_gadget *gadget)
+ 		if (backing_file_is_open(curlun)) {
+ 			p = NULL;
+ 			if (pathbuf) {
+-				p = d_path(curlun-&gt;filp-&gt;f_dentry,
+-					curlun-&gt;filp-&gt;f_vfsmnt,
++				p = d_path(curlun-&gt;filp-&gt;f_path.dentry,
++					curlun-&gt;filp-&gt;f_path.mnt,
+ 					pathbuf, PATH_MAX);
+ 				if (IS_ERR(p))
+ 					p = NULL;
+diff --git a/drivers/usb/misc/sisusbvga/sisusb.c b/drivers/usb/misc/sisusbvga/sisusb.c
+index b99ca9c79821..0398908b15d4 100644
+--- a/drivers/usb/misc/sisusbvga/sisusb.c
++++ b/drivers/usb/misc/sisusbvga/sisusb.c
+@@ -3168,7 +3168,7 @@ sisusb_compat_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
+ 		case SISUSB_GET_CONFIG:
+ 		case SISUSB_COMMAND:
+ 			lock_kernel();
+-			retval = sisusb_ioctl(f-&gt;f_dentry-&gt;d_inode, f, cmd, arg);
++			retval = sisusb_ioctl(f-&gt;f_path.dentry-&gt;d_inode, f, cmd, arg);
+ 			unlock_kernel();
+ 			return retval;
+ </pre><hr><pre>commit 592ccbf9fba665031765d9bb0f6c1ede1fa62f96
+Author: Josef Sipek &lt;jsipek@fsl.cs.sunysb.edu&gt;
+Date:   Fri Dec 8 02:37:45 2006 -0800
+
+    [PATCH] struct path: convert unix
+    
+    Signed-off-by: Josef Sipek &lt;jsipek@fsl.cs.sunysb.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/net/unix/garbage.c b/net/unix/garbage.c
+index 746c2f4a5fa6..f14ad6635fcc 100644
+--- a/net/unix/garbage.c
++++ b/net/unix/garbage.c
+@@ -96,7 +96,7 @@ atomic_t unix_tot_inflight = ATOMIC_INIT(0);
+ static struct sock *unix_get_socket(struct file *filp)
+ {
+ 	struct sock *u_sock = NULL;
+-	struct inode *inode = filp-&gt;f_dentry-&gt;d_inode;
++	struct inode *inode = filp-&gt;f_path.dentry-&gt;d_inode;
+ 
+ 	/*
+ 	 *	Socket ?</pre>
+    <div class="pagination">
+        <span>[1]</span><a href='9_2.html'>2</a><a href='9_3.html'>3</a><a href='9_4.html'>4</a><a href='9_5.html'>5</a><a href='9_6.html'>6</a><a href='9_7.html'>7</a><a href='9_8.html'>8</a><a href='9_9.html'>9</a><a href='9_10.html'>10</a><a href='9_11.html'>11</a><a href='9_12.html'>12</a><a href='9_13.html'>13</a><a href='9_14.html'>14</a><a href='9_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

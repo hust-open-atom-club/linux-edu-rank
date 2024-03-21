@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Fudan University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Fudan University</h1>
+    <div class="pagination">
+        <a href='15_5.html'>&lt;&lt;Prev</a><a href='15.html'>1</a><a href='15_2.html'>2</a><a href='15_3.html'>3</a><a href='15_4.html'>4</a><a href='15_5.html'>5</a><span>[6]</span><a href='15_7.html'>7</a><a href='15_7.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 8aebfffacfa379ba400da573a5bf9e49634e38cb
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Sat Apr 25 20:52:26 2020 +0800
+
+    configfs: fix config_item refcnt leak in configfs_rmdir()
+    
+    configfs_rmdir() invokes configfs_get_config_item(), which returns a
+    reference of the specified config_item object to "parent_item" with
+    increased refcnt.
+    
+    When configfs_rmdir() returns, local variable "parent_item" becomes
+    invalid, so the refcount should be decreased to keep refcount balanced.
+    
+    The reference counting issue happens in one exception handling path of
+    configfs_rmdir(). When down_write_killable() fails, the function forgets
+    to decrease the refcnt increased by configfs_get_config_item(), causing
+    a refcnt leak.
+    
+    Fix this issue by calling config_item_put() when down_write_killable()
+    fails.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Christoph Hellwig &lt;hch@lst.de&gt;
+
+diff --git a/fs/configfs/dir.c b/fs/configfs/dir.c
+index cf7b7e1d5bd7..cb733652ecca 100644
+--- a/fs/configfs/dir.c
++++ b/fs/configfs/dir.c
+@@ -1519,6 +1519,7 @@ static int configfs_rmdir(struct inode *dir, struct dentry *dentry)
+ 		spin_lock(&amp;configfs_dirent_lock);
+ 		configfs_detach_rollback(dentry);
+ 		spin_unlock(&amp;configfs_dirent_lock);
++		config_item_put(parent_item);
+ 		return -EINTR;
+ 	}
+ 	frag-&gt;frag_dead = true;</pre><hr><pre>commit 6e47666ef93dc9c4011407df8d2de1dd1ed39f25
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Sat Apr 25 21:04:40 2020 +0800
+
+    NFSv4: Remove unreachable error condition due to rpc_run_task()
+    
+    nfs4_proc_layoutget() invokes rpc_run_task(), which return the value to
+    "task". Since rpc_run_task() is impossible to return an ERR pointer,
+    there is no need to add the IS_ERR() condition on "task" here. So we
+    need to remove it.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Trond Myklebust &lt;trond.myklebust@hammerspace.com&gt;
+
+diff --git a/fs/nfs/nfs4proc.c b/fs/nfs/nfs4proc.c
+index 512afb1c7867..1c710a7834c2 100644
+--- a/fs/nfs/nfs4proc.c
++++ b/fs/nfs/nfs4proc.c
+@@ -9191,8 +9191,7 @@ nfs4_proc_layoutget(struct nfs4_layoutget *lgp, long *timeout)
+ 	nfs4_init_sequence(&amp;lgp-&gt;args.seq_args, &amp;lgp-&gt;res.seq_res, 0, 0);
+ 
+ 	task = rpc_run_task(&amp;task_setup_data);
+-	if (IS_ERR(task))
+-		return ERR_CAST(task);
++
+ 	status = rpc_wait_for_completion_task(task);
+ 	if (status != 0)
+ 		goto out;</pre><hr><pre>commit f35d12971b4d814cdb2f659d76b42f0c545270b6
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Thu Apr 23 13:13:03 2020 +0800
+
+    net/x25: Fix x25_neigh refcnt leak when receiving frame
+    
+    x25_lapb_receive_frame() invokes x25_get_neigh(), which returns a
+    reference of the specified x25_neigh object to "nb" with increased
+    refcnt.
+    
+    When x25_lapb_receive_frame() returns, local variable "nb" becomes
+    invalid, so the refcount should be decreased to keep refcount balanced.
+    
+    The reference counting issue happens in one path of
+    x25_lapb_receive_frame(). When pskb_may_pull() returns false, the
+    function forgets to decrease the refcnt increased by x25_get_neigh(),
+    causing a refcnt leak.
+    
+    Fix this issue by calling x25_neigh_put() when pskb_may_pull() returns
+    false.
+    
+    Fixes: cb101ed2c3c7 ("x25: Handle undersized/fragmented skbs")
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/x25/x25_dev.c b/net/x25/x25_dev.c
+index 00e782335cb0..25bf72ee6cad 100644
+--- a/net/x25/x25_dev.c
++++ b/net/x25/x25_dev.c
+@@ -115,8 +115,10 @@ int x25_lapb_receive_frame(struct sk_buff *skb, struct net_device *dev,
+ 		goto drop;
+ 	}
+ 
+-	if (!pskb_may_pull(skb, 1))
++	if (!pskb_may_pull(skb, 1)) {
++		x25_neigh_put(nb);
+ 		return 0;
++	}
+ 
+ 	switch (skb-&gt;data[0]) {
+ </pre><hr><pre>commit 1402d17dfd9657be0da8458b2079d03c2d61c86a
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Mon Apr 20 13:39:39 2020 +0800
+
+    btrfs: fix transaction leak in btrfs_recover_relocation
+    
+    btrfs_recover_relocation() invokes btrfs_join_transaction(), which joins
+    a btrfs_trans_handle object into transactions and returns a reference of
+    it with increased refcount to "trans".
+    
+    When btrfs_recover_relocation() returns, "trans" becomes invalid, so the
+    refcount should be decreased to keep refcount balanced.
+    
+    The reference counting issue happens in one exception handling path of
+    btrfs_recover_relocation(). When read_fs_root() failed, the refcnt
+    increased by btrfs_join_transaction() is not decreased, causing a refcnt
+    leak.
+    
+    Fix this issue by calling btrfs_end_transaction() on this error path
+    when read_fs_root() failed.
+    
+    Fixes: 79787eaab461 ("btrfs: replace many BUG_ONs with proper error handling")
+    CC: stable@vger.kernel.org # 4.4+
+    Reviewed-by: Filipe Manana &lt;fdmanana@suse.com&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: David Sterba &lt;dsterba@suse.com&gt;
+
+diff --git a/fs/btrfs/relocation.c b/fs/btrfs/relocation.c
+index d35936c934ab..03bc7134e8cb 100644
+--- a/fs/btrfs/relocation.c
++++ b/fs/btrfs/relocation.c
+@@ -4559,6 +4559,7 @@ int btrfs_recover_relocation(struct btrfs_root *root)
+ 		if (IS_ERR(fs_root)) {
+ 			err = PTR_ERR(fs_root);
+ 			list_add_tail(&amp;reloc_root-&gt;root_list, &amp;reloc_roots);
++			btrfs_end_transaction(trans);
+ 			goto out_unset;
+ 		}
+ </pre><hr><pre>commit f6033c5e333238f299c3ae03fac8cc1365b23b77
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Tue Apr 21 10:54:11 2020 +0800
+
+    btrfs: fix block group leak when removing fails
+    
+    btrfs_remove_block_group() invokes btrfs_lookup_block_group(), which
+    returns a local reference of the block group that contains the given
+    bytenr to "block_group" with increased refcount.
+    
+    When btrfs_remove_block_group() returns, "block_group" becomes invalid,
+    so the refcount should be decreased to keep refcount balanced.
+    
+    The reference counting issue happens in several exception handling paths
+    of btrfs_remove_block_group(). When those error scenarios occur such as
+    btrfs_alloc_path() returns NULL, the function forgets to decrease its
+    refcnt increased by btrfs_lookup_block_group() and will cause a refcnt
+    leak.
+    
+    Fix this issue by jumping to "out_put_group" label and calling
+    btrfs_put_block_group() when those error scenarios occur.
+    
+    CC: stable@vger.kernel.org # 4.4+
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Reviewed-by: David Sterba &lt;dsterba@suse.com&gt;
+    Signed-off-by: David Sterba &lt;dsterba@suse.com&gt;
+
+diff --git a/fs/btrfs/block-group.c b/fs/btrfs/block-group.c
+index af9e9a008724..696f47103cfc 100644
+--- a/fs/btrfs/block-group.c
++++ b/fs/btrfs/block-group.c
+@@ -916,7 +916,7 @@ int btrfs_remove_block_group(struct btrfs_trans_handle *trans,
+ 	path = btrfs_alloc_path();
+ 	if (!path) {
+ 		ret = -ENOMEM;
+-		goto out;
++		goto out_put_group;
+ 	}
+ 
+ 	/*
+@@ -954,7 +954,7 @@ int btrfs_remove_block_group(struct btrfs_trans_handle *trans,
+ 		ret = btrfs_orphan_add(trans, BTRFS_I(inode));
+ 		if (ret) {
+ 			btrfs_add_delayed_iput(inode);
+-			goto out;
++			goto out_put_group;
+ 		}
+ 		clear_nlink(inode);
+ 		/* One for the block groups ref */
+@@ -977,13 +977,13 @@ int btrfs_remove_block_group(struct btrfs_trans_handle *trans,
+ 
+ 	ret = btrfs_search_slot(trans, tree_root, &amp;key, path, -1, 1);
+ 	if (ret &lt; 0)
+-		goto out;
++		goto out_put_group;
+ 	if (ret &gt; 0)
+ 		btrfs_release_path(path);
+ 	if (ret == 0) {
+ 		ret = btrfs_del_item(trans, tree_root, path);
+ 		if (ret)
+-			goto out;
++			goto out_put_group;
+ 		btrfs_release_path(path);
+ 	}
+ 
+@@ -1102,9 +1102,9 @@ int btrfs_remove_block_group(struct btrfs_trans_handle *trans,
+ 
+ 	ret = remove_block_group_free_space(trans, block_group);
+ 	if (ret)
+-		goto out;
++		goto out_put_group;
+ 
+-	btrfs_put_block_group(block_group);
++	/* Once for the block groups rbtree */
+ 	btrfs_put_block_group(block_group);
+ 
+ 	ret = btrfs_search_slot(trans, root, &amp;key, path, -1, 1);
+@@ -1127,6 +1127,10 @@ int btrfs_remove_block_group(struct btrfs_trans_handle *trans,
+ 		/* once for the tree */
+ 		free_extent_map(em);
+ 	}
++
++out_put_group:
++	/* Once for the lookup reference */
++	btrfs_put_block_group(block_group);
+ out:
+ 	if (remove_rsv)
+ 		btrfs_delayed_refs_rsv_release(fs_info, 1);</pre><hr><pre>commit 332e0e17ad49e084b7db670ef43b5eb59abd9e34
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Mon Apr 20 13:44:16 2020 +0800
+
+    staging: comedi: Fix comedi_device refcnt leak in comedi_open
+    
+    comedi_open() invokes comedi_dev_get_from_minor(), which returns a
+    reference of the COMEDI device to "dev" with increased refcount.
+    
+    When comedi_open() returns, "dev" becomes invalid, so the refcount
+    should be decreased to keep refcount balanced.
+    
+    The reference counting issue happens in one exception handling path of
+    comedi_open(). When "cfp" allocation is failed, the refcnt increased by
+    comedi_dev_get_from_minor() is not decreased, causing a refcnt leak.
+    
+    Fix this issue by calling comedi_dev_put() on this error path when "cfp"
+    allocation is failed.
+    
+    Fixes: 20f083c07565 ("staging: comedi: prepare support for per-file read and write subdevices")
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Cc: stable &lt;stable@vger.kernel.org&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Ian Abbott &lt;abbotti@mev.co.uk&gt;
+    Link: https://lore.kernel.org/r/1587361459-83622-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/comedi/comedi_fops.c b/drivers/staging/comedi/comedi_fops.c
+index 08d1bbbebf2d..e84b4fb493d6 100644
+--- a/drivers/staging/comedi/comedi_fops.c
++++ b/drivers/staging/comedi/comedi_fops.c
+@@ -2725,8 +2725,10 @@ static int comedi_open(struct inode *inode, struct file *file)
+ 	}
+ 
+ 	cfp = kzalloc(sizeof(*cfp), GFP_KERNEL);
+-	if (!cfp)
++	if (!cfp) {
++		comedi_dev_put(dev);
+ 		return -ENOMEM;
++	}
+ 
+ 	cfp-&gt;dev = dev;
+ </pre><hr><pre>commit e3436ce60cf5f5eaedda2b8c622f69feb97595e2
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Thu Apr 23 13:15:40 2020 +0800
+
+    staging: gasket: Fix mapping refcnt leak when register/store fails
+    
+    gasket_sysfs_register_store() invokes get_mapping(), which returns a
+    reference of the specified gasket_sysfs_mapping object to "mapping" with
+    increased refcnt.
+    
+    When gasket_sysfs_register_store() returns, local variable "mapping"
+    becomes invalid, so the refcount should be decreased to keep refcount
+    balanced.
+    
+    The reference counting issue happens in one exception handling path of
+    gasket_sysfs_register_store(). When gasket_dev is NULL, the function
+    forgets to decrease the refcnt increased by get_mapping(), causing a
+    refcnt leak.
+    
+    Fix this issue by calling put_mapping() when gasket_dev is NULL.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Link: https://lore.kernel.org/r/1587618941-13718-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/gasket/gasket_sysfs.c b/drivers/staging/gasket/gasket_sysfs.c
+index f24edc38c27b..b4aa8c2ba2c0 100644
+--- a/drivers/staging/gasket/gasket_sysfs.c
++++ b/drivers/staging/gasket/gasket_sysfs.c
+@@ -374,6 +374,7 @@ ssize_t gasket_sysfs_register_store(struct device *device,
+ 	gasket_dev = mapping-&gt;gasket_dev;
+ 	if (!gasket_dev) {
+ 		dev_err(device, "Device driver may have been removed\n");
++		put_mapping(mapping);
+ 		return 0;
+ 	}
+ </pre><hr><pre>commit 57a66838e1494cd881b7f4e110ec685736e8e3ca
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Thu Apr 23 13:14:55 2020 +0800
+
+    staging: gasket: Fix mapping refcnt leak when put attribute fails
+    
+    gasket_sysfs_put_attr() invokes get_mapping(), which returns a reference
+    of the specified gasket_sysfs_mapping object to "mapping" with increased
+    refcnt.
+    
+    When gasket_sysfs_put_attr() returns, local variable "mapping" becomes
+    invalid, so the refcount should be decreased to keep refcount balanced.
+    
+    The reference counting issue happens in one path of
+    gasket_sysfs_put_attr(). When mapping attribute is unknown, the function
+    forgets to decrease the refcnt increased by get_mapping(), causing a
+    refcnt leak.
+    
+    Fix this issue by calling put_mapping() when put attribute fails due to
+    unknown attribute.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Link: https://lore.kernel.org/r/1587618895-13660-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/gasket/gasket_sysfs.c b/drivers/staging/gasket/gasket_sysfs.c
+index a2d67c28f530..f24edc38c27b 100644
+--- a/drivers/staging/gasket/gasket_sysfs.c
++++ b/drivers/staging/gasket/gasket_sysfs.c
+@@ -340,6 +340,7 @@ void gasket_sysfs_put_attr(struct device *device,
+ 
+ 	dev_err(device, "Unable to put unknown attribute: %s\n",
+ 		attr-&gt;attr.attr.name);
++	put_mapping(mapping);
+ }
+ EXPORT_SYMBOL(gasket_sysfs_put_attr);
+ </pre><hr><pre>commit 59e1947ca09ebd1cae147c08c7c41f3141233c84
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Thu Apr 23 12:54:19 2020 +0800
+
+    ALSA: usb-audio: Fix usb audio refcnt leak when getting spdif
+    
+    snd_microii_spdif_default_get() invokes snd_usb_lock_shutdown(), which
+    increases the refcount of the snd_usb_audio object "chip".
+    
+    When snd_microii_spdif_default_get() returns, local variable "chip"
+    becomes invalid, so the refcount should be decreased to keep refcount
+    balanced.
+    
+    The reference counting issue happens in several exception handling paths
+    of snd_microii_spdif_default_get(). When those error scenarios occur
+    such as usb_ifnum_to_if() returns NULL, the function forgets to decrease
+    the refcnt increased by snd_usb_lock_shutdown(), causing a refcnt leak.
+    
+    Fix this issue by jumping to "end" label when those error scenarios
+    occur.
+    
+    Fixes: 447d6275f0c2 ("ALSA: usb-audio: Add sanity checks for endpoint accesses")
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Link: https://lore.kernel.org/r/1587617711-13200-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/usb/mixer_quirks.c b/sound/usb/mixer_quirks.c
+index 02b036b2aefb..a5f65a9a0254 100644
+--- a/sound/usb/mixer_quirks.c
++++ b/sound/usb/mixer_quirks.c
+@@ -1509,11 +1509,15 @@ static int snd_microii_spdif_default_get(struct snd_kcontrol *kcontrol,
+ 
+ 	/* use known values for that card: interface#1 altsetting#1 */
+ 	iface = usb_ifnum_to_if(chip-&gt;dev, 1);
+-	if (!iface || iface-&gt;num_altsetting &lt; 2)
+-		return -EINVAL;
++	if (!iface || iface-&gt;num_altsetting &lt; 2) {
++		err = -EINVAL;
++		goto end;
++	}
+ 	alts = &amp;iface-&gt;altsetting[1];
+-	if (get_iface_desc(alts)-&gt;bNumEndpoints &lt; 1)
+-		return -EINVAL;
++	if (get_iface_desc(alts)-&gt;bNumEndpoints &lt; 1) {
++		err = -EINVAL;
++		goto end;
++	}
+ 	ep = get_endpoint(alts, 0)-&gt;bEndpointAddress;
+ 
+ 	err = snd_usb_ctl_msg(chip-&gt;dev,</pre><hr><pre>commit efe57fd58e1cb77f9186152ee12a8aa4ae3348e0
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Mon Apr 20 23:14:19 2020 +0800
+
+    SUNRPC: Remove unreachable error condition
+    
+    rpc_clnt_test_and_add_xprt() invokes rpc_call_null_helper(), which
+    return the value of rpc_run_task() to "task". Since rpc_run_task() is
+    impossible to return an ERR pointer, there is no need to add the
+    IS_ERR() condition on "task" here. So we need to remove it.
+    
+    Fixes: 7f554890587c ("SUNRPC: Allow addition of new transports to a struct rpc_clnt")
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Trond Myklebust &lt;trond.myklebust@hammerspace.com&gt;
+
+diff --git a/net/sunrpc/clnt.c b/net/sunrpc/clnt.c
+index 325a0858700f..05404bb05607 100644
+--- a/net/sunrpc/clnt.c
++++ b/net/sunrpc/clnt.c
+@@ -2808,8 +2808,7 @@ int rpc_clnt_test_and_add_xprt(struct rpc_clnt *clnt,
+ 	task = rpc_call_null_helper(clnt, xprt, NULL,
+ 			RPC_TASK_SOFT|RPC_TASK_SOFTCONN|RPC_TASK_ASYNC|RPC_TASK_NULLCREDS,
+ 			&amp;rpc_cb_add_xprt_call_ops, data);
+-	if (IS_ERR(task))
+-		return PTR_ERR(task);
++
+ 	rpc_put_task(task);
+ success:
+ 	return 1;</pre>
+    <div class="pagination">
+        <a href='15_5.html'>&lt;&lt;Prev</a><a href='15.html'>1</a><a href='15_2.html'>2</a><a href='15_3.html'>3</a><a href='15_4.html'>4</a><a href='15_5.html'>5</a><span>[6]</span><a href='15_7.html'>7</a><a href='15_7.html'>Next&gt;&gt;</a>
+    <div>
+</body>

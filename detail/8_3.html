@@ -1,0 +1,1551 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of New South Wales</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of New South Wales</h1>
+    <div class="pagination">
+        <a href='8_2.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><span>[3]</span><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_4.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 9e6603da9b9cfb14a6aca3845227f8c59f7eeb9b
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Sep 9 16:23:48 2005 -0700
+
+    [PATCH] md: raid1_quiesce is back to front, fix it.
+    
+    A state of 0 mean 'not quiesced'
+    A state of 1 means 'is quiesced'
+    
+    The original code got this wrong.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index ba7f5f256161..bfe78571586b 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -1708,14 +1708,14 @@ void raid1_quiesce(mddev_t *mddev, int state)
+ 	conf_t *conf = mddev_to_conf(mddev);
+ 
+ 	switch(state) {
+-	case 0:
++	case 1:
+ 		spin_lock_irq(&amp;conf-&gt;resync_lock);
+ 		conf-&gt;barrier++;
+ 		wait_event_lock_irq(conf-&gt;wait_idle, !conf-&gt;nr_pending,
+ 				    conf-&gt;resync_lock, raid1_unplug(mddev-&gt;queue));
+ 		spin_unlock_irq(&amp;conf-&gt;resync_lock);
+ 		break;
+-	case 1:
++	case 0:
+ 		spin_lock_irq(&amp;conf-&gt;resync_lock);
+ 		conf-&gt;barrier--;
+ 		spin_unlock_irq(&amp;conf-&gt;resync_lock);</pre><hr><pre>commit 15945fee6f09bff1f86b1a735b5888dc59cf38e3
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Sep 9 16:23:47 2005 -0700
+
+    [PATCH] md: support md/linear array with components greater than 2 terabytes.
+    
+    linear currently uses division by the size of the smallest componenet device
+    to find which device a request goes to.  If that smallest device is larger
+    than 2 terabytes, then the division will not work on some systems.
+    
+    So we introduce a pre-shift, and take care not to make the hash table too
+    large, much like the code in raid0.
+    
+    Also get rid of conf-&gt;nr_zones, which is not needed.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/linear.c b/drivers/md/linear.c
+index 4991ba543368..bb279fad2fd2 100644
+--- a/drivers/md/linear.c
++++ b/drivers/md/linear.c
+@@ -38,7 +38,8 @@ static inline dev_info_t *which_dev(mddev_t *mddev, sector_t sector)
+ 	/*
+ 	 * sector_div(a,b) returns the remainer and sets a to a/b
+ 	 */
+-	(void)sector_div(block, conf-&gt;smallest-&gt;size);
++	block &gt;&gt;= conf-&gt;preshift;
++	(void)sector_div(block, conf-&gt;hash_spacing);
+ 	hash = conf-&gt;hash_table[block];
+ 
+ 	while ((sector&gt;&gt;1) &gt;= (hash-&gt;size + hash-&gt;offset))
+@@ -47,7 +48,7 @@ static inline dev_info_t *which_dev(mddev_t *mddev, sector_t sector)
+ }
+ 
+ /**
+- *	linear_mergeable_bvec -- tell bio layer if a two requests can be merged
++ *	linear_mergeable_bvec -- tell bio layer if two requests can be merged
+  *	@q: request queue
+  *	@bio: the buffer head that's been built up so far
+  *	@biovec: the request that could be merged to it.
+@@ -116,7 +117,7 @@ static int linear_run (mddev_t *mddev)
+ 	dev_info_t **table;
+ 	mdk_rdev_t *rdev;
+ 	int i, nb_zone, cnt;
+-	sector_t start;
++	sector_t min_spacing;
+ 	sector_t curr_offset;
+ 	struct list_head *tmp;
+ 
+@@ -127,11 +128,6 @@ static int linear_run (mddev_t *mddev)
+ 	memset(conf, 0, sizeof(*conf) + mddev-&gt;raid_disks*sizeof(dev_info_t));
+ 	mddev-&gt;private = conf;
+ 
+-	/*
+-	 * Find the smallest device.
+-	 */
+-
+-	conf-&gt;smallest = NULL;
+ 	cnt = 0;
+ 	mddev-&gt;array_size = 0;
+ 
+@@ -159,8 +155,6 @@ static int linear_run (mddev_t *mddev)
+ 		disk-&gt;size = rdev-&gt;size;
+ 		mddev-&gt;array_size += rdev-&gt;size;
+ 
+-		if (!conf-&gt;smallest || (disk-&gt;size &lt; conf-&gt;smallest-&gt;size))
+-			conf-&gt;smallest = disk;
+ 		cnt++;
+ 	}
+ 	if (cnt != mddev-&gt;raid_disks) {
+@@ -168,6 +162,36 @@ static int linear_run (mddev_t *mddev)
+ 		goto out;
+ 	}
+ 
++	min_spacing = mddev-&gt;array_size;
++	sector_div(min_spacing, PAGE_SIZE/sizeof(struct dev_info *));
++
++	/* min_spacing is the minimum spacing that will fit the hash
++	 * table in one PAGE.  This may be much smaller than needed.
++	 * We find the smallest non-terminal set of consecutive devices
++	 * that is larger than min_spacing as use the size of that as
++	 * the actual spacing
++	 */
++	conf-&gt;hash_spacing = mddev-&gt;array_size;
++	for (i=0; i &lt; cnt-1 ; i++) {
++		sector_t sz = 0;
++		int j;
++		for (j=i; i&lt;cnt-1 &amp;&amp; sz &lt; min_spacing ; j++)
++			sz += conf-&gt;disks[j].size;
++		if (sz &gt;= min_spacing &amp;&amp; sz &lt; conf-&gt;hash_spacing)
++			conf-&gt;hash_spacing = sz;
++	}
++
++	/* hash_spacing may be too large for sector_div to work with,
++	 * so we might need to pre-shift
++	 */
++	conf-&gt;preshift = 0;
++	if (sizeof(sector_t) &gt; sizeof(u32)) {
++		sector_t space = conf-&gt;hash_spacing;
++		while (space &gt; (sector_t)(~(u32)0)) {
++			space &gt;&gt;= 1;
++			conf-&gt;preshift++;
++		}
++	}
+ 	/*
+ 	 * This code was restructured to work around a gcc-2.95.3 internal
+ 	 * compiler error.  Alter it with care.
+@@ -177,39 +201,52 @@ static int linear_run (mddev_t *mddev)
+ 		unsigned round;
+ 		unsigned long base;
+ 
+-		sz = mddev-&gt;array_size;
+-		base = conf-&gt;smallest-&gt;size;
++		sz = mddev-&gt;array_size &gt;&gt; conf-&gt;preshift;
++		sz += 1; /* force round-up */
++		base = conf-&gt;hash_spacing &gt;&gt; conf-&gt;preshift;
+ 		round = sector_div(sz, base);
+-		nb_zone = conf-&gt;nr_zones = sz + (round ? 1 : 0);
++		nb_zone = sz + (round ? 1 : 0);
+ 	}
+-			
+-	conf-&gt;hash_table = kmalloc (sizeof (dev_info_t*) * nb_zone,
++	BUG_ON(nb_zone &gt; PAGE_SIZE / sizeof(struct dev_info *));
++
++	conf-&gt;hash_table = kmalloc (sizeof (struct dev_info *) * nb_zone,
+ 					GFP_KERNEL);
+ 	if (!conf-&gt;hash_table)
+ 		goto out;
+ 
+ 	/*
+ 	 * Here we generate the linear hash table
++	 * First calculate the device offsets.
+ 	 */
++	conf-&gt;disks[0].offset = 0;
++	for (i=1; i&lt;mddev-&gt;raid_disks; i++)
++		conf-&gt;disks[i].offset =
++			conf-&gt;disks[i-1].offset +
++			conf-&gt;disks[i-1].size;
++
+ 	table = conf-&gt;hash_table;
+-	start = 0;
+ 	curr_offset = 0;
+-	for (i = 0; i &lt; cnt; i++) {
+-		dev_info_t *disk = conf-&gt;disks + i;
++	i = 0;
++	for (curr_offset = 0;
++	     curr_offset &lt; mddev-&gt;array_size;
++	     curr_offset += conf-&gt;hash_spacing) {
+ 
+-		disk-&gt;offset = curr_offset;
+-		curr_offset += disk-&gt;size;
++		while (i &lt; mddev-&gt;raid_disks-1 &amp;&amp;
++		       curr_offset &gt;= conf-&gt;disks[i+1].offset)
++			i++;
+ 
+-		/* 'curr_offset' is the end of this disk
+-		 * 'start' is the start of table
++		*table ++ = conf-&gt;disks + i;
++	}
++
++	if (conf-&gt;preshift) {
++		conf-&gt;hash_spacing &gt;&gt;= conf-&gt;preshift;
++		/* round hash_spacing up so that when we divide by it,
++		 * we err on the side of "too-low", which is safest.
+ 		 */
+-		while (start &lt; curr_offset) {
+-			*table++ = disk;
+-			start += conf-&gt;smallest-&gt;size;
+-		}
++		conf-&gt;hash_spacing++;
+ 	}
+-	if (table-conf-&gt;hash_table != nb_zone)
+-		BUG();
++
++	BUG_ON(table - conf-&gt;hash_table &gt; nb_zone);
+ 
+ 	blk_queue_merge_bvec(mddev-&gt;queue, linear_mergeable_bvec);
+ 	mddev-&gt;queue-&gt;unplug_fn = linear_unplug;
+@@ -299,7 +336,7 @@ static void linear_status (struct seq_file *seq, mddev_t *mddev)
+ 	sector_t s = 0;
+   
+ 	seq_printf(seq, "      ");
+-	for (j = 0; j &lt; conf-&gt;nr_zones; j++)
++	for (j = 0; j &lt; mddev-&gt;raid_disks; j++)
+ 	{
+ 		char b[BDEVNAME_SIZE];
+ 		s += conf-&gt;smallest_size;
+diff --git a/include/linux/raid/linear.h b/include/linux/raid/linear.h
+index e04c4fe45b53..7eaf290e10e7 100644
+--- a/include/linux/raid/linear.h
++++ b/include/linux/raid/linear.h
+@@ -14,8 +14,8 @@ typedef struct dev_info dev_info_t;
+ struct linear_private_data
+ {
+ 	dev_info_t		**hash_table;
+-	dev_info_t		*smallest;
+-	int			nr_zones;
++	sector_t		hash_spacing;
++	int			preshift; /* shift before dividing by hash_spacing */
+ 	dev_info_t		disks[0];
+ };
+ </pre><hr><pre>commit 4b6d287f627b5fb6a49f78f9e81649ff98c62bb7
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Sep 9 16:23:47 2005 -0700
+
+    [PATCH] md: add write-behind support for md/raid1
+    
+    If a device is flagged 'WriteMostly' and the array has a bitmap, and the
+    bitmap superblock indicates that write_behind is allowed, then write_behind is
+    enabled for WriteMostly devices.
+    
+    Write requests will be acknowledges as complete to the caller (via b_end_io)
+    when all non-WriteMostly devices have completed the write, but will not be
+    cleared from the bitmap until all devices complete.
+    
+    This requires memory allocation to make a local copy of the data being
+    written.  If there is insufficient memory, then we fall-back on normal write
+    semantics.
+    
+    Signed-Off-By: Paul Clements &lt;paul.clements@steeleye.com&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index 2925219f0881..2c84de2b4ad5 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -437,6 +437,7 @@ void bitmap_print_sb(struct bitmap *bitmap)
+ 	printk(KERN_DEBUG "  daemon sleep: %ds\n", le32_to_cpu(sb-&gt;daemon_sleep));
+ 	printk(KERN_DEBUG "     sync size: %llu KB\n",
+ 			(unsigned long long)le64_to_cpu(sb-&gt;sync_size)/2);
++	printk(KERN_DEBUG "max write behind: %d\n", le32_to_cpu(sb-&gt;write_behind));
+ 	kunmap(bitmap-&gt;sb_page);
+ }
+ 
+@@ -445,7 +446,7 @@ static int bitmap_read_sb(struct bitmap *bitmap)
+ {
+ 	char *reason = NULL;
+ 	bitmap_super_t *sb;
+-	unsigned long chunksize, daemon_sleep;
++	unsigned long chunksize, daemon_sleep, write_behind;
+ 	unsigned long bytes_read;
+ 	unsigned long long events;
+ 	int err = -EINVAL;
+@@ -474,6 +475,7 @@ static int bitmap_read_sb(struct bitmap *bitmap)
+ 
+ 	chunksize = le32_to_cpu(sb-&gt;chunksize);
+ 	daemon_sleep = le32_to_cpu(sb-&gt;daemon_sleep);
++	write_behind = le32_to_cpu(sb-&gt;write_behind);
+ 
+ 	/* verify that the bitmap-specific fields are valid */
+ 	if (sb-&gt;magic != cpu_to_le32(BITMAP_MAGIC))
+@@ -485,7 +487,9 @@ static int bitmap_read_sb(struct bitmap *bitmap)
+ 	else if ((1 &lt;&lt; ffz(~chunksize)) != chunksize)
+ 		reason = "bitmap chunksize not a power of 2";
+ 	else if (daemon_sleep &lt; 1 || daemon_sleep &gt; 15)
+-		reason = "daemon sleep period out of range";
++		reason = "daemon sleep period out of range (1-15s)";
++	else if (write_behind &gt; COUNTER_MAX)
++		reason = "write-behind limit out of range (0 - 16383)";
+ 	if (reason) {
+ 		printk(KERN_INFO "%s: invalid bitmap file superblock: %s\n",
+ 			bmname(bitmap), reason);
+@@ -518,6 +522,7 @@ static int bitmap_read_sb(struct bitmap *bitmap)
+ 	/* assign fields using values from superblock */
+ 	bitmap-&gt;chunksize = chunksize;
+ 	bitmap-&gt;daemon_sleep = daemon_sleep;
++	bitmap-&gt;max_write_behind = write_behind;
+ 	bitmap-&gt;flags |= sb-&gt;state;
+ 	bitmap-&gt;events_cleared = le64_to_cpu(sb-&gt;events_cleared);
+ 	if (sb-&gt;state &amp; BITMAP_STALE)
+@@ -1282,9 +1287,16 @@ static bitmap_counter_t *bitmap_get_counter(struct bitmap *bitmap,
+ 	}
+ }
+ 
+-int bitmap_startwrite(struct bitmap *bitmap, sector_t offset, unsigned long sectors)
++int bitmap_startwrite(struct bitmap *bitmap, sector_t offset, unsigned long sectors, int behind)
+ {
+ 	if (!bitmap) return 0;
++
++	if (behind) {
++		atomic_inc(&amp;bitmap-&gt;behind_writes);
++		PRINTK(KERN_DEBUG "inc write-behind count %d/%d\n",
++		  atomic_read(&amp;bitmap-&gt;behind_writes), bitmap-&gt;max_write_behind);
++	}
++
+ 	while (sectors) {
+ 		int blocks;
+ 		bitmap_counter_t *bmc;
+@@ -1319,9 +1331,15 @@ int bitmap_startwrite(struct bitmap *bitmap, sector_t offset, unsigned long sect
+ }
+ 
+ void bitmap_endwrite(struct bitmap *bitmap, sector_t offset, unsigned long sectors,
+-		     int success)
++		     int success, int behind)
+ {
+ 	if (!bitmap) return;
++	if (behind) {
++		atomic_dec(&amp;bitmap-&gt;behind_writes);
++		PRINTK(KERN_DEBUG "dec write-behind count %d/%d\n",
++		  atomic_read(&amp;bitmap-&gt;behind_writes), bitmap-&gt;max_write_behind);
++	}
++
+ 	while (sectors) {
+ 		int blocks;
+ 		unsigned long flags;
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index 28839a8193f2..ba7f5f256161 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -222,8 +222,17 @@ static void raid_end_bio_io(r1bio_t *r1_bio)
+ {
+ 	struct bio *bio = r1_bio-&gt;master_bio;
+ 
+-	bio_endio(bio, bio-&gt;bi_size,
+-		test_bit(R1BIO_Uptodate, &amp;r1_bio-&gt;state) ? 0 : -EIO);
++	/* if nobody has done the final endio yet, do it now */
++	if (!test_and_set_bit(R1BIO_Returned, &amp;r1_bio-&gt;state)) {
++		PRINTK(KERN_DEBUG "raid1: sync end %s on sectors %llu-%llu\n",
++			(bio_data_dir(bio) == WRITE) ? "write" : "read",
++			(unsigned long long) bio-&gt;bi_sector,
++			(unsigned long long) bio-&gt;bi_sector +
++				(bio-&gt;bi_size &gt;&gt; 9) - 1);
++
++		bio_endio(bio, bio-&gt;bi_size,
++			test_bit(R1BIO_Uptodate, &amp;r1_bio-&gt;state) ? 0 : -EIO);
++	}
+ 	free_r1bio(r1_bio);
+ }
+ 
+@@ -292,7 +301,7 @@ static int raid1_end_write_request(struct bio *bio, unsigned int bytes_done, int
+ {
+ 	int uptodate = test_bit(BIO_UPTODATE, &amp;bio-&gt;bi_flags);
+ 	r1bio_t * r1_bio = (r1bio_t *)(bio-&gt;bi_private);
+-	int mirror;
++	int mirror, behind;
+ 	conf_t *conf = mddev_to_conf(r1_bio-&gt;mddev);
+ 
+ 	if (bio-&gt;bi_size)
+@@ -323,16 +332,46 @@ static int raid1_end_write_request(struct bio *bio, unsigned int bytes_done, int
+ 
+ 	update_head_pos(mirror, r1_bio);
+ 
++	behind = test_bit(R1BIO_BehindIO, &amp;r1_bio-&gt;state);
++	if (behind) {
++		if (test_bit(WriteMostly, &amp;conf-&gt;mirrors[mirror].rdev-&gt;flags))
++			atomic_dec(&amp;r1_bio-&gt;behind_remaining);
++
++		/* In behind mode, we ACK the master bio once the I/O has safely
++		 * reached all non-writemostly disks. Setting the Returned bit
++		 * ensures that this gets done only once -- we don't ever want to
++		 * return -EIO here, instead we'll wait */
++
++		if (atomic_read(&amp;r1_bio-&gt;behind_remaining) &gt;= (atomic_read(&amp;r1_bio-&gt;remaining)-1) &amp;&amp;
++		    test_bit(R1BIO_Uptodate, &amp;r1_bio-&gt;state)) {
++			/* Maybe we can return now */
++			if (!test_and_set_bit(R1BIO_Returned, &amp;r1_bio-&gt;state)) {
++				struct bio *mbio = r1_bio-&gt;master_bio;
++				PRINTK(KERN_DEBUG "raid1: behind end write sectors %llu-%llu\n",
++				       (unsigned long long) mbio-&gt;bi_sector,
++				       (unsigned long long) mbio-&gt;bi_sector +
++				       (mbio-&gt;bi_size &gt;&gt; 9) - 1);
++				bio_endio(mbio, mbio-&gt;bi_size, 0);
++			}
++		}
++	}
+ 	/*
+ 	 *
+ 	 * Let's see if all mirrored write operations have finished
+ 	 * already.
+ 	 */
+ 	if (atomic_dec_and_test(&amp;r1_bio-&gt;remaining)) {
++		if (test_bit(R1BIO_BehindIO, &amp;r1_bio-&gt;state)) {
++			/* free extra copy of the data pages */
++			int i = bio-&gt;bi_vcnt;
++			while (i--)
++				__free_page(bio-&gt;bi_io_vec[i].bv_page);
++		}
+ 		/* clear the bitmap if all writes complete successfully */
+ 		bitmap_endwrite(r1_bio-&gt;mddev-&gt;bitmap, r1_bio-&gt;sector,
+ 				r1_bio-&gt;sectors,
+-				!test_bit(R1BIO_Degraded, &amp;r1_bio-&gt;state));
++				!test_bit(R1BIO_Degraded, &amp;r1_bio-&gt;state),
++				behind);
+ 		md_write_end(r1_bio-&gt;mddev);
+ 		raid_end_bio_io(r1_bio);
+ 	}
+@@ -562,6 +601,39 @@ static void device_barrier(conf_t *conf, sector_t sect)
+ 	spin_unlock_irq(&amp;conf-&gt;resync_lock);
+ }
+ 
++/* duplicate the data pages for behind I/O */
++static struct page **alloc_behind_pages(struct bio *bio)
++{
++	int i;
++	struct bio_vec *bvec;
++	struct page **pages = kmalloc(bio-&gt;bi_vcnt * sizeof(struct page *),
++					GFP_NOIO);
++	if (unlikely(!pages))
++		goto do_sync_io;
++
++	memset(pages, 0, bio-&gt;bi_vcnt * sizeof(struct page *));
++
++	bio_for_each_segment(bvec, bio, i) {
++		pages[i] = alloc_page(GFP_NOIO);
++		if (unlikely(!pages[i]))
++			goto do_sync_io;
++		memcpy(kmap(pages[i]) + bvec-&gt;bv_offset,
++			kmap(bvec-&gt;bv_page) + bvec-&gt;bv_offset, bvec-&gt;bv_len);
++		kunmap(pages[i]);
++		kunmap(bvec-&gt;bv_page);
++	}
++
++	return pages;
++
++do_sync_io:
++	if (pages)
++		for (i = 0; i &lt; bio-&gt;bi_vcnt &amp;&amp; pages[i]; i++)
++			__free_page(pages[i]);
++	kfree(pages);
++	PRINTK("%dB behind alloc failed, doing sync I/O\n", bio-&gt;bi_size);
++	return NULL;
++}
++
+ static int make_request(request_queue_t *q, struct bio * bio)
+ {
+ 	mddev_t *mddev = q-&gt;queuedata;
+@@ -574,6 +646,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	struct bitmap *bitmap = mddev-&gt;bitmap;
+ 	unsigned long flags;
+ 	struct bio_list bl;
++	struct page **behind_pages = NULL;
+ 
+ 	if (unlikely(bio_barrier(bio))) {
+ 		bio_endio(bio, bio-&gt;bi_size, -EOPNOTSUPP);
+@@ -613,8 +686,6 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	r1_bio-&gt;mddev = mddev;
+ 	r1_bio-&gt;sector = bio-&gt;bi_sector;
+ 
+-	r1_bio-&gt;state = 0;
+-
+ 	if (bio_data_dir(bio) == READ) {
+ 		/*
+ 		 * read balancing logic:
+@@ -675,13 +746,22 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	}
+ 	rcu_read_unlock();
+ 
++	BUG_ON(targets == 0); /* we never fail the last device */
++
+ 	if (targets &lt; conf-&gt;raid_disks) {
+ 		/* array is degraded, we will not clear the bitmap
+ 		 * on I/O completion (see raid1_end_write_request) */
+ 		set_bit(R1BIO_Degraded, &amp;r1_bio-&gt;state);
+ 	}
+ 
++	/* do behind I/O ? */
++	if (bitmap &amp;&amp;
++	    atomic_read(&amp;bitmap-&gt;behind_writes) &lt; bitmap-&gt;max_write_behind &amp;&amp;
++	    (behind_pages = alloc_behind_pages(bio)) != NULL)
++		set_bit(R1BIO_BehindIO, &amp;r1_bio-&gt;state);
++
+ 	atomic_set(&amp;r1_bio-&gt;remaining, 0);
++	atomic_set(&amp;r1_bio-&gt;behind_remaining, 0);
+ 
+ 	bio_list_init(&amp;bl);
+ 	for (i = 0; i &lt; disks; i++) {
+@@ -698,12 +778,31 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 		mbio-&gt;bi_rw = WRITE;
+ 		mbio-&gt;bi_private = r1_bio;
+ 
++		if (behind_pages) {
++			struct bio_vec *bvec;
++			int j;
++
++			/* Yes, I really want the '__' version so that
++			 * we clear any unused pointer in the io_vec, rather
++			 * than leave them unchanged.  This is important
++			 * because when we come to free the pages, we won't
++			 * know the originial bi_idx, so we just free
++			 * them all
++			 */
++			__bio_for_each_segment(bvec, mbio, j, 0)
++				bvec-&gt;bv_page = behind_pages[j];
++			if (test_bit(WriteMostly, &amp;conf-&gt;mirrors[i].rdev-&gt;flags))
++				atomic_inc(&amp;r1_bio-&gt;behind_remaining);
++		}
++
+ 		atomic_inc(&amp;r1_bio-&gt;remaining);
+ 
+ 		bio_list_add(&amp;bl, mbio);
+ 	}
++	kfree(behind_pages); /* the behind pages are attached to the bios now */
+ 
+-	bitmap_startwrite(bitmap, bio-&gt;bi_sector, r1_bio-&gt;sectors);
++	bitmap_startwrite(bitmap, bio-&gt;bi_sector, r1_bio-&gt;sectors,
++				test_bit(R1BIO_BehindIO, &amp;r1_bio-&gt;state));
+ 	spin_lock_irqsave(&amp;conf-&gt;device_lock, flags);
+ 	bio_list_merge(&amp;conf-&gt;pending_bio_list, &amp;bl);
+ 	bio_list_init(&amp;bl);
+@@ -1471,6 +1570,17 @@ static int run(mddev_t *mddev)
+ static int stop(mddev_t *mddev)
+ {
+ 	conf_t *conf = mddev_to_conf(mddev);
++	struct bitmap *bitmap = mddev-&gt;bitmap;
++	int behind_wait = 0;
++
++	/* wait for behind writes to complete */
++	while (bitmap &amp;&amp; atomic_read(&amp;bitmap-&gt;behind_writes) &gt; 0) {
++		behind_wait++;
++		printk(KERN_INFO "raid1: behind writes in progress on device %s, waiting to stop (%d)\n", mdname(mddev), behind_wait);
++		set_current_state(TASK_UNINTERRUPTIBLE);
++		schedule_timeout(HZ); /* wait a second */
++		/* need to kick something here to make sure I/O goes? */
++	}
+ 
+ 	md_unregister_thread(mddev-&gt;thread);
+ 	mddev-&gt;thread = NULL;
+diff --git a/include/linux/raid/bitmap.h b/include/linux/raid/bitmap.h
+index 4bf1659f8aa8..9de99198caf1 100644
+--- a/include/linux/raid/bitmap.h
++++ b/include/linux/raid/bitmap.h
+@@ -7,7 +7,7 @@
+ #define BITMAP_H 1
+ 
+ #define BITMAP_MAJOR 3
+-#define BITMAP_MINOR 38
++#define BITMAP_MINOR 39
+ 
+ /*
+  * in-memory bitmap:
+@@ -147,8 +147,9 @@ typedef struct bitmap_super_s {
+ 	__u32 state;        /* 48  bitmap state information */
+ 	__u32 chunksize;    /* 52  the bitmap chunk size in bytes */
+ 	__u32 daemon_sleep; /* 56  seconds between disk flushes */
++	__u32 write_behind; /* 60  number of outstanding write-behind writes */
+ 
+-	__u8  pad[256 - 60]; /* set to zero */
++	__u8  pad[256 - 64]; /* set to zero */
+ } bitmap_super_t;
+ 
+ /* notes:
+@@ -226,6 +227,9 @@ struct bitmap {
+ 
+ 	unsigned long flags;
+ 
++	unsigned long max_write_behind; /* write-behind mode */
++	atomic_t behind_writes;
++
+ 	/*
+ 	 * the bitmap daemon - periodically wakes up and sweeps the bitmap
+ 	 * file, cleaning up bits and flushing out pages to disk as necessary
+@@ -260,9 +264,10 @@ int  bitmap_setallbits(struct bitmap *bitmap);
+ void bitmap_write_all(struct bitmap *bitmap);
+ 
+ /* these are exported */
+-int bitmap_startwrite(struct bitmap *bitmap, sector_t offset, unsigned long sectors);
+-void bitmap_endwrite(struct bitmap *bitmap, sector_t offset, unsigned long sectors,
+-		     int success);
++int bitmap_startwrite(struct bitmap *bitmap, sector_t offset,
++			unsigned long sectors, int behind);
++void bitmap_endwrite(struct bitmap *bitmap, sector_t offset,
++			unsigned long sectors, int success, int behind);
+ int bitmap_start_sync(struct bitmap *bitmap, sector_t offset, int *blocks, int degraded);
+ void bitmap_end_sync(struct bitmap *bitmap, sector_t offset, int *blocks, int aborted);
+ void bitmap_close_sync(struct bitmap *bitmap);
+diff --git a/include/linux/raid/md_k.h b/include/linux/raid/md_k.h
+index 7ef78e15ce04..2514e5fcda7f 100644
+--- a/include/linux/raid/md_k.h
++++ b/include/linux/raid/md_k.h
+@@ -275,6 +275,9 @@ struct mddev_s
+ 	atomic_t			writes_pending; 
+ 	request_queue_t			*queue;	/* for plugging ... */
+ 
++	atomic_t                        write_behind; /* outstanding async IO */
++	unsigned int                    max_write_behind; /* 0 = sync */
++
+ 	struct bitmap                   *bitmap; /* the bitmap for the device */
+ 	struct file			*bitmap_file; /* the bitmap file */
+ 	long				bitmap_offset; /* offset from superblock of
+diff --git a/include/linux/raid/raid1.h b/include/linux/raid/raid1.h
+index 9d93cf12e890..60e19b667548 100644
+--- a/include/linux/raid/raid1.h
++++ b/include/linux/raid/raid1.h
+@@ -80,6 +80,9 @@ struct r1bio_s {
+ 	atomic_t		remaining; /* 'have we finished' count,
+ 					    * used from IRQ handlers
+ 					    */
++	atomic_t		behind_remaining; /* number of write-behind ios remaining
++						 * in this BehindIO request
++						 */
+ 	sector_t		sector;
+ 	int			sectors;
+ 	unsigned long		state;
+@@ -107,4 +110,14 @@ struct r1bio_s {
+ #define	R1BIO_Uptodate	0
+ #define	R1BIO_IsSync	1
+ #define	R1BIO_Degraded	2
++#define	R1BIO_BehindIO   3
++/* For write-behind requests, we call bi_end_io when
++ * the last non-write-behind device completes, providing
++ * any write was successful.  Otherwise we call when
++ * any write-behind write succeeds, otherwise we call
++ * with failure when last write completes (and all failed).
++ * Record that bi_end_io was called with this flag...
++ */
++#define	R1BIO_Returned 4
++
+ #endif</pre><hr><pre>commit 8ddf9efe6708f3674f0ddfeb6425fd27bea109a2
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Sep 9 16:23:45 2005 -0700
+
+    [PATCH] md: support write-mostly device in raid1
+    
+    This allows a device in a raid1 to be marked as "write mostly".  Read requests
+    will only be sent if there is no other option.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index ae654466dc23..f1ac356e656d 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -670,6 +670,7 @@ static int super_90_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 
+ 	if (mddev-&gt;level != LEVEL_MULTIPATH) {
+ 		rdev-&gt;faulty = 0;
++		rdev-&gt;flags = 0;
+ 		desc = sb-&gt;disks + rdev-&gt;desc_nr;
+ 
+ 		if (desc-&gt;state &amp; (1&lt;&lt;MD_DISK_FAULTY))
+@@ -679,6 +680,8 @@ static int super_90_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 			rdev-&gt;in_sync = 1;
+ 			rdev-&gt;raid_disk = desc-&gt;raid_disk;
+ 		}
++		if (desc-&gt;state &amp; (1&lt;&lt;MD_DISK_WRITEMOSTLY))
++			set_bit(WriteMostly, &amp;rdev-&gt;flags);
+ 	} else /* MULTIPATH are always insync */
+ 		rdev-&gt;in_sync = 1;
+ 	return 0;
+@@ -777,6 +780,8 @@ static void super_90_sync(mddev_t *mddev, mdk_rdev_t *rdev)
+ 			spare++;
+ 			working++;
+ 		}
++		if (test_bit(WriteMostly, &amp;rdev2-&gt;flags))
++			d-&gt;state |= (1&lt;&lt;MD_DISK_WRITEMOSTLY);
+ 	}
+ 	
+ 	/* now set the "removed" and "faulty" bits on any missing devices */
+@@ -990,6 +995,9 @@ static int super_1_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 			rdev-&gt;raid_disk = role;
+ 			break;
+ 		}
++		rdev-&gt;flags = 0;
++		if (sb-&gt;devflags &amp; WriteMostly1)
++			set_bit(WriteMostly, &amp;rdev-&gt;flags);
+ 	} else /* MULTIPATH are always insync */
+ 		rdev-&gt;in_sync = 1;
+ 
+@@ -2152,6 +2160,8 @@ static int get_disk_info(mddev_t * mddev, void __user * arg)
+ 			info.state |= (1&lt;&lt;MD_DISK_ACTIVE);
+ 			info.state |= (1&lt;&lt;MD_DISK_SYNC);
+ 		}
++		if (test_bit(WriteMostly, &amp;rdev-&gt;flags))
++			info.state |= (1&lt;&lt;MD_DISK_WRITEMOSTLY);
+ 	} else {
+ 		info.major = info.minor = 0;
+ 		info.raid_disk = -1;
+@@ -2237,6 +2247,9 @@ static int add_new_disk(mddev_t * mddev, mdu_disk_info_t *info)
+ 		rdev-&gt;saved_raid_disk = rdev-&gt;raid_disk;
+ 
+ 		rdev-&gt;in_sync = 0; /* just to be sure */
++		if (info-&gt;state &amp; (1&lt;&lt;MD_DISK_WRITEMOSTLY))
++			set_bit(WriteMostly, &amp;rdev-&gt;flags);
++
+ 		rdev-&gt;raid_disk = -1;
+ 		err = bind_rdev_to_array(rdev, mddev);
+ 		if (err)
+@@ -2277,6 +2290,9 @@ static int add_new_disk(mddev_t * mddev, mdu_disk_info_t *info)
+ 		else
+ 			rdev-&gt;in_sync = 0;
+ 
++		if (info-&gt;state &amp; (1&lt;&lt;MD_DISK_WRITEMOSTLY))
++			set_bit(WriteMostly, &amp;rdev-&gt;flags);
++
+ 		err = bind_rdev_to_array(rdev, mddev);
+ 		if (err) {
+ 			export_rdev(rdev);
+@@ -3329,6 +3345,8 @@ static int md_seq_show(struct seq_file *seq, void *v)
+ 			char b[BDEVNAME_SIZE];
+ 			seq_printf(seq, " %s[%d]",
+ 				bdevname(rdev-&gt;bdev,b), rdev-&gt;desc_nr);
++			if (test_bit(WriteMostly, &amp;rdev-&gt;flags))
++				seq_printf(seq, "(W)");
+ 			if (rdev-&gt;faulty) {
+ 				seq_printf(seq, "(F)");
+ 				continue;
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index ba643e4bfac9..28839a8193f2 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -360,13 +360,14 @@ static int read_balance(conf_t *conf, r1bio_t *r1_bio)
+ {
+ 	const unsigned long this_sector = r1_bio-&gt;sector;
+ 	int new_disk = conf-&gt;last_used, disk = new_disk;
++	int wonly_disk = -1;
+ 	const int sectors = r1_bio-&gt;sectors;
+ 	sector_t new_distance, current_distance;
+-	mdk_rdev_t *new_rdev, *rdev;
++	mdk_rdev_t *rdev;
+ 
+ 	rcu_read_lock();
+ 	/*
+-	 * Check if it if we can balance. We can balance on the whole
++	 * Check if we can balance. We can balance on the whole
+ 	 * device if no resync is going on, or below the resync window.
+ 	 * We take the first readable disk when above the resync window.
+ 	 */
+@@ -376,11 +377,16 @@ static int read_balance(conf_t *conf, r1bio_t *r1_bio)
+ 		/* Choose the first operation device, for consistancy */
+ 		new_disk = 0;
+ 
+-		while ((new_rdev=conf-&gt;mirrors[new_disk].rdev) == NULL ||
+-		       !new_rdev-&gt;in_sync) {
+-			new_disk++;
+-			if (new_disk == conf-&gt;raid_disks) {
+-				new_disk = -1;
++		for (rdev = conf-&gt;mirrors[new_disk].rdev;
++		     !rdev || !rdev-&gt;in_sync
++			     || test_bit(WriteMostly, &amp;rdev-&gt;flags);
++		     rdev = conf-&gt;mirrors[++new_disk].rdev) {
++
++			if (rdev &amp;&amp; rdev-&gt;in_sync)
++				wonly_disk = new_disk;
++
++			if (new_disk == conf-&gt;raid_disks - 1) {
++				new_disk = wonly_disk;
+ 				break;
+ 			}
+ 		}
+@@ -389,16 +395,26 @@ static int read_balance(conf_t *conf, r1bio_t *r1_bio)
+ 
+ 
+ 	/* make sure the disk is operational */
+-	while ((new_rdev=conf-&gt;mirrors[new_disk].rdev) == NULL ||
+-	       !new_rdev-&gt;in_sync) {
++	for (rdev = conf-&gt;mirrors[new_disk].rdev;
++	     !rdev || !rdev-&gt;in_sync ||
++		     test_bit(WriteMostly, &amp;rdev-&gt;flags);
++	     rdev = conf-&gt;mirrors[new_disk].rdev) {
++
++		if (rdev &amp;&amp; rdev-&gt;in_sync)
++			wonly_disk = new_disk;
++
+ 		if (new_disk &lt;= 0)
+ 			new_disk = conf-&gt;raid_disks;
+ 		new_disk--;
+ 		if (new_disk == disk) {
+-			new_disk = -1;
+-			goto rb_out;
++			new_disk = wonly_disk;
++			break;
+ 		}
+ 	}
++
++	if (new_disk &lt; 0)
++		goto rb_out;
++
+ 	disk = new_disk;
+ 	/* now disk == new_disk == starting point for search */
+ 
+@@ -419,37 +435,41 @@ static int read_balance(conf_t *conf, r1bio_t *r1_bio)
+ 			disk = conf-&gt;raid_disks;
+ 		disk--;
+ 
+-		if ((rdev=conf-&gt;mirrors[disk].rdev) == NULL ||
+-		    !rdev-&gt;in_sync)
++		rdev = conf-&gt;mirrors[disk].rdev;
++
++		if (!rdev ||
++		    !rdev-&gt;in_sync ||
++		    test_bit(WriteMostly, &amp;rdev-&gt;flags))
+ 			continue;
+ 
+ 		if (!atomic_read(&amp;rdev-&gt;nr_pending)) {
+ 			new_disk = disk;
+-			new_rdev = rdev;
+ 			break;
+ 		}
+ 		new_distance = abs(this_sector - conf-&gt;mirrors[disk].head_position);
+ 		if (new_distance &lt; current_distance) {
+ 			current_distance = new_distance;
+ 			new_disk = disk;
+-			new_rdev = rdev;
+ 		}
+ 	} while (disk != conf-&gt;last_used);
+ 
+-rb_out:
++ rb_out:
+ 
+ 
+ 	if (new_disk &gt;= 0) {
+-		conf-&gt;next_seq_sect = this_sector + sectors;
+-		conf-&gt;last_used = new_disk;
+-		atomic_inc(&amp;new_rdev-&gt;nr_pending);
+-		if (!new_rdev-&gt;in_sync) {
++		rdev = conf-&gt;mirrors[new_disk].rdev;
++		if (!rdev)
++			goto retry;
++		atomic_inc(&amp;rdev-&gt;nr_pending);
++		if (!rdev-&gt;in_sync) {
+ 			/* cannot risk returning a device that failed
+ 			 * before we inc'ed nr_pending
+ 			 */
+-			atomic_dec(&amp;new_rdev-&gt;nr_pending);
++			atomic_dec(&amp;rdev-&gt;nr_pending);
+ 			goto retry;
+ 		}
++		conf-&gt;next_seq_sect = this_sector + sectors;
++		conf-&gt;last_used = new_disk;
+ 	}
+ 	rcu_read_unlock();
+ 
+@@ -1109,6 +1129,7 @@ static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, i
+ 	sector_t max_sector, nr_sectors;
+ 	int disk;
+ 	int i;
++	int wonly;
+ 	int write_targets = 0;
+ 	int sync_blocks;
+ 	int still_degraded = 0;
+@@ -1164,14 +1185,21 @@ static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, i
+ 	 */
+ 	disk = conf-&gt;last_used;
+ 	/* make sure disk is operational */
+-
++	wonly = disk;
+ 	while (conf-&gt;mirrors[disk].rdev == NULL ||
+-	       !conf-&gt;mirrors[disk].rdev-&gt;in_sync) {
++	       !conf-&gt;mirrors[disk].rdev-&gt;in_sync ||
++	       test_bit(WriteMostly, &amp;conf-&gt;mirrors[disk].rdev-&gt;flags)
++		) {
++		if (conf-&gt;mirrors[disk].rdev  &amp;&amp;
++		    conf-&gt;mirrors[disk].rdev-&gt;in_sync)
++			wonly = disk;
+ 		if (disk &lt;= 0)
+ 			disk = conf-&gt;raid_disks;
+ 		disk--;
+-		if (disk == conf-&gt;last_used)
++		if (disk == conf-&gt;last_used) {
++			disk = wonly;
+ 			break;
++		}
+ 	}
+ 	conf-&gt;last_used = disk;
+ 	atomic_inc(&amp;conf-&gt;mirrors[disk].rdev-&gt;nr_pending);
+diff --git a/include/linux/raid/md_k.h b/include/linux/raid/md_k.h
+index 817062bf7352..7ef78e15ce04 100644
+--- a/include/linux/raid/md_k.h
++++ b/include/linux/raid/md_k.h
+@@ -181,6 +181,9 @@ struct mdk_rdev_s
+ 	int faulty;			/* if faulty do not issue IO requests */
+ 	int in_sync;			/* device is a full member of the array */
+ 
++	unsigned long	flags;		/* Should include faulty and in_sync here. */
++#define	WriteMostly	4		/* Avoid reading if at all possible */
++
+ 	int desc_nr;			/* descriptor index in the superblock */
+ 	int raid_disk;			/* role of device in array */
+ 	int saved_raid_disk;		/* role that device used to have in the
+diff --git a/include/linux/raid/md_p.h b/include/linux/raid/md_p.h
+index dc65cd435494..4f047f84fb1f 100644
+--- a/include/linux/raid/md_p.h
++++ b/include/linux/raid/md_p.h
+@@ -79,6 +79,11 @@
+ #define MD_DISK_SYNC		2 /* disk is in sync with the raid set */
+ #define MD_DISK_REMOVED		3 /* disk is in sync with the raid set */
+ 
++#define	MD_DISK_WRITEMOSTLY	9 /* disk is "write-mostly" is RAID1 config.
++				   * read requests will only be sent here in
++				   * dire need
++				   */
++
+ typedef struct mdp_device_descriptor_s {
+ 	__u32 number;		/* 0 Device number in the entire set	      */
+ 	__u32 major;		/* 1 Device major number		      */
+@@ -193,7 +198,7 @@ struct mdp_superblock_1 {
+ 
+ 	__u64	ctime;		/* lo 40 bits are seconds, top 24 are microseconds or 0*/
+ 	__u32	level;		/* -4 (multipath), -1 (linear), 0,1,4,5 */
+-	__u32	layout;		/* only for raid5 currently */
++	__u32	layout;		/* only for raid5 and raid10 currently */
+ 	__u64	size;		/* used size of component devices, in 512byte sectors */
+ 
+ 	__u32	chunksize;	/* in 512byte sectors */
+@@ -212,7 +217,9 @@ struct mdp_superblock_1 {
+ 	__u32	dev_number;	/* permanent identifier of this  device - not role in raid */
+ 	__u32	cnt_corrected_read; /* number of read errors that were corrected by re-writing */
+ 	__u8	device_uuid[16]; /* user-space setable, ignored by kernel */
+-	__u8	pad2[64-56];	/* set to 0 when writing */
++	__u8	devflags;	/* per-device flags.  Only one defined...*/
++#define	WriteMostly1	1	/* mask for writemostly flag in above */
++	__u8	pad2[64-57];	/* set to 0 when writing */
+ 
+ 	/* array state information - 64 bytes */
+ 	__u64	utime;		/* 40 bits second, 24 btes microseconds */</pre><hr><pre>commit 36fa30636fb84b209210299684e1be66d9e58217
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Sep 9 16:23:45 2005 -0700
+
+    [PATCH] md: all hot-add and hot-remove of md intent logging bitmaps
+    
+    Both file-bitmaps and superblock bitmaps are supported.
+    
+    If you add a bitmap file on the array device, you lose.
+    
+    This introduces a 'default_bitmap_offset' field in mddev, as the ioctl used
+    for adding a superblock bitmap doesn't have room for giving an offset.  Later,
+    this value will be setable via sysfs.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index 63c566165189..ae654466dc23 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -623,6 +623,7 @@ static int super_90_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 		mddev-&gt;size = sb-&gt;size;
+ 		mddev-&gt;events = md_event(sb);
+ 		mddev-&gt;bitmap_offset = 0;
++		mddev-&gt;default_bitmap_offset = MD_SB_BYTES &gt;&gt; 9;
+ 
+ 		if (sb-&gt;state &amp; (1&lt;&lt;MD_SB_CLEAN))
+ 			mddev-&gt;recovery_cp = MaxSector;
+@@ -648,7 +649,7 @@ static int super_90_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 				printk(KERN_WARNING "md: bitmaps only support for raid1\n");
+ 				return -EINVAL;
+ 			}
+-			mddev-&gt;bitmap_offset = (MD_SB_BYTES &gt;&gt; 9);
++			mddev-&gt;bitmap_offset = mddev-&gt;default_bitmap_offset;
+ 		}
+ 
+ 	} else if (mddev-&gt;pers == NULL) {
+@@ -939,6 +940,9 @@ static int super_1_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 		mddev-&gt;size = le64_to_cpu(sb-&gt;size)/2;
+ 		mddev-&gt;events = le64_to_cpu(sb-&gt;events);
+ 		mddev-&gt;bitmap_offset = 0;
++		mddev-&gt;default_bitmap_offset = 0;
++		if (mddev-&gt;minor_version == 0)
++			mddev-&gt;default_bitmap_offset = -(64*1024)/512;
+ 		
+ 		mddev-&gt;recovery_cp = le64_to_cpu(sb-&gt;resync_offset);
+ 		memcpy(mddev-&gt;uuid, sb-&gt;set_uuid, 16);
+@@ -2073,6 +2077,8 @@ static int get_array_info(mddev_t * mddev, void __user * arg)
+ 	info.state         = 0;
+ 	if (mddev-&gt;in_sync)
+ 		info.state = (1&lt;&lt;MD_SB_CLEAN);
++	if (mddev-&gt;bitmap &amp;&amp; mddev-&gt;bitmap_offset)
++		info.state = (1&lt;&lt;MD_SB_BITMAP_PRESENT);
+ 	info.active_disks  = active;
+ 	info.working_disks = working;
+ 	info.failed_disks  = failed;
+@@ -2430,25 +2436,51 @@ static int set_bitmap_file(mddev_t *mddev, int fd)
+ {
+ 	int err;
+ 
+-	if (mddev-&gt;pers || mddev-&gt;bitmap_file)
+-		return -EBUSY;
++	if (mddev-&gt;pers) {
++		if (!mddev-&gt;pers-&gt;quiesce)
++			return -EBUSY;
++		if (mddev-&gt;recovery || mddev-&gt;sync_thread)
++			return -EBUSY;
++		/* we should be able to change the bitmap.. */
++	}
+ 
+-	mddev-&gt;bitmap_file = fget(fd);
+ 
+-	if (mddev-&gt;bitmap_file == NULL) {
+-		printk(KERN_ERR "%s: error: failed to get bitmap file\n",
+-			mdname(mddev));
+-		return -EBADF;
+-	}
++	if (fd &gt;= 0) {
++		if (mddev-&gt;bitmap)
++			return -EEXIST; /* cannot add when bitmap is present */
++		mddev-&gt;bitmap_file = fget(fd);
+ 
+-	err = deny_bitmap_write_access(mddev-&gt;bitmap_file);
+-	if (err) {
+-		printk(KERN_ERR "%s: error: bitmap file is already in use\n",
+-			mdname(mddev));
+-		fput(mddev-&gt;bitmap_file);
+-		mddev-&gt;bitmap_file = NULL;
+-	} else
++		if (mddev-&gt;bitmap_file == NULL) {
++			printk(KERN_ERR "%s: error: failed to get bitmap file\n",
++			       mdname(mddev));
++			return -EBADF;
++		}
++
++		err = deny_bitmap_write_access(mddev-&gt;bitmap_file);
++		if (err) {
++			printk(KERN_ERR "%s: error: bitmap file is already in use\n",
++			       mdname(mddev));
++			fput(mddev-&gt;bitmap_file);
++			mddev-&gt;bitmap_file = NULL;
++			return err;
++		}
+ 		mddev-&gt;bitmap_offset = 0; /* file overrides offset */
++	} else if (mddev-&gt;bitmap == NULL)
++		return -ENOENT; /* cannot remove what isn't there */
++	err = 0;
++	if (mddev-&gt;pers) {
++		mddev-&gt;pers-&gt;quiesce(mddev, 1);
++		if (fd &gt;= 0)
++			err = bitmap_create(mddev);
++		if (fd &lt; 0 || err)
++			bitmap_destroy(mddev);
++		mddev-&gt;pers-&gt;quiesce(mddev, 0);
++	} else if (fd &lt; 0) {
++		if (mddev-&gt;bitmap_file)
++			fput(mddev-&gt;bitmap_file);
++		mddev-&gt;bitmap_file = NULL;
++	}
++
+ 	return err;
+ }
+ 
+@@ -2528,6 +2560,11 @@ static int update_array_info(mddev_t *mddev, mdu_array_info_t *info)
+ {
+ 	int rv = 0;
+ 	int cnt = 0;
++	int state = 0;
++
++	/* calculate expected state,ignoring low bits */
++	if (mddev-&gt;bitmap &amp;&amp; mddev-&gt;bitmap_offset)
++		state |= (1 &lt;&lt; MD_SB_BITMAP_PRESENT);
+ 
+ 	if (mddev-&gt;major_version != info-&gt;major_version ||
+ 	    mddev-&gt;minor_version != info-&gt;minor_version ||
+@@ -2536,12 +2573,16 @@ static int update_array_info(mddev_t *mddev, mdu_array_info_t *info)
+ 	    mddev-&gt;level         != info-&gt;level         ||
+ /*	    mddev-&gt;layout        != info-&gt;layout        || */
+ 	    !mddev-&gt;persistent	 != info-&gt;not_persistent||
+-	    mddev-&gt;chunk_size    != info-&gt;chunk_size    )
++	    mddev-&gt;chunk_size    != info-&gt;chunk_size    ||
++	    /* ignore bottom 8 bits of state, and allow SB_BITMAP_PRESENT to change */
++	    ((state^info-&gt;state) &amp; 0xfffffe00)
++		)
+ 		return -EINVAL;
+ 	/* Check there is only one change */
+ 	if (mddev-&gt;size != info-&gt;size) cnt++;
+ 	if (mddev-&gt;raid_disks != info-&gt;raid_disks) cnt++;
+ 	if (mddev-&gt;layout != info-&gt;layout) cnt++;
++	if ((state ^ info-&gt;state) &amp; (1&lt;&lt;MD_SB_BITMAP_PRESENT)) cnt++;
+ 	if (cnt == 0) return 0;
+ 	if (cnt &gt; 1) return -EINVAL;
+ 
+@@ -2620,6 +2661,35 @@ static int update_array_info(mddev_t *mddev, mdu_array_info_t *info)
+ 			}
+ 		}
+ 	}
++	if ((state ^ info-&gt;state) &amp; (1&lt;&lt;MD_SB_BITMAP_PRESENT)) {
++		if (mddev-&gt;pers-&gt;quiesce == NULL)
++			return -EINVAL;
++		if (mddev-&gt;recovery || mddev-&gt;sync_thread)
++			return -EBUSY;
++		if (info-&gt;state &amp; (1&lt;&lt;MD_SB_BITMAP_PRESENT)) {
++			/* add the bitmap */
++			if (mddev-&gt;bitmap)
++				return -EEXIST;
++			if (mddev-&gt;default_bitmap_offset == 0)
++				return -EINVAL;
++			mddev-&gt;bitmap_offset = mddev-&gt;default_bitmap_offset;
++			mddev-&gt;pers-&gt;quiesce(mddev, 1);
++			rv = bitmap_create(mddev);
++			if (rv)
++				bitmap_destroy(mddev);
++			mddev-&gt;pers-&gt;quiesce(mddev, 0);
++		} else {
++			/* remove the bitmap */
++			if (!mddev-&gt;bitmap)
++				return -ENOENT;
++			if (mddev-&gt;bitmap-&gt;file)
++				return -EINVAL;
++			mddev-&gt;pers-&gt;quiesce(mddev, 1);
++			bitmap_destroy(mddev);
++			mddev-&gt;pers-&gt;quiesce(mddev, 0);
++			mddev-&gt;bitmap_offset = 0;
++		}
++	}
+ 	md_update_sb(mddev);
+ 	return rv;
+ }
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index ace41c571aeb..ba643e4bfac9 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -1565,6 +1565,35 @@ static int raid1_reshape(mddev_t *mddev, int raid_disks)
+ 	return 0;
+ }
+ 
++void raid1_quiesce(mddev_t *mddev, int state)
++{
++	conf_t *conf = mddev_to_conf(mddev);
++
++	switch(state) {
++	case 0:
++		spin_lock_irq(&amp;conf-&gt;resync_lock);
++		conf-&gt;barrier++;
++		wait_event_lock_irq(conf-&gt;wait_idle, !conf-&gt;nr_pending,
++				    conf-&gt;resync_lock, raid1_unplug(mddev-&gt;queue));
++		spin_unlock_irq(&amp;conf-&gt;resync_lock);
++		break;
++	case 1:
++		spin_lock_irq(&amp;conf-&gt;resync_lock);
++		conf-&gt;barrier--;
++		spin_unlock_irq(&amp;conf-&gt;resync_lock);
++		wake_up(&amp;conf-&gt;wait_resume);
++		wake_up(&amp;conf-&gt;wait_idle);
++		break;
++	}
++	if (mddev-&gt;thread) {
++		if (mddev-&gt;bitmap)
++			mddev-&gt;thread-&gt;timeout = mddev-&gt;bitmap-&gt;daemon_sleep * HZ;
++		else
++			mddev-&gt;thread-&gt;timeout = MAX_SCHEDULE_TIMEOUT;
++		md_wakeup_thread(mddev-&gt;thread);
++	}
++}
++
+ 
+ static mdk_personality_t raid1_personality =
+ {
+@@ -1581,6 +1610,7 @@ static mdk_personality_t raid1_personality =
+ 	.sync_request	= sync_request,
+ 	.resize		= raid1_resize,
+ 	.reshape	= raid1_reshape,
++	.quiesce	= raid1_quiesce,
+ };
+ 
+ static int __init raid_init(void)
+diff --git a/include/linux/raid/md_k.h b/include/linux/raid/md_k.h
+index 8c14ba565a45..817062bf7352 100644
+--- a/include/linux/raid/md_k.h
++++ b/include/linux/raid/md_k.h
+@@ -278,6 +278,10 @@ struct mddev_s
+ 							* start of bitmap. May be
+ 							* negative, but not '0'
+ 							*/
++	long				default_bitmap_offset; /* this is the offset to use when
++								* hot-adding a bitmap.  It should
++								* eventually be settable by sysfs.
++								*/
+ 
+ 	struct list_head		all_mddevs;
+ };
+@@ -314,6 +318,12 @@ struct mdk_personality_s
+ 	int (*resize) (mddev_t *mddev, sector_t sectors);
+ 	int (*reshape) (mddev_t *mddev, int raid_disks);
+ 	int (*reconfig) (mddev_t *mddev, int layout, int chunk_size);
++	/* quiesce moves between quiescence states
++	 * 0 - fully active
++	 * 1 - no new requests allowed
++	 * others - reserved
++	 */
++	void (*quiesce) (mddev_t *mddev, int state);
+ };
+ 
+ </pre><hr><pre>commit 6a07997fc34ac15a1c5dc650285d79b7604a2276
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Sep 9 16:23:44 2005 -0700
+
+    [PATCH] md: improve handling of bitmap initialisation.
+    
+    When we find a 'stale' bitmap, possibly because it is new, we should just
+    assume every bit needs to be set, but rather base the setting of bits on the
+    current state of the array (degraded and recovery_cp).
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index 41df4cda66e2..2925219f0881 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -520,6 +520,8 @@ static int bitmap_read_sb(struct bitmap *bitmap)
+ 	bitmap-&gt;daemon_sleep = daemon_sleep;
+ 	bitmap-&gt;flags |= sb-&gt;state;
+ 	bitmap-&gt;events_cleared = le64_to_cpu(sb-&gt;events_cleared);
++	if (sb-&gt;state &amp; BITMAP_STALE)
++		bitmap-&gt;events_cleared = bitmap-&gt;mddev-&gt;events;
+ 	err = 0;
+ out:
+ 	kunmap(bitmap-&gt;sb_page);
+@@ -818,7 +820,7 @@ int bitmap_unplug(struct bitmap *bitmap)
+ 	return 0;
+ }
+ 
+-static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset);
++static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset, int needed);
+ /* * bitmap_init_from_disk -- called at bitmap_create time to initialize
+  * the in-memory bitmap from the on-disk bitmap -- also, sets up the
+  * memory mapping of the bitmap file
+@@ -826,8 +828,11 @@ static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset);
+  *   if there's no bitmap file, or if the bitmap file had been
+  *   previously kicked from the array, we mark all the bits as
+  *   1's in order to cause a full resync.
++ *
++ * We ignore all bits for sectors that end earlier than 'start'.
++ * This is used when reading an out-of-date bitmap...
+  */
+-static int bitmap_init_from_disk(struct bitmap *bitmap)
++static int bitmap_init_from_disk(struct bitmap *bitmap, sector_t start)
+ {
+ 	unsigned long i, chunks, index, oldindex, bit;
+ 	struct page *page = NULL, *oldpage = NULL;
+@@ -914,7 +919,7 @@ static int bitmap_init_from_disk(struct bitmap *bitmap)
+ 			 	 * whole page and write it out
+ 				 */
+ 				memset(page_address(page) + offset, 0xff,
+-					PAGE_SIZE - offset);
++				       PAGE_SIZE - offset);
+ 				ret = write_page(bitmap, page, 1);
+ 				if (ret) {
+ 					kunmap(page);
+@@ -928,8 +933,11 @@ static int bitmap_init_from_disk(struct bitmap *bitmap)
+ 		}
+ 		if (test_bit(bit, page_address(page))) {
+ 			/* if the disk bit is set, set the memory bit */
+-			bitmap_set_memory_bits(bitmap, i &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap));
++			bitmap_set_memory_bits(bitmap, i &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap),
++					       ((i+1) &lt;&lt; (CHUNK_BLOCK_SHIFT(bitmap)) &gt;= start)
++				);
+ 			bit_cnt++;
++			set_page_attr(bitmap, page, BITMAP_PAGE_CLEAN);
+ 		}
+ 	}
+ 
+@@ -1424,7 +1432,7 @@ void bitmap_close_sync(struct bitmap *bitmap)
+ 	}
+ }
+ 
+-static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset)
++static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset, int needed)
+ {
+ 	/* For each chunk covered by any of these sectors, set the
+ 	 * counter to 1 and set resync_needed.  They should all
+@@ -1441,7 +1449,7 @@ static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset)
+ 	}
+ 	if (! *bmc) {
+ 		struct page *page;
+-		*bmc = 1 | NEEDED_MASK;
++		*bmc = 1 | (needed?NEEDED_MASK:0);
+ 		bitmap_count_page(bitmap, offset, 1);
+ 		page = filemap_get_page(bitmap, offset &gt;&gt; CHUNK_BLOCK_SHIFT(bitmap));
+ 		set_page_attr(bitmap, page, BITMAP_PAGE_CLEAN);
+@@ -1517,6 +1525,7 @@ int bitmap_create(mddev_t *mddev)
+ 	unsigned long pages;
+ 	struct file *file = mddev-&gt;bitmap_file;
+ 	int err;
++	sector_t start;
+ 
+ 	BUG_ON(sizeof(bitmap_super_t) != 256);
+ 
+@@ -1581,7 +1590,12 @@ int bitmap_create(mddev_t *mddev)
+ 
+ 	/* now that we have some pages available, initialize the in-memory
+ 	 * bitmap from the on-disk bitmap */
+-	err = bitmap_init_from_disk(bitmap);
++	start = 0;
++	if (mddev-&gt;degraded == 0
++	    || bitmap-&gt;events_cleared == mddev-&gt;events)
++		/* no need to keep dirty bits to optimise a re-add of a missing device */
++		start = mddev-&gt;recovery_cp;
++	err = bitmap_init_from_disk(bitmap, start);
+ 
+ 	if (err)
+ 		return err;</pre><hr><pre>commit 1923b99a0f4748aa6be0b9b9523ce224a3449b17
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Sep 9 16:23:43 2005 -0700
+
+    [PATCH] md: don't allow new md/bitmap file to be set if one already exists
+    
+    ... otherwise we loose a reference and can never free the file.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index 373ab92e367b..63c566165189 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -2430,7 +2430,7 @@ static int set_bitmap_file(mddev_t *mddev, int fd)
+ {
+ 	int err;
+ 
+-	if (mddev-&gt;pers)
++	if (mddev-&gt;pers || mddev-&gt;bitmap_file)
+ 		return -EBUSY;
+ 
+ 	mddev-&gt;bitmap_file = fget(fd);</pre><hr><pre>commit e5dcdd80a60627371f40797426273048630dc8ca
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Sep 9 16:23:41 2005 -0700
+
+    [PATCH] md: fail IO request to md that require a barrier.
+    
+    md does not yet support BIO_RW_BARRIER, so be honest about it and fail
+    (-EOPNOTSUPP) any such requests.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/linear.c b/drivers/md/linear.c
+index 8d740013d74d..4991ba543368 100644
+--- a/drivers/md/linear.c
++++ b/drivers/md/linear.c
+@@ -238,6 +238,11 @@ static int linear_make_request (request_queue_t *q, struct bio *bio)
+ 	dev_info_t *tmp_dev;
+ 	sector_t block;
+ 
++	if (unlikely(bio_barrier(bio))) {
++		bio_endio(bio, bio-&gt;bi_size, -EOPNOTSUPP);
++		return 0;
++	}
++
+ 	if (bio_data_dir(bio)==WRITE) {
+ 		disk_stat_inc(mddev-&gt;gendisk, writes);
+ 		disk_stat_add(mddev-&gt;gendisk, write_sectors, bio_sectors(bio));
+diff --git a/drivers/md/multipath.c b/drivers/md/multipath.c
+index 2d2ca7fa0265..286342375fb7 100644
+--- a/drivers/md/multipath.c
++++ b/drivers/md/multipath.c
+@@ -169,6 +169,11 @@ static int multipath_make_request (request_queue_t *q, struct bio * bio)
+ 	struct multipath_bh * mp_bh;
+ 	struct multipath_info *multipath;
+ 
++	if (unlikely(bio_barrier(bio))) {
++		bio_endio(bio, bio-&gt;bi_size, -EOPNOTSUPP);
++		return 0;
++	}
++
+ 	mp_bh = mempool_alloc(conf-&gt;pool, GFP_NOIO);
+ 
+ 	mp_bh-&gt;master_bio = bio;
+diff --git a/drivers/md/raid0.c b/drivers/md/raid0.c
+index 2120710172c5..f6757259ce7f 100644
+--- a/drivers/md/raid0.c
++++ b/drivers/md/raid0.c
+@@ -404,6 +404,11 @@ static int raid0_make_request (request_queue_t *q, struct bio *bio)
+ 	unsigned long chunk;
+ 	sector_t block, rsect;
+ 
++	if (unlikely(bio_barrier(bio))) {
++		bio_endio(bio, bio-&gt;bi_size, -EOPNOTSUPP);
++		return 0;
++	}
++
+ 	if (bio_data_dir(bio)==WRITE) {
+ 		disk_stat_inc(mddev-&gt;gendisk, writes);
+ 		disk_stat_add(mddev-&gt;gendisk, write_sectors, bio_sectors(bio));
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index 51d9645ed09c..ace41c571aeb 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -555,6 +555,10 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	unsigned long flags;
+ 	struct bio_list bl;
+ 
++	if (unlikely(bio_barrier(bio))) {
++		bio_endio(bio, bio-&gt;bi_size, -EOPNOTSUPP);
++		return 0;
++	}
+ 
+ 	/*
+ 	 * Register the new request and wait if the reconstruction
+diff --git a/drivers/md/raid10.c b/drivers/md/raid10.c
+index 7239079203ec..5e0b333793d5 100644
+--- a/drivers/md/raid10.c
++++ b/drivers/md/raid10.c
+@@ -669,6 +669,11 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	int i;
+ 	int chunk_sects = conf-&gt;chunk_mask + 1;
+ 
++	if (unlikely(bio_barrier(bio))) {
++		bio_endio(bio, bio-&gt;bi_size, -EOPNOTSUPP);
++		return 0;
++	}
++
+ 	/* If this request crosses a chunk boundary, we need to
+ 	 * split it.  This will only happen for 1 PAGE (or less) requests.
+ 	 */
+diff --git a/drivers/md/raid5.c b/drivers/md/raid5.c
+index 43f231a467d5..ed859e08d600 100644
+--- a/drivers/md/raid5.c
++++ b/drivers/md/raid5.c
+@@ -1411,6 +1411,11 @@ static int make_request (request_queue_t *q, struct bio * bi)
+ 	sector_t logical_sector, last_sector;
+ 	struct stripe_head *sh;
+ 
++	if (unlikely(bio_barrier(bi))) {
++		bio_endio(bi, bi-&gt;bi_size, -EOPNOTSUPP);
++		return 0;
++	}
++
+ 	md_write_start(mddev, bi);
+ 
+ 	if (bio_data_dir(bi)==WRITE) {
+diff --git a/drivers/md/raid6main.c b/drivers/md/raid6main.c
+index 495dee1d1e83..09cb7272c09f 100644
+--- a/drivers/md/raid6main.c
++++ b/drivers/md/raid6main.c
+@@ -1570,6 +1570,11 @@ static int make_request (request_queue_t *q, struct bio * bi)
+ 	sector_t logical_sector, last_sector;
+ 	struct stripe_head *sh;
+ 
++	if (unlikely(bio_barrier(bi))) {
++		bio_endio(bi, bi-&gt;bi_size, -EOPNOTSUPP);
++		return 0;
++	}
++
+ 	md_write_start(mddev, bi);
+ 
+ 	if (bio_data_dir(bi)==WRITE) {</pre><hr><pre>commit 3ec67ac1a399d576d48b0736096bcce7721fe3cf
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Sep 9 16:23:40 2005 -0700
+
+    [PATCH] md: fix minor error in raid10 read-balancing calculation.
+    
+    'this_sector' is a virtual (array) address while 'head_position' is a physical
+    (device) address, so substraction doesn't make any sense.  devs[slot].addr
+    should be used instead of this_sector.
+    
+    However, this patch doesn't make much practical different to the read
+    balancing due to the effects of later code.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/raid10.c b/drivers/md/raid10.c
+index 62ebb1bc72be..7239079203ec 100644
+--- a/drivers/md/raid10.c
++++ b/drivers/md/raid10.c
+@@ -538,7 +538,8 @@ static int read_balance(conf_t *conf, r10bio_t *r10_bio)
+ 	}
+ 
+ 
+-	current_distance = abs(this_sector - conf-&gt;mirrors[disk].head_position);
++	current_distance = abs(r10_bio-&gt;devs[slot].addr -
++			       conf-&gt;mirrors[disk].head_position);
+ 
+ 	/* Find the disk whose head is closest */
+ </pre><hr><pre>commit 657390d25d4241705cb4fc5b3b4ba5b30575dc17
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Aug 26 18:34:16 2005 -0700
+
+    [PATCH] md: clear the 'recovery' flags when starting an md array.
+    
+    It's possible for this to still have flags in it and a previous instance
+    has been stopped, and that confused the new array using the same mddev.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index deccd560c0de..20ca80b7dc20 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -1689,6 +1689,7 @@ static int do_md_run(mddev_t * mddev)
+ 	mddev-&gt;pers = pers[pnum];
+ 	spin_unlock(&amp;pers_lock);
+ 
++	mddev-&gt;recovery = 0;
+ 	mddev-&gt;resync_max_sectors = mddev-&gt;size &lt;&lt; 1; /* may be over-ridden by personality */
+ 
+ 	/* before we start the array running, initialise the bitmap */</pre>
+    <div class="pagination">
+        <a href='8_2.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><span>[3]</span><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_4.html'>Next&gt;&gt;</a>
+    <div>
+</body>

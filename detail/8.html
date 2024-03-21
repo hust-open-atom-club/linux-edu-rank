@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of New South Wales</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of New South Wales</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit d5608a0578a07766a97c00904d85f6a7221ddb37
+Author: Michael Zhou &lt;mzhou@cse.unsw.edu.au&gt;
+Date:   Fri Aug 7 01:15:25 2020 +1000
+
+    netfilter: ip6t_NPT: rewrite addresses in ICMPv6 original packet
+    
+    Detect and rewrite a prefix embedded in an ICMPv6 original packet that was
+    rewritten by a corresponding DNPT/SNPT rule so it will be recognised by
+    the host that sent the original packet.
+    
+    Example
+    
+    Rules in effect on the 1:2:3:4::/64 + 5:6:7:8::/64 side router:
+    * SNPT src-pfx 1:2:3:4::/64 dst-pfx 5:6:7:8::/64
+    * DNPT src-pfx 5:6:7:8::/64 dst-pfx 1:2:3:4::/64
+    
+    No rules on the 9:a:b:c::/64 side.
+    
+    1. 1:2:3:4::1 sends UDP packet to 9:a:b:c::1
+    2. Router applies SNPT changing src to 5:6:7:8::ffef::1
+    3. 9:a:b:c::1 receives packet with (src 5:6:7:8::ffef::1 dst 9:a:b:c::1)
+            and replies with ICMPv6 port unreachable to 5:6:7:8::ffef::1,
+            including original packet (src 5:6:7:8::ffef::1 dst 9:a:b:c::1)
+    4. Router forwards ICMPv6 packet with (src 9:a:b:c::1 dst 5:6:7:8::ffef::1)
+            including original packet (src 5:6:7:8::ffef::1 dst 9:a:b:c::1)
+            and applies DNPT changing dst to 1:2:3:4::1
+    5. 1:2:3:4::1 receives ICMPv6 packet with (src 9:a:b:c::1 dst 1:2:3:4::1)
+            including original packet (src 5:6:7:8::ffef::1 dst 9:a:b:c::1).
+            It doesn't recognise the original packet as the src doesn't
+            match anything it originally sent
+    
+    With this change, at step 4, DNPT will also rewrite the original packet
+    src to 1:2:3:4::1, so at step 5, 1:2:3:4::1 will recognise the ICMPv6
+    error and provide feedback to the application properly.
+    
+    Conversely, SNPT will help when ICMPv6 errors are sent from the
+    translated network.
+    
+    1. 9:a:b:c::1 sends UDP packet to 5:6:7:8::ffef::1
+    2. Router applies DNPT changing dst to 1:2:3:4::1
+    3. 1:2:3:4::1 receives packet with (src 9:a:b:c::1 dst 1:2:3:4::1)
+            and replies with ICMPv6 port unreachable to 9:a:b:c::1
+            including original packet (src 9:a:b:c::1 dst 1:2:3:4::1)
+    4. Router forwards ICMPv6 packet with (src 1:2:3:4::1 dst 9:a:b:c::1)
+            including original packet (src 9:a:b:c::1 dst 1:2:3:4::1)
+            and applies SNPT changing src to 5:6:7:8::ffef::1
+    5. 9:a:b:c::1 receives ICMPv6 packet with
+            (src 5:6:7:8::ffef::1 dst 9:a:b:c::1) including
+            original packet (src 9:a:b:c::1 dst 1:2:3:4::1).
+            It doesn't recognise the original packet as the dst doesn't
+            match anything it already sent
+    
+    The change to SNPT means the ICMPv6 original packet dst will be
+    rewritten to 5:6:7:8::ffef::1 in step 4, allowing the error to be
+    properly recognised in step 5.
+    
+    Signed-off-by: Michael Zhou &lt;mzhou@cse.unsw.edu.au&gt;
+    Signed-off-by: Pablo Neira Ayuso &lt;pablo@netfilter.org&gt;
+
+diff --git a/net/ipv6/netfilter/ip6t_NPT.c b/net/ipv6/netfilter/ip6t_NPT.c
+index 9ee077bf4f49..787c74aa85e3 100644
+--- a/net/ipv6/netfilter/ip6t_NPT.c
++++ b/net/ipv6/netfilter/ip6t_NPT.c
+@@ -77,16 +77,43 @@ static bool ip6t_npt_map_pfx(const struct ip6t_npt_tginfo *npt,
+ 	return true;
+ }
+ 
++static struct ipv6hdr *icmpv6_bounced_ipv6hdr(struct sk_buff *skb,
++					      struct ipv6hdr *_bounced_hdr)
++{
++	if (ipv6_hdr(skb)-&gt;nexthdr != IPPROTO_ICMPV6)
++		return NULL;
++
++	if (!icmpv6_is_err(icmp6_hdr(skb)-&gt;icmp6_type))
++		return NULL;
++
++	return skb_header_pointer(skb,
++				  skb_transport_offset(skb) + sizeof(struct icmp6hdr),
++				  sizeof(struct ipv6hdr),
++				  _bounced_hdr);
++}
++
+ static unsigned int
+ ip6t_snpt_tg(struct sk_buff *skb, const struct xt_action_param *par)
+ {
+ 	const struct ip6t_npt_tginfo *npt = par-&gt;targinfo;
++	struct ipv6hdr _bounced_hdr;
++	struct ipv6hdr *bounced_hdr;
++	struct in6_addr bounced_pfx;
+ 
+ 	if (!ip6t_npt_map_pfx(npt, &amp;ipv6_hdr(skb)-&gt;saddr)) {
+ 		icmpv6_send(skb, ICMPV6_PARAMPROB, ICMPV6_HDR_FIELD,
+ 			    offsetof(struct ipv6hdr, saddr));
+ 		return NF_DROP;
+ 	}
++
++	/* rewrite dst addr of bounced packet which was sent to dst range */
++	bounced_hdr = icmpv6_bounced_ipv6hdr(skb, &amp;_bounced_hdr);
++	if (bounced_hdr) {
++		ipv6_addr_prefix(&amp;bounced_pfx, &amp;bounced_hdr-&gt;daddr, npt-&gt;src_pfx_len);
++		if (ipv6_addr_cmp(&amp;bounced_pfx, &amp;npt-&gt;src_pfx.in6) == 0)
++			ip6t_npt_map_pfx(npt, &amp;bounced_hdr-&gt;daddr);
++	}
++
+ 	return XT_CONTINUE;
+ }
+ 
+@@ -94,12 +121,24 @@ static unsigned int
+ ip6t_dnpt_tg(struct sk_buff *skb, const struct xt_action_param *par)
+ {
+ 	const struct ip6t_npt_tginfo *npt = par-&gt;targinfo;
++	struct ipv6hdr _bounced_hdr;
++	struct ipv6hdr *bounced_hdr;
++	struct in6_addr bounced_pfx;
+ 
+ 	if (!ip6t_npt_map_pfx(npt, &amp;ipv6_hdr(skb)-&gt;daddr)) {
+ 		icmpv6_send(skb, ICMPV6_PARAMPROB, ICMPV6_HDR_FIELD,
+ 			    offsetof(struct ipv6hdr, daddr));
+ 		return NF_DROP;
+ 	}
++
++	/* rewrite src addr of bounced packet which was sent from dst range */
++	bounced_hdr = icmpv6_bounced_ipv6hdr(skb, &amp;_bounced_hdr);
++	if (bounced_hdr) {
++		ipv6_addr_prefix(&amp;bounced_pfx, &amp;bounced_hdr-&gt;saddr, npt-&gt;src_pfx_len);
++		if (ipv6_addr_cmp(&amp;bounced_pfx, &amp;npt-&gt;src_pfx.in6) == 0)
++			ip6t_npt_map_pfx(npt, &amp;bounced_hdr-&gt;saddr);
++	}
++
+ 	return XT_CONTINUE;
+ }
+ </pre><hr><pre>commit 1f1e030bf75774b6a283518e1534d598e14147d4
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Jan 6 00:09:49 2006 -0800
+
+    [PATCH] knfsd: fix hash function for IP addresses on 64bit little-endian machines.
+    
+    The hash.h hash_long function, when used on a 64 bit machine, ignores many
+    of the middle-order bits.  (The prime chosen it too bit-sparse).
+    
+    IP addresses for clients of an NFS server are very likely to differ only in
+    the low-order bits.  As addresses are stored in network-byte-order, these
+    bits become middle-order bits in a little-endian 64bit 'long', and so do
+    not contribute to the hash.  Thus you can have the situation where all
+    clients appear on one hash chain.
+    
+    So, until hash_long is fixed (or maybe forever), us a hash function that
+    works well on IP addresses - xor the bytes together.
+    
+    Thanks to "Iozone" &lt;capps@iozone.org&gt; for identifying this problem.
+    
+    Cc: "Iozone" &lt;capps@iozone.org&gt;
+    
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/net/sunrpc/svcauth_unix.c b/net/sunrpc/svcauth_unix.c
+index cac2e774dd81..3e6c694bbad1 100644
+--- a/net/sunrpc/svcauth_unix.c
++++ b/net/sunrpc/svcauth_unix.c
+@@ -101,10 +101,22 @@ static void ip_map_put(struct cache_head *item, struct cache_detail *cd)
+ 	}
+ }
+ 
++#if IP_HASHBITS == 8
++/* hash_long on a 64 bit machine is currently REALLY BAD for
++ * IP addresses in reverse-endian (i.e. on a little-endian machine).
++ * So use a trivial but reliable hash instead
++ */
++static inline int hash_ip(unsigned long ip)
++{
++	int hash = ip ^ (ip&gt;&gt;16);
++	return (hash ^ (hash&gt;&gt;8)) &amp; 0xff;
++}
++#endif
++
+ static inline int ip_map_hash(struct ip_map *item)
+ {
+ 	return hash_str(item-&gt;m_class, IP_HASHBITS) ^ 
+-		hash_long((unsigned long)item-&gt;m_addr.s_addr, IP_HASHBITS);
++		hash_ip((unsigned long)item-&gt;m_addr.s_addr);
+ }
+ static inline int ip_map_match(struct ip_map *item, struct ip_map *tmp)
+ {</pre><hr><pre>commit 1887b93529410633b5529a7c2d304897dbed5b3e
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Nov 15 00:09:10 2005 -0800
+
+    [PATCH] knfsd: make sure nfsd doesn't hog a cpu forever
+    
+    Being kernel-threads, nfsd servers don't get pre-empted (depending on
+    CONFIG).  If there is a steady stream of NFS requests that can be served
+    from cache, an nfsd thread may hold on to a cpu indefinitely, which isn't
+    very friendly.
+    
+    So it is good to have a cond_resched in there (just before looking for a
+    new request to serve), to make sure we play nice.
+    
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Acked-by: Ingo Molnar &lt;mingo@elte.hu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/net/sunrpc/svcsock.c b/net/sunrpc/svcsock.c
+index e50e7cf43737..c6a51911e71e 100644
+--- a/net/sunrpc/svcsock.c
++++ b/net/sunrpc/svcsock.c
+@@ -1178,6 +1178,7 @@ svc_recv(struct svc_serv *serv, struct svc_rqst *rqstp, long timeout)
+ 	arg-&gt;tail[0].iov_len = 0;
+ 
+ 	try_to_freeze();
++	cond_resched();
+ 	if (signalled())
+ 		return -EINTR;
+ </pre><hr><pre>commit 80d188a643b0f550a2aaedf7bf4dd1abd86cfc45
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Mon Nov 7 01:00:27 2005 -0800
+
+    [PATCH] knfsd: make sure svc_process call the correct pg_authenticate for multi-service port
+    
+    If an RPC socket is serving multiple programs, then the pg_authenticate of
+    the first program in the list is called, instead of pg_authenticate for the
+    program to be run.
+    
+    This does not cause a problem with any programs in the current kernel, but
+    could confuse future code.
+    
+    Also set pg_authenticate for nfsd_acl_program incase it ever gets used.
+    
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfssvc.c b/fs/nfsd/nfssvc.c
+index 0568ff8565b1..89ed04696865 100644
+--- a/fs/nfsd/nfssvc.c
++++ b/fs/nfsd/nfssvc.c
+@@ -427,6 +427,7 @@ static struct svc_program	nfsd_acl_program = {
+ 	.pg_name		= "nfsd",
+ 	.pg_class		= "nfsd",
+ 	.pg_stats		= &amp;nfsd_acl_svcstats,
++	.pg_authenticate	= &amp;svc_set_client,
+ };
+ 
+ static struct svc_stat	nfsd_acl_svcstats = {
+diff --git a/net/sunrpc/svc.c b/net/sunrpc/svc.c
+index e9bd91265f70..5a220b2bb376 100644
+--- a/net/sunrpc/svc.c
++++ b/net/sunrpc/svc.c
+@@ -313,6 +313,11 @@ svc_process(struct svc_serv *serv, struct svc_rqst *rqstp)
+ 	rqstp-&gt;rq_proc = proc = ntohl(svc_getu32(argv));	/* procedure number */
+ 
+ 	progp = serv-&gt;sv_program;
++
++	for (progp = serv-&gt;sv_program; progp; progp = progp-&gt;pg_next)
++		if (prog == progp-&gt;pg_prog)
++			break;
++
+ 	/*
+ 	 * Decode auth data, and add verifier to reply buffer.
+ 	 * We do this before anything else in order to get a decent
+@@ -320,7 +325,7 @@ svc_process(struct svc_serv *serv, struct svc_rqst *rqstp)
+ 	 */
+ 	auth_res = svc_authenticate(rqstp, &amp;auth_stat);
+ 	/* Also give the program a chance to reject this call: */
+-	if (auth_res == SVC_OK) {
++	if (auth_res == SVC_OK &amp;&amp; progp) {
+ 		auth_stat = rpc_autherr_badcred;
+ 		auth_res = progp-&gt;pg_authenticate(rqstp);
+ 	}
+@@ -340,10 +345,7 @@ svc_process(struct svc_serv *serv, struct svc_rqst *rqstp)
+ 	case SVC_COMPLETE:
+ 		goto sendit;
+ 	}
+-		
+-	for (progp = serv-&gt;sv_program; progp; progp = progp-&gt;pg_next)
+-		if (prog == progp-&gt;pg_prog)
+-			break;
++
+ 	if (progp == NULL)
+ 		goto err_bad_prog;
+ </pre><hr><pre>commit 0ba7536d5d47e4ecf2259a80b207158dc4e711eb
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Mon Nov 7 01:00:26 2005 -0800
+
+    [PATCH] knfsd: Fix some minor sign problems in nfsd/xdr
+    
+    There are a couple of tests which could possibly be confused by extremely
+    large numbers appearing in 'xdr' packets.  I think the closest to an exploit
+    you could get would be writing random data from a free page into a file - i.e.
+     leak data out of kernel space.
+    
+    I'm fairly sure they cannot be used for remote compromise.
+    
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs3xdr.c b/fs/nfsd/nfs3xdr.c
+index e0e134d6baba..9147b8524d05 100644
+--- a/fs/nfsd/nfs3xdr.c
++++ b/fs/nfsd/nfs3xdr.c
+@@ -366,7 +366,8 @@ nfs3svc_decode_writeargs(struct svc_rqst *rqstp, u32 *p,
+ 	len = args-&gt;len = ntohl(*p++);
+ 
+ 	hdr = (void*)p - rqstp-&gt;rq_arg.head[0].iov_base;
+-	if (rqstp-&gt;rq_arg.len &lt; len + hdr)
++	if (rqstp-&gt;rq_arg.len &lt; hdr ||
++	    rqstp-&gt;rq_arg.len - hdr &lt; len)
+ 		return 0;
+ 
+ 	args-&gt;vec[0].iov_base = (void*)p;
+diff --git a/include/linux/nfsd/xdr3.h b/include/linux/nfsd/xdr3.h
+index 21e18ce7ca63..3c2a71b43bac 100644
+--- a/include/linux/nfsd/xdr3.h
++++ b/include/linux/nfsd/xdr3.h
+@@ -42,7 +42,7 @@ struct nfsd3_writeargs {
+ 	__u64			offset;
+ 	__u32			count;
+ 	int			stable;
+-	int			len;
++	__u32			len;
+ 	struct kvec		vec[RPCSVC_MAXPAGES];
+ 	int			vlen;
+ };
+diff --git a/include/linux/sunrpc/svc.h b/include/linux/sunrpc/svc.h
+index 5af8800e0ce3..e4086ec8b952 100644
+--- a/include/linux/sunrpc/svc.h
++++ b/include/linux/sunrpc/svc.h
+@@ -171,7 +171,8 @@ xdr_argsize_check(struct svc_rqst *rqstp, u32 *p)
+ {
+ 	char *cp = (char *)p;
+ 	struct kvec *vec = &amp;rqstp-&gt;rq_arg.head[0];
+-	return cp - (char*)vec-&gt;iov_base &lt;= vec-&gt;iov_len;
++	return cp &gt;= (char*)vec-&gt;iov_base
++		&amp;&amp; cp &lt;= (char*)vec-&gt;iov_base + vec-&gt;iov_len;
+ }
+ 
+ static inline int</pre><hr><pre>commit 70c3b76c28b012452d63bb27f6d0517afb05d86f
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Mon Nov 7 01:00:25 2005 -0800
+
+    [PATCH] knfsd: Allow run-time selection of NFS versions to export
+    
+    Provide a file in the NFSD filesystem that allows setting and querying of
+    which version of NFS are being exported.  Changes are only allowed while no
+    server is running.
+    
+    Signed-off-by: Steve Dickson &lt;steved@redhat.com&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfsctl.c b/fs/nfsd/nfsctl.c
+index 2a99a0bf54f6..a0871b3efeb7 100644
+--- a/fs/nfsd/nfsctl.c
++++ b/fs/nfsd/nfsctl.c
+@@ -23,6 +23,7 @@
+ #include &lt;linux/seq_file.h&gt;
+ #include &lt;linux/pagemap.h&gt;
+ #include &lt;linux/init.h&gt;
++#include &lt;linux/string.h&gt;
+ 
+ #include &lt;linux/nfs.h&gt;
+ #include &lt;linux/nfsd_idmap.h&gt;
+@@ -35,6 +36,8 @@
+ 
+ #include &lt;asm/uaccess.h&gt;
+ 
++unsigned int nfsd_versbits = ~0;
++
+ /*
+  *	We have a single directory with 9 nodes in it.
+  */
+@@ -50,8 +53,15 @@ enum {
+ 	NFSD_List,
+ 	NFSD_Fh,
+ 	NFSD_Threads,
++	NFSD_Versions,
++	/*
++	 * The below MUST come last.  Otherwise we leave a hole in nfsd_files[]
++	 * with !CONFIG_NFSD_V4 and simple_fill_super() goes oops
++	 */
++#ifdef CONFIG_NFSD_V4
+ 	NFSD_Leasetime,
+ 	NFSD_RecoveryDir,
++#endif
+ };
+ 
+ /*
+@@ -66,8 +76,11 @@ static ssize_t write_getfd(struct file *file, char *buf, size_t size);
+ static ssize_t write_getfs(struct file *file, char *buf, size_t size);
+ static ssize_t write_filehandle(struct file *file, char *buf, size_t size);
+ static ssize_t write_threads(struct file *file, char *buf, size_t size);
++static ssize_t write_versions(struct file *file, char *buf, size_t size);
++#ifdef CONFIG_NFSD_V4
+ static ssize_t write_leasetime(struct file *file, char *buf, size_t size);
+ static ssize_t write_recoverydir(struct file *file, char *buf, size_t size);
++#endif
+ 
+ static ssize_t (*write_op[])(struct file *, char *, size_t) = {
+ 	[NFSD_Svc] = write_svc,
+@@ -79,8 +92,11 @@ static ssize_t (*write_op[])(struct file *, char *, size_t) = {
+ 	[NFSD_Getfs] = write_getfs,
+ 	[NFSD_Fh] = write_filehandle,
+ 	[NFSD_Threads] = write_threads,
++	[NFSD_Versions] = write_versions,
++#ifdef CONFIG_NFSD_V4
+ 	[NFSD_Leasetime] = write_leasetime,
+ 	[NFSD_RecoveryDir] = write_recoverydir,
++#endif
+ };
+ 
+ static ssize_t nfsctl_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)
+@@ -343,6 +359,70 @@ static ssize_t write_threads(struct file *file, char *buf, size_t size)
+ 	return strlen(buf);
+ }
+ 
++static ssize_t write_versions(struct file *file, char *buf, size_t size)
++{
++	/*
++	 * Format:
++	 *   [-/+]vers [-/+]vers ...
++	 */
++	char *mesg = buf;
++	char *vers, sign;
++	int len, num;
++	ssize_t tlen = 0;
++	char *sep;
++
++	if (size&gt;0) {
++		if (nfsd_serv)
++			return -EBUSY;
++		if (buf[size-1] != '\n')
++			return -EINVAL;
++		buf[size-1] = 0;
++
++		vers = mesg;
++		len = qword_get(&amp;mesg, vers, size);
++		if (len &lt;= 0) return -EINVAL;
++		do {
++			sign = *vers;
++			if (sign == '+' || sign == '-')
++				num = simple_strtol((vers+1), NULL, 0);
++			else
++				num = simple_strtol(vers, NULL, 0);
++			switch(num) {
++			case 2:
++			case 3:
++			case 4:
++				if (sign != '-')
++					NFSCTL_VERSET(nfsd_versbits, num);
++				else
++					NFSCTL_VERUNSET(nfsd_versbits, num);
++				break;
++			default:
++				return -EINVAL;
++			}
++			vers += len + 1;
++			tlen += len;
++		} while ((len = qword_get(&amp;mesg, vers, size)) &gt; 0);
++		/* If all get turned off, turn them back on, as
++		 * having no versions is BAD
++		 */
++		if ((nfsd_versbits &amp; NFSCTL_VERALL)==0)
++			nfsd_versbits = NFSCTL_VERALL;
++	}
++	/* Now write current state into reply buffer */
++	len = 0;
++	sep = "";
++	for (num=2 ; num &lt;= 4 ; num++)
++		if (NFSCTL_VERISSET(NFSCTL_VERALL, num)) {
++			len += sprintf(buf+len, "%s%c%d", sep,
++				       NFSCTL_VERISSET(nfsd_versbits, num)?'+':'-',
++				       num);
++			sep = " ";
++		}
++	len += sprintf(buf+len, "\n");
++	return len;
++}
++
++#ifdef CONFIG_NFSD_V4
+ extern time_t nfs4_leasetime(void);
+ 
+ static ssize_t write_leasetime(struct file *file, char *buf, size_t size)
+@@ -384,6 +464,7 @@ static ssize_t write_recoverydir(struct file *file, char *buf, size_t size)
+ 	status = nfs4_reset_recoverydir(recdir);
+ 	return strlen(buf);
+ }
++#endif
+ 
+ /*----------------------------------------------------------------------------*/
+ /*
+@@ -403,6 +484,7 @@ static int nfsd_fill_super(struct super_block * sb, void * data, int silent)
+ 		[NFSD_List] = {"exports", &amp;exports_operations, S_IRUGO},
+ 		[NFSD_Fh] = {"filehandle", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+ 		[NFSD_Threads] = {"threads", &amp;transaction_ops, S_IWUSR|S_IRUSR},
++		[NFSD_Versions] = {"versions", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+ #ifdef CONFIG_NFSD_V4
+ 		[NFSD_Leasetime] = {"nfsv4leasetime", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+ 		[NFSD_RecoveryDir] = {"nfsv4recoverydir", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+diff --git a/fs/nfsd/nfssvc.c b/fs/nfsd/nfssvc.c
+index 1697539a7171..0568ff8565b1 100644
+--- a/fs/nfsd/nfssvc.c
++++ b/fs/nfsd/nfssvc.c
+@@ -30,6 +30,7 @@
+ #include &lt;linux/nfsd/nfsd.h&gt;
+ #include &lt;linux/nfsd/stats.h&gt;
+ #include &lt;linux/nfsd/cache.h&gt;
++#include &lt;linux/nfsd/syscall.h&gt;
+ #include &lt;linux/lockd/bind.h&gt;
+ #include &lt;linux/nfsacl.h&gt;
+ 
+@@ -52,7 +53,7 @@
+ extern struct svc_program	nfsd_program;
+ static void			nfsd(struct svc_rqst *rqstp);
+ struct timeval			nfssvc_boot;
+-static struct svc_serv 		*nfsd_serv;
++       struct svc_serv 		*nfsd_serv;
+ static atomic_t			nfsd_busy;
+ static unsigned long		nfsd_last_call;
+ static DEFINE_SPINLOCK(nfsd_call_lock);
+@@ -63,6 +64,31 @@ struct nfsd_list {
+ };
+ static struct list_head nfsd_list = LIST_HEAD_INIT(nfsd_list);
+ 
++static struct svc_version *	nfsd_version[] = {
++	[2] = &amp;nfsd_version2,
++#if defined(CONFIG_NFSD_V3)
++	[3] = &amp;nfsd_version3,
++#endif
++#if defined(CONFIG_NFSD_V4)
++	[4] = &amp;nfsd_version4,
++#endif
++};
++
++#define NFSD_MINVERS    	2
++#define NFSD_NRVERS		(sizeof(nfsd_version)/sizeof(nfsd_version[0]))
++static struct svc_version *nfsd_versions[NFSD_NRVERS];
++
++struct svc_program		nfsd_program = {
++	.pg_prog		= NFS_PROGRAM,		/* program number */
++	.pg_nvers		= NFSD_NRVERS,		/* nr of entries in nfsd_version */
++	.pg_vers		= nfsd_versions,	/* version table */
++	.pg_name		= "nfsd",		/* program name */
++	.pg_class		= "nfsd",		/* authentication class */
++	.pg_stats		= &amp;nfsd_svcstats,	/* version table */
++	.pg_authenticate	= &amp;svc_set_client,	/* export authentication */
++
++};
++
+ /*
+  * Maximum number of nfsd processes
+  */
+@@ -80,11 +106,12 @@ int
+ nfsd_svc(unsigned short port, int nrservs)
+ {
+ 	int	error;
+-	int	none_left;	
++	int	none_left, found_one, i;
+ 	struct list_head *victim;
+ 	
+ 	lock_kernel();
+-	dprintk("nfsd: creating service\n");
++	dprintk("nfsd: creating service: vers 0x%x\n",
++		nfsd_versbits);
+ 	error = -EINVAL;
+ 	if (nrservs &lt;= 0)
+ 		nrservs = 0;
+@@ -99,6 +126,27 @@ nfsd_svc(unsigned short port, int nrservs)
+ 	if (error&lt;0)
+ 		goto out;
+ 	if (!nfsd_serv) {
++		/*
++		 * Use the nfsd_ctlbits to define which
++		 * versions that will be advertised.
++		 * If nfsd_ctlbits doesn't list any version,
++		 * export them all.
++		 */
++		found_one = 0;
++
++		for (i = NFSD_MINVERS; i &lt; NFSD_NRVERS; i++) {
++			if (NFSCTL_VERISSET(nfsd_versbits, i)) {
++				nfsd_program.pg_vers[i] = nfsd_version[i];
++				found_one = 1;
++			} else
++				nfsd_program.pg_vers[i] = NULL;
++		}
++
++		if (!found_one) {
++			for (i = NFSD_MINVERS; i &lt; NFSD_NRVERS; i++)
++				nfsd_program.pg_vers[i] = nfsd_version[i];
++		}
++
+ 		atomic_set(&amp;nfsd_busy, 0);
+ 		error = -ENOMEM;
+ 		nfsd_serv = svc_create(&amp;nfsd_program, NFSD_BUFSIZE);
+@@ -389,28 +437,3 @@ static struct svc_stat	nfsd_acl_svcstats = {
+ #else
+ #define nfsd_acl_program_p	NULL
+ #endif /* defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL) */
+-
+-extern struct svc_version nfsd_version2, nfsd_version3, nfsd_version4;
+-
+-static struct svc_version *	nfsd_version[] = {
+-	[2] = &amp;nfsd_version2,
+-#if defined(CONFIG_NFSD_V3)
+-	[3] = &amp;nfsd_version3,
+-#endif
+-#if defined(CONFIG_NFSD_V4)
+-	[4] = &amp;nfsd_version4,
+-#endif
+-};
+-
+-#define NFSD_NRVERS		(sizeof(nfsd_version)/sizeof(nfsd_version[0]))
+-struct svc_program		nfsd_program = {
+-	.pg_next		= nfsd_acl_program_p,
+-	.pg_prog		= NFS_PROGRAM,		/* program number */
+-	.pg_nvers		= NFSD_NRVERS,		/* nr of entries in nfsd_version */
+-	.pg_vers		= nfsd_version,		/* version table */
+-	.pg_name		= "nfsd",		/* program name */
+-	.pg_class		= "nfsd",		/* authentication class */
+-	.pg_stats		= &amp;nfsd_svcstats,	/* version table */
+-	.pg_authenticate	= &amp;svc_set_client,	/* export authentication */
+-
+-};
+diff --git a/include/linux/nfsd/nfsd.h b/include/linux/nfsd/nfsd.h
+index 6d5a24f3fc6d..51c231a1e5a6 100644
+--- a/include/linux/nfsd/nfsd.h
++++ b/include/linux/nfsd/nfsd.h
+@@ -60,7 +60,7 @@ typedef int (*nfsd_dirop_t)(struct inode *, struct dentry *, int, int);
+ extern struct svc_program	nfsd_program;
+ extern struct svc_version	nfsd_version2, nfsd_version3,
+ 				nfsd_version4;
+-
++extern struct svc_serv		*nfsd_serv;
+ /*
+  * Function prototypes.
+  */
+diff --git a/include/linux/nfsd/syscall.h b/include/linux/nfsd/syscall.h
+index e65c9db6d13f..781efbf94ed3 100644
+--- a/include/linux/nfsd/syscall.h
++++ b/include/linux/nfsd/syscall.h
+@@ -39,6 +39,21 @@
+ #define NFSCTL_GETFD		7	/* get an fh by path (used by mountd) */
+ #define	NFSCTL_GETFS		8	/* get an fh by path with max FH len */
+ 
++/*
++ * Macros used to set version
++ */
++#define NFSCTL_VERSET(_cltbits, _v)   ((_cltbits) |=  (1 &lt;&lt; (_v)))
++#define NFSCTL_VERUNSET(_cltbits, _v) ((_cltbits) &amp;= ~(1 &lt;&lt; (_v)))
++#define NFSCTL_VERISSET(_cltbits, _v) ((_cltbits) &amp; (1 &lt;&lt; (_v)))
++
++#if defined(CONFIG_NFSD_V4)
++#define	NFSCTL_VERALL	(0x1c /* 0b011100 */)
++#elif defined(CONFIG_NFSD_V3)
++#define	NFSCTL_VERALL	(0x0c /* 0b001100 */)
++#else
++#define	NFSCTL_VERALL	(0x04 /* 0b000100 */)
++#endif
++
+ /* SVC */
+ struct nfsctl_svc {
+ 	unsigned short		svc_port;
+@@ -120,6 +135,8 @@ extern int		exp_delclient(struct nfsctl_client *ncp);
+ extern int		exp_export(struct nfsctl_export *nxp);
+ extern int		exp_unexport(struct nfsctl_export *nxp);
+ 
++extern unsigned int nfsd_versbits;
++
+ #endif /* __KERNEL__ */
+ 
+ #endif /* NFSD_SYSCALL_H */</pre><hr><pre>commit 7390022d697bcc62a7556d6fdc61ec56ce3a381a
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Mon Nov 7 01:00:24 2005 -0800
+
+    [PATCH] knfsd: Restore functionality to read from file in /proc/fs/nfsd/
+    
+    Most files in the nfsd filesystems are transaction files.  You write a
+    request, and read a response.
+    
+    For some (e.g.  'threads') it makes sense to just be able to read and get the
+    current value.
+    
+    This functionality did exist but was broken recently when someone modified
+    nfsctl.c without going through the maintainer.  This patch fixes the
+    regression.
+    
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfsctl.c b/fs/nfsd/nfsctl.c
+index 841c562991e8..2a99a0bf54f6 100644
+--- a/fs/nfsd/nfsctl.c
++++ b/fs/nfsd/nfsctl.c
+@@ -104,9 +104,23 @@ static ssize_t nfsctl_transaction_write(struct file *file, const char __user *bu
+ 	return rv;
+ }
+ 
++static ssize_t nfsctl_transaction_read(struct file *file, char __user *buf, size_t size, loff_t *pos)
++{
++	if (! file-&gt;private_data) {
++		/* An attempt to read a transaction file without writing
++		 * causes a 0-byte write so that the file can return
++		 * state information
++		 */
++		ssize_t rv = nfsctl_transaction_write(file, buf, 0, pos);
++		if (rv &lt; 0)
++			return rv;
++	}
++	return simple_transaction_read(file, buf, size, pos);
++}
++
+ static struct file_operations transaction_ops = {
+ 	.write		= nfsctl_transaction_write,
+-	.read		= simple_transaction_read,
++	.read		= nfsctl_transaction_read,
+ 	.release	= simple_transaction_release,
+ };
+ </pre><hr><pre>commit 15b7a1b86d663ef40108b1ba322973e32d5b62d6
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Mon Nov 7 01:00:23 2005 -0800
+
+    [PATCH] knfsd: fix setattr-on-symlink error return
+    
+    This is a somewhat cosmetic fix to keep the SpecFS validation test from
+    complaining.
+    
+    SpecFS want's to try chmod on symlinks, and ext3 and reiser (at least) return
+    ENOTSUPP.
+    
+    Probably both sides are being silly, but it is easiest to simply make it a
+    non-issue and filter out chmod requests on symlinks at the nfsd level.
+    
+    Signed-off-by: Olaf Kirch &lt;okir@suse.de&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 4f2cd3d27566..af7c3c3074b0 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -254,12 +254,19 @@ nfsd_setattr(struct svc_rqst *rqstp, struct svc_fh *fhp, struct iattr *iap,
+ 
+ 	/* Get inode */
+ 	err = fh_verify(rqstp, fhp, ftype, accmode);
+-	if (err || !iap-&gt;ia_valid)
++	if (err)
+ 		goto out;
+ 
+ 	dentry = fhp-&gt;fh_dentry;
+ 	inode = dentry-&gt;d_inode;
+ 
++	/* Ignore any mode updates on symlinks */
++	if (S_ISLNK(inode-&gt;i_mode))
++		iap-&gt;ia_valid &amp;= ~ATTR_MODE;
++
++	if (!iap-&gt;ia_valid)
++		goto out;
++
+ 	/* NFSv2 does not differentiate between "set-[ac]time-to-now"
+ 	 * which only requires access, and "set-[ac]time-to-X" which
+ 	 * requires ownership.</pre><hr><pre>commit 500af87abb81098da47474c81f29ea315a056dc5
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Sep 9 16:23:58 2005 -0700
+
+    [PATCH] md: tidy up daemon stop/start code in md/bitmap.c
+    
+    The bitmap code used to have two daemons, so there is some 'common' start/stop
+    code.  But now there is only one, so the common code is just noise.
+    
+    This patch tidies this up somewhat.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Adrian Bunk &lt;bunk@stusta.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index 87145faac491..2fba2bbe72d8 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -626,7 +626,7 @@ static void bitmap_file_unmap(struct bitmap *bitmap)
+ 		page_cache_release(sb_page);
+ }
+ 
+-static void bitmap_stop_daemons(struct bitmap *bitmap);
++static void bitmap_stop_daemon(struct bitmap *bitmap);
+ 
+ /* dequeue the next item in a page list -- don't call from irq context */
+ static struct page_list *dequeue_page(struct bitmap *bitmap)
+@@ -668,7 +668,7 @@ static void bitmap_file_put(struct bitmap *bitmap)
+ 	bitmap-&gt;file = NULL;
+ 	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 
+-	bitmap_stop_daemons(bitmap);
++	bitmap_stop_daemon(bitmap);
+ 
+ 	drain_write_queues(bitmap);
+ 
+@@ -1188,21 +1188,12 @@ static void bitmap_writeback_daemon(mddev_t *mddev)
+ 	}
+ }
+ 
+-static int bitmap_start_daemon(struct bitmap *bitmap, mdk_thread_t **ptr,
++static mdk_thread_t *bitmap_start_daemon(struct bitmap *bitmap,
+ 				void (*func)(mddev_t *), char *name)
+ {
+ 	mdk_thread_t *daemon;
+-	unsigned long flags;
+ 	char namebuf[32];
+ 
+-	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
+-	*ptr = NULL;
+-
+-	if (!bitmap-&gt;file) /* no need for daemon if there's no backing file */
+-		goto out_unlock;
+-
+-	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+-
+ #ifdef INJECT_FATAL_FAULT_2
+ 	daemon = NULL;
+ #else
+@@ -1212,47 +1203,32 @@ static int bitmap_start_daemon(struct bitmap *bitmap, mdk_thread_t **ptr,
+ 	if (!daemon) {
+ 		printk(KERN_ERR "%s: failed to start bitmap daemon\n",
+ 			bmname(bitmap));
+-		return -ECHILD;
++		return ERR_PTR(-ECHILD);
+ 	}
+ 
+-	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
+-	*ptr = daemon;
+-
+ 	md_wakeup_thread(daemon); /* start it running */
+ 
+ 	PRINTK("%s: %s daemon (pid %d) started...\n",
+ 		bmname(bitmap), name, daemon-&gt;tsk-&gt;pid);
+-out_unlock:
+-	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+-	return 0;
+-}
+ 
+-static int bitmap_start_daemons(struct bitmap *bitmap)
+-{
+-	int err = bitmap_start_daemon(bitmap, &amp;bitmap-&gt;writeback_daemon,
+-					bitmap_writeback_daemon, "bitmap_wb");
+-	return err;
++	return daemon;
+ }
+ 
+-static void bitmap_stop_daemon(struct bitmap *bitmap, mdk_thread_t **ptr)
++static void bitmap_stop_daemon(struct bitmap *bitmap)
+ {
+-	mdk_thread_t *daemon;
+-	unsigned long flags;
+-
+-	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
+-	daemon = *ptr;
+-	*ptr = NULL;
+-	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+-	if (daemon)
+-		md_unregister_thread(daemon); /* destroy the thread */
+-}
++	/* the daemon can't stop itself... it'll just exit instead... */
++	if (bitmap-&gt;writeback_daemon &amp;&amp; ! IS_ERR(bitmap-&gt;writeback_daemon) &amp;&amp;
++	    current-&gt;pid != bitmap-&gt;writeback_daemon-&gt;tsk-&gt;pid) {
++		mdk_thread_t *daemon;
++		unsigned long flags;
+ 
+-static void bitmap_stop_daemons(struct bitmap *bitmap)
+-{
+-	/* the daemons can't stop themselves... they'll just exit instead... */
+-	if (bitmap-&gt;writeback_daemon &amp;&amp;
+-	    current-&gt;pid != bitmap-&gt;writeback_daemon-&gt;tsk-&gt;pid)
+-		bitmap_stop_daemon(bitmap, &amp;bitmap-&gt;writeback_daemon);
++		spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
++		daemon = bitmap-&gt;writeback_daemon;
++		bitmap-&gt;writeback_daemon = NULL;
++		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++		if (daemon &amp;&amp; ! IS_ERR(daemon))
++			md_unregister_thread(daemon); /* destroy the thread */
++	}
+ }
+ 
+ static bitmap_counter_t *bitmap_get_counter(struct bitmap *bitmap,
+@@ -1637,10 +1613,15 @@ int bitmap_create(mddev_t *mddev)
+ 
+ 	mddev-&gt;bitmap = bitmap;
+ 
+-	/* kick off the bitmap daemons */
+-	err = bitmap_start_daemons(bitmap);
+-	if (err)
+-		return err;
++	if (file)
++		/* kick off the bitmap writeback daemon */
++		bitmap-&gt;writeback_daemon =
++			bitmap_start_daemon(bitmap,
++					    bitmap_writeback_daemon,
++					    "bitmap_wb");
++
++	if (IS_ERR(bitmap-&gt;writeback_daemon))
++		return PTR_ERR(bitmap-&gt;writeback_daemon);
+ 	return bitmap_update_sb(bitmap);
+ 
+  error:
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index bfe78571586b..a93ca478142a 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -1703,7 +1703,7 @@ static int raid1_reshape(mddev_t *mddev, int raid_disks)
+ 	return 0;
+ }
+ 
+-void raid1_quiesce(mddev_t *mddev, int state)
++static void raid1_quiesce(mddev_t *mddev, int state)
+ {
+ 	conf_t *conf = mddev_to_conf(mddev);
+ </pre><hr><pre>commit 9ba00538ada7ecb4fb8bd71ba734a8eada987817
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Fri Sep 9 16:23:57 2005 -0700
+
+    [PATCH] md: ensure bitmap_writeback_daemon handles shutdown properly.
+    
+    mddev-&gt;bitmap gets clearred before the writeback daemon is stopped.  So the
+    write_back daemon needs to be careful not to dereference the 'bitmap' if it is
+    NULL.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index 90fe70d76a31..87145faac491 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -1156,6 +1156,9 @@ static void bitmap_writeback_daemon(mddev_t *mddev)
+ 		err = -EINTR;
+ 		goto out;
+ 	}
++	if (bitmap == NULL)
++		/* about to be stopped. */
++		return;
+ 
+ 	PRINTK("%s: bitmap writeback daemon woke up...\n", bmname(bitmap));
+ 	/* wait on bitmap page writebacks */</pre>
+    <div class="pagination">
+        <span>[1]</span><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

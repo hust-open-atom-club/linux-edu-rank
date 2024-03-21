@@ -1,0 +1,1813 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_18.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><span>[19]</span><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_20.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 32ae763e3fce4192cd008956a340353a2e5c3192
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu Mar 5 14:46:03 2009 -0600
+
+    [SCSI] iscsi lib: have lib create work queue for transmitting IO
+    
+    We were using the shost work queue which ended up being
+    a little akward since all iscsi hosts need a thread for
+    scanning, but only drivers hooked into libiscsi need
+    a workqueue for transmitting. So this patch moves the
+    xmit workqueue to the lib.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/infiniband/ulp/iser/iscsi_iser.c b/drivers/infiniband/ulp/iser/iscsi_iser.c
+index 5f79c0a5faf3..a50cd53e2753 100644
+--- a/drivers/infiniband/ulp/iser/iscsi_iser.c
++++ b/drivers/infiniband/ulp/iser/iscsi_iser.c
+@@ -404,7 +404,7 @@ iscsi_iser_session_create(struct iscsi_endpoint *ep,
+ 	struct Scsi_Host *shost;
+ 	struct iser_conn *ib_conn;
+ 
+-	shost = iscsi_host_alloc(&amp;iscsi_iser_sht, 0, ISER_DEF_CMD_PER_LUN);
++	shost = iscsi_host_alloc(&amp;iscsi_iser_sht, 0, ISER_DEF_CMD_PER_LUN, 1);
+ 	if (!shost)
+ 		return NULL;
+ 	shost-&gt;transportt = iscsi_iser_scsi_transport;
+diff --git a/drivers/infiniband/ulp/iser/iser_initiator.c b/drivers/infiniband/ulp/iser/iser_initiator.c
+index e209cb8dd948..9de640200ad3 100644
+--- a/drivers/infiniband/ulp/iser/iser_initiator.c
++++ b/drivers/infiniband/ulp/iser/iser_initiator.c
+@@ -661,7 +661,7 @@ void iser_snd_completion(struct iser_desc *tx_desc)
+ 
+ 	if (resume_tx) {
+ 		iser_dbg("%ld resuming tx\n",jiffies);
+-		scsi_queue_work(conn-&gt;session-&gt;host, &amp;conn-&gt;xmitwork);
++		iscsi_conn_queue_work(conn);
+ 	}
+ 
+ 	if (tx_desc-&gt;type == ISCSI_TX_CONTROL) {
+diff --git a/drivers/scsi/cxgb3i/cxgb3i_iscsi.c b/drivers/scsi/cxgb3i/cxgb3i_iscsi.c
+index fa2a44f37b36..f6ed9c62efb0 100644
+--- a/drivers/scsi/cxgb3i/cxgb3i_iscsi.c
++++ b/drivers/scsi/cxgb3i/cxgb3i_iscsi.c
+@@ -171,7 +171,7 @@ struct cxgb3i_hba *cxgb3i_hba_host_add(struct cxgb3i_adapter *snic,
+ 
+ 	shost = iscsi_host_alloc(&amp;cxgb3i_host_template,
+ 				 sizeof(struct cxgb3i_hba),
+-				 CXGB3I_SCSI_QDEPTH_DFLT);
++				 CXGB3I_SCSI_QDEPTH_DFLT, 1);
+ 	if (!shost) {
+ 		cxgb3i_log_info("iscsi_host_alloc failed.\n");
+ 		return NULL;
+diff --git a/drivers/scsi/cxgb3i/cxgb3i_pdu.c b/drivers/scsi/cxgb3i/cxgb3i_pdu.c
+index 17115c230d65..7eebc9a7cb35 100644
+--- a/drivers/scsi/cxgb3i/cxgb3i_pdu.c
++++ b/drivers/scsi/cxgb3i/cxgb3i_pdu.c
+@@ -479,7 +479,7 @@ void cxgb3i_conn_tx_open(struct s3_conn *c3cn)
+ 	cxgb3i_tx_debug("cn 0x%p.\n", c3cn);
+ 	if (conn) {
+ 		cxgb3i_tx_debug("cn 0x%p, cid %d.\n", c3cn, conn-&gt;id);
+-		scsi_queue_work(conn-&gt;session-&gt;host, &amp;conn-&gt;xmitwork);
++		iscsi_conn_queue_work(conn);
+ 	}
+ }
+ 
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 9c2e52792bdc..79a706a94c68 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -166,7 +166,7 @@ static void iscsi_sw_tcp_write_space(struct sock *sk)
+ 
+ 	tcp_sw_conn-&gt;old_write_space(sk);
+ 	ISCSI_SW_TCP_DBG(conn, "iscsi_write_space\n");
+-	scsi_queue_work(conn-&gt;session-&gt;host, &amp;conn-&gt;xmitwork);
++	iscsi_conn_queue_work(conn);
+ }
+ 
+ static void iscsi_sw_tcp_conn_set_callbacks(struct iscsi_conn *conn)
+@@ -777,7 +777,7 @@ iscsi_sw_tcp_session_create(struct iscsi_endpoint *ep, uint16_t cmds_max,
+ 		return NULL;
+ 	}
+ 
+-	shost = iscsi_host_alloc(&amp;iscsi_sw_tcp_sht, 0, qdepth);
++	shost = iscsi_host_alloc(&amp;iscsi_sw_tcp_sht, 0, qdepth, 1);
+ 	if (!shost)
+ 		return NULL;
+ 	shost-&gt;transportt = iscsi_sw_tcp_scsi_transport;
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index a5168a673503..ff891543df22 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -76,6 +76,15 @@ static int iscsi_sna_lte(u32 n1, u32 n2)
+ 			    (n1 &gt; n2 &amp;&amp; (n2 - n1 &lt; SNA32_CHECK)));
+ }
+ 
++inline void iscsi_conn_queue_work(struct iscsi_conn *conn)
++{
++	struct Scsi_Host *shost = conn-&gt;session-&gt;host;
++	struct iscsi_host *ihost = shost_priv(shost);
++
++	queue_work(ihost-&gt;workq, &amp;conn-&gt;xmitwork);
++}
++EXPORT_SYMBOL_GPL(iscsi_conn_queue_work);
++
+ void
+ iscsi_update_cmdsn(struct iscsi_session *session, struct iscsi_nopin *hdr)
+ {
+@@ -103,8 +112,7 @@ iscsi_update_cmdsn(struct iscsi_session *session, struct iscsi_nopin *hdr)
+ 		if (!list_empty(&amp;session-&gt;leadconn-&gt;xmitqueue) ||
+ 		    !list_empty(&amp;session-&gt;leadconn-&gt;mgmtqueue)) {
+ 			if (!(session-&gt;tt-&gt;caps &amp; CAP_DATA_PATH_OFFLOAD))
+-				scsi_queue_work(session-&gt;host,
+-						&amp;session-&gt;leadconn-&gt;xmitwork);
++				iscsi_conn_queue_work(session-&gt;leadconn);
+ 		}
+ 	}
+ }
+@@ -586,7 +594,7 @@ __iscsi_conn_send_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 			goto free_task;
+ 
+ 	} else
+-		scsi_queue_work(conn-&gt;session-&gt;host, &amp;conn-&gt;xmitwork);
++		iscsi_conn_queue_work(conn);
+ 
+ 	return task;
+ 
+@@ -1160,7 +1168,7 @@ void iscsi_requeue_task(struct iscsi_task *task)
+ 	struct iscsi_conn *conn = task-&gt;conn;
+ 
+ 	list_move_tail(&amp;task-&gt;running, &amp;conn-&gt;requeue);
+-	scsi_queue_work(conn-&gt;session-&gt;host, &amp;conn-&gt;xmitwork);
++	iscsi_conn_queue_work(conn);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_requeue_task);
+ 
+@@ -1413,7 +1421,7 @@ int iscsi_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 			goto prepd_reject;
+ 		}
+ 	} else
+-		scsi_queue_work(session-&gt;host, &amp;conn-&gt;xmitwork);
++		iscsi_conn_queue_work(conn);
+ 
+ 	session-&gt;queued_cmdsn++;
+ 	spin_unlock(&amp;session-&gt;lock);
+@@ -1631,9 +1639,12 @@ static void fail_all_commands(struct iscsi_conn *conn, unsigned lun,
+ 
+ void iscsi_suspend_tx(struct iscsi_conn *conn)
+ {
++	struct Scsi_Host *shost = conn-&gt;session-&gt;host;
++	struct iscsi_host *ihost = shost_priv(shost);
++
+ 	set_bit(ISCSI_SUSPEND_BIT, &amp;conn-&gt;suspend_tx);
+ 	if (!(conn-&gt;session-&gt;tt-&gt;caps &amp; CAP_DATA_PATH_OFFLOAD))
+-		scsi_flush_work(conn-&gt;session-&gt;host);
++		flush_workqueue(ihost-&gt;workq);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_suspend_tx);
+ 
+@@ -1641,7 +1652,7 @@ static void iscsi_start_tx(struct iscsi_conn *conn)
+ {
+ 	clear_bit(ISCSI_SUSPEND_BIT, &amp;conn-&gt;suspend_tx);
+ 	if (!(conn-&gt;session-&gt;tt-&gt;caps &amp; CAP_DATA_PATH_OFFLOAD))
+-		scsi_queue_work(conn-&gt;session-&gt;host, &amp;conn-&gt;xmitwork);
++		iscsi_conn_queue_work(conn);
+ }
+ 
+ static enum blk_eh_timer_return iscsi_eh_cmd_timed_out(struct scsi_cmnd *scmd)
+@@ -2046,12 +2057,14 @@ EXPORT_SYMBOL_GPL(iscsi_host_add);
+  * @sht: scsi host template
+  * @dd_data_size: driver host data size
+  * @qdepth: default device queue depth
++ * @xmit_can_sleep: bool indicating if LLD will queue IO from a work queue
+  *
+  * This should be called by partial offload and software iscsi drivers.
+  * To access the driver specific memory use the iscsi_host_priv() macro.
+  */
+ struct Scsi_Host *iscsi_host_alloc(struct scsi_host_template *sht,
+-				   int dd_data_size, uint16_t qdepth)
++				   int dd_data_size, uint16_t qdepth,
++				   bool xmit_can_sleep)
+ {
+ 	struct Scsi_Host *shost;
+ 	struct iscsi_host *ihost;
+@@ -2063,13 +2076,25 @@ struct Scsi_Host *iscsi_host_alloc(struct scsi_host_template *sht,
+ 	if (qdepth == 0)
+ 		qdepth = ISCSI_DEF_CMD_PER_LUN;
+ 	shost-&gt;cmd_per_lun = qdepth;
+-
+ 	ihost = shost_priv(shost);
++
++	if (xmit_can_sleep) {
++		snprintf(ihost-&gt;workq_name, sizeof(ihost-&gt;workq_name),
++			"iscsi_q_%d", shost-&gt;host_no);
++		ihost-&gt;workq = create_singlethread_workqueue(ihost-&gt;workq_name);
++		if (!ihost-&gt;workq)
++			goto free_host;
++	}
++
+ 	spin_lock_init(&amp;ihost-&gt;lock);
+ 	ihost-&gt;state = ISCSI_HOST_SETUP;
+ 	ihost-&gt;num_sessions = 0;
+ 	init_waitqueue_head(&amp;ihost-&gt;session_removal_wq);
+ 	return shost;
++
++free_host:
++	scsi_host_put(shost);
++	return NULL;
+ }
+ EXPORT_SYMBOL_GPL(iscsi_host_alloc);
+ 
+@@ -2101,6 +2126,8 @@ void iscsi_host_remove(struct Scsi_Host *shost)
+ 		flush_signals(current);
+ 
+ 	scsi_remove_host(shost);
++	if (ihost-&gt;workq)
++		destroy_workqueue(ihost-&gt;workq);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_host_remove);
+ 
+diff --git a/include/scsi/libiscsi.h b/include/scsi/libiscsi.h
+index 898de4a73727..b0b8a6992497 100644
+--- a/include/scsi/libiscsi.h
++++ b/include/scsi/libiscsi.h
+@@ -318,6 +318,9 @@ struct iscsi_host {
+ 	spinlock_t		lock;
+ 	int			num_sessions;
+ 	int			state;
++
++	struct workqueue_struct	*workq;
++	char			workq_name[20];
+ };
+ 
+ /*
+@@ -343,7 +346,8 @@ extern int iscsi_host_get_param(struct Scsi_Host *shost,
+ 				enum iscsi_host_param param, char *buf);
+ extern int iscsi_host_add(struct Scsi_Host *shost, struct device *pdev);
+ extern struct Scsi_Host *iscsi_host_alloc(struct scsi_host_template *sht,
+-					  int dd_data_size, uint16_t qdepth);
++					  int dd_data_size, uint16_t qdepth,
++					  bool xmit_can_sleep);
+ extern void iscsi_host_remove(struct Scsi_Host *shost);
+ extern void iscsi_host_free(struct Scsi_Host *shost);
+ 
+@@ -379,6 +383,7 @@ extern void iscsi_session_failure(struct iscsi_cls_session *cls_session,
+ extern int iscsi_conn_get_param(struct iscsi_cls_conn *cls_conn,
+ 				enum iscsi_param param, char *buf);
+ extern void iscsi_suspend_tx(struct iscsi_conn *conn);
++extern void iscsi_conn_queue_work(struct iscsi_conn *conn);
+ 
+ #define iscsi_conn_printk(prefix, _c, fmt, a...) \
+ 	iscsi_cls_conn_printk(prefix, ((struct iscsi_conn *)_c)-&gt;cls_conn, \</pre><hr><pre>commit 06d25af4edb60f9e9c7e74d342a6963a32e3392f
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu Mar 5 14:46:02 2009 -0600
+
+    [SCSI] iscsi class: fix lock dep warning on logout
+    
+    We never should hit the lock up that is spit out when
+    lock dep is on and we logout. But we have been using the
+    shost work queue in a odd way. This patch has us use the
+    work queue for scanning instead of creating our own,
+    and this ends up also killing the lock dep warnings.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 75c9297694cb..4f22f9e37c5a 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -246,30 +246,13 @@ static int iscsi_setup_host(struct transport_container *tc, struct device *dev,
+ 	memset(ihost, 0, sizeof(*ihost));
+ 	atomic_set(&amp;ihost-&gt;nr_scans, 0);
+ 	mutex_init(&amp;ihost-&gt;mutex);
+-
+-	snprintf(ihost-&gt;scan_workq_name, sizeof(ihost-&gt;scan_workq_name),
+-		 "iscsi_scan_%d", shost-&gt;host_no);
+-	ihost-&gt;scan_workq = create_singlethread_workqueue(
+-						ihost-&gt;scan_workq_name);
+-	if (!ihost-&gt;scan_workq)
+-		return -ENOMEM;
+-	return 0;
+-}
+-
+-static int iscsi_remove_host(struct transport_container *tc, struct device *dev,
+-			     struct device *cdev)
+-{
+-	struct Scsi_Host *shost = dev_to_shost(dev);
+-	struct iscsi_cls_host *ihost = shost-&gt;shost_data;
+-
+-	destroy_workqueue(ihost-&gt;scan_workq);
+ 	return 0;
+ }
+ 
+ static DECLARE_TRANSPORT_CLASS(iscsi_host_class,
+ 			       "iscsi_host",
+ 			       iscsi_setup_host,
+-			       iscsi_remove_host,
++			       NULL,
+ 			       NULL);
+ 
+ static DECLARE_TRANSPORT_CLASS(iscsi_session_class,
+@@ -568,7 +551,7 @@ static void __iscsi_unblock_session(struct work_struct *work)
+ 	 * scanning from userspace).
+ 	 */
+ 	if (shost-&gt;hostt-&gt;scan_finished) {
+-		if (queue_work(ihost-&gt;scan_workq, &amp;session-&gt;scan_work))
++		if (scsi_queue_work(shost, &amp;session-&gt;scan_work))
+ 			atomic_inc(&amp;ihost-&gt;nr_scans);
+ 	}
+ }
+@@ -636,14 +619,6 @@ static void __iscsi_unbind_session(struct work_struct *work)
+ 	iscsi_session_event(session, ISCSI_KEVENT_UNBIND_SESSION);
+ }
+ 
+-static int iscsi_unbind_session(struct iscsi_cls_session *session)
+-{
+-	struct Scsi_Host *shost = iscsi_session_to_shost(session);
+-	struct iscsi_cls_host *ihost = shost-&gt;shost_data;
+-
+-	return queue_work(ihost-&gt;scan_workq, &amp;session-&gt;unbind_work);
+-}
+-
+ struct iscsi_cls_session *
+ iscsi_alloc_session(struct Scsi_Host *shost, struct iscsi_transport *transport,
+ 		    int dd_size)
+@@ -796,7 +771,6 @@ static int iscsi_iter_destroy_conn_fn(struct device *dev, void *data)
+ void iscsi_remove_session(struct iscsi_cls_session *session)
+ {
+ 	struct Scsi_Host *shost = iscsi_session_to_shost(session);
+-	struct iscsi_cls_host *ihost = shost-&gt;shost_data;
+ 	unsigned long flags;
+ 	int err;
+ 
+@@ -821,7 +795,7 @@ void iscsi_remove_session(struct iscsi_cls_session *session)
+ 
+ 	scsi_target_unblock(&amp;session-&gt;dev);
+ 	/* flush running scans then delete devices */
+-	flush_workqueue(ihost-&gt;scan_workq);
++	scsi_flush_work(shost);
+ 	__iscsi_unbind_session(&amp;session-&gt;unbind_work);
+ 
+ 	/* hw iscsi may not have removed all connections from session */
+@@ -1447,7 +1421,8 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 	case ISCSI_UEVENT_UNBIND_SESSION:
+ 		session = iscsi_session_lookup(ev-&gt;u.d_session.sid);
+ 		if (session)
+-			iscsi_unbind_session(session);
++			scsi_queue_work(iscsi_session_to_shost(session),
++					&amp;session-&gt;unbind_work);
+ 		else
+ 			err = -EINVAL;
+ 		break;
+@@ -1809,8 +1784,7 @@ iscsi_register_transport(struct iscsi_transport *tt)
+ 	priv-&gt;daemon_pid = -1;
+ 	priv-&gt;iscsi_transport = tt;
+ 	priv-&gt;t.user_scan = iscsi_user_scan;
+-	if (!(tt-&gt;caps &amp; CAP_DATA_PATH_OFFLOAD))
+-		priv-&gt;t.create_work_queue = 1;
++	priv-&gt;t.create_work_queue = 1;
+ 
+ 	priv-&gt;dev.class = &amp;iscsi_transport_class;
+ 	dev_set_name(&amp;priv-&gt;dev, "%s", tt-&gt;name);
+diff --git a/include/scsi/scsi_transport_iscsi.h b/include/scsi/scsi_transport_iscsi.h
+index b50aabe2861e..ac29fbd35544 100644
+--- a/include/scsi/scsi_transport_iscsi.h
++++ b/include/scsi/scsi_transport_iscsi.h
+@@ -206,8 +206,6 @@ struct iscsi_cls_session {
+ struct iscsi_cls_host {
+ 	atomic_t nr_scans;
+ 	struct mutex mutex;
+-	struct workqueue_struct *scan_workq;
+-	char scan_workq_name[20];
+ };
+ 
+ extern void iscsi_host_for_each_session(struct Scsi_Host *shost,</pre><hr><pre>commit e28f3d5b51ed07d822f135cd941b01e2d485270e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu Mar 5 14:46:01 2009 -0600
+
+    [SCSI] libiscsi: don't cap queue depth in iscsi modules
+    
+    There is no need to cap the queue depth in the modules. We set
+    this in userspace and can do that there. For performance testing
+    with ram based targets, this is helpful since we can have very
+    high queue depths.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/infiniband/ulp/iser/iscsi_iser.c b/drivers/infiniband/ulp/iser/iscsi_iser.c
+index 4338f54c41fa..5f79c0a5faf3 100644
+--- a/drivers/infiniband/ulp/iser/iscsi_iser.c
++++ b/drivers/infiniband/ulp/iser/iscsi_iser.c
+@@ -404,7 +404,7 @@ iscsi_iser_session_create(struct iscsi_endpoint *ep,
+ 	struct Scsi_Host *shost;
+ 	struct iser_conn *ib_conn;
+ 
+-	shost = iscsi_host_alloc(&amp;iscsi_iser_sht, 0, ISCSI_MAX_CMD_PER_LUN);
++	shost = iscsi_host_alloc(&amp;iscsi_iser_sht, 0, ISER_DEF_CMD_PER_LUN);
+ 	if (!shost)
+ 		return NULL;
+ 	shost-&gt;transportt = iscsi_iser_scsi_transport;
+@@ -596,7 +596,7 @@ static struct scsi_host_template iscsi_iser_sht = {
+ 	.change_queue_depth	= iscsi_change_queue_depth,
+ 	.sg_tablesize           = ISCSI_ISER_SG_TABLESIZE,
+ 	.max_sectors		= 1024,
+-	.cmd_per_lun            = ISCSI_MAX_CMD_PER_LUN,
++	.cmd_per_lun            = ISER_DEF_CMD_PER_LUN,
+ 	.eh_abort_handler       = iscsi_eh_abort,
+ 	.eh_device_reset_handler= iscsi_eh_device_reset,
+ 	.eh_target_reset_handler= iscsi_eh_target_reset,
+diff --git a/drivers/infiniband/ulp/iser/iscsi_iser.h b/drivers/infiniband/ulp/iser/iscsi_iser.h
+index 861119593f2b..9d529cae1f0d 100644
+--- a/drivers/infiniband/ulp/iser/iscsi_iser.h
++++ b/drivers/infiniband/ulp/iser/iscsi_iser.h
+@@ -93,7 +93,7 @@
+ 
+ 					/* support upto 512KB in one RDMA */
+ #define ISCSI_ISER_SG_TABLESIZE         (0x80000 &gt;&gt; SHIFT_4K)
+-#define ISCSI_ISER_MAX_LUN		256
++#define ISER_DEF_CMD_PER_LUN		128
+ 
+ /* QP settings */
+ /* Maximal bounds on received asynchronous PDUs */
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 701457cca08a..a5168a673503 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -1451,8 +1451,6 @@ EXPORT_SYMBOL_GPL(iscsi_queuecommand);
+ 
+ int iscsi_change_queue_depth(struct scsi_device *sdev, int depth)
+ {
+-	if (depth &gt; ISCSI_MAX_CMD_PER_LUN)
+-		depth = ISCSI_MAX_CMD_PER_LUN;
+ 	scsi_adjust_queue_depth(sdev, scsi_get_tag_type(sdev), depth);
+ 	return sdev-&gt;queue_depth;
+ }
+@@ -2062,13 +2060,8 @@ struct Scsi_Host *iscsi_host_alloc(struct scsi_host_template *sht,
+ 	if (!shost)
+ 		return NULL;
+ 
+-	if (qdepth &gt; ISCSI_MAX_CMD_PER_LUN || qdepth &lt; 1) {
+-		if (qdepth != 0)
+-			printk(KERN_ERR "iscsi: invalid queue depth of %d. "
+-			       "Queue depth must be between 1 and %d.\n",
+-			       qdepth, ISCSI_MAX_CMD_PER_LUN);
++	if (qdepth == 0)
+ 		qdepth = ISCSI_DEF_CMD_PER_LUN;
+-	}
+ 	shost-&gt;cmd_per_lun = qdepth;
+ 
+ 	ihost = shost_priv(shost);
+diff --git a/include/scsi/libiscsi.h b/include/scsi/libiscsi.h
+index 67542aa3aedc..898de4a73727 100644
+--- a/include/scsi/libiscsi.h
++++ b/include/scsi/libiscsi.h
+@@ -48,8 +48,7 @@ struct device;
+ #define ISCSI_DEF_XMIT_CMDS_MAX	128	/* must be power of 2 */
+ #define ISCSI_MGMT_CMDS_MAX	15
+ 
+-#define ISCSI_DEF_CMD_PER_LUN		32
+-#define ISCSI_MAX_CMD_PER_LUN		128
++#define ISCSI_DEF_CMD_PER_LUN	32
+ 
+ /* Task Mgmt states */
+ enum {</pre><hr><pre>commit c93f87c727ad4e6a5d94cfab219b1492ccc5ca5e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu Mar 5 14:46:00 2009 -0600
+
+    [SCSI] iscsi_tcp: replace scsi_debug/tcp_debug logging with iscsi conn logging
+    
+    This makes the logging a compile time option and replaces
+    the tcp_debug macro with a iscsi connection one that prints
+    out a driver model id prefix.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 5a08ca48fb3a..9c2e52792bdc 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -48,13 +48,6 @@ MODULE_AUTHOR("Mike Christie &lt;michaelc@cs.wisc.edu&gt;, "
+ 	      "Alex Aizman &lt;itn780@yahoo.com&gt;");
+ MODULE_DESCRIPTION("iSCSI/TCP data-path");
+ MODULE_LICENSE("GPL");
+-#undef DEBUG_TCP
+-
+-#ifdef DEBUG_TCP
+-#define debug_tcp(fmt...) printk(KERN_INFO "tcp: " fmt)
+-#else
+-#define debug_tcp(fmt...)
+-#endif
+ 
+ static struct scsi_transport_template *iscsi_sw_tcp_scsi_transport;
+ static struct scsi_host_template iscsi_sw_tcp_sht;
+@@ -63,6 +56,21 @@ static struct iscsi_transport iscsi_sw_tcp_transport;
+ static unsigned int iscsi_max_lun = 512;
+ module_param_named(max_lun, iscsi_max_lun, uint, S_IRUGO);
+ 
++static int iscsi_sw_tcp_dbg;
++module_param_named(debug_iscsi_tcp, iscsi_sw_tcp_dbg, int,
++		   S_IRUGO | S_IWUSR);
++MODULE_PARM_DESC(debug_iscsi_tcp, "Turn on debugging for iscsi_tcp module "
++		 "Set to 1 to turn on, and zero to turn off. Default is off.");
++
++#define ISCSI_SW_TCP_DBG(_conn, dbg_fmt, arg...)		\
++	do {							\
++		if (iscsi_sw_tcp_dbg)				\
++			iscsi_conn_printk(KERN_INFO, _conn,	\
++					     "%s " dbg_fmt,	\
++					     __func__, ##arg);	\
++	} while (0);
++
++
+ /**
+  * iscsi_sw_tcp_recv - TCP receive in sendfile fashion
+  * @rd_desc: read descriptor
+@@ -77,7 +85,7 @@ static int iscsi_sw_tcp_recv(read_descriptor_t *rd_desc, struct sk_buff *skb,
+ 	unsigned int consumed, total_consumed = 0;
+ 	int status;
+ 
+-	debug_tcp("in %d bytes\n", skb-&gt;len - offset);
++	ISCSI_SW_TCP_DBG(conn, "in %d bytes\n", skb-&gt;len - offset);
+ 
+ 	do {
+ 		status = 0;
+@@ -86,7 +94,8 @@ static int iscsi_sw_tcp_recv(read_descriptor_t *rd_desc, struct sk_buff *skb,
+ 		total_consumed += consumed;
+ 	} while (consumed != 0 &amp;&amp; status != ISCSI_TCP_SKB_DONE);
+ 
+-	debug_tcp("read %d bytes status %d\n", skb-&gt;len - offset, status);
++	ISCSI_SW_TCP_DBG(conn, "read %d bytes status %d\n",
++			 skb-&gt;len - offset, status);
+ 	return total_consumed;
+ }
+ 
+@@ -131,7 +140,8 @@ static void iscsi_sw_tcp_state_change(struct sock *sk)
+ 	if ((sk-&gt;sk_state == TCP_CLOSE_WAIT ||
+ 	     sk-&gt;sk_state == TCP_CLOSE) &amp;&amp;
+ 	    !atomic_read(&amp;sk-&gt;sk_rmem_alloc)) {
+-		debug_tcp("iscsi_tcp_state_change: TCP_CLOSE|TCP_CLOSE_WAIT\n");
++		ISCSI_SW_TCP_DBG(conn, "iscsi_tcp_state_change: "
++				 "TCP_CLOSE|TCP_CLOSE_WAIT\n");
+ 		iscsi_conn_failure(conn, ISCSI_ERR_CONN_FAILED);
+ 	}
+ 
+@@ -155,7 +165,7 @@ static void iscsi_sw_tcp_write_space(struct sock *sk)
+ 	struct iscsi_sw_tcp_conn *tcp_sw_conn = tcp_conn-&gt;dd_data;
+ 
+ 	tcp_sw_conn-&gt;old_write_space(sk);
+-	debug_tcp("iscsi_write_space: cid %d\n", conn-&gt;id);
++	ISCSI_SW_TCP_DBG(conn, "iscsi_write_space\n");
+ 	scsi_queue_work(conn-&gt;session-&gt;host, &amp;conn-&gt;xmitwork);
+ }
+ 
+@@ -283,7 +293,7 @@ static int iscsi_sw_tcp_xmit(struct iscsi_conn *conn)
+ 		}
+ 	}
+ 
+-	debug_tcp("xmit %d bytes\n", consumed);
++	ISCSI_SW_TCP_DBG(conn, "xmit %d bytes\n", consumed);
+ 
+ 	conn-&gt;txdata_octets += consumed;
+ 	return consumed;
+@@ -291,7 +301,7 @@ static int iscsi_sw_tcp_xmit(struct iscsi_conn *conn)
+ error:
+ 	/* Transmit error. We could initiate error recovery
+ 	 * here. */
+-	debug_tcp("Error sending PDU, errno=%d\n", rc);
++	ISCSI_SW_TCP_DBG(conn, "Error sending PDU, errno=%d\n", rc);
+ 	iscsi_conn_failure(conn, rc);
+ 	return -EIO;
+ }
+@@ -334,9 +344,10 @@ static int iscsi_sw_tcp_send_hdr_done(struct iscsi_tcp_conn *tcp_conn,
+ 	struct iscsi_sw_tcp_conn *tcp_sw_conn = tcp_conn-&gt;dd_data;
+ 
+ 	tcp_sw_conn-&gt;out.segment = tcp_sw_conn-&gt;out.data_segment;
+-	debug_tcp("Header done. Next segment size %u total_size %u\n",
+-		  tcp_sw_conn-&gt;out.segment.size,
+-		  tcp_sw_conn-&gt;out.segment.total_size);
++	ISCSI_SW_TCP_DBG(tcp_conn-&gt;iscsi_conn,
++			 "Header done. Next segment size %u total_size %u\n",
++			 tcp_sw_conn-&gt;out.segment.size,
++			 tcp_sw_conn-&gt;out.segment.total_size);
+ 	return 0;
+ }
+ 
+@@ -346,8 +357,8 @@ static void iscsi_sw_tcp_send_hdr_prep(struct iscsi_conn *conn, void *hdr,
+ 	struct iscsi_tcp_conn *tcp_conn = conn-&gt;dd_data;
+ 	struct iscsi_sw_tcp_conn *tcp_sw_conn = tcp_conn-&gt;dd_data;
+ 
+-	debug_tcp("%s(%p%s)\n", __func__, tcp_conn,
+-			conn-&gt;hdrdgst_en? ", digest enabled" : "");
++	ISCSI_SW_TCP_DBG(conn, "%s\n", conn-&gt;hdrdgst_en ?
++			 "digest enabled" : "digest disabled");
+ 
+ 	/* Clear the data segment - needs to be filled in by the
+ 	 * caller using iscsi_tcp_send_data_prep() */
+@@ -389,9 +400,9 @@ iscsi_sw_tcp_send_data_prep(struct iscsi_conn *conn, struct scatterlist *sg,
+ 	struct hash_desc *tx_hash = NULL;
+ 	unsigned int hdr_spec_len;
+ 
+-	debug_tcp("%s(%p, offset=%d, datalen=%d%s)\n", __func__,
+-			tcp_conn, offset, len,
+-			conn-&gt;datadgst_en? ", digest enabled" : "");
++	ISCSI_SW_TCP_DBG(conn, "offset=%d, datalen=%d %s\n", offset, len,
++			 conn-&gt;datadgst_en ?
++			 "digest enabled" : "digest disabled");
+ 
+ 	/* Make sure the datalen matches what the caller
+ 	   said he would send. */
+@@ -415,8 +426,8 @@ iscsi_sw_tcp_send_linear_data_prep(struct iscsi_conn *conn, void *data,
+ 	struct hash_desc *tx_hash = NULL;
+ 	unsigned int hdr_spec_len;
+ 
+-	debug_tcp("%s(%p, datalen=%d%s)\n", __func__, tcp_conn, len,
+-		  conn-&gt;datadgst_en? ", digest enabled" : "");
++	ISCSI_SW_TCP_DBG(conn, "datalen=%zd %s\n", len, conn-&gt;datadgst_en ?
++			 "digest enabled" : "digest disabled");
+ 
+ 	/* Make sure the datalen matches what the caller
+ 	   said he would send. */</pre><hr><pre>commit 0ab1c2529e6a70e1b3c63fe9c6b41d4049758a8e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu Mar 5 14:45:59 2009 -0600
+
+    [SCSI] libiscsi_tcp: replace tcp_debug/scsi_debug logging with session/conn logging
+    
+    This makes the logging a compile time option and replaces
+    the scsi_debug and tcp_debug macro with session and connection ones
+    that print out a driver model id prefix.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/libiscsi_tcp.c b/drivers/scsi/libiscsi_tcp.c
+index e7705d3532c9..91f8ce4d8d08 100644
+--- a/drivers/scsi/libiscsi_tcp.c
++++ b/drivers/scsi/libiscsi_tcp.c
+@@ -49,13 +49,21 @@ MODULE_AUTHOR("Mike Christie &lt;michaelc@cs.wisc.edu&gt;, "
+ 	      "Alex Aizman &lt;itn780@yahoo.com&gt;");
+ MODULE_DESCRIPTION("iSCSI/TCP data-path");
+ MODULE_LICENSE("GPL");
+-#undef DEBUG_TCP
+ 
+-#ifdef DEBUG_TCP
+-#define debug_tcp(fmt...) printk(KERN_INFO "tcp: " fmt)
+-#else
+-#define debug_tcp(fmt...)
+-#endif
++static int iscsi_dbg_libtcp;
++module_param_named(debug_libiscsi_tcp, iscsi_dbg_libtcp, int,
++		   S_IRUGO | S_IWUSR);
++MODULE_PARM_DESC(debug_libiscsi_tcp, "Turn on debugging for libiscsi_tcp "
++		 "module. Set to 1 to turn on, and zero to turn off. Default "
++		 "is off.");
++
++#define ISCSI_DBG_TCP(_conn, dbg_fmt, arg...)			\
++	do {							\
++		if (iscsi_dbg_libtcp)				\
++			iscsi_conn_printk(KERN_INFO, _conn,	\
++					     "%s " dbg_fmt,	\
++					     __func__, ##arg);	\
++	} while (0);
+ 
+ static int iscsi_tcp_hdr_recv_done(struct iscsi_tcp_conn *tcp_conn,
+ 				   struct iscsi_segment *segment);
+@@ -123,18 +131,13 @@ static void iscsi_tcp_segment_map(struct iscsi_segment *segment, int recv)
+ 	if (page_count(sg_page(sg)) &gt;= 1 &amp;&amp; !recv)
+ 		return;
+ 
+-	debug_tcp("iscsi_tcp_segment_map %s %p\n", recv ? "recv" : "xmit",
+-		  segment);
+ 	segment-&gt;sg_mapped = kmap_atomic(sg_page(sg), KM_SOFTIRQ0);
+ 	segment-&gt;data = segment-&gt;sg_mapped + sg-&gt;offset + segment-&gt;sg_offset;
+ }
+ 
+ void iscsi_tcp_segment_unmap(struct iscsi_segment *segment)
+ {
+-	debug_tcp("iscsi_tcp_segment_unmap %p\n", segment);
+-
+ 	if (segment-&gt;sg_mapped) {
+-		debug_tcp("iscsi_tcp_segment_unmap valid\n");
+ 		kunmap_atomic(segment-&gt;sg_mapped, KM_SOFTIRQ0);
+ 		segment-&gt;sg_mapped = NULL;
+ 		segment-&gt;data = NULL;
+@@ -180,8 +183,9 @@ int iscsi_tcp_segment_done(struct iscsi_tcp_conn *tcp_conn,
+ 	struct scatterlist sg;
+ 	unsigned int pad;
+ 
+-	debug_tcp("copied %u %u size %u %s\n", segment-&gt;copied, copied,
+-		  segment-&gt;size, recv ? "recv" : "xmit");
++	ISCSI_DBG_TCP(tcp_conn-&gt;iscsi_conn, "copied %u %u size %u %s\n",
++		      segment-&gt;copied, copied, segment-&gt;size,
++		      recv ? "recv" : "xmit");
+ 	if (segment-&gt;hash &amp;&amp; copied) {
+ 		/*
+ 		 * If a segment is kmapd we must unmap it before sending
+@@ -214,8 +218,8 @@ int iscsi_tcp_segment_done(struct iscsi_tcp_conn *tcp_conn,
+ 	iscsi_tcp_segment_unmap(segment);
+ 
+ 	/* Do we have more scatterlist entries? */
+-	debug_tcp("total copied %u total size %u\n", segment-&gt;total_copied,
+-		   segment-&gt;total_size);
++	ISCSI_DBG_TCP(tcp_conn-&gt;iscsi_conn, "total copied %u total size %u\n",
++		      segment-&gt;total_copied, segment-&gt;total_size);
+ 	if (segment-&gt;total_copied &lt; segment-&gt;total_size) {
+ 		/* Proceed to the next entry in the scatterlist. */
+ 		iscsi_tcp_segment_init_sg(segment, sg_next(segment-&gt;sg),
+@@ -229,7 +233,8 @@ int iscsi_tcp_segment_done(struct iscsi_tcp_conn *tcp_conn,
+ 	if (!(tcp_conn-&gt;iscsi_conn-&gt;session-&gt;tt-&gt;caps &amp; CAP_PADDING_OFFLOAD)) {
+ 		pad = iscsi_padding(segment-&gt;total_copied);
+ 		if (pad != 0) {
+-			debug_tcp("consume %d pad bytes\n", pad);
++			ISCSI_DBG_TCP(tcp_conn-&gt;iscsi_conn,
++				      "consume %d pad bytes\n", pad);
+ 			segment-&gt;total_size += pad;
+ 			segment-&gt;size = pad;
+ 			segment-&gt;data = segment-&gt;padbuf;
+@@ -278,13 +283,13 @@ iscsi_tcp_segment_recv(struct iscsi_tcp_conn *tcp_conn,
+ 
+ 	while (!iscsi_tcp_segment_done(tcp_conn, segment, 1, copy)) {
+ 		if (copied == len) {
+-			debug_tcp("iscsi_tcp_segment_recv copied %d bytes\n",
+-				  len);
++			ISCSI_DBG_TCP(tcp_conn-&gt;iscsi_conn,
++				      "copied %d bytes\n", len);
+ 			break;
+ 		}
+ 
+ 		copy = min(len - copied, segment-&gt;size - segment-&gt;copied);
+-		debug_tcp("iscsi_tcp_segment_recv copying %d\n", copy);
++		ISCSI_DBG_TCP(tcp_conn-&gt;iscsi_conn, "copying %d\n", copy);
+ 		memcpy(segment-&gt;data + segment-&gt;copied, ptr + copied, copy);
+ 		copied += copy;
+ 	}
+@@ -311,7 +316,7 @@ iscsi_tcp_dgst_verify(struct iscsi_tcp_conn *tcp_conn,
+ 
+ 	if (memcmp(segment-&gt;recv_digest, segment-&gt;digest,
+ 		   segment-&gt;digest_len)) {
+-		debug_scsi("digest mismatch\n");
++		ISCSI_DBG_TCP(tcp_conn-&gt;iscsi_conn, "digest mismatch\n");
+ 		return 0;
+ 	}
+ 
+@@ -355,12 +360,8 @@ iscsi_segment_seek_sg(struct iscsi_segment *segment,
+ 	struct scatterlist *sg;
+ 	unsigned int i;
+ 
+-	debug_scsi("iscsi_segment_seek_sg offset %u size %llu\n",
+-		  offset, size);
+ 	__iscsi_segment_init(segment, size, done, hash);
+ 	for_each_sg(sg_list, sg, sg_count, i) {
+-		debug_scsi("sg %d, len %u offset %u\n", i, sg-&gt;length,
+-			   sg-&gt;offset);
+ 		if (offset &lt; sg-&gt;length) {
+ 			iscsi_tcp_segment_init_sg(segment, sg, offset);
+ 			return 0;
+@@ -382,8 +383,9 @@ EXPORT_SYMBOL_GPL(iscsi_segment_seek_sg);
+  */
+ void iscsi_tcp_hdr_recv_prep(struct iscsi_tcp_conn *tcp_conn)
+ {
+-	debug_tcp("iscsi_tcp_hdr_recv_prep(%p%s)\n", tcp_conn,
+-		  tcp_conn-&gt;iscsi_conn-&gt;hdrdgst_en ? ", digest enabled" : "");
++	ISCSI_DBG_TCP(tcp_conn-&gt;iscsi_conn,
++		      "(%s)\n", tcp_conn-&gt;iscsi_conn-&gt;hdrdgst_en ?
++		      "digest enabled" : "digest disabled");
+ 	iscsi_segment_init_linear(&amp;tcp_conn-&gt;in.segment,
+ 				tcp_conn-&gt;in.hdr_buf, sizeof(struct iscsi_hdr),
+ 				iscsi_tcp_hdr_recv_done, NULL);
+@@ -446,7 +448,7 @@ void iscsi_tcp_cleanup_task(struct iscsi_task *task)
+ 	while (__kfifo_get(tcp_task-&gt;r2tqueue, (void*)&amp;r2t, sizeof(void*))) {
+ 		__kfifo_put(tcp_task-&gt;r2tpool.queue, (void*)&amp;r2t,
+ 			    sizeof(void*));
+-		debug_scsi("iscsi_tcp_cleanup_task pending r2t dropped\n");
++		ISCSI_DBG_TCP(task-&gt;conn, "pending r2t dropped\n");
+ 	}
+ 
+ 	r2t = tcp_task-&gt;r2t;
+@@ -476,8 +478,8 @@ static int iscsi_tcp_data_in(struct iscsi_conn *conn, struct iscsi_task *task)
+ 		return 0;
+ 
+ 	if (tcp_task-&gt;exp_datasn != datasn) {
+-		debug_tcp("%s: task-&gt;exp_datasn(%d) != rhdr-&gt;datasn(%d)\n",
+-		          __func__, tcp_task-&gt;exp_datasn, datasn);
++		ISCSI_DBG_TCP(conn, "task-&gt;exp_datasn(%d) != rhdr-&gt;datasn(%d)"
++			      "\n", tcp_task-&gt;exp_datasn, datasn);
+ 		return ISCSI_ERR_DATASN;
+ 	}
+ 
+@@ -485,9 +487,9 @@ static int iscsi_tcp_data_in(struct iscsi_conn *conn, struct iscsi_task *task)
+ 
+ 	tcp_task-&gt;data_offset = be32_to_cpu(rhdr-&gt;offset);
+ 	if (tcp_task-&gt;data_offset + tcp_conn-&gt;in.datalen &gt; total_in_length) {
+-		debug_tcp("%s: data_offset(%d) + data_len(%d) &gt; total_length_in(%d)\n",
+-		          __func__, tcp_task-&gt;data_offset,
+-		          tcp_conn-&gt;in.datalen, total_in_length);
++		ISCSI_DBG_TCP(conn, "data_offset(%d) + data_len(%d) &gt; "
++			      "total_length_in(%d)\n", tcp_task-&gt;data_offset,
++			      tcp_conn-&gt;in.datalen, total_in_length);
+ 		return ISCSI_ERR_DATA_OFFSET;
+ 	}
+ 
+@@ -518,8 +520,8 @@ static int iscsi_tcp_r2t_rsp(struct iscsi_conn *conn, struct iscsi_task *task)
+ 	}
+ 
+ 	if (tcp_task-&gt;exp_datasn != r2tsn){
+-		debug_tcp("%s: task-&gt;exp_datasn(%d) != rhdr-&gt;r2tsn(%d)\n",
+-		          __func__, tcp_task-&gt;exp_datasn, r2tsn);
++		ISCSI_DBG_TCP(conn, "task-&gt;exp_datasn(%d) != rhdr-&gt;r2tsn(%d)\n",
++			      tcp_task-&gt;exp_datasn, r2tsn);
+ 		return ISCSI_ERR_R2TSN;
+ 	}
+ 
+@@ -552,9 +554,9 @@ static int iscsi_tcp_r2t_rsp(struct iscsi_conn *conn, struct iscsi_task *task)
+ 	}
+ 
+ 	if (r2t-&gt;data_length &gt; session-&gt;max_burst)
+-		debug_scsi("invalid R2T with data len %u and max burst %u."
+-			   "Attempting to execute request.\n",
+-			    r2t-&gt;data_length, session-&gt;max_burst);
++		ISCSI_DBG_TCP(conn, "invalid R2T with data len %u and max "
++			      "burst %u. Attempting to execute request.\n",
++			      r2t-&gt;data_length, session-&gt;max_burst);
+ 
+ 	r2t-&gt;data_offset = be32_to_cpu(rhdr-&gt;data_offset);
+ 	if (r2t-&gt;data_offset + r2t-&gt;data_length &gt; scsi_out(task-&gt;sc)-&gt;length) {
+@@ -641,8 +643,8 @@ iscsi_tcp_hdr_dissect(struct iscsi_conn *conn, struct iscsi_hdr *hdr)
+ 	if (rc)
+ 		return rc;
+ 
+-	debug_tcp("opcode 0x%x ahslen %d datalen %d\n",
+-		  opcode, ahslen, tcp_conn-&gt;in.datalen);
++	ISCSI_DBG_TCP(conn, "opcode 0x%x ahslen %d datalen %d\n",
++		      opcode, ahslen, tcp_conn-&gt;in.datalen);
+ 
+ 	switch(opcode) {
+ 	case ISCSI_OP_SCSI_DATA_IN:
+@@ -674,10 +676,10 @@ iscsi_tcp_hdr_dissect(struct iscsi_conn *conn, struct iscsi_hdr *hdr)
+ 			    !(conn-&gt;session-&gt;tt-&gt;caps &amp; CAP_DIGEST_OFFLOAD))
+ 				rx_hash = tcp_conn-&gt;rx_hash;
+ 
+-			debug_tcp("iscsi_tcp_begin_data_in(%p, offset=%d, "
+-				  "datalen=%d)\n", tcp_conn,
+-				  tcp_task-&gt;data_offset,
+-				  tcp_conn-&gt;in.datalen);
++			ISCSI_DBG_TCP(conn, "iscsi_tcp_begin_data_in( "
++				     "offset=%d, datalen=%d)\n",
++				      tcp_task-&gt;data_offset,
++				      tcp_conn-&gt;in.datalen);
+ 			rc = iscsi_segment_seek_sg(&amp;tcp_conn-&gt;in.segment,
+ 						   sdb-&gt;table.sgl,
+ 						   sdb-&gt;table.nents,
+@@ -854,10 +856,10 @@ int iscsi_tcp_recv_skb(struct iscsi_conn *conn, struct sk_buff *skb,
+ 	unsigned int consumed = 0;
+ 	int rc = 0;
+ 
+-	debug_tcp("in %d bytes\n", skb-&gt;len - offset);
++	ISCSI_DBG_TCP(conn, "in %d bytes\n", skb-&gt;len - offset);
+ 
+ 	if (unlikely(conn-&gt;suspend_rx)) {
+-		debug_tcp("conn %d Rx suspended!\n", conn-&gt;id);
++		ISCSI_DBG_TCP(conn, "Rx suspended!\n");
+ 		*status = ISCSI_TCP_SUSPENDED;
+ 		return 0;
+ 	}
+@@ -874,15 +876,16 @@ int iscsi_tcp_recv_skb(struct iscsi_conn *conn, struct sk_buff *skb,
+ 
+ 		avail = skb_seq_read(consumed, &amp;ptr, &amp;seq);
+ 		if (avail == 0) {
+-			debug_tcp("no more data avail. Consumed %d\n",
+-				  consumed);
++			ISCSI_DBG_TCP(conn, "no more data avail. Consumed %d\n",
++				      consumed);
+ 			*status = ISCSI_TCP_SKB_DONE;
+ 			skb_abort_seq_read(&amp;seq);
+ 			goto skb_done;
+ 		}
+ 		BUG_ON(segment-&gt;copied &gt;= segment-&gt;size);
+ 
+-		debug_tcp("skb %p ptr=%p avail=%u\n", skb, ptr, avail);
++		ISCSI_DBG_TCP(conn, "skb %p ptr=%p avail=%u\n", skb, ptr,
++			      avail);
+ 		rc = iscsi_tcp_segment_recv(tcp_conn, segment, ptr, avail);
+ 		BUG_ON(rc == 0);
+ 		consumed += rc;
+@@ -895,11 +898,11 @@ int iscsi_tcp_recv_skb(struct iscsi_conn *conn, struct sk_buff *skb,
+ 
+ segment_done:
+ 	*status = ISCSI_TCP_SEGMENT_DONE;
+-	debug_tcp("segment done\n");
++	ISCSI_DBG_TCP(conn, "segment done\n");
+ 	rc = segment-&gt;done(tcp_conn, segment);
+ 	if (rc != 0) {
+ 		*status = ISCSI_TCP_CONN_ERR;
+-		debug_tcp("Error receiving PDU, errno=%d\n", rc);
++		ISCSI_DBG_TCP(conn, "Error receiving PDU, errno=%d\n", rc);
+ 		iscsi_conn_failure(conn, rc);
+ 		return 0;
+ 	}
+@@ -929,8 +932,7 @@ int iscsi_tcp_task_init(struct iscsi_task *task)
+ 		 * mgmt tasks do not have a scatterlist since they come
+ 		 * in from the iscsi interface.
+ 		 */
+-		debug_scsi("mtask deq [cid %d itt 0x%x]\n", conn-&gt;id,
+-			   task-&gt;itt);
++		ISCSI_DBG_TCP(conn, "mtask deq [itt 0x%x]\n", task-&gt;itt);
+ 
+ 		return conn-&gt;session-&gt;tt-&gt;init_pdu(task, 0, task-&gt;data_count);
+ 	}
+@@ -939,9 +941,8 @@ int iscsi_tcp_task_init(struct iscsi_task *task)
+ 	tcp_task-&gt;exp_datasn = 0;
+ 
+ 	/* Prepare PDU, optionally w/ immediate data */
+-	debug_scsi("task deq [cid %d itt 0x%x imm %d unsol %d]\n",
+-		    conn-&gt;id, task-&gt;itt, task-&gt;imm_count,
+-		    task-&gt;unsol_r2t.data_length);
++	ISCSI_DBG_TCP(conn, "task deq [itt 0x%x imm %d unsol %d]\n",
++		      task-&gt;itt, task-&gt;imm_count, task-&gt;unsol_r2t.data_length);
+ 
+ 	err = conn-&gt;session-&gt;tt-&gt;init_pdu(task, 0, task-&gt;imm_count);
+ 	if (err)
+@@ -965,7 +966,8 @@ static struct iscsi_r2t_info *iscsi_tcp_get_curr_r2t(struct iscsi_task *task)
+ 			r2t = tcp_task-&gt;r2t;
+ 			/* Continue with this R2T? */
+ 			if (r2t-&gt;data_length &lt;= r2t-&gt;sent) {
+-				debug_scsi("  done with r2t %p\n", r2t);
++				ISCSI_DBG_TCP(task-&gt;conn,
++					      "  done with r2t %p\n", r2t);
+ 				__kfifo_put(tcp_task-&gt;r2tpool.queue,
+ 					    (void *)&amp;tcp_task-&gt;r2t,
+ 					    sizeof(void *));
+@@ -1019,7 +1021,7 @@ int iscsi_tcp_task_xmit(struct iscsi_task *task)
+ 	r2t = iscsi_tcp_get_curr_r2t(task);
+ 	if (r2t == NULL) {
+ 		/* Waiting for more R2Ts to arrive. */
+-		debug_tcp("no R2Ts yet\n");
++		ISCSI_DBG_TCP(conn, "no R2Ts yet\n");
+ 		return 0;
+ 	}
+ 
+@@ -1028,9 +1030,9 @@ int iscsi_tcp_task_xmit(struct iscsi_task *task)
+ 		return rc;
+ 	iscsi_prep_data_out_pdu(task, r2t, (struct iscsi_data *) task-&gt;hdr);
+ 
+-	debug_scsi("sol dout %p [dsn %d itt 0x%x doff %d dlen %d]\n",
+-		   r2t, r2t-&gt;datasn - 1, task-&gt;hdr-&gt;itt,
+-		   r2t-&gt;data_offset + r2t-&gt;sent, r2t-&gt;data_count);
++	ISCSI_DBG_TCP(conn, "sol dout %p [dsn %d itt 0x%x doff %d dlen %d]\n",
++		      r2t, r2t-&gt;datasn - 1, task-&gt;hdr-&gt;itt,
++		      r2t-&gt;data_offset + r2t-&gt;sent, r2t-&gt;data_count);
+ 
+ 	rc = conn-&gt;session-&gt;tt-&gt;init_pdu(task, r2t-&gt;data_offset + r2t-&gt;sent,
+ 					 r2t-&gt;data_count);</pre><hr><pre>commit 1b2c7af877f427a2b25583c9033616c9ebd30aed
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu Mar 5 14:45:58 2009 -0600
+
+    [SCSI] libiscsi: replace scsi_debug logging with session/conn logging
+    
+    This makes the logging a compile time option and replaces
+    the scsi_debug macro with session and connection ones
+    that print out a driver model id prefix.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index c33e28fd49bc..701457cca08a 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -38,6 +38,28 @@
+ #include &lt;scsi/scsi_transport_iscsi.h&gt;
+ #include &lt;scsi/libiscsi.h&gt;
+ 
++static int iscsi_dbg_lib;
++module_param_named(debug_libiscsi, iscsi_dbg_lib, int, S_IRUGO | S_IWUSR);
++MODULE_PARM_DESC(debug_libiscsi, "Turn on debugging for libiscsi module. "
++		 "Set to 1 to turn on, and zero to turn off. Default "
++		 "is off.");
++
++#define ISCSI_DBG_CONN(_conn, dbg_fmt, arg...)			\
++	do {							\
++		if (iscsi_dbg_lib)				\
++			iscsi_conn_printk(KERN_INFO, _conn,	\
++					     "%s " dbg_fmt,	\
++					     __func__, ##arg);	\
++	} while (0);
++
++#define ISCSI_DBG_SESSION(_session, dbg_fmt, arg...)			\
++	do {								\
++		if (iscsi_dbg_lib)					\
++			iscsi_session_printk(KERN_INFO, _session,	\
++					     "%s " dbg_fmt,		\
++					     __func__, ##arg);		\
++	} while (0);
++
+ /* Serial Number Arithmetic, 32 bits, less than, RFC1982 */
+ #define SNA32_CHECK 2147483648UL
+ 
+@@ -176,10 +198,11 @@ static int iscsi_prep_ecdb_ahs(struct iscsi_task *task)
+ 	ecdb_ahdr-&gt;reserved = 0;
+ 	memcpy(ecdb_ahdr-&gt;ecdb, cmd-&gt;cmnd + ISCSI_CDB_SIZE, rlen);
+ 
+-	debug_scsi("iscsi_prep_ecdb_ahs: varlen_cdb_len %d "
+-		   "rlen %d pad_len %d ahs_length %d iscsi_headers_size %u\n",
+-		   cmd-&gt;cmd_len, rlen, pad_len, ahslength, task-&gt;hdr_len);
+-
++	ISCSI_DBG_SESSION(task-&gt;conn-&gt;session,
++			  "iscsi_prep_ecdb_ahs: varlen_cdb_len %d "
++		          "rlen %d pad_len %d ahs_length %d iscsi_headers_size "
++		          "%u\n", cmd-&gt;cmd_len, rlen, pad_len, ahslength,
++		          task-&gt;hdr_len);
+ 	return 0;
+ }
+ 
+@@ -201,10 +224,11 @@ static int iscsi_prep_bidi_ahs(struct iscsi_task *task)
+ 	rlen_ahdr-&gt;reserved = 0;
+ 	rlen_ahdr-&gt;read_length = cpu_to_be32(scsi_in(sc)-&gt;length);
+ 
+-	debug_scsi("bidi-in rlen_ahdr-&gt;read_length(%d) "
+-		   "rlen_ahdr-&gt;ahslength(%d)\n",
+-		   be32_to_cpu(rlen_ahdr-&gt;read_length),
+-		   be16_to_cpu(rlen_ahdr-&gt;ahslength));
++	ISCSI_DBG_SESSION(task-&gt;conn-&gt;session,
++			  "bidi-in rlen_ahdr-&gt;read_length(%d) "
++		          "rlen_ahdr-&gt;ahslength(%d)\n",
++		          be32_to_cpu(rlen_ahdr-&gt;read_length),
++		          be16_to_cpu(rlen_ahdr-&gt;ahslength));
+ 	return 0;
+ }
+ 
+@@ -335,13 +359,15 @@ static int iscsi_prep_scsi_cmd_pdu(struct iscsi_task *task)
+ 	list_move_tail(&amp;task-&gt;running, &amp;conn-&gt;run_list);
+ 
+ 	conn-&gt;scsicmd_pdus_cnt++;
+-	debug_scsi("iscsi prep [%s cid %d sc %p cdb 0x%x itt 0x%x len %d "
+-		   "bidi_len %d cmdsn %d win %d]\n", scsi_bidi_cmnd(sc) ?
+-		   "bidirectional" : sc-&gt;sc_data_direction == DMA_TO_DEVICE ?
+-		   "write" : "read", conn-&gt;id, sc, sc-&gt;cmnd[0], task-&gt;itt,
+-		   scsi_bufflen(sc),
+-		   scsi_bidi_cmnd(sc) ? scsi_in(sc)-&gt;length : 0,
+-		   session-&gt;cmdsn, session-&gt;max_cmdsn - session-&gt;exp_cmdsn + 1);
++	ISCSI_DBG_SESSION(session, "iscsi prep [%s cid %d sc %p cdb 0x%x "
++			  "itt 0x%x len %d bidi_len %d cmdsn %d win %d]\n",
++			  scsi_bidi_cmnd(sc) ? "bidirectional" :
++			  sc-&gt;sc_data_direction == DMA_TO_DEVICE ?
++			  "write" : "read", conn-&gt;id, sc, sc-&gt;cmnd[0],
++			  task-&gt;itt, scsi_bufflen(sc),
++			  scsi_bidi_cmnd(sc) ? scsi_in(sc)-&gt;length : 0,
++			  session-&gt;cmdsn,
++			  session-&gt;max_cmdsn - session-&gt;exp_cmdsn + 1);
+ 	return 0;
+ }
+ 
+@@ -483,9 +509,9 @@ static int iscsi_prep_mgmt_task(struct iscsi_conn *conn,
+ 
+ 	task-&gt;state = ISCSI_TASK_RUNNING;
+ 	list_move_tail(&amp;task-&gt;running, &amp;conn-&gt;mgmt_run_list);
+-	debug_scsi("mgmtpdu [op 0x%x hdr-&gt;itt 0x%x datalen %d]\n",
+-		   hdr-&gt;opcode &amp; ISCSI_OPCODE_MASK, hdr-&gt;itt,
+-		   task-&gt;data_count);
++	ISCSI_DBG_SESSION(session, "mgmtpdu [op 0x%x hdr-&gt;itt 0x%x "
++			  "datalen %d]\n", hdr-&gt;opcode &amp; ISCSI_OPCODE_MASK,
++			  hdr-&gt;itt, task-&gt;data_count);
+ 	return 0;
+ }
+ 
+@@ -637,8 +663,9 @@ static void iscsi_scsi_cmd_rsp(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 
+ 		memcpy(sc-&gt;sense_buffer, data + 2,
+ 		       min_t(uint16_t, senselen, SCSI_SENSE_BUFFERSIZE));
+-		debug_scsi("copied %d bytes of sense\n",
+-			   min_t(uint16_t, senselen, SCSI_SENSE_BUFFERSIZE));
++		ISCSI_DBG_SESSION(session, "copied %d bytes of sense\n",
++				  min_t(uint16_t, senselen,
++				  SCSI_SENSE_BUFFERSIZE));
+ 	}
+ 
+ 	if (rhdr-&gt;flags &amp; (ISCSI_FLAG_CMD_BIDI_UNDERFLOW |
+@@ -666,8 +693,8 @@ static void iscsi_scsi_cmd_rsp(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 			sc-&gt;result = (DID_BAD_TARGET &lt;&lt; 16) | rhdr-&gt;cmd_status;
+ 	}
+ out:
+-	debug_scsi("done [sc %lx res %d itt 0x%x]\n",
+-		   (long)sc, sc-&gt;result, task-&gt;itt);
++	ISCSI_DBG_SESSION(session, "done [sc %p res %d itt 0x%x]\n",
++			  sc, sc-&gt;result, task-&gt;itt);
+ 	conn-&gt;scsirsp_pdus_cnt++;
+ 
+ 	__iscsi_put_task(task);
+@@ -835,8 +862,8 @@ int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 	else
+ 		itt = ~0U;
+ 
+-	debug_scsi("[op 0x%x cid %d itt 0x%x len %d]\n",
+-		   opcode, conn-&gt;id, itt, datalen);
++	ISCSI_DBG_SESSION(session, "[op 0x%x cid %d itt 0x%x len %d]\n",
++			  opcode, conn-&gt;id, itt, datalen);
+ 
+ 	if (itt == ~0U) {
+ 		iscsi_update_cmdsn(session, (struct iscsi_nopin*)hdr);
+@@ -1095,10 +1122,10 @@ static int iscsi_check_cmdsn_window_closed(struct iscsi_conn *conn)
+ 	 * Check for iSCSI window and take care of CmdSN wrap-around
+ 	 */
+ 	if (!iscsi_sna_lte(session-&gt;queued_cmdsn, session-&gt;max_cmdsn)) {
+-		debug_scsi("iSCSI CmdSN closed. ExpCmdSn %u MaxCmdSN %u "
+-			   "CmdSN %u/%u\n", session-&gt;exp_cmdsn,
+-			   session-&gt;max_cmdsn, session-&gt;cmdsn,
+-			   session-&gt;queued_cmdsn);
++		ISCSI_DBG_SESSION(session, "iSCSI CmdSN closed. ExpCmdSn "
++				  "%u MaxCmdSN %u CmdSN %u/%u\n",
++				  session-&gt;exp_cmdsn, session-&gt;max_cmdsn,
++				  session-&gt;cmdsn, session-&gt;queued_cmdsn);
+ 		return -ENOSPC;
+ 	}
+ 	return 0;
+@@ -1152,7 +1179,7 @@ static int iscsi_data_xmit(struct iscsi_conn *conn)
+ 
+ 	spin_lock_bh(&amp;conn-&gt;session-&gt;lock);
+ 	if (unlikely(conn-&gt;suspend_tx)) {
+-		debug_scsi("conn %d Tx suspended!\n", conn-&gt;id);
++		ISCSI_DBG_SESSION(conn-&gt;session, "Tx suspended!\n");
+ 		spin_unlock_bh(&amp;conn-&gt;session-&gt;lock);
+ 		return -ENODATA;
+ 	}
+@@ -1398,7 +1425,8 @@ int iscsi_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 	iscsi_complete_command(task);
+ reject:
+ 	spin_unlock(&amp;session-&gt;lock);
+-	debug_scsi("cmd 0x%x rejected (%d)\n", sc-&gt;cmnd[0], reason);
++	ISCSI_DBG_SESSION(session, "cmd 0x%x rejected (%d)\n",
++			  sc-&gt;cmnd[0], reason);
+ 	spin_lock(host-&gt;host_lock);
+ 	return SCSI_MLQUEUE_TARGET_BUSY;
+ 
+@@ -1407,7 +1435,8 @@ int iscsi_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 	iscsi_complete_command(task);
+ fault:
+ 	spin_unlock(&amp;session-&gt;lock);
+-	debug_scsi("iscsi: cmd 0x%x is not queued (%d)\n", sc-&gt;cmnd[0], reason);
++	ISCSI_DBG_SESSION(session, "iscsi: cmd 0x%x is not queued (%d)\n",
++			  sc-&gt;cmnd[0], reason);
+ 	if (!scsi_bidi_cmnd(sc))
+ 		scsi_set_resid(sc, scsi_bufflen(sc));
+ 	else {
+@@ -1457,8 +1486,10 @@ int iscsi_eh_target_reset(struct scsi_cmnd *sc)
+ 	spin_lock_bh(&amp;session-&gt;lock);
+ 	if (session-&gt;state == ISCSI_STATE_TERMINATE) {
+ failed:
+-		debug_scsi("failing target reset: session terminated "
+-			   "[CID %d age %d]\n", conn-&gt;id, session-&gt;age);
++		iscsi_session_printk(KERN_INFO, session,
++				     "failing target reset: Could not log "
++				     "back into target [age %d]\n",
++				     session-&gt;age);
+ 		spin_unlock_bh(&amp;session-&gt;lock);
+ 		mutex_unlock(&amp;session-&gt;eh_mutex);
+ 		return FAILED;
+@@ -1472,7 +1503,7 @@ int iscsi_eh_target_reset(struct scsi_cmnd *sc)
+ 	 */
+ 	iscsi_conn_failure(conn, ISCSI_ERR_CONN_FAILED);
+ 
+-	debug_scsi("iscsi_eh_target_reset wait for relogin\n");
++	ISCSI_DBG_SESSION(session, "wait for relogin\n");
+ 	wait_event_interruptible(conn-&gt;ehwait,
+ 				 session-&gt;state == ISCSI_STATE_TERMINATE ||
+ 				 session-&gt;state == ISCSI_STATE_LOGGED_IN ||
+@@ -1501,7 +1532,7 @@ static void iscsi_tmf_timedout(unsigned long data)
+ 	spin_lock(&amp;session-&gt;lock);
+ 	if (conn-&gt;tmf_state == TMF_QUEUED) {
+ 		conn-&gt;tmf_state = TMF_TIMEDOUT;
+-		debug_scsi("tmf timedout\n");
++		ISCSI_DBG_SESSION(session, "tmf timedout\n");
+ 		/* unblock eh_abort() */
+ 		wake_up(&amp;conn-&gt;ehwait);
+ 	}
+@@ -1521,7 +1552,7 @@ static int iscsi_exec_task_mgmt_fn(struct iscsi_conn *conn,
+ 		spin_unlock_bh(&amp;session-&gt;lock);
+ 		iscsi_conn_failure(conn, ISCSI_ERR_CONN_FAILED);
+ 		spin_lock_bh(&amp;session-&gt;lock);
+-		debug_scsi("tmf exec failure\n");
++		ISCSI_DBG_SESSION(session, "tmf exec failure\n");
+ 		return -EPERM;
+ 	}
+ 	conn-&gt;tmfcmd_pdus_cnt++;
+@@ -1529,7 +1560,7 @@ static int iscsi_exec_task_mgmt_fn(struct iscsi_conn *conn,
+ 	conn-&gt;tmf_timer.function = iscsi_tmf_timedout;
+ 	conn-&gt;tmf_timer.data = (unsigned long)conn;
+ 	add_timer(&amp;conn-&gt;tmf_timer);
+-	debug_scsi("tmf set timeout\n");
++	ISCSI_DBG_SESSION(session, "tmf set timeout\n");
+ 
+ 	spin_unlock_bh(&amp;session-&gt;lock);
+ 	mutex_unlock(&amp;session-&gt;eh_mutex);
+@@ -1573,16 +1604,18 @@ static void fail_all_commands(struct iscsi_conn *conn, unsigned lun,
+ 	/* flush pending */
+ 	list_for_each_entry_safe(task, tmp, &amp;conn-&gt;xmitqueue, running) {
+ 		if (lun == task-&gt;sc-&gt;device-&gt;lun || lun == -1) {
+-			debug_scsi("failing pending sc %p itt 0x%x\n",
+-				   task-&gt;sc, task-&gt;itt);
++			ISCSI_DBG_SESSION(conn-&gt;session,
++					  "failing pending sc %p itt 0x%x\n",
++					  task-&gt;sc, task-&gt;itt);
+ 			fail_command(conn, task, error &lt;&lt; 16);
+ 		}
+ 	}
+ 
+ 	list_for_each_entry_safe(task, tmp, &amp;conn-&gt;requeue, running) {
+ 		if (lun == task-&gt;sc-&gt;device-&gt;lun || lun == -1) {
+-			debug_scsi("failing requeued sc %p itt 0x%x\n",
+-				   task-&gt;sc, task-&gt;itt);
++			ISCSI_DBG_SESSION(conn-&gt;session,
++					  "failing requeued sc %p itt 0x%x\n",
++					  task-&gt;sc, task-&gt;itt);
+ 			fail_command(conn, task, error &lt;&lt; 16);
+ 		}
+ 	}
+@@ -1590,8 +1623,9 @@ static void fail_all_commands(struct iscsi_conn *conn, unsigned lun,
+ 	/* fail all other running */
+ 	list_for_each_entry_safe(task, tmp, &amp;conn-&gt;run_list, running) {
+ 		if (lun == task-&gt;sc-&gt;device-&gt;lun || lun == -1) {
+-			debug_scsi("failing in progress sc %p itt 0x%x\n",
+-				   task-&gt;sc, task-&gt;itt);
++			ISCSI_DBG_SESSION(conn-&gt;session,
++					 "failing in progress sc %p itt 0x%x\n",
++					 task-&gt;sc, task-&gt;itt);
+ 			fail_command(conn, task, error &lt;&lt; 16);
+ 		}
+ 	}
+@@ -1622,7 +1656,7 @@ static enum blk_eh_timer_return iscsi_eh_cmd_timed_out(struct scsi_cmnd *scmd)
+ 	cls_session = starget_to_session(scsi_target(scmd-&gt;device));
+ 	session = cls_session-&gt;dd_data;
+ 
+-	debug_scsi("scsi cmd %p timedout\n", scmd);
++	ISCSI_DBG_SESSION(session, "scsi cmd %p timedout\n", scmd);
+ 
+ 	spin_lock(&amp;session-&gt;lock);
+ 	if (session-&gt;state != ISCSI_STATE_LOGGED_IN) {
+@@ -1662,8 +1696,8 @@ static enum blk_eh_timer_return iscsi_eh_cmd_timed_out(struct scsi_cmnd *scmd)
+ 		rc = BLK_EH_RESET_TIMER;
+ done:
+ 	spin_unlock(&amp;session-&gt;lock);
+-	debug_scsi("return %s\n", rc == BLK_EH_RESET_TIMER ?
+-					"timer reset" : "nh");
++	ISCSI_DBG_SESSION(session, "return %s\n", rc == BLK_EH_RESET_TIMER ?
++			  "timer reset" : "nh");
+ 	return rc;
+ }
+ 
+@@ -1697,13 +1731,13 @@ static void iscsi_check_transport_timeouts(unsigned long data)
+ 
+ 	if (time_before_eq(last_recv + recv_timeout, jiffies)) {
+ 		/* send a ping to try to provoke some traffic */
+-		debug_scsi("Sending nopout as ping on conn %p\n", conn);
++		ISCSI_DBG_CONN(conn, "Sending nopout as ping\n");
+ 		iscsi_send_nopout(conn, NULL);
+ 		next_timeout = conn-&gt;last_ping + (conn-&gt;ping_timeout * HZ);
+ 	} else
+ 		next_timeout = last_recv + recv_timeout;
+ 
+-	debug_scsi("Setting next tmo %lu\n", next_timeout);
++	ISCSI_DBG_CONN(conn, "Setting next tmo %lu\n", next_timeout);
+ 	mod_timer(&amp;conn-&gt;transport_timer, next_timeout);
+ done:
+ 	spin_unlock(&amp;session-&gt;lock);
+@@ -1740,7 +1774,8 @@ int iscsi_eh_abort(struct scsi_cmnd *sc)
+ 	 * got the command.
+ 	 */
+ 	if (!sc-&gt;SCp.ptr) {
+-		debug_scsi("sc never reached iscsi layer or it completed.\n");
++		ISCSI_DBG_SESSION(session, "sc never reached iscsi layer or "
++				  "it completed.\n");
+ 		spin_unlock_bh(&amp;session-&gt;lock);
+ 		mutex_unlock(&amp;session-&gt;eh_mutex);
+ 		return SUCCESS;
+@@ -1762,11 +1797,13 @@ int iscsi_eh_abort(struct scsi_cmnd *sc)
+ 	age = session-&gt;age;
+ 
+ 	task = (struct iscsi_task *)sc-&gt;SCp.ptr;
+-	debug_scsi("aborting [sc %p itt 0x%x]\n", sc, task-&gt;itt);
++	ISCSI_DBG_SESSION(session, "aborting [sc %p itt 0x%x]\n",
++			  sc, task-&gt;itt);
+ 
+ 	/* task completed before time out */
+ 	if (!task-&gt;sc) {
+-		debug_scsi("sc completed while abort in progress\n");
++		ISCSI_DBG_SESSION(session, "sc completed while abort in "
++				  "progress\n");
+ 		goto success;
+ 	}
+ 
+@@ -1815,7 +1852,8 @@ int iscsi_eh_abort(struct scsi_cmnd *sc)
+ 		if (!sc-&gt;SCp.ptr) {
+ 			conn-&gt;tmf_state = TMF_INITIAL;
+ 			/* task completed before tmf abort response */
+-			debug_scsi("sc completed while abort in progress\n");
++			ISCSI_DBG_SESSION(session, "sc completed while abort "
++					  "in progress\n");
+ 			goto success;
+ 		}
+ 		/* fall through */
+@@ -1827,15 +1865,16 @@ int iscsi_eh_abort(struct scsi_cmnd *sc)
+ success:
+ 	spin_unlock_bh(&amp;session-&gt;lock);
+ success_unlocked:
+-	debug_scsi("abort success [sc %lx itt 0x%x]\n", (long)sc, task-&gt;itt);
++	ISCSI_DBG_SESSION(session, "abort success [sc %p itt 0x%x]\n",
++			  sc, task-&gt;itt);
+ 	mutex_unlock(&amp;session-&gt;eh_mutex);
+ 	return SUCCESS;
+ 
+ failed:
+ 	spin_unlock_bh(&amp;session-&gt;lock);
+ failed_unlocked:
+-	debug_scsi("abort failed [sc %p itt 0x%x]\n", sc,
+-		    task ? task-&gt;itt : 0);
++	ISCSI_DBG_SESSION(session, "abort failed [sc %p itt 0x%x]\n", sc,
++			  task ? task-&gt;itt : 0);
+ 	mutex_unlock(&amp;session-&gt;eh_mutex);
+ 	return FAILED;
+ }
+@@ -1862,7 +1901,8 @@ int iscsi_eh_device_reset(struct scsi_cmnd *sc)
+ 	cls_session = starget_to_session(scsi_target(sc-&gt;device));
+ 	session = cls_session-&gt;dd_data;
+ 
+-	debug_scsi("LU Reset [sc %p lun %u]\n", sc, sc-&gt;device-&gt;lun);
++	ISCSI_DBG_SESSION(session, "LU Reset [sc %p lun %u]\n",
++			  sc, sc-&gt;device-&gt;lun);
+ 
+ 	mutex_lock(&amp;session-&gt;eh_mutex);
+ 	spin_lock_bh(&amp;session-&gt;lock);
+@@ -1916,8 +1956,8 @@ int iscsi_eh_device_reset(struct scsi_cmnd *sc)
+ unlock:
+ 	spin_unlock_bh(&amp;session-&gt;lock);
+ done:
+-	debug_scsi("iscsi_eh_device_reset %s\n",
+-		  rc == SUCCESS ? "SUCCESS" : "FAILED");
++	ISCSI_DBG_SESSION(session, "dev reset result = %s\n",
++			 rc == SUCCESS ? "SUCCESS" : "FAILED");
+ 	mutex_unlock(&amp;session-&gt;eh_mutex);
+ 	return rc;
+ }
+@@ -2466,14 +2506,16 @@ flush_control_queues(struct iscsi_session *session, struct iscsi_conn *conn)
+ 
+ 	/* handle pending */
+ 	list_for_each_entry_safe(task, tmp, &amp;conn-&gt;mgmtqueue, running) {
+-		debug_scsi("flushing pending mgmt task itt 0x%x\n", task-&gt;itt);
++		ISCSI_DBG_SESSION(session, "flushing pending mgmt task "
++				  "itt 0x%x\n", task-&gt;itt);
+ 		/* release ref from prep task */
+ 		__iscsi_put_task(task);
+ 	}
+ 
+ 	/* handle running */
+ 	list_for_each_entry_safe(task, tmp, &amp;conn-&gt;mgmt_run_list, running) {
+-		debug_scsi("flushing running mgmt task itt 0x%x\n", task-&gt;itt);
++		ISCSI_DBG_SESSION(session, "flushing running mgmt task "
++				  "itt 0x%x\n", task-&gt;itt);
+ 		/* release ref from prep task */
+ 		__iscsi_put_task(task);
+ 	}
+@@ -2523,7 +2565,7 @@ static void iscsi_start_session_recovery(struct iscsi_session *session,
+ 		conn-&gt;datadgst_en = 0;
+ 		if (session-&gt;state == ISCSI_STATE_IN_RECOVERY &amp;&amp;
+ 		    old_stop_stage != STOP_CONN_RECOVER) {
+-			debug_scsi("blocking session\n");
++			ISCSI_DBG_SESSION(session, "blocking session\n");
+ 			iscsi_block_session(session-&gt;cls_session);
+ 		}
+ 	}
+diff --git a/include/scsi/libiscsi.h b/include/scsi/libiscsi.h
+index 7360e1916e75..67542aa3aedc 100644
+--- a/include/scsi/libiscsi.h
++++ b/include/scsi/libiscsi.h
+@@ -45,13 +45,6 @@ struct iscsi_session;
+ struct iscsi_nopin;
+ struct device;
+ 
+-/* #define DEBUG_SCSI */
+-#ifdef DEBUG_SCSI
+-#define debug_scsi(fmt...) printk(KERN_INFO "iscsi: " fmt)
+-#else
+-#define debug_scsi(fmt...)
+-#endif
+-
+ #define ISCSI_DEF_XMIT_CMDS_MAX	128	/* must be power of 2 */
+ #define ISCSI_MGMT_CMDS_MAX	15
+ </pre><hr><pre>commit 48a237a26db0a31404c83a88e984b37a30ddcf5a
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu Mar 5 14:45:57 2009 -0600
+
+    [SCSI] iser: have iser use its own logging
+    
+    iser has its own logging inrfastrucutre. Convert it to use
+    it instead of libiscsi.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/infiniband/ulp/iser/iscsi_iser.c b/drivers/infiniband/ulp/iser/iscsi_iser.c
+index 12876392516e..4338f54c41fa 100644
+--- a/drivers/infiniband/ulp/iser/iscsi_iser.c
++++ b/drivers/infiniband/ulp/iser/iscsi_iser.c
+@@ -168,7 +168,7 @@ iscsi_iser_mtask_xmit(struct iscsi_conn *conn, struct iscsi_task *task)
+ {
+ 	int error = 0;
+ 
+-	debug_scsi("task deq [cid %d itt 0x%x]\n", conn-&gt;id, task-&gt;itt);
++	iser_dbg("task deq [cid %d itt 0x%x]\n", conn-&gt;id, task-&gt;itt);
+ 
+ 	error = iser_send_control(conn, task);
+ 
+@@ -195,7 +195,7 @@ iscsi_iser_task_xmit_unsol_data(struct iscsi_conn *conn,
+ 	/* Send data-out PDUs while there's still unsolicited data to send */
+ 	while (iscsi_task_has_unsol_data(task)) {
+ 		iscsi_prep_data_out_pdu(task, r2t, &amp;hdr);
+-		debug_scsi("Sending data-out: itt 0x%x, data count %d\n",
++		iser_dbg("Sending data-out: itt 0x%x, data count %d\n",
+ 			   hdr.itt, r2t-&gt;data_count);
+ 
+ 		/* the buffer description has been passed with the command */
+@@ -206,7 +206,7 @@ iscsi_iser_task_xmit_unsol_data(struct iscsi_conn *conn,
+ 			goto iscsi_iser_task_xmit_unsol_data_exit;
+ 		}
+ 		r2t-&gt;sent += r2t-&gt;data_count;
+-		debug_scsi("Need to send %d more as data-out PDUs\n",
++		iser_dbg("Need to send %d more as data-out PDUs\n",
+ 			   r2t-&gt;data_length - r2t-&gt;sent);
+ 	}
+ 
+@@ -227,12 +227,12 @@ iscsi_iser_task_xmit(struct iscsi_task *task)
+ 	if (task-&gt;sc-&gt;sc_data_direction == DMA_TO_DEVICE) {
+ 		BUG_ON(scsi_bufflen(task-&gt;sc) == 0);
+ 
+-		debug_scsi("cmd [itt %x total %d imm %d unsol_data %d\n",
++		iser_dbg("cmd [itt %x total %d imm %d unsol_data %d\n",
+ 			   task-&gt;itt, scsi_bufflen(task-&gt;sc),
+ 			   task-&gt;imm_count, task-&gt;unsol_r2t.data_length);
+ 	}
+ 
+-	debug_scsi("task deq [cid %d itt 0x%x]\n",
++	iser_dbg("task deq [cid %d itt 0x%x]\n",
+ 		   conn-&gt;id, task-&gt;itt);
+ 
+ 	/* Send the cmd PDU */</pre><hr><pre>commit 308cec14e6710b4d5b70e9778ce117be8371735d
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Feb 6 12:06:20 2009 -0600
+
+    [SCSI] libiscsi: Fix scsi command timeout oops in iscsi_eh_timed_out
+    
+    Yanling Qi from LSI found the root cause of the panic, below is his
+    analysis:
+    
+    Problem description: the open iscsi driver installs eh_timed_out handler
+    to the
+    blank_transport_template of the scsi middle level that causes panic of
+    timed
+    out command of other host
+    
+    Here are the details
+    
+    Iscsi Session creation
+    
+    During iscsi session creation time, the iscsi_tcp_session_create() of
+    iscsi_tpc.c will create a scsi-host for the session. See the statement
+    marked
+    with the label A. The statement B replaces the shost-&gt;transportt point
+    with a
+    local struct variable.
+    
+    static struct iscsi_cls_session *
+    iscsi_tcp_session_create(struct iscsi_endpoint *ep, uint16_t cmds_max,
+                             uint16_t qdepth, uint32_t initial_cmdsn,
+                             uint32_t *hostno)
+    {
+            struct iscsi_cls_session *cls_session;
+            struct iscsi_session *session;
+            struct Scsi_Host *shost;
+            int cmd_i;
+            if (ep) {
+                    printk(KERN_ERR "iscsi_tcp: invalid ep %p.\n", ep);
+                    return NULL;
+            }
+    
+    A        shost = iscsi_host_alloc(&amp;iscsi_sht, 0, qdepth);
+    
+            if (!shost)
+    
+                    return NULL;
+    
+    B         shost-&gt;transportt = iscsi_tcp_scsi_transport;
+    
+            shost-&gt;max_lun = iscsi_max_lun;
+    
+    Please note the scsi host is allocated by invoking isccsi_host_alloc()
+    in
+    libiscsi.c
+    
+    Polluting the middle level blank_transport_template in
+    iscsi_host_alloc() of
+    libiscsi.c
+    
+    The iscsi_host_alloc() invokes the middle level function
+    scsi_host_alloc() in
+    hosts.c for allocating a scsi_host. Then the statement marked with C
+    assigns
+    the iscsi_eh_cmd_timed_out handler to the eh_timed_out callback
+    function.
+    
+    struct Scsi_Host *iscsi_host_alloc(struct scsi_host_template *sht,
+    
+                                       int dd_data_size, uint16_t qdepth)
+    
+    {
+            struct Scsi_Host *shost;
+            struct iscsi_host *ihost;
+            shost = scsi_host_alloc(sht, sizeof(struct iscsi_host) +
+    dd_data_size);
+            if (!shost)
+                    return NULL;
+    
+     C      shost-&gt;transportt-&gt;eh_timed_out = iscsi_eh_cmd_timed_out;
+    
+    Please note the shost-&gt;transport is the middle level
+    blank_transport_template
+    as shown in the code segment below. We see two problems here. 1.
+    iscsi_eh_cmd_timed_out is installed to the blank_transport_template that
+    will
+    cause some body else problem. 2. iscsi_eh_cmd_timed_out will never be
+    invoked
+    when iscsi command gets timeout because the statement B resets the
+    pointer.
+    
+    Middle level blank_transport_template
+    
+    In the middle level function scsi_host_alloc() of hosts.c, the middle
+    level
+    assigns a blank_transport_template for those hosts not implementing its
+    transport layer. All HBAs without supporting a specific scsi_transport
+    will
+    share the middle level blank_transport_template. Please see the
+    statement D
+    
+    struct Scsi_Host *scsi_host_alloc(struct scsi_host_template *sht, int
+    privsize)
+    
+    {
+            struct Scsi_Host *shost;
+            gfp_t gfp_mask = GFP_KERNEL;
+            int rval;
+            if (sht-&gt;unchecked_isa_dma &amp;&amp; privsize)
+                    gfp_mask |= __GFP_DMA;
+    
+             shost = kzalloc(sizeof(struct Scsi_Host) + privsize, gfp_mask);
+            if (!shost)
+                    return NULL;
+    
+            shost-&gt;host_lock = &amp;shost-&gt;default_lock;
+    
+            spin_lock_init(shost-&gt;host_lock);
+    
+            shost-&gt;shost_state = SHOST_CREATED;
+    
+            INIT_LIST_HEAD(&amp;shost-&gt;__devices);
+    
+            INIT_LIST_HEAD(&amp;shost-&gt;__targets);
+    
+            INIT_LIST_HEAD(&amp;shost-&gt;eh_cmd_q);
+    
+            INIT_LIST_HEAD(&amp;shost-&gt;starved_list);
+    
+            init_waitqueue_head(&amp;shost-&gt;host_wait);
+    
+            mutex_init(&amp;shost-&gt;scan_mutex);
+    
+            shost-&gt;host_no = scsi_host_next_hn++; /* XXX(hch): still racy */
+    
+            shost-&gt;dma_channel = 0xff;
+    
+            /* These three are default values which can be overridden */
+    
+            shost-&gt;max_channel = 0;
+    
+            shost-&gt;max_id = 8;
+    
+            shost-&gt;max_lun = 8;
+    
+            /* Give each shost a default transportt */
+    
+     D       shost-&gt;transportt = &amp;blank_transport_template;
+    
+    Why we see panic at iscsi_eh_cmd_timed_out()
+    
+    The mpp virtual HBA doesn’t have a specific scsi_transport. Therefore,
+    the
+    blank_transport_template will be assigned to the virtual host of the MPP
+    virtual HBA by SCSI middle level. Please note that the statement C has
+    assigned
+    iscsi-transport eh_timedout handler to the blank_transport_template.
+    When a mpp
+    virtual command gets timedout, the iscsi_eh_cmd_timed_out() will be
+    invoked to
+    handle mpp virtual command timeout from the middle level
+    scsi_times_out()
+    function of the scsi_error.c.
+    
+    enum blk_eh_timer_return scsi_times_out(struct request *req)
+    
+    {
+    
+            struct scsi_cmnd *scmd = req-&gt;special;
+    
+            enum blk_eh_timer_return (*eh_timed_out)(struct scsi_cmnd *);
+    
+            enum blk_eh_timer_return rtn = BLK_EH_NOT_HANDLED;
+    
+            scsi_log_completion(scmd, TIMEOUT_ERROR);
+    
+            if (scmd-&gt;device-&gt;host-&gt;transportt-&gt;eh_timed_out)
+    
+     E               eh_timed_out =
+    scmd-&gt;device-&gt;host-&gt;transportt-&gt;eh_timed_out;
+    
+            else if (scmd-&gt;device-&gt;host-&gt;hostt-&gt;eh_timed_out)
+    
+                    eh_timed_out = scmd-&gt;device-&gt;host-&gt;hostt-&gt;eh_timed_out;
+    
+            else
+    
+                    eh_timed_out = NULL;
+    
+            if (eh_timed_out) {
+    
+                    rtn = eh_timed_out(scmd);
+    
+    It is very easy to understand why we get panic in the
+    iscsi_eh_cmd_timed_out().
+    A scsi_cmnd from a no-iscsi device definitely can not resolve out a
+    session and
+    session-&gt;lock. The panic can be happed anywhere during the differencing.
+    
+    static enum blk_eh_timer_return iscsi_eh_cmd_timed_out(struct scsi_cmnd
+    *scmd)
+    
+    {
+    
+            struct iscsi_cls_session *cls_session;
+    
+            struct iscsi_session *session;
+    
+            struct iscsi_conn *conn;
+    
+            enum blk_eh_timer_return rc = BLK_EH_NOT_HANDLED;
+    
+            cls_session = starget_to_session(scsi_target(scmd-&gt;device));
+    
+            session = cls_session-&gt;dd_data;
+    
+            debug_scsi("scsi cmd %p timedout\n", scmd);
+    
+            spin_lock(&amp;session-&gt;lock);
+    
+    This patch fixes the problem by moving the setting of the
+    iscsi_eh_cmd_timed_out to iscsi_add_host, which is after the LLDs
+    have set their transport template to shost-&gt;transportt.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 257c24115de9..809d32d95c76 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -1998,6 +1998,8 @@ int iscsi_host_add(struct Scsi_Host *shost, struct device *pdev)
+ 	if (!shost-&gt;can_queue)
+ 		shost-&gt;can_queue = ISCSI_DEF_XMIT_CMDS_MAX;
+ 
++	if (!shost-&gt;transportt-&gt;eh_timed_out)
++		shost-&gt;transportt-&gt;eh_timed_out = iscsi_eh_cmd_timed_out;
+ 	return scsi_add_host(shost, pdev);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_host_add);
+@@ -2020,7 +2022,6 @@ struct Scsi_Host *iscsi_host_alloc(struct scsi_host_template *sht,
+ 	shost = scsi_host_alloc(sht, sizeof(struct iscsi_host) + dd_data_size);
+ 	if (!shost)
+ 		return NULL;
+-	shost-&gt;transportt-&gt;eh_timed_out = iscsi_eh_cmd_timed_out;
+ 
+ 	if (qdepth &gt; ISCSI_MAX_CMD_PER_LUN || qdepth &lt; 1) {
+ 		if (qdepth != 0)</pre><hr><pre>commit 41bbdbebbbe7e06871d25f51c2eb1d6466bb9e5f
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Jan 16 12:36:52 2009 -0600
+
+    [SCSI] qla4xxx: do not reuse session when connecting to different target port
+    
+    qla4xxx does not check the I_T nexus values correctly
+    so it ends up creating one session to the target. If
+    a portal should disappear or they should be reported
+    in different order the driver will think it is already
+    logged in when it could now be speaking to a different
+    target portal or accessing it through a different
+    initiator port (iscsi initiator port is not tied to
+    hardware and is just the initiator name plus isid
+    so you could end up with multiple ports through one
+    host).
+    
+    This patch has the driver check the iscsi scsi port
+    values when matching sessions (we do not check
+    the initiator name because that is static). It results
+    in a portal from each target portal group getting
+    logged into instead of just one per target. In the future
+    the firmware should hopefully send us notification of other
+    sessions that are created to other portals within the
+    same tpgt and the sessions should have different isids.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/qla4xxx/ql4_def.h b/drivers/scsi/qla4xxx/ql4_def.h
+index d6be0762eb91..b586f27c3bd4 100644
+--- a/drivers/scsi/qla4xxx/ql4_def.h
++++ b/drivers/scsi/qla4xxx/ql4_def.h
+@@ -244,6 +244,7 @@ struct ddb_entry {
+ 	uint8_t ip_addr[ISCSI_IPADDR_SIZE];
+ 	uint8_t iscsi_name[ISCSI_NAME_SIZE];	/* 72 x48 */
+ 	uint8_t iscsi_alias[0x20];
++	uint8_t isid[6];
+ };
+ 
+ /*
+diff --git a/drivers/scsi/qla4xxx/ql4_init.c b/drivers/scsi/qla4xxx/ql4_init.c
+index 109c5f5985ec..af8c3233e8ae 100644
+--- a/drivers/scsi/qla4xxx/ql4_init.c
++++ b/drivers/scsi/qla4xxx/ql4_init.c
+@@ -342,8 +342,12 @@ static struct ddb_entry* qla4xxx_get_ddb_entry(struct scsi_qla_host *ha,
+ 	DEBUG2(printk("scsi%ld: %s: Looking for ddb[%d]\n", ha-&gt;host_no,
+ 		      __func__, fw_ddb_index));
+ 	list_for_each_entry(ddb_entry, &amp;ha-&gt;ddb_list, list) {
+-		if (memcmp(ddb_entry-&gt;iscsi_name, fw_ddb_entry-&gt;iscsi_name,
+-			   ISCSI_NAME_SIZE) == 0) {
++		if ((memcmp(ddb_entry-&gt;iscsi_name, fw_ddb_entry-&gt;iscsi_name,
++			   ISCSI_NAME_SIZE) == 0) &amp;&amp;
++			(ddb_entry-&gt;tpgt ==
++				le32_to_cpu(fw_ddb_entry-&gt;tgt_portal_grp)) &amp;&amp;
++			(memcmp(ddb_entry-&gt;isid, fw_ddb_entry-&gt;isid,
++				sizeof(ddb_entry-&gt;isid)) == 0)) {
+ 			found++;
+ 			break;
+ 		}
+@@ -430,6 +434,8 @@ static int qla4xxx_update_ddb_entry(struct scsi_qla_host *ha,
+ 
+ 	ddb_entry-&gt;port = le16_to_cpu(fw_ddb_entry-&gt;port);
+ 	ddb_entry-&gt;tpgt = le32_to_cpu(fw_ddb_entry-&gt;tgt_portal_grp);
++	memcpy(ddb_entry-&gt;isid, fw_ddb_entry-&gt;isid, sizeof(ddb_entry-&gt;isid));
++
+ 	memcpy(&amp;ddb_entry-&gt;iscsi_name[0], &amp;fw_ddb_entry-&gt;iscsi_name[0],
+ 	       min(sizeof(ddb_entry-&gt;iscsi_name),
+ 		   sizeof(fw_ddb_entry-&gt;iscsi_name)));</pre><hr><pre>commit 2f5899a39dcffb404c9a3d06ad438aff3e03bf04
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Jan 16 12:36:51 2009 -0600
+
+    [SCSI] libiscsi: fix iscsi pool leak
+    
+    I am not sure what happened. It looks like we have always leaked
+    the q-&gt;queue that is allocated from the kfifo_init call. nab finally
+    noticed that we were leaking and this patch fixes it by adding a
+    kfree call to iscsi_pool_free. kfifo_free is not used per kfifo_init's
+    instructions to use kfree.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 7225b6e2029e..257c24115de9 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -1981,6 +1981,7 @@ void iscsi_pool_free(struct iscsi_pool *q)
+ 		kfree(q-&gt;pool[i]);
+ 	if (q-&gt;pool)
+ 		kfree(q-&gt;pool);
++	kfree(q-&gt;queue);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_pool_free);
+ </pre>
+    <div class="pagination">
+        <a href='5_18.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><span>[19]</span><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_20.html'>Next&gt;&gt;</a>
+    <div>
+</body>

@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Fudan University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Fudan University</h1>
+    <div class="pagination">
+        <a href='15_2.html'>&lt;&lt;Prev</a><a href='15.html'>1</a><a href='15_2.html'>2</a><span>[3]</span><a href='15_4.html'>4</a><a href='15_5.html'>5</a><a href='15_6.html'>6</a><a href='15_7.html'>7</a><a href='15_4.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 9b6ff7eb666415e1558f1ba8a742f5db6a9954de
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Thu Sep 9 12:32:00 2021 +0800
+
+    net/l2tp: Fix reference count leak in l2tp_udp_recv_core
+    
+    The reference count leak issue may take place in an error handling
+    path. If both conditions of tunnel-&gt;version == L2TP_HDR_VER_3 and the
+    return value of l2tp_v3_ensure_opt_in_linear is nonzero, the function
+    would directly jump to label invalid, without decrementing the reference
+    count of the l2tp_session object session increased earlier by
+    l2tp_tunnel_get_session(). This may result in refcount leaks.
+    
+    Fix this issue by decrease the reference count before jumping to the
+    label invalid.
+    
+    Fixes: 4522a70db7aa ("l2tp: fix reading optional fields of L2TPv3")
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/l2tp/l2tp_core.c b/net/l2tp/l2tp_core.c
+index 53486b162f01..93271a2632b8 100644
+--- a/net/l2tp/l2tp_core.c
++++ b/net/l2tp/l2tp_core.c
+@@ -869,8 +869,10 @@ static int l2tp_udp_recv_core(struct l2tp_tunnel *tunnel, struct sk_buff *skb)
+ 	}
+ 
+ 	if (tunnel-&gt;version == L2TP_HDR_VER_3 &amp;&amp;
+-	    l2tp_v3_ensure_opt_in_linear(session, skb, &amp;ptr, &amp;optr))
++	    l2tp_v3_ensure_opt_in_linear(session, skb, &amp;ptr, &amp;optr)) {
++		l2tp_session_dec_refcount(session);
+ 		goto invalid;
++	}
+ 
+ 	l2tp_recv_common(session, skb, ptr, optr, hdrflags, length);
+ 	l2tp_session_dec_refcount(session);</pre><hr><pre>commit c66070125837900163b81a03063ddd657a7e9bfb
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Sun Aug 29 23:58:01 2021 +0800
+
+    net: sched: Fix qdisc_rate_table refcount leak when get tcf_block failed
+    
+    The reference counting issue happens in one exception handling path of
+    cbq_change_class(). When failing to get tcf_block, the function forgets
+    to decrease the refcount of "rtab" increased by qdisc_put_rtab(),
+    causing a refcount leak.
+    
+    Fix this issue by jumping to "failure" label when get tcf_block failed.
+    
+    Fixes: 6529eaba33f0 ("net: sched: introduce tcf block infractructure")
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Reviewed-by: Cong Wang &lt;cong.wang@bytedance.com&gt;
+    Link: https://lore.kernel.org/r/1630252681-71588-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/sched/sch_cbq.c b/net/sched/sch_cbq.c
+index 2dabaffd39d0..e0da15530f0e 100644
+--- a/net/sched/sch_cbq.c
++++ b/net/sched/sch_cbq.c
+@@ -1614,7 +1614,7 @@ cbq_change_class(struct Qdisc *sch, u32 classid, u32 parentid, struct nlattr **t
+ 	err = tcf_block_get(&amp;cl-&gt;block, &amp;cl-&gt;filter_list, sch, extack);
+ 	if (err) {
+ 		kfree(cl);
+-		return err;
++		goto failure;
+ 	}
+ 
+ 	if (tca[TCA_RATE]) {</pre><hr><pre>commit 8c27cc5b90ed00ed0dc5956b99e455a494ac8970
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Mon Jul 19 13:58:51 2021 +0800
+
+    drm/exynos: Convert from atomic_t to refcount_t on g2d_cmdlist_userptr-&gt;refcount
+    
+    refcount_t type and corresponding API can protect refcounters from
+    accidental underflow and overflow and further use-after-free situations.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Inki Dae &lt;inki.dae@samsung.com&gt;
+
+diff --git a/drivers/gpu/drm/exynos/exynos_drm_g2d.c b/drivers/gpu/drm/exynos/exynos_drm_g2d.c
+index 0ed665501ac4..b00230626c6a 100644
+--- a/drivers/gpu/drm/exynos/exynos_drm_g2d.c
++++ b/drivers/gpu/drm/exynos/exynos_drm_g2d.c
+@@ -4,6 +4,7 @@
+  * Authors: Joonyoung Shim &lt;jy0922.shim@samsung.com&gt;
+  */
+ 
++#include &lt;linux/refcount.h&gt;
+ #include &lt;linux/clk.h&gt;
+ #include &lt;linux/component.h&gt;
+ #include &lt;linux/delay.h&gt;
+@@ -208,7 +209,7 @@ struct g2d_cmdlist_userptr {
+ 	struct page		**pages;
+ 	unsigned int		npages;
+ 	struct sg_table		*sgt;
+-	atomic_t		refcount;
++	refcount_t		refcount;
+ 	bool			in_pool;
+ 	bool			out_of_list;
+ };
+@@ -386,9 +387,9 @@ static void g2d_userptr_put_dma_addr(struct g2d_data *g2d,
+ 	if (force)
+ 		goto out;
+ 
+-	atomic_dec(&amp;g2d_userptr-&gt;refcount);
++	refcount_dec(&amp;g2d_userptr-&gt;refcount);
+ 
+-	if (atomic_read(&amp;g2d_userptr-&gt;refcount) &gt; 0)
++	if (refcount_read(&amp;g2d_userptr-&gt;refcount) &gt; 0)
+ 		return;
+ 
+ 	if (g2d_userptr-&gt;in_pool)
+@@ -436,7 +437,7 @@ static dma_addr_t *g2d_userptr_get_dma_addr(struct g2d_data *g2d,
+ 			 * and different size.
+ 			 */
+ 			if (g2d_userptr-&gt;size == size) {
+-				atomic_inc(&amp;g2d_userptr-&gt;refcount);
++				refcount_inc(&amp;g2d_userptr-&gt;refcount);
+ 				*obj = g2d_userptr;
+ 
+ 				return &amp;g2d_userptr-&gt;dma_addr;
+@@ -461,7 +462,7 @@ static dma_addr_t *g2d_userptr_get_dma_addr(struct g2d_data *g2d,
+ 	if (!g2d_userptr)
+ 		return ERR_PTR(-ENOMEM);
+ 
+-	atomic_set(&amp;g2d_userptr-&gt;refcount, 1);
++	refcount_set(&amp;g2d_userptr-&gt;refcount, 1);
+ 	g2d_userptr-&gt;size = size;
+ 
+ 	start = userptr &amp; PAGE_MASK;</pre><hr><pre>commit a0293eb24936ff30e5a23f9438fd4ad1c4009dbf
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Mon Jul 19 14:00:53 2021 +0800
+
+    RDMA/hfi1: Convert from atomic_t to refcount_t on hfi1_devdata-&gt;user_refcount
+    
+    refcount_t type and corresponding API can protect refcounters from
+    accidental underflow and overflow and further use-after-free situations.
+    
+    Link: https://lore.kernel.org/r/1626674454-56075-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Tested-by: Josh Fisher &lt;josh.fisher@cornelisnetworks.com&gt;
+    Acked-by: Dennis Dalessandro &lt;dennis.dalessandro@cornelisnetworks.com&gt;
+    Signed-off-by: Jason Gunthorpe &lt;jgg@nvidia.com&gt;
+
+diff --git a/drivers/infiniband/hw/hfi1/chip.c b/drivers/infiniband/hw/hfi1/chip.c
+index c97544638367..50ffb8244625 100644
+--- a/drivers/infiniband/hw/hfi1/chip.c
++++ b/drivers/infiniband/hw/hfi1/chip.c
+@@ -15336,7 +15336,7 @@ int hfi1_init_dd(struct hfi1_devdata *dd)
+ 	init_completion(&amp;dd-&gt;user_comp);
+ 
+ 	/* The user refcount starts with one to inidicate an active device */
+-	atomic_set(&amp;dd-&gt;user_refcount, 1);
++	refcount_set(&amp;dd-&gt;user_refcount, 1);
+ 
+ 	goto bail;
+ 
+diff --git a/drivers/infiniband/hw/hfi1/file_ops.c b/drivers/infiniband/hw/hfi1/file_ops.c
+index 955c3637980e..6dbfb794c255 100644
+--- a/drivers/infiniband/hw/hfi1/file_ops.c
++++ b/drivers/infiniband/hw/hfi1/file_ops.c
+@@ -194,7 +194,7 @@ static int hfi1_file_open(struct inode *inode, struct file *fp)
+ 	if (!((dd-&gt;flags &amp; HFI1_PRESENT) &amp;&amp; dd-&gt;kregbase1))
+ 		return -EINVAL;
+ 
+-	if (!atomic_inc_not_zero(&amp;dd-&gt;user_refcount))
++	if (!refcount_inc_not_zero(&amp;dd-&gt;user_refcount))
+ 		return -ENXIO;
+ 
+ 	/* The real work is performed later in assign_ctxt() */
+@@ -213,7 +213,7 @@ static int hfi1_file_open(struct inode *inode, struct file *fp)
+ nomem:
+ 	kfree(fd);
+ 	fp-&gt;private_data = NULL;
+-	if (atomic_dec_and_test(&amp;dd-&gt;user_refcount))
++	if (refcount_dec_and_test(&amp;dd-&gt;user_refcount))
+ 		complete(&amp;dd-&gt;user_comp);
+ 	return -ENOMEM;
+ }
+@@ -711,7 +711,7 @@ static int hfi1_file_close(struct inode *inode, struct file *fp)
+ 	deallocate_ctxt(uctxt);
+ done:
+ 
+-	if (atomic_dec_and_test(&amp;dd-&gt;user_refcount))
++	if (refcount_dec_and_test(&amp;dd-&gt;user_refcount))
+ 		complete(&amp;dd-&gt;user_comp);
+ 
+ 	cleanup_srcu_struct(&amp;fdata-&gt;pq_srcu);
+diff --git a/drivers/infiniband/hw/hfi1/hfi.h b/drivers/infiniband/hw/hfi1/hfi.h
+index 31664f43c27f..6cf03d16a495 100644
+--- a/drivers/infiniband/hw/hfi1/hfi.h
++++ b/drivers/infiniband/hw/hfi1/hfi.h
+@@ -48,6 +48,7 @@
+  *
+  */
+ 
++#include &lt;linux/refcount.h&gt;
+ #include &lt;linux/interrupt.h&gt;
+ #include &lt;linux/pci.h&gt;
+ #include &lt;linux/dma-mapping.h&gt;
+@@ -1384,7 +1385,7 @@ struct hfi1_devdata {
+ 	/* Number of verbs contexts which have disabled ASPM */
+ 	atomic_t aspm_disabled_cnt;
+ 	/* Keeps track of user space clients */
+-	atomic_t user_refcount;
++	refcount_t user_refcount;
+ 	/* Used to wait for outstanding user space clients before dev removal */
+ 	struct completion user_comp;
+ 
+diff --git a/drivers/infiniband/hw/hfi1/init.c b/drivers/infiniband/hw/hfi1/init.c
+index 34106e5be679..f37b157dbdb2 100644
+--- a/drivers/infiniband/hw/hfi1/init.c
++++ b/drivers/infiniband/hw/hfi1/init.c
+@@ -1747,7 +1747,7 @@ static void wait_for_clients(struct hfi1_devdata *dd)
+ 	 * Remove the device init value and complete the device if there is
+ 	 * no clients or wait for active clients to finish.
+ 	 */
+-	if (atomic_dec_and_test(&amp;dd-&gt;user_refcount))
++	if (refcount_dec_and_test(&amp;dd-&gt;user_refcount))
+ 		complete(&amp;dd-&gt;user_comp);
+ 
+ 	wait_for_completion(&amp;dd-&gt;user_comp);</pre><hr><pre>commit d5ee8e750c9449e9849a09ce6fb6b8adeaa66adc
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Tue Jul 20 11:05:11 2021 -0400
+
+    padata: Convert from atomic_t to refcount_t on parallel_data-&gt;refcnt
+    
+    refcount_t type and corresponding API can protect refcounters from
+    accidental underflow and overflow and further use-after-free situations.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Acked-by: Daniel Jordan &lt;daniel.m.jordan@oracle.com&gt;
+    Signed-off-by: Herbert Xu &lt;herbert@gondor.apana.org.au&gt;
+
+diff --git a/include/linux/padata.h b/include/linux/padata.h
+index a433f13fc4bf..495b16b6b4d7 100644
+--- a/include/linux/padata.h
++++ b/include/linux/padata.h
+@@ -12,6 +12,7 @@
+ #ifndef PADATA_H
+ #define PADATA_H
+ 
++#include &lt;linux/refcount.h&gt;
+ #include &lt;linux/compiler_types.h&gt;
+ #include &lt;linux/workqueue.h&gt;
+ #include &lt;linux/spinlock.h&gt;
+@@ -96,7 +97,7 @@ struct parallel_data {
+ 	struct padata_shell		*ps;
+ 	struct padata_list		__percpu *reorder_list;
+ 	struct padata_serial_queue	__percpu *squeue;
+-	atomic_t			refcnt;
++	refcount_t			refcnt;
+ 	unsigned int			seq_nr;
+ 	unsigned int			processed;
+ 	int				cpu;
+diff --git a/kernel/padata.c b/kernel/padata.c
+index d4d3ba6e1728..378c36080781 100644
+--- a/kernel/padata.c
++++ b/kernel/padata.c
+@@ -211,7 +211,7 @@ int padata_do_parallel(struct padata_shell *ps,
+ 	if ((pinst-&gt;flags &amp; PADATA_RESET))
+ 		goto out;
+ 
+-	atomic_inc(&amp;pd-&gt;refcnt);
++	refcount_inc(&amp;pd-&gt;refcnt);
+ 	padata-&gt;pd = pd;
+ 	padata-&gt;cb_cpu = *cb_cpu;
+ 
+@@ -383,7 +383,7 @@ static void padata_serial_worker(struct work_struct *serial_work)
+ 	}
+ 	local_bh_enable();
+ 
+-	if (atomic_sub_and_test(cnt, &amp;pd-&gt;refcnt))
++	if (refcount_sub_and_test(cnt, &amp;pd-&gt;refcnt))
+ 		padata_free_pd(pd);
+ }
+ 
+@@ -593,7 +593,7 @@ static struct parallel_data *padata_alloc_pd(struct padata_shell *ps)
+ 	padata_init_reorder_list(pd);
+ 	padata_init_squeues(pd);
+ 	pd-&gt;seq_nr = -1;
+-	atomic_set(&amp;pd-&gt;refcnt, 1);
++	refcount_set(&amp;pd-&gt;refcnt, 1);
+ 	spin_lock_init(&amp;pd-&gt;lock);
+ 	pd-&gt;cpu = cpumask_first(pd-&gt;cpumask.pcpu);
+ 	INIT_WORK(&amp;pd-&gt;reorder_work, invoke_padata_reorder);
+@@ -667,7 +667,7 @@ static int padata_replace(struct padata_instance *pinst)
+ 	synchronize_rcu();
+ 
+ 	list_for_each_entry_continue_reverse(ps, &amp;pinst-&gt;pslist, list)
+-		if (atomic_dec_and_test(&amp;ps-&gt;opd-&gt;refcnt))
++		if (refcount_dec_and_test(&amp;ps-&gt;opd-&gt;refcnt))
+ 			padata_free_pd(ps-&gt;opd);
+ 
+ 	pinst-&gt;flags &amp;= ~PADATA_RESET;</pre><hr><pre>commit 03acb0c5ac46b1aa5f3015f1e01243aff9e08600
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Sat Jul 17 18:17:22 2021 +0800
+
+    misc: sgi-gru: Convert from atomic_t to refcount_t on gru_thread_state-&gt;ts_refcnt
+    
+    refcount_t type and corresponding API can protect refcounters from
+    accidental underflow and overflow and further use-after-free situations.
+    
+    Acked-by: Dimitri Sivanich &lt;sivanich@hpe.com&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Link: https://lore.kernel.org/r/1626517043-42696-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/misc/sgi-gru/grumain.c b/drivers/misc/sgi-gru/grumain.c
+index 40ac59dd018c..9afda47efbf2 100644
+--- a/drivers/misc/sgi-gru/grumain.c
++++ b/drivers/misc/sgi-gru/grumain.c
+@@ -282,7 +282,7 @@ static void gru_unload_mm_tracker(struct gru_state *gru,
+  */
+ void gts_drop(struct gru_thread_state *gts)
+ {
+-	if (gts &amp;&amp; atomic_dec_return(&amp;gts-&gt;ts_refcnt) == 0) {
++	if (gts &amp;&amp; refcount_dec_and_test(&amp;gts-&gt;ts_refcnt)) {
+ 		if (gts-&gt;ts_gms)
+ 			gru_drop_mmu_notifier(gts-&gt;ts_gms);
+ 		kfree(gts);
+@@ -323,7 +323,7 @@ struct gru_thread_state *gru_alloc_gts(struct vm_area_struct *vma,
+ 
+ 	STAT(gts_alloc);
+ 	memset(gts, 0, sizeof(struct gru_thread_state)); /* zero out header */
+-	atomic_set(&amp;gts-&gt;ts_refcnt, 1);
++	refcount_set(&amp;gts-&gt;ts_refcnt, 1);
+ 	mutex_init(&amp;gts-&gt;ts_ctxlock);
+ 	gts-&gt;ts_cbr_au_count = cbr_au_count;
+ 	gts-&gt;ts_dsr_au_count = dsr_au_count;
+@@ -888,7 +888,7 @@ struct gru_state *gru_assign_gru_context(struct gru_thread_state *gts)
+ 		gts-&gt;ts_gru = gru;
+ 		gts-&gt;ts_blade = gru-&gt;gs_blade_id;
+ 		gts-&gt;ts_ctxnum = gru_assign_context_number(gru);
+-		atomic_inc(&amp;gts-&gt;ts_refcnt);
++		refcount_inc(&amp;gts-&gt;ts_refcnt);
+ 		gru-&gt;gs_gts[gts-&gt;ts_ctxnum] = gts;
+ 		spin_unlock(&amp;gru-&gt;gs_lock);
+ 
+diff --git a/drivers/misc/sgi-gru/grutables.h b/drivers/misc/sgi-gru/grutables.h
+index 5ce8f3081e96..e4c067c61251 100644
+--- a/drivers/misc/sgi-gru/grutables.h
++++ b/drivers/misc/sgi-gru/grutables.h
+@@ -129,6 +129,7 @@
+  *
+  */
+ 
++#include &lt;linux/refcount.h&gt;
+ #include &lt;linux/rmap.h&gt;
+ #include &lt;linux/interrupt.h&gt;
+ #include &lt;linux/mutex.h&gt;
+@@ -358,7 +359,7 @@ struct gru_thread_state {
+ 						     enabled */
+ 	int			ts_ctxnum;	/* context number where the
+ 						   context is loaded */
+-	atomic_t		ts_refcnt;	/* reference count GTS */
++	refcount_t		ts_refcnt;	/* reference count GTS */
+ 	unsigned char		ts_dsr_au_count;/* Number of DSR resources
+ 						   required for contest */
+ 	unsigned char		ts_cbr_au_count;/* Number of CBR resources</pre><hr><pre>commit 0189cb57b96ff92f75e3680b3710a46dacd6509f
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Mon Jul 19 13:59:45 2021 +0800
+
+    fbmem: Convert from atomic_t to refcount_t on fb_info-&gt;count
+    
+    refcount_t type and corresponding API can protect refcounters from
+    accidental underflow and overflow and further use-after-free situations.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Sam Ravnborg &lt;sam@ravnborg.org&gt;
+    Link: https://patchwork.freedesktop.org/patch/msgid/1626674392-55857-1-git-send-email-xiyuyang19@fudan.edu.cn
+
+diff --git a/drivers/video/fbdev/core/fbmem.c b/drivers/video/fbdev/core/fbmem.c
+index 072780b0e570..1598736e3bcf 100644
+--- a/drivers/video/fbdev/core/fbmem.c
++++ b/drivers/video/fbdev/core/fbmem.c
+@@ -67,7 +67,7 @@ static struct fb_info *get_fb_info(unsigned int idx)
+ 	mutex_lock(&amp;registration_lock);
+ 	fb_info = registered_fb[idx];
+ 	if (fb_info)
+-		atomic_inc(&amp;fb_info-&gt;count);
++		refcount_inc(&amp;fb_info-&gt;count);
+ 	mutex_unlock(&amp;registration_lock);
+ 
+ 	return fb_info;
+@@ -75,7 +75,7 @@ static struct fb_info *get_fb_info(unsigned int idx)
+ 
+ static void put_fb_info(struct fb_info *fb_info)
+ {
+-	if (!atomic_dec_and_test(&amp;fb_info-&gt;count))
++	if (!refcount_dec_and_test(&amp;fb_info-&gt;count))
+ 		return;
+ 	if (fb_info-&gt;fbops-&gt;fb_destroy)
+ 		fb_info-&gt;fbops-&gt;fb_destroy(fb_info);
+@@ -1590,7 +1590,7 @@ static int do_register_framebuffer(struct fb_info *fb_info)
+ 		if (!registered_fb[i])
+ 			break;
+ 	fb_info-&gt;node = i;
+-	atomic_set(&amp;fb_info-&gt;count, 1);
++	refcount_set(&amp;fb_info-&gt;count, 1);
+ 	mutex_init(&amp;fb_info-&gt;lock);
+ 	mutex_init(&amp;fb_info-&gt;mm_lock);
+ 
+diff --git a/include/linux/fb.h b/include/linux/fb.h
+index a8dccd23c249..9023739e9a42 100644
+--- a/include/linux/fb.h
++++ b/include/linux/fb.h
+@@ -2,6 +2,7 @@
+ #ifndef _LINUX_FB_H
+ #define _LINUX_FB_H
+ 
++#include &lt;linux/refcount.h&gt;
+ #include &lt;linux/kgdb.h&gt;
+ #include &lt;uapi/linux/fb.h&gt;
+ 
+@@ -435,7 +436,7 @@ struct fb_tile_ops {
+ 
+ 
+ struct fb_info {
+-	atomic_t count;
++	refcount_t count;
+ 	int node;
+ 	int flags;
+ 	/*</pre><hr><pre>commit 8c13212443230d03ff25014514ec0d53498c0912
+Author: Jiajun Cao &lt;jjcao20@fudan.edu.cn&gt;
+Date:   Tue Jun 22 21:19:42 2021 +0800
+
+    ALSA: hda: Add IRQ check for platform_get_irq()
+    
+    The function hda_tegra_first_init() neglects to check the return
+    value after executing platform_get_irq().
+    
+    hda_tegra_first_init() should check the return value (if negative
+    error number) for errors so as to not pass a negative value to
+    the devm_request_irq().
+    
+    Fix it by adding a check for the return value irq_id.
+    
+    Signed-off-by: Jiajun Cao &lt;jjcao20@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Reviewed-by: Thierry Reding &lt;treding@nvidia.com&gt;
+    Link: https://lore.kernel.org/r/20210622131947.94346-1-jjcao20@fudan.edu.cn
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/hda_tegra.c b/sound/pci/hda/hda_tegra.c
+index 5aeef6123781..ea700395bef4 100644
+--- a/sound/pci/hda/hda_tegra.c
++++ b/sound/pci/hda/hda_tegra.c
+@@ -260,6 +260,9 @@ static int hda_tegra_first_init(struct azx *chip, struct platform_device *pdev)
+ 	const char *sname, *drv_name = "tegra-hda";
+ 	struct device_node *np = pdev-&gt;dev.of_node;
+ 
++	if (irq_id &lt; 0)
++		return irq_id;
++
+ 	err = hda_tegra_init_chip(chip, pdev);
+ 	if (err)
+ 		return err;</pre><hr><pre>commit 7c8f176d6a3fa18aa0f8875da6f7c672ed2a8554
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Thu Jun 10 10:49:20 2021 +0800
+
+    iommu/arm-smmu: Fix arm_smmu_device refcount leak in address translation
+    
+    The reference counting issue happens in several exception handling paths
+    of arm_smmu_iova_to_phys_hard(). When those error scenarios occur, the
+    function forgets to decrease the refcount of "smmu" increased by
+    arm_smmu_rpm_get(), causing a refcount leak.
+    
+    Fix this issue by jumping to "out" label when those error scenarios
+    occur.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Reviewed-by: Rob Clark &lt;robdclark@chromium.org&gt;
+    Link: https://lore.kernel.org/r/1623293391-17261-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Will Deacon &lt;will@kernel.org&gt;
+
+diff --git a/drivers/iommu/arm/arm-smmu/arm-smmu.c b/drivers/iommu/arm/arm-smmu/arm-smmu.c
+index 5de5cf5fcc50..22be819d6b7f 100644
+--- a/drivers/iommu/arm/arm-smmu/arm-smmu.c
++++ b/drivers/iommu/arm/arm-smmu/arm-smmu.c
+@@ -1271,6 +1271,7 @@ static phys_addr_t arm_smmu_iova_to_phys_hard(struct iommu_domain *domain,
+ 	u64 phys;
+ 	unsigned long va, flags;
+ 	int ret, idx = cfg-&gt;cbndx;
++	phys_addr_t addr = 0;
+ 
+ 	ret = arm_smmu_rpm_get(smmu);
+ 	if (ret &lt; 0)
+@@ -1290,6 +1291,7 @@ static phys_addr_t arm_smmu_iova_to_phys_hard(struct iommu_domain *domain,
+ 		dev_err(dev,
+ 			"iova to phys timed out on %pad. Falling back to software table walk.\n",
+ 			&amp;iova);
++		arm_smmu_rpm_put(smmu);
+ 		return ops-&gt;iova_to_phys(ops, iova);
+ 	}
+ 
+@@ -1298,12 +1300,14 @@ static phys_addr_t arm_smmu_iova_to_phys_hard(struct iommu_domain *domain,
+ 	if (phys &amp; ARM_SMMU_CB_PAR_F) {
+ 		dev_err(dev, "translation fault!\n");
+ 		dev_err(dev, "PAR = 0x%llx\n", phys);
+-		return 0;
++		goto out;
+ 	}
+ 
++	addr = (phys &amp; GENMASK_ULL(39, 12)) | (iova &amp; 0xfff);
++out:
+ 	arm_smmu_rpm_put(smmu);
+ 
+-	return (phys &amp; GENMASK_ULL(39, 12)) | (iova &amp; 0xfff);
++	return addr;
+ }
+ 
+ static phys_addr_t arm_smmu_iova_to_phys(struct iommu_domain *domain,</pre><hr><pre>commit 1adf30f198c26539a62d761e45af72cde570413d
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Thu Jun 10 10:54:29 2021 +0800
+
+    iommu/arm-smmu: Fix arm_smmu_device refcount leak when arm_smmu_rpm_get fails
+    
+    arm_smmu_rpm_get() invokes pm_runtime_get_sync(), which increases the
+    refcount of the "smmu" even though the return value is less than 0.
+    
+    The reference counting issue happens in some error handling paths of
+    arm_smmu_rpm_get() in its caller functions. When arm_smmu_rpm_get()
+    fails, the caller functions forget to decrease the refcount of "smmu"
+    increased by arm_smmu_rpm_get(), causing a refcount leak.
+    
+    Fix this issue by calling pm_runtime_resume_and_get() instead of
+    pm_runtime_get_sync() in arm_smmu_rpm_get(), which can keep the refcount
+    balanced in case of failure.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Link: https://lore.kernel.org/r/1623293672-17954-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Will Deacon &lt;will@kernel.org&gt;
+
+diff --git a/drivers/iommu/arm/arm-smmu/arm-smmu.c b/drivers/iommu/arm/arm-smmu/arm-smmu.c
+index 88a3023676ce..5de5cf5fcc50 100644
+--- a/drivers/iommu/arm/arm-smmu/arm-smmu.c
++++ b/drivers/iommu/arm/arm-smmu/arm-smmu.c
+@@ -74,7 +74,7 @@ static bool using_legacy_binding, using_generic_binding;
+ static inline int arm_smmu_rpm_get(struct arm_smmu_device *smmu)
+ {
+ 	if (pm_runtime_enabled(smmu-&gt;dev))
+-		return pm_runtime_get_sync(smmu-&gt;dev);
++		return pm_runtime_resume_and_get(smmu-&gt;dev);
+ 
+ 	return 0;
+ }</pre>
+    <div class="pagination">
+        <a href='15_2.html'>&lt;&lt;Prev</a><a href='15.html'>1</a><a href='15_2.html'>2</a><span>[3]</span><a href='15_4.html'>4</a><a href='15_5.html'>5</a><a href='15_6.html'>6</a><a href='15_7.html'>7</a><a href='15_4.html'>Next&gt;&gt;</a>
+    <div>
+</body>

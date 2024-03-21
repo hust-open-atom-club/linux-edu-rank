@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Georgia</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Georgia</h1>
+    <div class="pagination">
+        <a href='19_5.html'>&lt;&lt;Prev</a><a href='19.html'>1</a><a href='19_2.html'>2</a><a href='19_3.html'>3</a><a href='19_4.html'>4</a><a href='19_5.html'>5</a><span>[6]</span>
+    </div>
+    <hr>
+    <pre>commit c7cd7c748a3250ca33509f9235efab9c803aca09
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Thu Aug 8 00:15:21 2019 -0500
+
+    sound: fix a memory leak bug
+    
+    In sound_insert_unit(), the controlling structure 's' is allocated through
+    kmalloc(). Then it is added to the sound driver list by invoking
+    __sound_insert_unit(). Later on, if __register_chrdev() fails, 's' is
+    removed from the list through __sound_remove_unit(). If 'index' is not less
+    than 0, -EBUSY is returned to indicate the error. However, 's' is not
+    deallocated on this execution path, leading to a memory leak bug.
+    
+    To fix the above issue, free 's' before -EBUSY is returned.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/sound_core.c b/sound/sound_core.c
+index b730d97c4de6..90d118cd9164 100644
+--- a/sound/sound_core.c
++++ b/sound/sound_core.c
+@@ -275,7 +275,8 @@ static int sound_insert_unit(struct sound_unit **list, const struct file_operati
+ 				goto retry;
+ 			}
+ 			spin_unlock(&amp;sound_loader_lock);
+-			return -EBUSY;
++			r = -EBUSY;
++			goto fail;
+ 		}
+ 	}
+ </pre><hr><pre>commit 3d92aa45fbfd7319e3a19f4ec59fd32b3862b723
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Wed Aug 7 04:08:51 2019 -0500
+
+    ALSA: hiface: fix multiple memory leak bugs
+    
+    In hiface_pcm_init(), 'rt' is firstly allocated through kzalloc(). Later
+    on, hiface_pcm_init_urb() is invoked to initialize 'rt-&gt;out_urbs[i]'. In
+    hiface_pcm_init_urb(), 'rt-&gt;out_urbs[i].buffer' is allocated through
+    kzalloc().  However, if hiface_pcm_init_urb() fails, both 'rt' and
+    'rt-&gt;out_urbs[i].buffer' are not deallocated, leading to memory leak bugs.
+    Also, 'rt-&gt;out_urbs[i].buffer' is not deallocated if snd_pcm_new() fails.
+    
+    To fix the above issues, free 'rt' and 'rt-&gt;out_urbs[i].buffer'.
+    
+    Fixes: a91c3fb2f842 ("Add M2Tech hiFace USB-SPDIF driver")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/usb/hiface/pcm.c b/sound/usb/hiface/pcm.c
+index 14fc1e1d5d13..c406497c5919 100644
+--- a/sound/usb/hiface/pcm.c
++++ b/sound/usb/hiface/pcm.c
+@@ -600,14 +600,13 @@ int hiface_pcm_init(struct hiface_chip *chip, u8 extra_freq)
+ 		ret = hiface_pcm_init_urb(&amp;rt-&gt;out_urbs[i], chip, OUT_EP,
+ 				    hiface_pcm_out_urb_handler);
+ 		if (ret &lt; 0)
+-			return ret;
++			goto error;
+ 	}
+ 
+ 	ret = snd_pcm_new(chip-&gt;card, "USB-SPDIF Audio", 0, 1, 0, &amp;pcm);
+ 	if (ret &lt; 0) {
+-		kfree(rt);
+ 		dev_err(&amp;chip-&gt;dev-&gt;dev, "Cannot create pcm instance\n");
+-		return ret;
++		goto error;
+ 	}
+ 
+ 	pcm-&gt;private_data = rt;
+@@ -620,4 +619,10 @@ int hiface_pcm_init(struct hiface_chip *chip, u8 extra_freq)
+ 
+ 	chip-&gt;pcm = rt;
+ 	return 0;
++
++error:
++	for (i = 0; i &lt; PCM_N_URBS; i++)
++		kfree(rt-&gt;out_urbs[i].buffer);
++	kfree(rt);
++	return ret;
+ }</pre><hr><pre>commit a67060201b746a308b1674f66bf289c9faef6d09
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Tue Aug 6 03:00:27 2019 -0400
+
+    ALSA: usb-audio: fix a memory leak bug
+    
+    In snd_usb_get_audioformat_uac3(), a structure for channel maps 'chmap' is
+    allocated through kzalloc() before the execution goto 'found_clock'.
+    However, this structure is not deallocated if the memory allocation for
+    'pd' fails, leading to a memory leak bug.
+    
+    To fix the above issue, free 'fp-&gt;chmap' before returning NULL.
+    
+    Fixes: 7edf3b5e6a45 ("ALSA: usb-audio: AudioStreaming Power Domain parsing")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/usb/stream.c b/sound/usb/stream.c
+index 7ee9d17d0143..e852c7fd6109 100644
+--- a/sound/usb/stream.c
++++ b/sound/usb/stream.c
+@@ -1043,6 +1043,7 @@ snd_usb_get_audioformat_uac3(struct snd_usb_audio *chip,
+ 
+ 		pd = kzalloc(sizeof(*pd), GFP_KERNEL);
+ 		if (!pd) {
++			kfree(fp-&gt;chmap);
+ 			kfree(fp-&gt;rate_table);
+ 			kfree(fp);
+ 			return NULL;</pre><hr><pre>commit d4fddac5a51c378c5d3e68658816c37132611e1f
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Jul 14 01:11:35 2019 -0500
+
+    test_firmware: fix a memory leak bug
+    
+    In test_firmware_init(), the buffer pointed to by the global pointer
+    'test_fw_config' is allocated through kzalloc(). Then, the buffer is
+    initialized in __test_firmware_config_init(). In the case that the
+    initialization fails, the following execution in test_firmware_init() needs
+    to be terminated with an error code returned to indicate this failure.
+    However, the allocated buffer is not freed on this execution path, leading
+    to a memory leak bug.
+    
+    To fix the above issue, free the allocated buffer before returning from
+    test_firmware_init().
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Link: https://lore.kernel.org/r/1563084696-6865-1-git-send-email-wang6495@umn.edu
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/lib/test_firmware.c b/lib/test_firmware.c
+index 83ea6c4e623c..6ca97a63b3d6 100644
+--- a/lib/test_firmware.c
++++ b/lib/test_firmware.c
+@@ -886,8 +886,11 @@ static int __init test_firmware_init(void)
+ 		return -ENOMEM;
+ 
+ 	rc = __test_firmware_config_init();
+-	if (rc)
++	if (rc) {
++		kfree(test_fw_config);
++		pr_err("could not init firmware test config: %d\n", rc);
+ 		return rc;
++	}
+ 
+ 	rc = misc_register(&amp;test_fw_misc_device);
+ 	if (rc) {</pre><hr><pre>commit 45004d66f2a28d78f543fb2ffbc133e31dc2d162
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Mon Jul 22 08:57:44 2019 -0500
+
+    ASoC: dapm: fix a memory leak bug
+    
+    In snd_soc_dapm_new_control_unlocked(), a kernel buffer is allocated in
+    dapm_cnew_widget() to hold the new dapm widget. Then, different actions are
+    taken according to the id of the widget, i.e., 'w-&gt;id'. If any failure
+    occurs during this process, snd_soc_dapm_new_control_unlocked() should be
+    terminated by going to the 'request_failed' label. However, the allocated
+    kernel buffer is not freed on this code path, leading to a memory leak bug.
+    
+    To fix the above issue, free the buffer before returning from
+    snd_soc_dapm_new_control_unlocked() through the 'request_failed' label.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Link: https://lore.kernel.org/r/1563803864-2809-1-git-send-email-wang6495@umn.edu
+    Signed-off-by: Mark Brown &lt;broonie@kernel.org&gt;
+
+diff --git a/sound/soc/soc-dapm.c b/sound/soc/soc-dapm.c
+index 9cd87e47ee8f..656cb5cd9cd8 100644
+--- a/sound/soc/soc-dapm.c
++++ b/sound/soc/soc-dapm.c
+@@ -3704,6 +3704,8 @@ snd_soc_dapm_new_control_unlocked(struct snd_soc_dapm_context *dapm,
+ 		dev_err(dapm-&gt;dev, "ASoC: Failed to request %s: %d\n",
+ 			w-&gt;name, ret);
+ 
++	kfree_const(w-&gt;sname);
++	kfree(w);
+ 	return ERR_PTR(ret);
+ }
+ </pre><hr><pre>commit 15a78ba1844a8e052c1226f930133de4cef4e7ad
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sat Jul 20 07:22:45 2019 -0500
+
+    netfilter: ebtables: fix a memory leak bug in compat
+    
+    In compat_do_replace(), a temporary buffer is allocated through vmalloc()
+    to hold entries copied from the user space. The buffer address is firstly
+    saved to 'newinfo-&gt;entries', and later on assigned to 'entries_tmp'. Then
+    the entries in this temporary buffer is copied to the internal kernel
+    structure through compat_copy_entries(). If this copy process fails,
+    compat_do_replace() should be terminated. However, the allocated temporary
+    buffer is not freed on this path, leading to a memory leak.
+    
+    To fix the bug, free the buffer before returning from compat_do_replace().
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Reviewed-by: Florian Westphal &lt;fw@strlen.de&gt;
+    Signed-off-by: Pablo Neira Ayuso &lt;pablo@netfilter.org&gt;
+
+diff --git a/net/bridge/netfilter/ebtables.c b/net/bridge/netfilter/ebtables.c
+index 963dfdc14827..fd84b48e48b5 100644
+--- a/net/bridge/netfilter/ebtables.c
++++ b/net/bridge/netfilter/ebtables.c
+@@ -2261,8 +2261,10 @@ static int compat_do_replace(struct net *net, void __user *user,
+ 	state.buf_kern_len = size64;
+ 
+ 	ret = compat_copy_entries(entries_tmp, tmp.entries_size, &amp;state);
+-	if (WARN_ON(ret &lt; 0))
++	if (WARN_ON(ret &lt; 0)) {
++		vfree(entries_tmp);
+ 		goto out_unlock;
++	}
+ 
+ 	vfree(entries_tmp);
+ 	tmp.entries_size = size64;</pre><hr><pre>commit e7bf90e5afe3aa1d1282c1635a49e17a32c4ecec
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Thu Jul 11 14:22:02 2019 -0500
+
+    block/bio-integrity: fix a memory leak bug
+    
+    In bio_integrity_prep(), a kernel buffer is allocated through kmalloc() to
+    hold integrity metadata. Later on, the buffer will be attached to the bio
+    structure through bio_integrity_add_page(), which returns the number of
+    bytes of integrity metadata attached. Due to unexpected situations,
+    bio_integrity_add_page() may return 0. As a result, bio_integrity_prep()
+    needs to be terminated with 'false' returned to indicate this error.
+    However, the allocated kernel buffer is not freed on this execution path,
+    leading to a memory leak.
+    
+    To fix this issue, free the allocated buffer before returning from
+    bio_integrity_prep().
+    
+    Reviewed-by: Ming Lei &lt;ming.lei@redhat.com&gt;
+    Acked-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/block/bio-integrity.c b/block/bio-integrity.c
+index 4db620849515..fb95dbb21dd8 100644
+--- a/block/bio-integrity.c
++++ b/block/bio-integrity.c
+@@ -276,8 +276,12 @@ bool bio_integrity_prep(struct bio *bio)
+ 		ret = bio_integrity_add_page(bio, virt_to_page(buf),
+ 					     bytes, offset);
+ 
+-		if (ret == 0)
+-			return false;
++		if (ret == 0) {
++			printk(KERN_ERR "could not attach integrity payload\n");
++			kfree(buf);
++			status = BLK_STS_RESOURCE;
++			goto err_end_io;
++		}
+ 
+ 		if (ret &lt; bytes)
+ 			break;</pre>
+    <div class="pagination">
+        <a href='19_5.html'>&lt;&lt;Prev</a><a href='19.html'>1</a><a href='19_2.html'>2</a><a href='19_3.html'>3</a><a href='19_4.html'>4</a><a href='19_5.html'>5</a><span>[6]</span>
+    <div>
+</body>

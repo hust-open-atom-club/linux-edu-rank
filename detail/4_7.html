@@ -1,0 +1,2182 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_6.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><span>[7]</span><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_8.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 9f3770422c771da32c1d14e650c695eec27dbd1d
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Sat Jul 30 20:52:50 2011 -0400
+
+    pnfsblock: merge rw extents
+    
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/blocklayout/extents.c b/fs/nfs/blocklayout/extents.c
+index 473faee9cdef..292aadfd4d46 100644
+--- a/fs/nfs/blocklayout/extents.c
++++ b/fs/nfs/blocklayout/extents.c
+@@ -493,3 +493,50 @@ bl_find_get_extent(struct pnfs_block_layout *bl, sector_t isect,
+ 	print_bl_extent(ret);
+ 	return ret;
+ }
++
++/* Helper function to set_to_rw that initialize a new extent */
++static void
++_prep_new_extent(struct pnfs_block_extent *new,
++		 struct pnfs_block_extent *orig,
++		 sector_t offset, sector_t length, int state)
++{
++	kref_init(&amp;new-&gt;be_refcnt);
++	/* don't need to INIT_LIST_HEAD(&amp;new-&gt;be_node) */
++	memcpy(&amp;new-&gt;be_devid, &amp;orig-&gt;be_devid, sizeof(struct nfs4_deviceid));
++	new-&gt;be_mdev = orig-&gt;be_mdev;
++	new-&gt;be_f_offset = offset;
++	new-&gt;be_length = length;
++	new-&gt;be_v_offset = orig-&gt;be_v_offset - orig-&gt;be_f_offset + offset;
++	new-&gt;be_state = state;
++	new-&gt;be_inval = orig-&gt;be_inval;
++}
++
++/* Tries to merge be with extent in front of it in list.
++ * Frees storage if not used.
++ */
++static struct pnfs_block_extent *
++_front_merge(struct pnfs_block_extent *be, struct list_head *head,
++	     struct pnfs_block_extent *storage)
++{
++	struct pnfs_block_extent *prev;
++
++	if (!storage)
++		goto no_merge;
++	if (&amp;be-&gt;be_node == head || be-&gt;be_node.prev == head)
++		goto no_merge;
++	prev = list_entry(be-&gt;be_node.prev, struct pnfs_block_extent, be_node);
++	if ((prev-&gt;be_f_offset + prev-&gt;be_length != be-&gt;be_f_offset) ||
++	    !extents_consistent(prev, be))
++		goto no_merge;
++	_prep_new_extent(storage, prev, prev-&gt;be_f_offset,
++			 prev-&gt;be_length + be-&gt;be_length, prev-&gt;be_state);
++	list_replace(&amp;prev-&gt;be_node, &amp;storage-&gt;be_node);
++	bl_put_extent(prev);
++	list_del(&amp;be-&gt;be_node);
++	bl_put_extent(be);
++	return storage;
++
++ no_merge:
++	kfree(storage);
++	return be;
++}</pre><hr><pre>commit c1c2a4cd352269f1fb585b4a5c63abe24dd946c6
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Sat Jul 30 20:52:49 2011 -0400
+
+    pnfsblock: add extent manipulation functions
+    
+    Adds working implementations of various support functions
+    to handle INVAL extents, needed by writes, such as
+    bl_mark_sectors_init and bl_is_sector_init.
+    
+    [pnfsblock: fix 64-bit compiler warnings for extent manipulation]
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    [Implement release_inval_marks]
+    Signed-off-by: Zhang Jingwang &lt;zhangjingwang@nrchpc.ac.cn&gt;
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/blocklayout/blocklayout.c b/fs/nfs/blocklayout/blocklayout.c
+index 6cd7f4f3acdb..8c29a189f09b 100644
+--- a/fs/nfs/blocklayout/blocklayout.c
++++ b/fs/nfs/blocklayout/blocklayout.c
+@@ -78,10 +78,15 @@ release_extents(struct pnfs_block_layout *bl, struct pnfs_layout_range *range)
+ 	spin_unlock(&amp;bl-&gt;bl_ext_lock);
+ }
+ 
+-/* STUB */
+ static void
+ release_inval_marks(struct pnfs_inval_markings *marks)
+ {
++	struct pnfs_inval_tracking *pos, *temp;
++
++	list_for_each_entry_safe(pos, temp, &amp;marks-&gt;im_tree.mtt_stub, it_link) {
++		list_del(&amp;pos-&gt;it_link);
++		kfree(pos);
++	}
+ 	return;
+ }
+ 
+diff --git a/fs/nfs/blocklayout/blocklayout.h b/fs/nfs/blocklayout/blocklayout.h
+index 3e1b5fc152d7..fcf47b55b5ce 100644
+--- a/fs/nfs/blocklayout/blocklayout.h
++++ b/fs/nfs/blocklayout/blocklayout.h
+@@ -38,6 +38,9 @@
+ 
+ #include "../pnfs.h"
+ 
++#define PAGE_CACHE_SECTORS (PAGE_CACHE_SIZE &gt;&gt; SECTOR_SHIFT)
++#define PAGE_CACHE_SECTOR_SHIFT (PAGE_CACHE_SHIFT - SECTOR_SHIFT)
++
+ struct block_mount_id {
+ 	spinlock_t			bm_lock;    /* protects list */
+ 	struct list_head		bm_devlist; /* holds pnfs_block_dev */
+@@ -56,8 +59,23 @@ enum exstate4 {
+ 	PNFS_BLOCK_NONE_DATA		= 3  /* unmapped, it's a hole */
+ };
+ 
++#define MY_MAX_TAGS (15) /* tag bitnums used must be less than this */
++
++struct my_tree {
++	sector_t		mtt_step_size;	/* Internal sector alignment */
++	struct list_head	mtt_stub; /* Should be a radix tree */
++};
++
+ struct pnfs_inval_markings {
+-	/* STUB */
++	spinlock_t	im_lock;
++	struct my_tree	im_tree;	/* Sectors that need LAYOUTCOMMIT */
++	sector_t	im_block_size;	/* Server blocksize in sectors */
++};
++
++struct pnfs_inval_tracking {
++	struct list_head it_link;
++	int		 it_sector;
++	int		 it_tags;
+ };
+ 
+ /* sector_t fields are all in 512-byte sectors */
+@@ -76,7 +94,11 @@ struct pnfs_block_extent {
+ static inline void
+ BL_INIT_INVAL_MARKS(struct pnfs_inval_markings *marks, sector_t blocksize)
+ {
+-	/* STUB */
++	spin_lock_init(&amp;marks-&gt;im_lock);
++	INIT_LIST_HEAD(&amp;marks-&gt;im_tree.mtt_stub);
++	marks-&gt;im_block_size = blocksize;
++	marks-&gt;im_tree.mtt_step_size = min((sector_t)PAGE_CACHE_SECTORS,
++					   blocksize);
+ }
+ 
+ enum extentclass4 {
+@@ -156,8 +178,12 @@ void bl_free_block_dev(struct pnfs_block_dev *bdev);
+ struct pnfs_block_extent *
+ bl_find_get_extent(struct pnfs_block_layout *bl, sector_t isect,
+ 		struct pnfs_block_extent **cow_read);
++int bl_mark_sectors_init(struct pnfs_inval_markings *marks,
++			     sector_t offset, sector_t length,
++			     sector_t **pages);
+ void bl_put_extent(struct pnfs_block_extent *be);
+ struct pnfs_block_extent *bl_alloc_extent(void);
++int bl_is_sector_init(struct pnfs_inval_markings *marks, sector_t isect);
+ int bl_add_merge_extent(struct pnfs_block_layout *bl,
+ 			 struct pnfs_block_extent *new);
+ 
+diff --git a/fs/nfs/blocklayout/extents.c b/fs/nfs/blocklayout/extents.c
+index 8fa93e23cb24..473faee9cdef 100644
+--- a/fs/nfs/blocklayout/extents.c
++++ b/fs/nfs/blocklayout/extents.c
+@@ -33,6 +33,259 @@
+ #include "blocklayout.h"
+ #define NFSDBG_FACILITY         NFSDBG_PNFS_LD
+ 
++/* Bit numbers */
++#define EXTENT_INITIALIZED 0
++#define EXTENT_WRITTEN     1
++#define EXTENT_IN_COMMIT   2
++#define INTERNAL_EXISTS    MY_MAX_TAGS
++#define INTERNAL_MASK      ((1 &lt;&lt; INTERNAL_EXISTS) - 1)
++
++/* Returns largest t&lt;=s s.t. t%base==0 */
++static inline sector_t normalize(sector_t s, int base)
++{
++	sector_t tmp = s; /* Since do_div modifies its argument */
++	return s - do_div(tmp, base);
++}
++
++static inline sector_t normalize_up(sector_t s, int base)
++{
++	return normalize(s + base - 1, base);
++}
++
++/* Complete stub using list while determine API wanted */
++
++/* Returns tags, or negative */
++static int32_t _find_entry(struct my_tree *tree, u64 s)
++{
++	struct pnfs_inval_tracking *pos;
++
++	dprintk("%s(%llu) enter\n", __func__, s);
++	list_for_each_entry_reverse(pos, &amp;tree-&gt;mtt_stub, it_link) {
++		if (pos-&gt;it_sector &gt; s)
++			continue;
++		else if (pos-&gt;it_sector == s)
++			return pos-&gt;it_tags &amp; INTERNAL_MASK;
++		else
++			break;
++	}
++	return -ENOENT;
++}
++
++static inline
++int _has_tag(struct my_tree *tree, u64 s, int32_t tag)
++{
++	int32_t tags;
++
++	dprintk("%s(%llu, %i) enter\n", __func__, s, tag);
++	s = normalize(s, tree-&gt;mtt_step_size);
++	tags = _find_entry(tree, s);
++	if ((tags &lt; 0) || !(tags &amp; (1 &lt;&lt; tag)))
++		return 0;
++	else
++		return 1;
++}
++
++/* Creates entry with tag, or if entry already exists, unions tag to it.
++ * If storage is not NULL, newly created entry will use it.
++ * Returns number of entries added, or negative on error.
++ */
++static int _add_entry(struct my_tree *tree, u64 s, int32_t tag,
++		      struct pnfs_inval_tracking *storage)
++{
++	int found = 0;
++	struct pnfs_inval_tracking *pos;
++
++	dprintk("%s(%llu, %i, %p) enter\n", __func__, s, tag, storage);
++	list_for_each_entry_reverse(pos, &amp;tree-&gt;mtt_stub, it_link) {
++		if (pos-&gt;it_sector &gt; s)
++			continue;
++		else if (pos-&gt;it_sector == s) {
++			found = 1;
++			break;
++		} else
++			break;
++	}
++	if (found) {
++		pos-&gt;it_tags |= (1 &lt;&lt; tag);
++		return 0;
++	} else {
++		struct pnfs_inval_tracking *new;
++		if (storage)
++			new = storage;
++		else {
++			new = kmalloc(sizeof(*new), GFP_NOFS);
++			if (!new)
++				return -ENOMEM;
++		}
++		new-&gt;it_sector = s;
++		new-&gt;it_tags = (1 &lt;&lt; tag);
++		list_add(&amp;new-&gt;it_link, &amp;pos-&gt;it_link);
++		return 1;
++	}
++}
++
++/* XXXX Really want option to not create */
++/* Over range, unions tag with existing entries, else creates entry with tag */
++static int _set_range(struct my_tree *tree, int32_t tag, u64 s, u64 length)
++{
++	u64 i;
++
++	dprintk("%s(%i, %llu, %llu) enter\n", __func__, tag, s, length);
++	for (i = normalize(s, tree-&gt;mtt_step_size); i &lt; s + length;
++	     i += tree-&gt;mtt_step_size)
++		if (_add_entry(tree, i, tag, NULL))
++			return -ENOMEM;
++	return 0;
++}
++
++/* Ensure that future operations on given range of tree will not malloc */
++static int _preload_range(struct my_tree *tree, u64 offset, u64 length)
++{
++	u64 start, end, s;
++	int count, i, used = 0, status = -ENOMEM;
++	struct pnfs_inval_tracking **storage;
++
++	dprintk("%s(%llu, %llu) enter\n", __func__, offset, length);
++	start = normalize(offset, tree-&gt;mtt_step_size);
++	end = normalize_up(offset + length, tree-&gt;mtt_step_size);
++	count = (int)(end - start) / (int)tree-&gt;mtt_step_size;
++
++	/* Pre-malloc what memory we might need */
++	storage = kmalloc(sizeof(*storage) * count, GFP_NOFS);
++	if (!storage)
++		return -ENOMEM;
++	for (i = 0; i &lt; count; i++) {
++		storage[i] = kmalloc(sizeof(struct pnfs_inval_tracking),
++				     GFP_NOFS);
++		if (!storage[i])
++			goto out_cleanup;
++	}
++
++	/* Now need lock - HOW??? */
++
++	for (s = start; s &lt; end; s += tree-&gt;mtt_step_size)
++		used += _add_entry(tree, s, INTERNAL_EXISTS, storage[used]);
++
++	/* Unlock - HOW??? */
++	status = 0;
++
++ out_cleanup:
++	for (i = used; i &lt; count; i++) {
++		if (!storage[i])
++			break;
++		kfree(storage[i]);
++	}
++	kfree(storage);
++	return status;
++}
++
++static void set_needs_init(sector_t *array, sector_t offset)
++{
++	sector_t *p = array;
++
++	dprintk("%s enter\n", __func__);
++	if (!p)
++		return;
++	while (*p &lt; offset)
++		p++;
++	if (*p == offset)
++		return;
++	else if (*p == ~0) {
++		*p++ = offset;
++		*p = ~0;
++		return;
++	} else {
++		sector_t *save = p;
++		dprintk("%s Adding %llu\n", __func__, (u64)offset);
++		while (*p != ~0)
++			p++;
++		p++;
++		memmove(save + 1, save, (char *)p - (char *)save);
++		*save = offset;
++		return;
++	}
++}
++
++/* We are relying on page lock to serialize this */
++int bl_is_sector_init(struct pnfs_inval_markings *marks, sector_t isect)
++{
++	int rv;
++
++	spin_lock(&amp;marks-&gt;im_lock);
++	rv = _has_tag(&amp;marks-&gt;im_tree, isect, EXTENT_INITIALIZED);
++	spin_unlock(&amp;marks-&gt;im_lock);
++	return rv;
++}
++
++/* Marks sectors in [offest, offset_length) as having been initialized.
++ * All lengths are step-aligned, where step is min(pagesize, blocksize).
++ * Notes where partial block is initialized, and helps prepare it for
++ * complete initialization later.
++ */
++/* Currently assumes offset is page-aligned */
++int bl_mark_sectors_init(struct pnfs_inval_markings *marks,
++			     sector_t offset, sector_t length,
++			     sector_t **pages)
++{
++	sector_t s, start, end;
++	sector_t *array = NULL; /* Pages to mark */
++
++	dprintk("%s(offset=%llu,len=%llu) enter\n",
++		__func__, (u64)offset, (u64)length);
++	s = max((sector_t) 3,
++		2 * (marks-&gt;im_block_size / (PAGE_CACHE_SECTORS)));
++	dprintk("%s set max=%llu\n", __func__, (u64)s);
++	if (pages) {
++		array = kmalloc(s * sizeof(sector_t), GFP_NOFS);
++		if (!array)
++			goto outerr;
++		array[0] = ~0;
++	}
++
++	start = normalize(offset, marks-&gt;im_block_size);
++	end = normalize_up(offset + length, marks-&gt;im_block_size);
++	if (_preload_range(&amp;marks-&gt;im_tree, start, end - start))
++		goto outerr;
++
++	spin_lock(&amp;marks-&gt;im_lock);
++
++	for (s = normalize_up(start, PAGE_CACHE_SECTORS);
++	     s &lt; offset; s += PAGE_CACHE_SECTORS) {
++		dprintk("%s pre-area pages\n", __func__);
++		/* Portion of used block is not initialized */
++		if (!_has_tag(&amp;marks-&gt;im_tree, s, EXTENT_INITIALIZED))
++			set_needs_init(array, s);
++	}
++	if (_set_range(&amp;marks-&gt;im_tree, EXTENT_INITIALIZED, offset, length))
++		goto out_unlock;
++	for (s = normalize_up(offset + length, PAGE_CACHE_SECTORS);
++	     s &lt; end; s += PAGE_CACHE_SECTORS) {
++		dprintk("%s post-area pages\n", __func__);
++		if (!_has_tag(&amp;marks-&gt;im_tree, s, EXTENT_INITIALIZED))
++			set_needs_init(array, s);
++	}
++
++	spin_unlock(&amp;marks-&gt;im_lock);
++
++	if (pages) {
++		if (array[0] == ~0) {
++			kfree(array);
++			*pages = NULL;
++		} else
++			*pages = array;
++	}
++	return 0;
++
++ out_unlock:
++	spin_unlock(&amp;marks-&gt;im_lock);
++ outerr:
++	if (pages) {
++		kfree(array);
++		*pages = NULL;
++	}
++	return -ENOMEM;
++}
++
+ static void print_bl_extent(struct pnfs_block_extent *be)
+ {
+ 	dprintk("PRINT EXTENT extent %p\n", be);</pre><hr><pre>commit 6d742ba538f98164f3c5e05cdcadb4ec6ddf504f
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Sat Jul 30 20:52:48 2011 -0400
+
+    pnfsblock: bl_find_get_extent
+    
+    Implement bl_find_get_extent(), one of the core extent manipulation
+    routines.
+    
+    [pnfsblock: Lookup list entry of layouts and tags in reverse order]
+    Signed-off-by: Zhang Jingwang &lt;zhangjingwang@nrchpc.ac.cn&gt;
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    
+    pnfsblock: fix print format warnings for sector_t and size_t
+    
+    gcc spews warnings about these on x86_64, e.g.:
+    fs/nfs/blocklayout/blocklayout.c:74: warning: format ‘%Lu’ expects type ‘long long unsigned int’, but argument 2 has type ‘sector_t’
+    fs/nfs/blocklayout/blocklayout.c:388: warning: format ‘%d’ expects type ‘int’, but argument 5 has type ‘size_t’
+    
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/blocklayout/blocklayout.h b/fs/nfs/blocklayout/blocklayout.h
+index d645880f61a0..3e1b5fc152d7 100644
+--- a/fs/nfs/blocklayout/blocklayout.h
++++ b/fs/nfs/blocklayout/blocklayout.h
+@@ -153,6 +153,9 @@ int nfs4_blk_process_layoutget(struct pnfs_layout_hdr *lo,
+ void bl_free_block_dev(struct pnfs_block_dev *bdev);
+ 
+ /* extents.c */
++struct pnfs_block_extent *
++bl_find_get_extent(struct pnfs_block_layout *bl, sector_t isect,
++		struct pnfs_block_extent **cow_read);
+ void bl_put_extent(struct pnfs_block_extent *be);
+ struct pnfs_block_extent *bl_alloc_extent(void);
+ int bl_add_merge_extent(struct pnfs_block_layout *bl,
+diff --git a/fs/nfs/blocklayout/extents.c b/fs/nfs/blocklayout/extents.c
+index ee4891f32492..8fa93e23cb24 100644
+--- a/fs/nfs/blocklayout/extents.c
++++ b/fs/nfs/blocklayout/extents.c
+@@ -193,3 +193,50 @@ bl_add_merge_extent(struct pnfs_block_layout *bl,
+ 	bl_put_extent(new);
+ 	return -EIO;
+ }
++
++/* Returns extent, or NULL.  If a second READ extent exists, it is returned
++ * in cow_read, if given.
++ *
++ * The extents are kept in two seperate ordered lists, one for READ and NONE,
++ * one for READWRITE and INVALID.  Within each list, we assume:
++ * 1. Extents are ordered by file offset.
++ * 2. For any given isect, there is at most one extents that matches.
++ */
++struct pnfs_block_extent *
++bl_find_get_extent(struct pnfs_block_layout *bl, sector_t isect,
++	    struct pnfs_block_extent **cow_read)
++{
++	struct pnfs_block_extent *be, *cow, *ret;
++	int i;
++
++	dprintk("%s enter with isect %llu\n", __func__, (u64)isect);
++	cow = ret = NULL;
++	spin_lock(&amp;bl-&gt;bl_ext_lock);
++	for (i = 0; i &lt; EXTENT_LISTS; i++) {
++		list_for_each_entry_reverse(be, &amp;bl-&gt;bl_extents[i], be_node) {
++			if (isect &gt;= be-&gt;be_f_offset + be-&gt;be_length)
++				break;
++			if (isect &gt;= be-&gt;be_f_offset) {
++				/* We have found an extent */
++				dprintk("%s Get %p (%i)\n", __func__, be,
++					atomic_read(&amp;be-&gt;be_refcnt.refcount));
++				kref_get(&amp;be-&gt;be_refcnt);
++				if (!ret)
++					ret = be;
++				else if (be-&gt;be_state != PNFS_BLOCK_READ_DATA)
++					bl_put_extent(be);
++				else
++					cow = be;
++				break;
++			}
++		}
++		if (ret &amp;&amp;
++		    (!cow_read || ret-&gt;be_state != PNFS_BLOCK_INVALID_DATA))
++			break;
++	}
++	spin_unlock(&amp;bl-&gt;bl_ext_lock);
++	if (cow_read)
++		*cow_read = cow;
++	print_bl_extent(ret);
++	return ret;
++}</pre><hr><pre>commit e9437ccef92a28ba4c9009404bb8c9b5672dc54a
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Sat Jul 30 20:52:47 2011 -0400
+
+    pnfsblock: xdr decode pnfs_block_layout4
+    
+    XDR decodes the block layout payload sent in LAYOUTGET result, storing
+    the result in an extent list.
+    
+    [pnfsblock: get rid of deprecated xdr macros]
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    [pnfsblock: fix bug getting pnfs_layout_type in translate_devid().]
+    Signed-off-by: Tao Guo &lt;guotao@nrchpc.ac.cn&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/blocklayout/blocklayoutdev.c b/fs/nfs/blocklayout/blocklayoutdev.c
+index b23fe601d1c9..a83b393fb01c 100644
+--- a/fs/nfs/blocklayout/blocklayoutdev.c
++++ b/fs/nfs/blocklayout/blocklayoutdev.c
+@@ -40,6 +40,19 @@
+ 
+ #define NFSDBG_FACILITY         NFSDBG_PNFS_LD
+ 
++static int decode_sector_number(__be32 **rp, sector_t *sp)
++{
++	uint64_t s;
++
++	*rp = xdr_decode_hyper(*rp, &amp;s);
++	if (s &amp; 0x1ff) {
++		printk(KERN_WARNING "%s: sector not aligned\n", __func__);
++		return -1;
++	}
++	*sp = s &gt;&gt; SECTOR_SHIFT;
++	return 0;
++}
++
+ /* Open a block_device by device number. */
+ struct block_device *nfs4_blkdev_get(dev_t dev)
+ {
+@@ -197,10 +210,201 @@ nfs4_blk_decode_device(struct nfs_server *server,
+ 	return rv;
+ }
+ 
++/* Map deviceid returned by the server to constructed block_device */
++static struct block_device *translate_devid(struct pnfs_layout_hdr *lo,
++					    struct nfs4_deviceid *id)
++{
++	struct block_device *rv = NULL;
++	struct block_mount_id *mid;
++	struct pnfs_block_dev *dev;
++
++	dprintk("%s enter, lo=%p, id=%p\n", __func__, lo, id);
++	mid = BLK_ID(lo);
++	spin_lock(&amp;mid-&gt;bm_lock);
++	list_for_each_entry(dev, &amp;mid-&gt;bm_devlist, bm_node) {
++		if (memcmp(id-&gt;data, dev-&gt;bm_mdevid.data,
++			   NFS4_DEVICEID4_SIZE) == 0) {
++			rv = dev-&gt;bm_mdev;
++			goto out;
++		}
++	}
++ out:
++	spin_unlock(&amp;mid-&gt;bm_lock);
++	dprintk("%s returning %p\n", __func__, rv);
++	return rv;
++}
++
++/* Tracks info needed to ensure extents in layout obey constraints of spec */
++struct layout_verification {
++	u32 mode;	/* R or RW */
++	u64 start;	/* Expected start of next non-COW extent */
++	u64 inval;	/* Start of INVAL coverage */
++	u64 cowread;	/* End of COW read coverage */
++};
++
++/* Verify the extent meets the layout requirements of the pnfs-block draft,
++ * section 2.3.1.
++ */
++static int verify_extent(struct pnfs_block_extent *be,
++			 struct layout_verification *lv)
++{
++	if (lv-&gt;mode == IOMODE_READ) {
++		if (be-&gt;be_state == PNFS_BLOCK_READWRITE_DATA ||
++		    be-&gt;be_state == PNFS_BLOCK_INVALID_DATA)
++			return -EIO;
++		if (be-&gt;be_f_offset != lv-&gt;start)
++			return -EIO;
++		lv-&gt;start += be-&gt;be_length;
++		return 0;
++	}
++	/* lv-&gt;mode == IOMODE_RW */
++	if (be-&gt;be_state == PNFS_BLOCK_READWRITE_DATA) {
++		if (be-&gt;be_f_offset != lv-&gt;start)
++			return -EIO;
++		if (lv-&gt;cowread &gt; lv-&gt;start)
++			return -EIO;
++		lv-&gt;start += be-&gt;be_length;
++		lv-&gt;inval = lv-&gt;start;
++		return 0;
++	} else if (be-&gt;be_state == PNFS_BLOCK_INVALID_DATA) {
++		if (be-&gt;be_f_offset != lv-&gt;start)
++			return -EIO;
++		lv-&gt;start += be-&gt;be_length;
++		return 0;
++	} else if (be-&gt;be_state == PNFS_BLOCK_READ_DATA) {
++		if (be-&gt;be_f_offset &gt; lv-&gt;start)
++			return -EIO;
++		if (be-&gt;be_f_offset &lt; lv-&gt;inval)
++			return -EIO;
++		if (be-&gt;be_f_offset &lt; lv-&gt;cowread)
++			return -EIO;
++		/* It looks like you might want to min this with lv-&gt;start,
++		 * but you really don't.
++		 */
++		lv-&gt;inval = lv-&gt;inval + be-&gt;be_length;
++		lv-&gt;cowread = be-&gt;be_f_offset + be-&gt;be_length;
++		return 0;
++	} else
++		return -EIO;
++}
++
++/* XDR decode pnfs_block_layout4 structure */
+ int
+ nfs4_blk_process_layoutget(struct pnfs_layout_hdr *lo,
+ 			   struct nfs4_layoutget_res *lgr, gfp_t gfp_flags)
+ {
+-	/* STUB */
+-	return -EIO;
++	struct pnfs_block_layout *bl = BLK_LO2EXT(lo);
++	int i, status = -EIO;
++	uint32_t count;
++	struct pnfs_block_extent *be = NULL, *save;
++	struct xdr_stream stream;
++	struct xdr_buf buf;
++	struct page *scratch;
++	__be32 *p;
++	struct layout_verification lv = {
++		.mode = lgr-&gt;range.iomode,
++		.start = lgr-&gt;range.offset &gt;&gt; SECTOR_SHIFT,
++		.inval = lgr-&gt;range.offset &gt;&gt; SECTOR_SHIFT,
++		.cowread = lgr-&gt;range.offset &gt;&gt; SECTOR_SHIFT,
++	};
++	LIST_HEAD(extents);
++
++	dprintk("---&gt; %s\n", __func__);
++
++	scratch = alloc_page(gfp_flags);
++	if (!scratch)
++		return -ENOMEM;
++
++	xdr_init_decode_pages(&amp;stream, &amp;buf, lgr-&gt;layoutp-&gt;pages, lgr-&gt;layoutp-&gt;len);
++	xdr_set_scratch_buffer(&amp;stream, page_address(scratch), PAGE_SIZE);
++
++	p = xdr_inline_decode(&amp;stream, 4);
++	if (unlikely(!p))
++		goto out_err;
++
++	count = be32_to_cpup(p++);
++
++	dprintk("%s enter, number of extents %i\n", __func__, count);
++	p = xdr_inline_decode(&amp;stream, (28 + NFS4_DEVICEID4_SIZE) * count);
++	if (unlikely(!p))
++		goto out_err;
++
++	/* Decode individual extents, putting them in temporary
++	 * staging area until whole layout is decoded to make error
++	 * recovery easier.
++	 */
++	for (i = 0; i &lt; count; i++) {
++		be = bl_alloc_extent();
++		if (!be) {
++			status = -ENOMEM;
++			goto out_err;
++		}
++		memcpy(&amp;be-&gt;be_devid, p, NFS4_DEVICEID4_SIZE);
++		p += XDR_QUADLEN(NFS4_DEVICEID4_SIZE);
++		be-&gt;be_mdev = translate_devid(lo, &amp;be-&gt;be_devid);
++		if (!be-&gt;be_mdev)
++			goto out_err;
++
++		/* The next three values are read in as bytes,
++		 * but stored as 512-byte sector lengths
++		 */
++		if (decode_sector_number(&amp;p, &amp;be-&gt;be_f_offset) &lt; 0)
++			goto out_err;
++		if (decode_sector_number(&amp;p, &amp;be-&gt;be_length) &lt; 0)
++			goto out_err;
++		if (decode_sector_number(&amp;p, &amp;be-&gt;be_v_offset) &lt; 0)
++			goto out_err;
++		be-&gt;be_state = be32_to_cpup(p++);
++		if (be-&gt;be_state == PNFS_BLOCK_INVALID_DATA)
++			be-&gt;be_inval = &amp;bl-&gt;bl_inval;
++		if (verify_extent(be, &amp;lv)) {
++			dprintk("%s verify failed\n", __func__);
++			goto out_err;
++		}
++		list_add_tail(&amp;be-&gt;be_node, &amp;extents);
++	}
++	if (lgr-&gt;range.offset + lgr-&gt;range.length !=
++			lv.start &lt;&lt; SECTOR_SHIFT) {
++		dprintk("%s Final length mismatch\n", __func__);
++		be = NULL;
++		goto out_err;
++	}
++	if (lv.start &lt; lv.cowread) {
++		dprintk("%s Final uncovered COW extent\n", __func__);
++		be = NULL;
++		goto out_err;
++	}
++	/* Extents decoded properly, now try to merge them in to
++	 * existing layout extents.
++	 */
++	spin_lock(&amp;bl-&gt;bl_ext_lock);
++	list_for_each_entry_safe(be, save, &amp;extents, be_node) {
++		list_del(&amp;be-&gt;be_node);
++		status = bl_add_merge_extent(bl, be);
++		if (status) {
++			spin_unlock(&amp;bl-&gt;bl_ext_lock);
++			/* This is a fairly catastrophic error, as the
++			 * entire layout extent lists are now corrupted.
++			 * We should have some way to distinguish this.
++			 */
++			be = NULL;
++			goto out_err;
++		}
++	}
++	spin_unlock(&amp;bl-&gt;bl_ext_lock);
++	status = 0;
++ out:
++	__free_page(scratch);
++	dprintk("%s returns %i\n", __func__, status);
++	return status;
++
++ out_err:
++	bl_put_extent(be);
++	while (!list_empty(&amp;extents)) {
++		be = list_first_entry(&amp;extents, struct pnfs_block_extent,
++				      be_node);
++		list_del(&amp;be-&gt;be_node);
++		bl_put_extent(be);
++	}
++	goto out;
+ }</pre><hr><pre>commit 2f9fd182607e7b3bdca35f6ed7f2fae539f7c46b
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Sat Jul 30 20:52:46 2011 -0400
+
+    pnfsblock: call and parse getdevicelist
+    
+    Call GETDEVICELIST during mount, then call and parse GETDEVICEINFO
+    for each device returned.
+    
+    [pnfsblock: get rid of deprecated xdr macros]
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    [pnfsblock: fix pnfs_deviceid references]
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    [pnfsblock: fix print format warnings for sector_t and size_t]
+    [pnfs-block: #include &lt;linux/vmalloc.h&gt;]
+    [pnfsblock: no PNFS_NFS_SERVER]
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    [pnfsblock: fix bug determining size of striped volume]
+    [pnfsblock: fix oops when using multiple devices]
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    [pnfsblock: get rid of vmap and deviceid-&gt;area structure]
+    Signed-off-by: Peng Tao &lt;peng_tao@emc.com&gt;
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/blocklayout/blocklayout.c b/fs/nfs/blocklayout/blocklayout.c
+index e7bc7a57b3bb..6cd7f4f3acdb 100644
+--- a/fs/nfs/blocklayout/blocklayout.c
++++ b/fs/nfs/blocklayout/blocklayout.c
+@@ -157,17 +157,153 @@ bl_cleanup_layoutcommit(struct nfs4_layoutcommit_data *lcdata)
+ {
+ }
+ 
++static void free_blk_mountid(struct block_mount_id *mid)
++{
++	if (mid) {
++		struct pnfs_block_dev *dev;
++		spin_lock(&amp;mid-&gt;bm_lock);
++		while (!list_empty(&amp;mid-&gt;bm_devlist)) {
++			dev = list_first_entry(&amp;mid-&gt;bm_devlist,
++					       struct pnfs_block_dev,
++					       bm_node);
++			list_del(&amp;dev-&gt;bm_node);
++			bl_free_block_dev(dev);
++		}
++		spin_unlock(&amp;mid-&gt;bm_lock);
++		kfree(mid);
++	}
++}
++
++/* This is mostly copied from the filelayout's get_device_info function.
++ * It seems much of this should be at the generic pnfs level.
++ */
++static struct pnfs_block_dev *
++nfs4_blk_get_deviceinfo(struct nfs_server *server, const struct nfs_fh *fh,
++			struct nfs4_deviceid *d_id)
++{
++	struct pnfs_device *dev;
++	struct pnfs_block_dev *rv = NULL;
++	u32 max_resp_sz;
++	int max_pages;
++	struct page **pages = NULL;
++	int i, rc;
++
++	/*
++	 * Use the session max response size as the basis for setting
++	 * GETDEVICEINFO's maxcount
++	 */
++	max_resp_sz = server-&gt;nfs_client-&gt;cl_session-&gt;fc_attrs.max_resp_sz;
++	max_pages = max_resp_sz &gt;&gt; PAGE_SHIFT;
++	dprintk("%s max_resp_sz %u max_pages %d\n",
++		__func__, max_resp_sz, max_pages);
++
++	dev = kmalloc(sizeof(*dev), GFP_NOFS);
++	if (!dev) {
++		dprintk("%s kmalloc failed\n", __func__);
++		return NULL;
++	}
++
++	pages = kzalloc(max_pages * sizeof(struct page *), GFP_NOFS);
++	if (pages == NULL) {
++		kfree(dev);
++		return NULL;
++	}
++	for (i = 0; i &lt; max_pages; i++) {
++		pages[i] = alloc_page(GFP_NOFS);
++		if (!pages[i])
++			goto out_free;
++	}
++
++	memcpy(&amp;dev-&gt;dev_id, d_id, sizeof(*d_id));
++	dev-&gt;layout_type = LAYOUT_BLOCK_VOLUME;
++	dev-&gt;pages = pages;
++	dev-&gt;pgbase = 0;
++	dev-&gt;pglen = PAGE_SIZE * max_pages;
++	dev-&gt;mincount = 0;
++
++	dprintk("%s: dev_id: %s\n", __func__, dev-&gt;dev_id.data);
++	rc = nfs4_proc_getdeviceinfo(server, dev);
++	dprintk("%s getdevice info returns %d\n", __func__, rc);
++	if (rc)
++		goto out_free;
++
++	rv = nfs4_blk_decode_device(server, dev);
++ out_free:
++	for (i = 0; i &lt; max_pages; i++)
++		__free_page(pages[i]);
++	kfree(pages);
++	kfree(dev);
++	return rv;
++}
++
+ static int
+ bl_set_layoutdriver(struct nfs_server *server, const struct nfs_fh *fh)
+ {
++	struct block_mount_id *b_mt_id = NULL;
++	struct pnfs_devicelist *dlist = NULL;
++	struct pnfs_block_dev *bdev;
++	LIST_HEAD(block_disklist);
++	int status = 0, i;
++
+ 	dprintk("%s enter\n", __func__);
+-	return 0;
++
++	if (server-&gt;pnfs_blksize == 0) {
++		dprintk("%s Server did not return blksize\n", __func__);
++		return -EINVAL;
++	}
++	b_mt_id = kzalloc(sizeof(struct block_mount_id), GFP_NOFS);
++	if (!b_mt_id) {
++		status = -ENOMEM;
++		goto out_error;
++	}
++	/* Initialize nfs4 block layout mount id */
++	spin_lock_init(&amp;b_mt_id-&gt;bm_lock);
++	INIT_LIST_HEAD(&amp;b_mt_id-&gt;bm_devlist);
++
++	dlist = kmalloc(sizeof(struct pnfs_devicelist), GFP_NOFS);
++	if (!dlist) {
++		status = -ENOMEM;
++		goto out_error;
++	}
++	dlist-&gt;eof = 0;
++	while (!dlist-&gt;eof) {
++		status = nfs4_proc_getdevicelist(server, fh, dlist);
++		if (status)
++			goto out_error;
++		dprintk("%s GETDEVICELIST numdevs=%i, eof=%i\n",
++			__func__, dlist-&gt;num_devs, dlist-&gt;eof);
++		for (i = 0; i &lt; dlist-&gt;num_devs; i++) {
++			bdev = nfs4_blk_get_deviceinfo(server, fh,
++						       &amp;dlist-&gt;dev_id[i]);
++			if (!bdev) {
++				status = -ENODEV;
++				goto out_error;
++			}
++			spin_lock(&amp;b_mt_id-&gt;bm_lock);
++			list_add(&amp;bdev-&gt;bm_node, &amp;b_mt_id-&gt;bm_devlist);
++			spin_unlock(&amp;b_mt_id-&gt;bm_lock);
++		}
++	}
++	dprintk("%s SUCCESS\n", __func__);
++	server-&gt;pnfs_ld_data = b_mt_id;
++
++ out_return:
++	kfree(dlist);
++	return status;
++
++ out_error:
++	free_blk_mountid(b_mt_id);
++	goto out_return;
+ }
+ 
+ static int
+ bl_clear_layoutdriver(struct nfs_server *server)
+ {
++	struct block_mount_id *b_mt_id = server-&gt;pnfs_ld_data;
++
+ 	dprintk("%s enter\n", __func__);
++	free_blk_mountid(b_mt_id);
++	dprintk("%s RETURNS\n", __func__);
+ 	return 0;
+ }
+ 
+diff --git a/fs/nfs/blocklayout/blocklayout.h b/fs/nfs/blocklayout/blocklayout.h
+index 581d8f47a723..d645880f61a0 100644
+--- a/fs/nfs/blocklayout/blocklayout.h
++++ b/fs/nfs/blocklayout/blocklayout.h
+@@ -38,6 +38,11 @@
+ 
+ #include "../pnfs.h"
+ 
++struct block_mount_id {
++	spinlock_t			bm_lock;    /* protects list */
++	struct list_head		bm_devlist; /* holds pnfs_block_dev */
++};
++
+ struct pnfs_block_dev {
+ 	struct list_head		bm_node;
+ 	struct nfs4_deviceid		bm_mdevid;    /* associated devid */
+@@ -99,7 +104,10 @@ struct pnfs_block_layout {
+ 	sector_t		bl_blocksize;  /* Server blocksize in sectors */
+ };
+ 
+-static inline struct pnfs_block_layout *BLK_LO2EXT(struct pnfs_layout_hdr *lo)
++#define BLK_ID(lo) ((struct block_mount_id *)(NFS_SERVER(lo-&gt;plh_inode)-&gt;pnfs_ld_data))
++
++static inline struct pnfs_block_layout *
++BLK_LO2EXT(struct pnfs_layout_hdr *lo)
+ {
+ 	return container_of(lo, struct pnfs_block_layout, bl_layout);
+ }
+@@ -137,8 +145,7 @@ void bl_pipe_destroy_msg(struct rpc_pipe_msg *);
+ struct block_device *nfs4_blkdev_get(dev_t dev);
+ int nfs4_blkdev_put(struct block_device *bdev);
+ struct pnfs_block_dev *nfs4_blk_decode_device(struct nfs_server *server,
+-						struct pnfs_device *dev,
+-						struct list_head *sdlist);
++						struct pnfs_device *dev);
+ int nfs4_blk_process_layoutget(struct pnfs_layout_hdr *lo,
+ 				struct nfs4_layoutget_res *lgr, gfp_t gfp_flags);
+ 
+diff --git a/fs/nfs/blocklayout/blocklayoutdev.c b/fs/nfs/blocklayout/blocklayoutdev.c
+index 64da33a40eaf..b23fe601d1c9 100644
+--- a/fs/nfs/blocklayout/blocklayoutdev.c
++++ b/fs/nfs/blocklayout/blocklayoutdev.c
+@@ -116,8 +116,7 @@ void bl_pipe_destroy_msg(struct rpc_pipe_msg *msg)
+  */
+ struct pnfs_block_dev *
+ nfs4_blk_decode_device(struct nfs_server *server,
+-		       struct pnfs_device *dev,
+-		       struct list_head *sdlist)
++		       struct pnfs_device *dev)
+ {
+ 	struct pnfs_block_dev *rv = NULL;
+ 	struct block_device *bd = NULL;
+@@ -129,6 +128,7 @@ nfs4_blk_decode_device(struct nfs_server *server,
+ 	uint8_t *dataptr;
+ 	DECLARE_WAITQUEUE(wq, current);
+ 	struct bl_dev_msg *reply = &amp;bl_mount_reply;
++	int offset, len, i;
+ 
+ 	dprintk("%s CREATING PIPEFS MESSAGE\n", __func__);
+ 	dprintk("%s: deviceid: %s, mincount: %d\n", __func__, dev-&gt;dev_id.data,
+@@ -143,7 +143,14 @@ nfs4_blk_decode_device(struct nfs_server *server,
+ 
+ 	memcpy(msg.data, &amp;bl_msg, sizeof(bl_msg));
+ 	dataptr = (uint8_t *) msg.data;
+-	memcpy(&amp;dataptr[sizeof(bl_msg)], dev-&gt;area, dev-&gt;mincount);
++	len = dev-&gt;mincount;
++	offset = sizeof(bl_msg);
++	for (i = 0; len &gt; 0; i++) {
++		memcpy(&amp;dataptr[offset], page_address(dev-&gt;pages[i]),
++				len &lt; PAGE_CACHE_SIZE ? len : PAGE_CACHE_SIZE);
++		len -= PAGE_CACHE_SIZE;
++		offset += PAGE_CACHE_SIZE;
++	}
+ 	msg.len = sizeof(bl_msg) + dev-&gt;mincount;
+ 
+ 	dprintk("%s CALLING USERSPACE DAEMON\n", __func__);
+diff --git a/fs/nfs/pnfs.h b/fs/nfs/pnfs.h
+index 606fbde2e757..e0b5d80a43f6 100644
+--- a/fs/nfs/pnfs.h
++++ b/fs/nfs/pnfs.h
+@@ -140,7 +140,6 @@ struct pnfs_device {
+ 	unsigned int  layout_type;
+ 	unsigned int  mincount;
+ 	struct page **pages;
+-	void          *area;
+ 	unsigned int  pgbase;
+ 	unsigned int  pglen;
+ };
+diff --git a/include/linux/nfs_fs_sb.h b/include/linux/nfs_fs_sb.h
+index b2ea8b82d2cb..cc03fc1dfb72 100644
+--- a/include/linux/nfs_fs_sb.h
++++ b/include/linux/nfs_fs_sb.h
+@@ -146,6 +146,7 @@ struct nfs_server {
+ 	struct pnfs_layoutdriver_type  *pnfs_curr_ld; /* Active layout driver */
+ 	struct rpc_wait_queue	roc_rpcwaitq;
+ 	u32			pnfs_blksize;	/* layout_blksize attr */
++	void			*pnfs_ld_data;	/* per mount point data */
+ 
+ 	/* the following fields are protected by nfs_client-&gt;cl_lock */
+ 	struct rb_root		state_owners;</pre><hr><pre>commit 03341d2cc91c700fc38883e572043a6a8f17dd5c
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Sat Jul 30 20:52:45 2011 -0400
+
+    pnfsblock: merge extents
+    
+    Replace a stub, so that extents underlying the layouts are properly
+    added, merged, or ignored as necessary.
+    
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    [pnfsblock: delete the new node before put it]
+    Signed-off-by: Mingyang Guo &lt;guomingyang@nrchpc.ac.cn&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Peng Tao &lt;peng_tao@emc.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/blocklayout/blocklayout.h b/fs/nfs/blocklayout/blocklayout.h
+index 3e05b08d5347..581d8f47a723 100644
+--- a/fs/nfs/blocklayout/blocklayout.h
++++ b/fs/nfs/blocklayout/blocklayout.h
+@@ -80,6 +80,14 @@ enum extentclass4 {
+ 	EXTENT_LISTS    = 2,
+ };
+ 
++static inline int bl_choose_list(enum exstate4 state)
++{
++	if (state == PNFS_BLOCK_READ_DATA || state == PNFS_BLOCK_NONE_DATA)
++		return RO_EXTENT;
++	else
++		return RW_EXTENT;
++}
++
+ struct pnfs_block_layout {
+ 	struct pnfs_layout_hdr bl_layout;
+ 	struct pnfs_inval_markings bl_inval; /* tracks INVAL-&gt;RW transition */
+@@ -137,5 +145,10 @@ int nfs4_blk_process_layoutget(struct pnfs_layout_hdr *lo,
+ /* blocklayoutdm.c */
+ void bl_free_block_dev(struct pnfs_block_dev *bdev);
+ 
++/* extents.c */
+ void bl_put_extent(struct pnfs_block_extent *be);
++struct pnfs_block_extent *bl_alloc_extent(void);
++int bl_add_merge_extent(struct pnfs_block_layout *bl,
++			 struct pnfs_block_extent *new);
++
+ #endif /* FS_NFS_NFS4BLOCKLAYOUT_H */
+diff --git a/fs/nfs/blocklayout/extents.c b/fs/nfs/blocklayout/extents.c
+index d0ca7604d33e..ee4891f32492 100644
+--- a/fs/nfs/blocklayout/extents.c
++++ b/fs/nfs/blocklayout/extents.c
+@@ -87,3 +87,109 @@ static void print_elist(struct list_head *list)
+ 	}
+ 	dprintk("****************\n");
+ }
++
++static inline int
++extents_consistent(struct pnfs_block_extent *old, struct pnfs_block_extent *new)
++{
++	/* Note this assumes new-&gt;be_f_offset &gt;= old-&gt;be_f_offset */
++	return (new-&gt;be_state == old-&gt;be_state) &amp;&amp;
++		((new-&gt;be_state == PNFS_BLOCK_NONE_DATA) ||
++		 ((new-&gt;be_v_offset - old-&gt;be_v_offset ==
++		   new-&gt;be_f_offset - old-&gt;be_f_offset) &amp;&amp;
++		  new-&gt;be_mdev == old-&gt;be_mdev));
++}
++
++/* Adds new to appropriate list in bl, modifying new and removing existing
++ * extents as appropriate to deal with overlaps.
++ *
++ * See bl_find_get_extent for list constraints.
++ *
++ * Refcount on new is already set.  If end up not using it, or error out,
++ * need to put the reference.
++ *
++ * bl-&gt;bl_ext_lock is held by caller.
++ */
++int
++bl_add_merge_extent(struct pnfs_block_layout *bl,
++		     struct pnfs_block_extent *new)
++{
++	struct pnfs_block_extent *be, *tmp;
++	sector_t end = new-&gt;be_f_offset + new-&gt;be_length;
++	struct list_head *list;
++
++	dprintk("%s enter with be=%p\n", __func__, new);
++	print_bl_extent(new);
++	list = &amp;bl-&gt;bl_extents[bl_choose_list(new-&gt;be_state)];
++	print_elist(list);
++
++	/* Scan for proper place to insert, extending new to the left
++	 * as much as possible.
++	 */
++	list_for_each_entry_safe(be, tmp, list, be_node) {
++		if (new-&gt;be_f_offset &lt; be-&gt;be_f_offset)
++			break;
++		if (end &lt;= be-&gt;be_f_offset + be-&gt;be_length) {
++			/* new is a subset of existing be*/
++			if (extents_consistent(be, new)) {
++				dprintk("%s: new is subset, ignoring\n",
++					__func__);
++				bl_put_extent(new);
++				return 0;
++			} else
++				goto out_err;
++		} else if (new-&gt;be_f_offset &lt;=
++				be-&gt;be_f_offset + be-&gt;be_length) {
++			/* new overlaps or abuts existing be */
++			if (extents_consistent(be, new)) {
++				/* extend new to fully replace be */
++				new-&gt;be_length += new-&gt;be_f_offset -
++						  be-&gt;be_f_offset;
++				new-&gt;be_f_offset = be-&gt;be_f_offset;
++				new-&gt;be_v_offset = be-&gt;be_v_offset;
++				dprintk("%s: removing %p\n", __func__, be);
++				list_del(&amp;be-&gt;be_node);
++				bl_put_extent(be);
++			} else if (new-&gt;be_f_offset !=
++				   be-&gt;be_f_offset + be-&gt;be_length)
++				goto out_err;
++		}
++	}
++	/* Note that if we never hit the above break, be will not point to a
++	 * valid extent.  However, in that case &amp;be-&gt;be_node==list.
++	 */
++	list_add_tail(&amp;new-&gt;be_node, &amp;be-&gt;be_node);
++	dprintk("%s: inserting new\n", __func__);
++	print_elist(list);
++	/* Scan forward for overlaps.  If we find any, extend new and
++	 * remove the overlapped extent.
++	 */
++	be = list_prepare_entry(new, list, be_node);
++	list_for_each_entry_safe_continue(be, tmp, list, be_node) {
++		if (end &lt; be-&gt;be_f_offset)
++			break;
++		/* new overlaps or abuts existing be */
++		if (extents_consistent(be, new)) {
++			if (end &lt; be-&gt;be_f_offset + be-&gt;be_length) {
++				/* extend new to fully cover be */
++				end = be-&gt;be_f_offset + be-&gt;be_length;
++				new-&gt;be_length = end - new-&gt;be_f_offset;
++			}
++			dprintk("%s: removing %p\n", __func__, be);
++			list_del(&amp;be-&gt;be_node);
++			bl_put_extent(be);
++		} else if (end != be-&gt;be_f_offset) {
++			list_del(&amp;new-&gt;be_node);
++			goto out_err;
++		}
++	}
++	dprintk("%s: after merging\n", __func__);
++	print_elist(list);
++	/* FIXME - The per-list consistency checks have all been done,
++	 * should now check cross-list consistency.
++	 */
++	return 0;
++
++ out_err:
++	bl_put_extent(new);
++	return -EIO;
++}</pre><hr><pre>commit a60d2ebd93d3c5db5b6913c4844b8e6bd3b5538e
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Sat Jul 30 20:52:44 2011 -0400
+
+    pnfsblock: lseg alloc and free
+    
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    [pnfsblock: fix bug getting pnfs_layout_type in translate_devid().]
+    Signed-off-by: Tao Guo &lt;guotao@nrchpc.ac.cn&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Zhang Jingwang &lt;Jingwang.Zhang@emc.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/blocklayout/blocklayout.c b/fs/nfs/blocklayout/blocklayout.c
+index c83878441047..e7bc7a57b3bb 100644
+--- a/fs/nfs/blocklayout/blocklayout.c
++++ b/fs/nfs/blocklayout/blocklayout.c
+@@ -115,16 +115,35 @@ static struct pnfs_layout_hdr *bl_alloc_layout_hdr(struct inode *inode,
+ 	return &amp;bl-&gt;bl_layout;
+ }
+ 
+-static void
+-bl_free_lseg(struct pnfs_layout_segment *lseg)
++static void bl_free_lseg(struct pnfs_layout_segment *lseg)
+ {
++	dprintk("%s enter\n", __func__);
++	kfree(lseg);
+ }
+ 
+-static struct pnfs_layout_segment *
+-bl_alloc_lseg(struct pnfs_layout_hdr *lo,
+-	      struct nfs4_layoutget_res *lgr, gfp_t gfp_flags)
++/* We pretty much ignore lseg, and store all data layout wide, so we
++ * can correctly merge.
++ */
++static struct pnfs_layout_segment *bl_alloc_lseg(struct pnfs_layout_hdr *lo,
++						 struct nfs4_layoutget_res *lgr,
++						 gfp_t gfp_flags)
+ {
+-	return NULL;
++	struct pnfs_layout_segment *lseg;
++	int status;
++
++	dprintk("%s enter\n", __func__);
++	lseg = kzalloc(sizeof(*lseg), gfp_flags);
++	if (!lseg)
++		return ERR_PTR(-ENOMEM);
++	status = nfs4_blk_process_layoutget(lo, lgr, gfp_flags);
++	if (status) {
++		/* We don't want to call the full-blown bl_free_lseg,
++		 * since on error extents were not touched.
++		 */
++		kfree(lseg);
++		return ERR_PTR(status);
++	}
++	return lseg;
+ }
+ 
+ static void
+diff --git a/fs/nfs/blocklayout/blocklayout.h b/fs/nfs/blocklayout/blocklayout.h
+index 1527f88e00dd..3e05b08d5347 100644
+--- a/fs/nfs/blocklayout/blocklayout.h
++++ b/fs/nfs/blocklayout/blocklayout.h
+@@ -96,6 +96,12 @@ static inline struct pnfs_block_layout *BLK_LO2EXT(struct pnfs_layout_hdr *lo)
+ 	return container_of(lo, struct pnfs_block_layout, bl_layout);
+ }
+ 
++static inline struct pnfs_block_layout *
++BLK_LSEG2EXT(struct pnfs_layout_segment *lseg)
++{
++	return BLK_LO2EXT(lseg-&gt;pls_layout);
++}
++
+ struct bl_dev_msg {
+ 	int status;
+ 	uint32_t major, minor;
+diff --git a/fs/nfs/blocklayout/blocklayoutdev.c b/fs/nfs/blocklayout/blocklayoutdev.c
+index 7e1377fcfdce..64da33a40eaf 100644
+--- a/fs/nfs/blocklayout/blocklayoutdev.c
++++ b/fs/nfs/blocklayout/blocklayoutdev.c
+@@ -189,3 +189,11 @@ nfs4_blk_decode_device(struct nfs_server *server,
+ 	kfree(msg.data);
+ 	return rv;
+ }
++
++int
++nfs4_blk_process_layoutget(struct pnfs_layout_hdr *lo,
++			   struct nfs4_layoutget_res *lgr, gfp_t gfp_flags)
++{
++	/* STUB */
++	return -EIO;
++}</pre><hr><pre>commit 9e69296999362c4e4b2821b64389b47e86e4821b
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Sat Jul 30 20:52:41 2011 -0400
+
+    pnfsblock: basic extent code
+    
+    Adds structures and basic create/delete code for extents.
+    
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Zhang Jingwang &lt;Jingwang.Zhang@emc.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/blocklayout/Makefile b/fs/nfs/blocklayout/Makefile
+index 6bf49cd5da06..5cfadf6ebc90 100644
+--- a/fs/nfs/blocklayout/Makefile
++++ b/fs/nfs/blocklayout/Makefile
+@@ -2,4 +2,4 @@
+ # Makefile for the pNFS block layout driver kernel module
+ #
+ obj-$(CONFIG_PNFS_BLOCK) += blocklayoutdriver.o
+-blocklayoutdriver-objs := blocklayout.o
++blocklayoutdriver-objs := blocklayout.o extents.o
+diff --git a/fs/nfs/blocklayout/blocklayout.c b/fs/nfs/blocklayout/blocklayout.c
+index 1f5287c2230a..8dde3723482e 100644
+--- a/fs/nfs/blocklayout/blocklayout.c
++++ b/fs/nfs/blocklayout/blocklayout.c
+@@ -53,12 +53,24 @@ bl_write_pagelist(struct nfs_write_data *wdata,
+ 	return PNFS_NOT_ATTEMPTED;
+ }
+ 
+-/* STUB */
++/* FIXME - range ignored */
+ static void
+-release_extents(struct pnfs_block_layout *bl,
+-		struct pnfs_layout_range *range)
++release_extents(struct pnfs_block_layout *bl, struct pnfs_layout_range *range)
+ {
+-	return;
++	int i;
++	struct pnfs_block_extent *be;
++
++	spin_lock(&amp;bl-&gt;bl_ext_lock);
++	for (i = 0; i &lt; EXTENT_LISTS; i++) {
++		while (!list_empty(&amp;bl-&gt;bl_extents[i])) {
++			be = list_first_entry(&amp;bl-&gt;bl_extents[i],
++					      struct pnfs_block_extent,
++					      be_node);
++			list_del(&amp;be-&gt;be_node);
++			bl_put_extent(be);
++		}
++	}
++	spin_unlock(&amp;bl-&gt;bl_ext_lock);
+ }
+ 
+ /* STUB */
+diff --git a/fs/nfs/blocklayout/blocklayout.h b/fs/nfs/blocklayout/blocklayout.h
+index 8bfa4668ff31..98e2f60c2143 100644
+--- a/fs/nfs/blocklayout/blocklayout.h
++++ b/fs/nfs/blocklayout/blocklayout.h
+@@ -88,4 +88,5 @@ static inline struct pnfs_block_layout *BLK_LO2EXT(struct pnfs_layout_hdr *lo)
+ 	return container_of(lo, struct pnfs_block_layout, bl_layout);
+ }
+ 
++void bl_put_extent(struct pnfs_block_extent *be);
+ #endif /* FS_NFS_NFS4BLOCKLAYOUT_H */
+diff --git a/fs/nfs/blocklayout/extents.c b/fs/nfs/blocklayout/extents.c
+new file mode 100644
+index 000000000000..d0ca7604d33e
+--- /dev/null
++++ b/fs/nfs/blocklayout/extents.c
+@@ -0,0 +1,89 @@
++/*
++ *  linux/fs/nfs/blocklayout/blocklayout.h
++ *
++ *  Module for the NFSv4.1 pNFS block layout driver.
++ *
++ *  Copyright (c) 2006 The Regents of the University of Michigan.
++ *  All rights reserved.
++ *
++ *  Andy Adamson &lt;andros@citi.umich.edu&gt;
++ *  Fred Isaman &lt;iisaman@umich.edu&gt;
++ *
++ * permission is granted to use, copy, create derivative works and
++ * redistribute this software and such derivative works for any purpose,
++ * so long as the name of the university of michigan is not used in
++ * any advertising or publicity pertaining to the use or distribution
++ * of this software without specific, written prior authorization.  if
++ * the above copyright notice or any other identification of the
++ * university of michigan is included in any copy of any portion of
++ * this software, then the disclaimer below must also be included.
++ *
++ * this software is provided as is, without representation from the
++ * university of michigan as to its fitness for any purpose, and without
++ * warranty by the university of michigan of any kind, either express
++ * or implied, including without limitation the implied warranties of
++ * merchantability and fitness for a particular purpose.  the regents
++ * of the university of michigan shall not be liable for any damages,
++ * including special, indirect, incidental, or consequential damages,
++ * with respect to any claim arising out or in connection with the use
++ * of the software, even if it has been or is hereafter advised of the
++ * possibility of such damages.
++ */
++
++#include "blocklayout.h"
++#define NFSDBG_FACILITY         NFSDBG_PNFS_LD
++
++static void print_bl_extent(struct pnfs_block_extent *be)
++{
++	dprintk("PRINT EXTENT extent %p\n", be);
++	if (be) {
++		dprintk("        be_f_offset %llu\n", (u64)be-&gt;be_f_offset);
++		dprintk("        be_length   %llu\n", (u64)be-&gt;be_length);
++		dprintk("        be_v_offset %llu\n", (u64)be-&gt;be_v_offset);
++		dprintk("        be_state    %d\n", be-&gt;be_state);
++	}
++}
++
++static void
++destroy_extent(struct kref *kref)
++{
++	struct pnfs_block_extent *be;
++
++	be = container_of(kref, struct pnfs_block_extent, be_refcnt);
++	dprintk("%s be=%p\n", __func__, be);
++	kfree(be);
++}
++
++void
++bl_put_extent(struct pnfs_block_extent *be)
++{
++	if (be) {
++		dprintk("%s enter %p (%i)\n", __func__, be,
++			atomic_read(&amp;be-&gt;be_refcnt.refcount));
++		kref_put(&amp;be-&gt;be_refcnt, destroy_extent);
++	}
++}
++
++struct pnfs_block_extent *bl_alloc_extent(void)
++{
++	struct pnfs_block_extent *be;
++
++	be = kmalloc(sizeof(struct pnfs_block_extent), GFP_NOFS);
++	if (!be)
++		return NULL;
++	INIT_LIST_HEAD(&amp;be-&gt;be_node);
++	kref_init(&amp;be-&gt;be_refcnt);
++	be-&gt;be_inval = NULL;
++	return be;
++}
++
++static void print_elist(struct list_head *list)
++{
++	struct pnfs_block_extent *be;
++	dprintk("****************\n");
++	dprintk("Extent list looks like:\n");
++	list_for_each_entry(be, list, be_node) {
++		print_bl_extent(be);
++	}
++	dprintk("****************\n");
++}</pre><hr><pre>commit 155e7524f28fa374da041434085050693c3df45b
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Sat Jul 30 20:52:39 2011 -0400
+
+    pnfsblock: add blocklayout Kconfig option, Makefile, and stubs
+    
+    Define a configuration variable to enable/disable compilation of the
+    block driver code.
+    
+    Add the minimal structure for a pnfs block layout driver, and empty
+    list-heads that will hold the extent data
+    
+    [pnfsblock: make NFS_V4_1 select PNFS_BLOCK]
+    Signed-off-by: Peng Tao &lt;peng_tao@emc.com&gt;
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    [pnfs-block: fix CONFIG_PNFS_BLOCK dependencies]
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    [pnfsblock: SQUASHME: adjust to API change]
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    [pnfs: move pnfs_layout_type inline in nfs_inode]
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    [blocklayout: encode_layoutcommit implementation]
+    Signed-off-by: Boaz Harrosh &lt;bharrosh@panasas.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    [pnfsblock: layout alloc and free]
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    [pnfs: move pnfs_layout_type inline in nfs_inode]
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    [pnfsblock: define module alias]
+    Signed-off-by: Peng Tao &lt;peng_tao@emc.com&gt;
+    [rm inode and pnfs_layout_hdr args from cleanup_layoutcommit()]
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/Kconfig b/fs/nfs/Kconfig
+index 2cde5d954750..be020771c6b4 100644
+--- a/fs/nfs/Kconfig
++++ b/fs/nfs/Kconfig
+@@ -79,15 +79,21 @@ config NFS_V4_1
+ 	depends on NFS_FS &amp;&amp; NFS_V4 &amp;&amp; EXPERIMENTAL
+ 	select SUNRPC_BACKCHANNEL
+ 	select PNFS_FILE_LAYOUT
++	select PNFS_BLOCK
++	select MD
++	select BLK_DEV_DM
+ 	help
+ 	  This option enables support for minor version 1 of the NFSv4 protocol
+-	  (RFC 5661) in the kernel's NFS client.
++	  (RFC 5661 and RFC 5663) in the kernel's NFS client.
+ 
+ 	  If unsure, say N.
+ 
+ config PNFS_FILE_LAYOUT
+ 	tristate
+ 
++config PNFS_BLOCK
++	tristate
++
+ config PNFS_OBJLAYOUT
+ 	tristate "Provide support for the pNFS Objects Layout Driver for NFSv4.1 pNFS (EXPERIMENTAL)"
+ 	depends on NFS_FS &amp;&amp; NFS_V4_1 &amp;&amp; SCSI_OSD_ULD
+diff --git a/fs/nfs/Makefile b/fs/nfs/Makefile
+index 6a34f7dd0e6f..b58613d0abb3 100644
+--- a/fs/nfs/Makefile
++++ b/fs/nfs/Makefile
+@@ -23,3 +23,4 @@ obj-$(CONFIG_PNFS_FILE_LAYOUT) += nfs_layout_nfsv41_files.o
+ nfs_layout_nfsv41_files-y := nfs4filelayout.o nfs4filelayoutdev.o
+ 
+ obj-$(CONFIG_PNFS_OBJLAYOUT) += objlayout/
++obj-$(CONFIG_PNFS_BLOCK) += blocklayout/
+diff --git a/fs/nfs/blocklayout/Makefile b/fs/nfs/blocklayout/Makefile
+new file mode 100644
+index 000000000000..6bf49cd5da06
+--- /dev/null
++++ b/fs/nfs/blocklayout/Makefile
+@@ -0,0 +1,5 @@
++#
++# Makefile for the pNFS block layout driver kernel module
++#
++obj-$(CONFIG_PNFS_BLOCK) += blocklayoutdriver.o
++blocklayoutdriver-objs := blocklayout.o
+diff --git a/fs/nfs/blocklayout/blocklayout.c b/fs/nfs/blocklayout/blocklayout.c
+new file mode 100644
+index 000000000000..44562cbbe394
+--- /dev/null
++++ b/fs/nfs/blocklayout/blocklayout.c
+@@ -0,0 +1,174 @@
++/*
++ *  linux/fs/nfs/blocklayout/blocklayout.c
++ *
++ *  Module for the NFSv4.1 pNFS block layout driver.
++ *
++ *  Copyright (c) 2006 The Regents of the University of Michigan.
++ *  All rights reserved.
++ *
++ *  Andy Adamson &lt;andros@citi.umich.edu&gt;
++ *  Fred Isaman &lt;iisaman@umich.edu&gt;
++ *
++ * permission is granted to use, copy, create derivative works and
++ * redistribute this software and such derivative works for any purpose,
++ * so long as the name of the university of michigan is not used in
++ * any advertising or publicity pertaining to the use or distribution
++ * of this software without specific, written prior authorization.  if
++ * the above copyright notice or any other identification of the
++ * university of michigan is included in any copy of any portion of
++ * this software, then the disclaimer below must also be included.
++ *
++ * this software is provided as is, without representation from the
++ * university of michigan as to its fitness for any purpose, and without
++ * warranty by the university of michigan of any kind, either express
++ * or implied, including without limitation the implied warranties of
++ * merchantability and fitness for a particular purpose.  the regents
++ * of the university of michigan shall not be liable for any damages,
++ * including special, indirect, incidental, or consequential damages,
++ * with respect to any claim arising out or in connection with the use
++ * of the software, even if it has been or is hereafter advised of the
++ * possibility of such damages.
++ */
++#include &lt;linux/module.h&gt;
++#include &lt;linux/init.h&gt;
++
++#include "blocklayout.h"
++
++#define NFSDBG_FACILITY	NFSDBG_PNFS_LD
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Andy Adamson &lt;andros@citi.umich.edu&gt;");
++MODULE_DESCRIPTION("The NFSv4.1 pNFS Block layout driver");
++
++static enum pnfs_try_status
++bl_read_pagelist(struct nfs_read_data *rdata)
++{
++	return PNFS_NOT_ATTEMPTED;
++}
++
++static enum pnfs_try_status
++bl_write_pagelist(struct nfs_write_data *wdata,
++		  int sync)
++{
++	return PNFS_NOT_ATTEMPTED;
++}
++
++/* STUB */
++static void
++release_extents(struct pnfs_block_layout *bl,
++		struct pnfs_layout_range *range)
++{
++	return;
++}
++
++/* STUB */
++static void
++release_inval_marks(struct pnfs_inval_markings *marks)
++{
++	return;
++}
++
++static void bl_free_layout_hdr(struct pnfs_layout_hdr *lo)
++{
++	struct pnfs_block_layout *bl = BLK_LO2EXT(lo);
++
++	dprintk("%s enter\n", __func__);
++	release_extents(bl, NULL);
++	release_inval_marks(&amp;bl-&gt;bl_inval);
++	kfree(bl);
++}
++
++static struct pnfs_layout_hdr *bl_alloc_layout_hdr(struct inode *inode,
++						   gfp_t gfp_flags)
++{
++	struct pnfs_block_layout *bl;
++
++	dprintk("%s enter\n", __func__);
++	bl = kzalloc(sizeof(*bl), gfp_flags);
++	if (!bl)
++		return NULL;
++	spin_lock_init(&amp;bl-&gt;bl_ext_lock);
++	INIT_LIST_HEAD(&amp;bl-&gt;bl_extents[0]);
++	INIT_LIST_HEAD(&amp;bl-&gt;bl_extents[1]);
++	INIT_LIST_HEAD(&amp;bl-&gt;bl_commit);
++	INIT_LIST_HEAD(&amp;bl-&gt;bl_committing);
++	bl-&gt;bl_count = 0;
++	bl-&gt;bl_blocksize = NFS_SERVER(inode)-&gt;pnfs_blksize &gt;&gt; SECTOR_SHIFT;
++	BL_INIT_INVAL_MARKS(&amp;bl-&gt;bl_inval, bl-&gt;bl_blocksize);
++	return &amp;bl-&gt;bl_layout;
++}
++
++static void
++bl_free_lseg(struct pnfs_layout_segment *lseg)
++{
++}
++
++static struct pnfs_layout_segment *
++bl_alloc_lseg(struct pnfs_layout_hdr *lo,
++	      struct nfs4_layoutget_res *lgr, gfp_t gfp_flags)
++{
++	return NULL;
++}
++
++static void
++bl_encode_layoutcommit(struct pnfs_layout_hdr *lo, struct xdr_stream *xdr,
++		       const struct nfs4_layoutcommit_args *arg)
++{
++}
++
++static void
++bl_cleanup_layoutcommit(struct nfs4_layoutcommit_data *lcdata)
++{
++}
++
++static int
++bl_set_layoutdriver(struct nfs_server *server, const struct nfs_fh *fh)
++{
++	dprintk("%s enter\n", __func__);
++	return 0;
++}
++
++static int
++bl_clear_layoutdriver(struct nfs_server *server)
++{
++	dprintk("%s enter\n", __func__);
++	return 0;
++}
++
++static struct pnfs_layoutdriver_type blocklayout_type = {
++	.id				= LAYOUT_BLOCK_VOLUME,
++	.name				= "LAYOUT_BLOCK_VOLUME",
++	.read_pagelist			= bl_read_pagelist,
++	.write_pagelist			= bl_write_pagelist,
++	.alloc_layout_hdr		= bl_alloc_layout_hdr,
++	.free_layout_hdr		= bl_free_layout_hdr,
++	.alloc_lseg			= bl_alloc_lseg,
++	.free_lseg			= bl_free_lseg,
++	.encode_layoutcommit		= bl_encode_layoutcommit,
++	.cleanup_layoutcommit		= bl_cleanup_layoutcommit,
++	.set_layoutdriver		= bl_set_layoutdriver,
++	.clear_layoutdriver		= bl_clear_layoutdriver,
++};
++
++static int __init nfs4blocklayout_init(void)
++{
++	int ret;
++
++	dprintk("%s: NFSv4 Block Layout Driver Registering...\n", __func__);
++
++	ret = pnfs_register_layoutdriver(&amp;blocklayout_type);
++	return ret;
++}
++
++static void __exit nfs4blocklayout_exit(void)
++{
++	dprintk("%s: NFSv4 Block Layout Driver Unregistering...\n",
++	       __func__);
++
++	pnfs_unregister_layoutdriver(&amp;blocklayout_type);
++}
++
++MODULE_ALIAS("nfs-layouttype4-3");
++
++module_init(nfs4blocklayout_init);
++module_exit(nfs4blocklayout_exit);
+diff --git a/fs/nfs/blocklayout/blocklayout.h b/fs/nfs/blocklayout/blocklayout.h
+new file mode 100644
+index 000000000000..8bfa4668ff31
+--- /dev/null
++++ b/fs/nfs/blocklayout/blocklayout.h
+@@ -0,0 +1,91 @@
++/*
++ *  linux/fs/nfs/blocklayout/blocklayout.h
++ *
++ *  Module for the NFSv4.1 pNFS block layout driver.
++ *
++ *  Copyright (c) 2006 The Regents of the University of Michigan.
++ *  All rights reserved.
++ *
++ *  Andy Adamson &lt;andros@citi.umich.edu&gt;
++ *  Fred Isaman &lt;iisaman@umich.edu&gt;
++ *
++ * permission is granted to use, copy, create derivative works and
++ * redistribute this software and such derivative works for any purpose,
++ * so long as the name of the university of michigan is not used in
++ * any advertising or publicity pertaining to the use or distribution
++ * of this software without specific, written prior authorization.  if
++ * the above copyright notice or any other identification of the
++ * university of michigan is included in any copy of any portion of
++ * this software, then the disclaimer below must also be included.
++ *
++ * this software is provided as is, without representation from the
++ * university of michigan as to its fitness for any purpose, and without
++ * warranty by the university of michigan of any kind, either express
++ * or implied, including without limitation the implied warranties of
++ * merchantability and fitness for a particular purpose.  the regents
++ * of the university of michigan shall not be liable for any damages,
++ * including special, indirect, incidental, or consequential damages,
++ * with respect to any claim arising out or in connection with the use
++ * of the software, even if it has been or is hereafter advised of the
++ * possibility of such damages.
++ */
++#ifndef FS_NFS_NFS4BLOCKLAYOUT_H
++#define FS_NFS_NFS4BLOCKLAYOUT_H
++
++#include &lt;linux/device-mapper.h&gt;
++#include &lt;linux/nfs_fs.h&gt;
++#include "../pnfs.h"
++
++enum exstate4 {
++	PNFS_BLOCK_READWRITE_DATA	= 0,
++	PNFS_BLOCK_READ_DATA		= 1,
++	PNFS_BLOCK_INVALID_DATA		= 2, /* mapped, but data is invalid */
++	PNFS_BLOCK_NONE_DATA		= 3  /* unmapped, it's a hole */
++};
++
++struct pnfs_inval_markings {
++	/* STUB */
++};
++
++/* sector_t fields are all in 512-byte sectors */
++struct pnfs_block_extent {
++	struct kref	be_refcnt;
++	struct list_head be_node;	/* link into lseg list */
++	struct nfs4_deviceid be_devid;  /* FIXME: could use device cache instead */
++	struct block_device *be_mdev;
++	sector_t	be_f_offset;	/* the starting offset in the file */
++	sector_t	be_length;	/* the size of the extent */
++	sector_t	be_v_offset;	/* the starting offset in the volume */
++	enum exstate4	be_state;	/* the state of this extent */
++	struct pnfs_inval_markings *be_inval; /* tracks INVAL-&gt;RW transition */
++};
++
++static inline void
++BL_INIT_INVAL_MARKS(struct pnfs_inval_markings *marks, sector_t blocksize)
++{
++	/* STUB */
++}
++
++enum extentclass4 {
++	RW_EXTENT       = 0, /* READWRTE and INVAL */
++	RO_EXTENT       = 1, /* READ and NONE */
++	EXTENT_LISTS    = 2,
++};
++
++struct pnfs_block_layout {
++	struct pnfs_layout_hdr bl_layout;
++	struct pnfs_inval_markings bl_inval; /* tracks INVAL-&gt;RW transition */
++	spinlock_t		bl_ext_lock;   /* Protects list manipulation */
++	struct list_head	bl_extents[EXTENT_LISTS]; /* R and RW extents */
++	struct list_head	bl_commit;	/* Needs layout commit */
++	struct list_head	bl_committing;	/* Layout committing */
++	unsigned int		bl_count;	/* entries in bl_commit */
++	sector_t		bl_blocksize;  /* Server blocksize in sectors */
++};
++
++static inline struct pnfs_block_layout *BLK_LO2EXT(struct pnfs_layout_hdr *lo)
++{
++	return container_of(lo, struct pnfs_block_layout, bl_layout);
++}
++
++#endif /* FS_NFS_NFS4BLOCKLAYOUT_H */</pre><hr><pre>commit dae100c2b1b9463996aab9162f2258145c43f7df
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Sat Jul 30 20:52:37 2011 -0400
+
+    pnfs: ask for layout_blksize and save it in nfs_server
+    
+    Block layout needs it to determine IO size.
+    
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    Signed-off-by: Tao Guo &lt;glorioustao@gmail.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@tonian.com&gt;
+    Signed-off-by: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/client.c b/fs/nfs/client.c
+index a9b18483cb24..de00a373f085 100644
+--- a/fs/nfs/client.c
++++ b/fs/nfs/client.c
+@@ -936,6 +936,7 @@ static void nfs_server_set_fsinfo(struct nfs_server *server,
+ 	if (server-&gt;wsize &gt; NFS_MAX_FILE_IO_SIZE)
+ 		server-&gt;wsize = NFS_MAX_FILE_IO_SIZE;
+ 	server-&gt;wpages = (server-&gt;wsize + PAGE_CACHE_SIZE - 1) &gt;&gt; PAGE_CACHE_SHIFT;
++	server-&gt;pnfs_blksize = fsinfo-&gt;blksize;
+ 	set_pnfs_layoutdriver(server, mntfh, fsinfo-&gt;layouttype);
+ 
+ 	server-&gt;wtmult = nfs_block_bits(fsinfo-&gt;wtmult, NULL);
+diff --git a/fs/nfs/nfs4_fs.h b/fs/nfs/nfs4_fs.h
+index 1909ee8be350..1ec1a85fa71c 100644
+--- a/fs/nfs/nfs4_fs.h
++++ b/fs/nfs/nfs4_fs.h
+@@ -318,7 +318,7 @@ extern const struct nfs4_minor_version_ops *nfs_v4_minor_ops[];
+ extern const u32 nfs4_fattr_bitmap[2];
+ extern const u32 nfs4_statfs_bitmap[2];
+ extern const u32 nfs4_pathconf_bitmap[2];
+-extern const u32 nfs4_fsinfo_bitmap[2];
++extern const u32 nfs4_fsinfo_bitmap[3];
+ extern const u32 nfs4_fs_locations_bitmap[2];
+ 
+ /* nfs4renewd.c */
+diff --git a/fs/nfs/nfs4proc.c b/fs/nfs/nfs4proc.c
+index af32d3df0544..e86de799dd12 100644
+--- a/fs/nfs/nfs4proc.c
++++ b/fs/nfs/nfs4proc.c
+@@ -140,12 +140,13 @@ const u32 nfs4_pathconf_bitmap[2] = {
+ 	0
+ };
+ 
+-const u32 nfs4_fsinfo_bitmap[2] = { FATTR4_WORD0_MAXFILESIZE
++const u32 nfs4_fsinfo_bitmap[3] = { FATTR4_WORD0_MAXFILESIZE
+ 			| FATTR4_WORD0_MAXREAD
+ 			| FATTR4_WORD0_MAXWRITE
+ 			| FATTR4_WORD0_LEASE_TIME,
+ 			FATTR4_WORD1_TIME_DELTA
+-			| FATTR4_WORD1_FS_LAYOUT_TYPES
++			| FATTR4_WORD1_FS_LAYOUT_TYPES,
++			FATTR4_WORD2_LAYOUT_BLKSIZE
+ };
+ 
+ const u32 nfs4_fs_locations_bitmap[2] = {
+diff --git a/fs/nfs/nfs4xdr.c b/fs/nfs/nfs4xdr.c
+index 5f769f8d05b0..026166993d11 100644
+--- a/fs/nfs/nfs4xdr.c
++++ b/fs/nfs/nfs4xdr.c
+@@ -113,7 +113,11 @@ static int nfs4_stat_to_errno(int);
+ #define encode_restorefh_maxsz  (op_encode_hdr_maxsz)
+ #define decode_restorefh_maxsz  (op_decode_hdr_maxsz)
+ #define encode_fsinfo_maxsz	(encode_getattr_maxsz)
+-#define decode_fsinfo_maxsz	(op_decode_hdr_maxsz + 15)
++/* The 5 accounts for the PNFS attributes, and assumes that at most three
++ * layout types will be returned.
++ */
++#define decode_fsinfo_maxsz	(op_decode_hdr_maxsz + \
++				 nfs4_fattr_bitmap_maxsz + 4 + 8 + 5)
+ #define encode_renew_maxsz	(op_encode_hdr_maxsz + 3)
+ #define decode_renew_maxsz	(op_decode_hdr_maxsz)
+ #define encode_setclientid_maxsz \
+@@ -1123,6 +1127,35 @@ static void encode_getattr_two(struct xdr_stream *xdr, uint32_t bm0, uint32_t bm
+ 	hdr-&gt;replen += decode_getattr_maxsz;
+ }
+ 
++static void
++encode_getattr_three(struct xdr_stream *xdr,
++		     uint32_t bm0, uint32_t bm1, uint32_t bm2,
++		     struct compound_hdr *hdr)
++{
++	__be32 *p;
++
++	p = reserve_space(xdr, 4);
++	*p = cpu_to_be32(OP_GETATTR);
++	if (bm2) {
++		p = reserve_space(xdr, 16);
++		*p++ = cpu_to_be32(3);
++		*p++ = cpu_to_be32(bm0);
++		*p++ = cpu_to_be32(bm1);
++		*p = cpu_to_be32(bm2);
++	} else if (bm1) {
++		p = reserve_space(xdr, 12);
++		*p++ = cpu_to_be32(2);
++		*p++ = cpu_to_be32(bm0);
++		*p = cpu_to_be32(bm1);
++	} else {
++		p = reserve_space(xdr, 8);
++		*p++ = cpu_to_be32(1);
++		*p = cpu_to_be32(bm0);
++	}
++	hdr-&gt;nops++;
++	hdr-&gt;replen += decode_getattr_maxsz;
++}
++
+ static void encode_getfattr(struct xdr_stream *xdr, const u32* bitmask, struct compound_hdr *hdr)
+ {
+ 	encode_getattr_two(xdr, bitmask[0] &amp; nfs4_fattr_bitmap[0],
+@@ -1131,8 +1164,11 @@ static void encode_getfattr(struct xdr_stream *xdr, const u32* bitmask, struct c
+ 
+ static void encode_fsinfo(struct xdr_stream *xdr, const u32* bitmask, struct compound_hdr *hdr)
+ {
+-	encode_getattr_two(xdr, bitmask[0] &amp; nfs4_fsinfo_bitmap[0],
+-			   bitmask[1] &amp; nfs4_fsinfo_bitmap[1], hdr);
++	encode_getattr_three(xdr,
++			     bitmask[0] &amp; nfs4_fsinfo_bitmap[0],
++			     bitmask[1] &amp; nfs4_fsinfo_bitmap[1],
++			     bitmask[2] &amp; nfs4_fsinfo_bitmap[2],
++			     hdr);
+ }
+ 
+ static void encode_fs_locations(struct xdr_stream *xdr, const u32* bitmask, struct compound_hdr *hdr)
+@@ -2643,7 +2679,7 @@ static void nfs4_xdr_enc_setclientid_confirm(struct rpc_rqst *req,
+ 	struct compound_hdr hdr = {
+ 		.nops	= 0,
+ 	};
+-	const u32 lease_bitmap[2] = { FATTR4_WORD0_LEASE_TIME, 0 };
++	const u32 lease_bitmap[3] = { FATTR4_WORD0_LEASE_TIME };
+ 
+ 	encode_compound_hdr(xdr, req, &amp;hdr);
+ 	encode_setclientid_confirm(xdr, arg, &amp;hdr);
+@@ -2787,7 +2823,7 @@ static void nfs4_xdr_enc_get_lease_time(struct rpc_rqst *req,
+ 	struct compound_hdr hdr = {
+ 		.minorversion = nfs4_xdr_minorversion(&amp;args-&gt;la_seq_args),
+ 	};
+-	const u32 lease_bitmap[2] = { FATTR4_WORD0_LEASE_TIME, 0 };
++	const u32 lease_bitmap[3] = { FATTR4_WORD0_LEASE_TIME };
+ 
+ 	encode_compound_hdr(xdr, req, &amp;hdr);
+ 	encode_sequence(xdr, &amp;args-&gt;la_seq_args, &amp;hdr);
+@@ -3068,14 +3104,17 @@ static int decode_attr_bitmap(struct xdr_stream *xdr, uint32_t *bitmap)
+ 		goto out_overflow;
+ 	bmlen = be32_to_cpup(p);
+ 
+-	bitmap[0] = bitmap[1] = 0;
++	bitmap[0] = bitmap[1] = bitmap[2] = 0;
+ 	p = xdr_inline_decode(xdr, (bmlen &lt;&lt; 2));
+ 	if (unlikely(!p))
+ 		goto out_overflow;
+ 	if (bmlen &gt; 0) {
+ 		bitmap[0] = be32_to_cpup(p++);
+-		if (bmlen &gt; 1)
+-			bitmap[1] = be32_to_cpup(p);
++		if (bmlen &gt; 1) {
++			bitmap[1] = be32_to_cpup(p++);
++			if (bmlen &gt; 2)
++				bitmap[2] = be32_to_cpup(p);
++		}
+ 	}
+ 	return 0;
+ out_overflow:
+@@ -3107,8 +3146,9 @@ static int decode_attr_supported(struct xdr_stream *xdr, uint32_t *bitmap, uint3
+ 			return ret;
+ 		bitmap[0] &amp;= ~FATTR4_WORD0_SUPPORTED_ATTRS;
+ 	} else
+-		bitmask[0] = bitmask[1] = 0;
+-	dprintk("%s: bitmask=%08x:%08x\n", __func__, bitmask[0], bitmask[1]);
++		bitmask[0] = bitmask[1] = bitmask[2] = 0;
++	dprintk("%s: bitmask=%08x:%08x:%08x\n", __func__,
++		bitmask[0], bitmask[1], bitmask[2]);
+ 	return 0;
+ }
+ 
+@@ -4162,7 +4202,7 @@ static int decode_create(struct xdr_stream *xdr, struct nfs4_change_info *cinfo)
+ static int decode_server_caps(struct xdr_stream *xdr, struct nfs4_server_caps_res *res)
+ {
+ 	__be32 *savep;
+-	uint32_t attrlen, bitmap[2] = {0};
++	uint32_t attrlen, bitmap[3] = {0};
+ 	int status;
+ 
+ 	if ((status = decode_op_hdr(xdr, OP_GETATTR)) != 0)
+@@ -4188,7 +4228,7 @@ static int decode_server_caps(struct xdr_stream *xdr, struct nfs4_server_caps_re
+ static int decode_statfs(struct xdr_stream *xdr, struct nfs_fsstat *fsstat)
+ {
+ 	__be32 *savep;
+-	uint32_t attrlen, bitmap[2] = {0};
++	uint32_t attrlen, bitmap[3] = {0};
+ 	int status;
+ 
+ 	if ((status = decode_op_hdr(xdr, OP_GETATTR)) != 0)
+@@ -4220,7 +4260,7 @@ static int decode_statfs(struct xdr_stream *xdr, struct nfs_fsstat *fsstat)
+ static int decode_pathconf(struct xdr_stream *xdr, struct nfs_pathconf *pathconf)
+ {
+ 	__be32 *savep;
+-	uint32_t attrlen, bitmap[2] = {0};
++	uint32_t attrlen, bitmap[3] = {0};
+ 	int status;
+ 
+ 	if ((status = decode_op_hdr(xdr, OP_GETATTR)) != 0)
+@@ -4360,7 +4400,7 @@ static int decode_getfattr_generic(struct xdr_stream *xdr, struct nfs_fattr *fat
+ {
+ 	__be32 *savep;
+ 	uint32_t attrlen,
+-		 bitmap[2] = {0};
++		 bitmap[3] = {0};
+ 	int status;
+ 
+ 	status = decode_op_hdr(xdr, OP_GETATTR);
+@@ -4446,10 +4486,32 @@ static int decode_attr_pnfstype(struct xdr_stream *xdr, uint32_t *bitmap,
+ 	return status;
+ }
+ 
++/*
++ * The prefered block size for layout directed io
++ */
++static int decode_attr_layout_blksize(struct xdr_stream *xdr, uint32_t *bitmap,
++				      uint32_t *res)
++{
++	__be32 *p;
++
++	dprintk("%s: bitmap is %x\n", __func__, bitmap[2]);
++	*res = 0;
++	if (bitmap[2] &amp; FATTR4_WORD2_LAYOUT_BLKSIZE) {
++		p = xdr_inline_decode(xdr, 4);
++		if (unlikely(!p)) {
++			print_overflow_msg(__func__, xdr);
++			return -EIO;
++		}
++		*res = be32_to_cpup(p);
++		bitmap[2] &amp;= ~FATTR4_WORD2_LAYOUT_BLKSIZE;
++	}
++	return 0;
++}
++
+ static int decode_fsinfo(struct xdr_stream *xdr, struct nfs_fsinfo *fsinfo)
+ {
+ 	__be32 *savep;
+-	uint32_t attrlen, bitmap[2];
++	uint32_t attrlen, bitmap[3];
+ 	int status;
+ 
+ 	if ((status = decode_op_hdr(xdr, OP_GETATTR)) != 0)
+@@ -4477,6 +4539,9 @@ static int decode_fsinfo(struct xdr_stream *xdr, struct nfs_fsinfo *fsinfo)
+ 	status = decode_attr_pnfstype(xdr, bitmap, &amp;fsinfo-&gt;layouttype);
+ 	if (status != 0)
+ 		goto xdr_error;
++	status = decode_attr_layout_blksize(xdr, bitmap, &amp;fsinfo-&gt;blksize);
++	if (status)
++		goto xdr_error;
+ 
+ 	status = verify_attr_len(xdr, savep, attrlen);
+ xdr_error:
+@@ -4896,7 +4961,7 @@ static int decode_getacl(struct xdr_stream *xdr, struct rpc_rqst *req,
+ {
+ 	__be32 *savep;
+ 	uint32_t attrlen,
+-		 bitmap[2] = {0};
++		 bitmap[3] = {0};
+ 	struct kvec *iov = req-&gt;rq_rcv_buf.head;
+ 	int status;
+ 
+@@ -6852,7 +6917,7 @@ static int nfs4_xdr_dec_free_stateid(struct rpc_rqst *rqstp,
+ int nfs4_decode_dirent(struct xdr_stream *xdr, struct nfs_entry *entry,
+ 		       int plus)
+ {
+-	uint32_t bitmap[2] = {0};
++	uint32_t bitmap[3] = {0};
+ 	uint32_t len;
+ 	__be32 *p = xdr_inline_decode(xdr, 4);
+ 	if (unlikely(!p))
+diff --git a/include/linux/nfs_fs_sb.h b/include/linux/nfs_fs_sb.h
+index 4faeac8f448a..b2ea8b82d2cb 100644
+--- a/include/linux/nfs_fs_sb.h
++++ b/include/linux/nfs_fs_sb.h
+@@ -132,7 +132,7 @@ struct nfs_server {
+ #endif
+ 
+ #ifdef CONFIG_NFS_V4
+-	u32			attr_bitmask[2];/* V4 bitmask representing the set
++	u32			attr_bitmask[3];/* V4 bitmask representing the set
+ 						   of attributes supported on this
+ 						   filesystem */
+ 	u32			cache_consistency_bitmask[2];
+@@ -145,6 +145,7 @@ struct nfs_server {
+ 						   filesystem */
+ 	struct pnfs_layoutdriver_type  *pnfs_curr_ld; /* Active layout driver */
+ 	struct rpc_wait_queue	roc_rpcwaitq;
++	u32			pnfs_blksize;	/* layout_blksize attr */
+ 
+ 	/* the following fields are protected by nfs_client-&gt;cl_lock */
+ 	struct rb_root		state_owners;
+diff --git a/include/linux/nfs_xdr.h b/include/linux/nfs_xdr.h
+index 21f333eae3c8..94f27e56df9c 100644
+--- a/include/linux/nfs_xdr.h
++++ b/include/linux/nfs_xdr.h
+@@ -122,6 +122,7 @@ struct nfs_fsinfo {
+ 	struct timespec		time_delta; /* server time granularity */
+ 	__u32			lease_time; /* in seconds */
+ 	__u32			layouttype; /* supported pnfs layout driver */
++	__u32			blksize; /* preferred pnfs io block size */
+ };
+ 
+ struct nfs_fsstat {
+@@ -954,7 +955,7 @@ struct nfs4_server_caps_arg {
+ };
+ 
+ struct nfs4_server_caps_res {
+-	u32				attr_bitmask[2];
++	u32				attr_bitmask[3];
+ 	u32				acl_bitmask;
+ 	u32				has_links;
+ 	u32				has_symlinks;</pre>
+    <div class="pagination">
+        <a href='4_6.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><span>[7]</span><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_8.html'>Next&gt;&gt;</a>
+    <div>
+</body>

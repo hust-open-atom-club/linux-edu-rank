@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Carnegie Mellon University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Carnegie Mellon University</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='14_2.html'>2</a><a href='14_3.html'>3</a><a href='14_4.html'>4</a><a href='14_5.html'>5</a><a href='14_6.html'>6</a><a href='14_7.html'>7</a><a href='14_8.html'>8</a><a href='14_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 98d5b61ef5fae7681df27065ad95ee6e30c42243
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Mon Nov 8 18:34:55 2021 -0800
+
+    coda: bump module version to 7.2
+    
+    Helps with tracking which patches have been propagated upstream and if
+    users are running the latest known version.
+    
+    Link: https://lkml.kernel.org/r/20210908140308.18491-10-jaharkes@cs.cmu.edu
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Alex Shi &lt;alex.shi@linux.alibaba.com&gt;
+    Cc: Jing Yangyang &lt;jing.yangyang@zte.com.cn&gt;
+    Cc: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Cc: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Cc: Zeal Robot &lt;zealci@zte.com.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/psdev.c b/fs/coda/psdev.c
+index 7e23cb22d394..b39580ad4ce5 100644
+--- a/fs/coda/psdev.c
++++ b/fs/coda/psdev.c
+@@ -384,7 +384,7 @@ MODULE_AUTHOR("Jan Harkes, Peter J. Braam");
+ MODULE_DESCRIPTION("Coda Distributed File System VFS interface");
+ MODULE_ALIAS_CHARDEV_MAJOR(CODA_PSDEV_MAJOR);
+ MODULE_LICENSE("GPL");
+-MODULE_VERSION("7.0");
++MODULE_VERSION("7.2");
+ 
+ static int __init init_coda(void)
+ {</pre><hr><pre>commit 5a646fb3a3e2de8bbab19d41826b3e54b09969bc
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Mon Nov 8 18:34:45 2021 -0800
+
+    coda: avoid doing bad things on inode type changes during revalidation
+    
+    When Coda discovers an inconsistent object, it turns it into a symlink.
+    However we can't just follow this change in the kernel on an existing file
+    or directory inode that may still have references.
+    
+    This patch removes the inconsistent inode from the inode hash and
+    allocates a new inode for the symlink object.
+    
+    Link: https://lkml.kernel.org/r/20210908140308.18491-7-jaharkes@cs.cmu.edu
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Alex Shi &lt;alex.shi@linux.alibaba.com&gt;
+    Cc: Jing Yangyang &lt;jing.yangyang@zte.com.cn&gt;
+    Cc: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Cc: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Cc: Zeal Robot &lt;zealci@zte.com.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/cnode.c b/fs/coda/cnode.c
+index 06855f6c7902..62a3d2565c26 100644
+--- a/fs/coda/cnode.c
++++ b/fs/coda/cnode.c
+@@ -63,9 +63,10 @@ struct inode * coda_iget(struct super_block * sb, struct CodaFid * fid,
+ 	struct inode *inode;
+ 	struct coda_inode_info *cii;
+ 	unsigned long hash = coda_f2i(fid);
++	umode_t inode_type = coda_inode_type(attr);
+ 
++retry:
+ 	inode = iget5_locked(sb, hash, coda_test_inode, coda_set_inode, fid);
+-
+ 	if (!inode)
+ 		return ERR_PTR(-ENOMEM);
+ 
+@@ -75,11 +76,15 @@ struct inode * coda_iget(struct super_block * sb, struct CodaFid * fid,
+ 		inode-&gt;i_ino = hash;
+ 		/* inode is locked and unique, no need to grab cii-&gt;c_lock */
+ 		cii-&gt;c_mapcount = 0;
++		coda_fill_inode(inode, attr);
+ 		unlock_new_inode(inode);
++	} else if ((inode-&gt;i_mode &amp; S_IFMT) != inode_type) {
++		/* Inode has changed type, mark bad and grab a new one */
++		remove_inode_hash(inode);
++		coda_flag_inode(inode, C_PURGE);
++		iput(inode);
++		goto retry;
+ 	}
+-
+-	/* always replace the attributes, type might have changed */
+-	coda_fill_inode(inode, attr);
+ 	return inode;
+ }
+ 
+diff --git a/fs/coda/coda_linux.c b/fs/coda/coda_linux.c
+index 2e1a5a192074..903ca8fa4b9b 100644
+--- a/fs/coda/coda_linux.c
++++ b/fs/coda/coda_linux.c
+@@ -87,28 +87,27 @@ static struct coda_timespec timespec64_to_coda(struct timespec64 ts64)
+ }
+ 
+ /* utility functions below */
++umode_t coda_inode_type(struct coda_vattr *attr)
++{
++	switch (attr-&gt;va_type) {
++	case C_VREG:
++		return S_IFREG;
++	case C_VDIR:
++		return S_IFDIR;
++	case C_VLNK:
++		return S_IFLNK;
++	case C_VNON:
++	default:
++		return 0;
++	}
++}
++
+ void coda_vattr_to_iattr(struct inode *inode, struct coda_vattr *attr)
+ {
+-        int inode_type;
+-        /* inode's i_flags, i_ino are set by iget 
+-           XXX: is this all we need ??
+-           */
+-        switch (attr-&gt;va_type) {
+-        case C_VNON:
+-                inode_type  = 0;
+-                break;
+-        case C_VREG:
+-                inode_type = S_IFREG;
+-                break;
+-        case C_VDIR:
+-                inode_type = S_IFDIR;
+-                break;
+-        case C_VLNK:
+-                inode_type = S_IFLNK;
+-                break;
+-        default:
+-                inode_type = 0;
+-        }
++	/* inode's i_flags, i_ino are set by iget
++	 * XXX: is this all we need ??
++	 */
++	umode_t inode_type = coda_inode_type(attr);
+ 	inode-&gt;i_mode |= inode_type;
+ 
+ 	if (attr-&gt;va_mode != (u_short) -1)
+diff --git a/fs/coda/coda_linux.h b/fs/coda/coda_linux.h
+index 3c2947bba5e5..9be281bbcc06 100644
+--- a/fs/coda/coda_linux.h
++++ b/fs/coda/coda_linux.h
+@@ -53,10 +53,11 @@ int coda_getattr(struct user_namespace *, const struct path *, struct kstat *,
+ 		 u32, unsigned int);
+ int coda_setattr(struct user_namespace *, struct dentry *, struct iattr *);
+ 
+-/* this file:  heloers */
++/* this file:  helpers */
+ char *coda_f2s(struct CodaFid *f);
+ int coda_iscontrol(const char *name, size_t length);
+ 
++umode_t coda_inode_type(struct coda_vattr *attr);
+ void coda_vattr_to_iattr(struct inode *, struct coda_vattr *);
+ void coda_iattr_to_vattr(struct iattr *, struct coda_vattr *);
+ unsigned short coda_flags_to_cflags(unsigned short);</pre><hr><pre>commit b2e36228367a8a097c7d15670fad47d77098f56d
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Mon Nov 8 18:34:42 2021 -0800
+
+    coda: avoid hidden code duplication in rename
+    
+    We were actually fixing up the directory mtime in both branches after the
+    negative dentry test, it was just that one branch was only flagging the
+    directory inodes to refresh their attributes while the other branch used
+    the optional optimization to set mtime to the current time and not go back
+    to the Coda client.
+    
+    Link: https://lkml.kernel.org/r/20210908140308.18491-6-jaharkes@cs.cmu.edu
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Alex Shi &lt;alex.shi@linux.alibaba.com&gt;
+    Cc: Jing Yangyang &lt;jing.yangyang@zte.com.cn&gt;
+    Cc: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Cc: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Cc: Zeal Robot &lt;zealci@zte.com.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/dir.c b/fs/coda/dir.c
+index 3fd085009f26..328d7a684b63 100644
+--- a/fs/coda/dir.c
++++ b/fs/coda/dir.c
+@@ -317,13 +317,10 @@ static int coda_rename(struct user_namespace *mnt_userns, struct inode *old_dir,
+ 				coda_dir_drop_nlink(old_dir);
+ 				coda_dir_inc_nlink(new_dir);
+ 			}
+-			coda_dir_update_mtime(old_dir);
+-			coda_dir_update_mtime(new_dir);
+ 			coda_flag_inode(d_inode(new_dentry), C_VATTR);
+-		} else {
+-			coda_flag_inode(old_dir, C_VATTR);
+-			coda_flag_inode(new_dir, C_VATTR);
+ 		}
++		coda_dir_update_mtime(old_dir);
++		coda_dir_update_mtime(new_dir);
+ 	}
+ 	return error;
+ }</pre><hr><pre>commit 76097eb7a48a2ddcf4755773bd501c7aa14cbb7d
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Mon Nov 8 18:34:39 2021 -0800
+
+    coda: avoid flagging NULL inodes
+    
+    Somehow we hit a negative dentry in coda_rename even after checking with
+    d_really_is_positive.  Maybe something raced and turned the new_dentry
+    negative while we were fixing up directory link counts.
+    
+    Link: https://lkml.kernel.org/r/20210908140308.18491-5-jaharkes@cs.cmu.edu
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Alex Shi &lt;alex.shi@linux.alibaba.com&gt;
+    Cc: Jing Yangyang &lt;jing.yangyang@zte.com.cn&gt;
+    Cc: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Cc: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Cc: Zeal Robot &lt;zealci@zte.com.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/coda_linux.h b/fs/coda/coda_linux.h
+index e7b27754ce78..3c2947bba5e5 100644
+--- a/fs/coda/coda_linux.h
++++ b/fs/coda/coda_linux.h
+@@ -83,6 +83,9 @@ static __inline__ void coda_flag_inode(struct inode *inode, int flag)
+ {
+ 	struct coda_inode_info *cii = ITOC(inode);
+ 
++	if (!inode)
++		return;
++
+ 	spin_lock(&amp;cii-&gt;c_lock);
+ 	cii-&gt;c_flags |= flag;
+ 	spin_unlock(&amp;cii-&gt;c_lock);</pre><hr><pre>commit 3d8e72d97411370aab662e85e2c3a7b26555179c
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Mon Nov 8 18:34:33 2021 -0800
+
+    coda: check for async upcall request using local state
+    
+    Originally flagged by Smatch because the code implicitly assumed outSize
+    is not NULL for non-async upcalls because of a flag that was (not) set in
+    req-&gt;uc_flags.
+    
+    However req-&gt;uc_flags field is in shared state and although the current
+    code will not allow it to be changed before the async request check the
+    code is more robust when it tests against the local outSize variable.
+    
+    Link: https://lkml.kernel.org/r/20210908140308.18491-3-jaharkes@cs.cmu.edu
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Alex Shi &lt;alex.shi@linux.alibaba.com&gt;
+    Cc: Jing Yangyang &lt;jing.yangyang@zte.com.cn&gt;
+    Cc: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Cc: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Cc: Zeal Robot &lt;zealci@zte.com.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/upcall.c b/fs/coda/upcall.c
+index eb3b1898da46..59f6cfd06f96 100644
+--- a/fs/coda/upcall.c
++++ b/fs/coda/upcall.c
+@@ -744,7 +744,8 @@ static int coda_upcall(struct venus_comm *vcp,
+ 	list_add_tail(&amp;req-&gt;uc_chain, &amp;vcp-&gt;vc_pending);
+ 	wake_up_interruptible(&amp;vcp-&gt;vc_waitq);
+ 
+-	if (req-&gt;uc_flags &amp; CODA_REQ_ASYNC) {
++	/* We can return early on asynchronous requests */
++	if (outSize == NULL) {
+ 		mutex_unlock(&amp;vcp-&gt;vc_mutex);
+ 		return 0;
+ 	}</pre><hr><pre>commit 18319cb478de23340fdcb6385b0cc074a5416da7
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Mon Nov 8 18:34:30 2021 -0800
+
+    coda: avoid NULL pointer dereference from a bad inode
+    
+    Patch series "Coda updates for -next".
+    
+    The following patch series contains some fixes for the Coda kernel module
+    I've had sitting around and were tested extensively in a development
+    version of the Coda kernel module that lives outside of the main kernel.
+    
+    This patch (of 9):
+    
+    Avoid accessing coda_inode_info from a dentry with a bad inode.
+    
+    Link: https://lkml.kernel.org/r/20210908140308.18491-1-jaharkes@cs.cmu.edu
+    Link: https://lkml.kernel.org/r/20210908140308.18491-2-jaharkes@cs.cmu.edu
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Alex Shi &lt;alex.shi@linux.alibaba.com&gt;
+    Cc: Jing Yangyang &lt;jing.yangyang@zte.com.cn&gt;
+    Cc: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Cc: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Cc: Zeal Robot &lt;zealci@zte.com.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/dir.c b/fs/coda/dir.c
+index d69989c1bac3..3fd085009f26 100644
+--- a/fs/coda/dir.c
++++ b/fs/coda/dir.c
+@@ -499,15 +499,20 @@ static int coda_dentry_revalidate(struct dentry *de, unsigned int flags)
+  */
+ static int coda_dentry_delete(const struct dentry * dentry)
+ {
+-	int flags;
++	struct inode *inode;
++	struct coda_inode_info *cii;
+ 
+ 	if (d_really_is_negative(dentry)) 
+ 		return 0;
+ 
+-	flags = (ITOC(d_inode(dentry))-&gt;c_flags) &amp; C_PURGE;
+-	if (is_bad_inode(d_inode(dentry)) || flags) {
++	inode = d_inode(dentry);
++	if (!inode || is_bad_inode(inode))
+ 		return 1;
+-	}
++
++	cii = ITOC(inode);
++	if (cii-&gt;c_flags &amp; C_PURGE)
++		return 1;
++
+ 	return 0;
+ }
+ </pre><hr><pre>commit 6dc280ebeed2c96a2fb933103dafe655a922b9c1
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Tue Jul 16 16:28:51 2019 -0700
+
+    coda: remove uapi/linux/coda_psdev.h
+    
+    Nothing is left in this header that is used by userspace.
+    
+    Link: http://lkml.kernel.org/r/bb11378cef94739f2cf89425dd6d302a52c64480.1558117389.git.jaharkes@cs.cmu.edu
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Arnd Bergmann &lt;arnd@arndb.de&gt;
+    Cc: Colin Ian King &lt;colin.king@canonical.com&gt;
+    Cc: Dan Carpenter &lt;dan.carpenter@oracle.com&gt;
+    Cc: David Howells &lt;dhowells@redhat.com&gt;
+    Cc: Fabian Frederick &lt;fabf@skynet.be&gt;
+    Cc: Mikko Rapeli &lt;mikko.rapeli@iki.fi&gt;
+    Cc: Sam Protsenko &lt;semen.protsenko@linaro.org&gt;
+    Cc: Yann Droneaud &lt;ydroneaud@opteya.com&gt;
+    Cc: Zhouyang Jia &lt;jiazhouyang09@gmail.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/coda_psdev.h b/fs/coda/coda_psdev.h
+index 012e16f741a6..801423cbbdfc 100644
+--- a/fs/coda/coda_psdev.h
++++ b/fs/coda/coda_psdev.h
+@@ -3,8 +3,11 @@
+ #define __CODA_PSDEV_H
+ 
+ #include &lt;linux/backing-dev.h&gt;
++#include &lt;linux/magic.h&gt;
+ #include &lt;linux/mutex.h&gt;
+-#include &lt;linux/coda_psdev.h&gt;
++
++#define CODA_PSDEV_MAJOR 67
++#define MAX_CODADEVS  5	   /* how many do we allow */
+ 
+ struct kstatfs;
+ 
+diff --git a/include/uapi/linux/coda_psdev.h b/include/uapi/linux/coda_psdev.h
+deleted file mode 100644
+index 3dacb7fad66a..000000000000
+--- a/include/uapi/linux/coda_psdev.h
++++ /dev/null
+@@ -1,10 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
+-#ifndef _UAPI__CODA_PSDEV_H
+-#define _UAPI__CODA_PSDEV_H
+-
+-#include &lt;linux/magic.h&gt;
+-
+-#define CODA_PSDEV_MAJOR 67
+-#define MAX_CODADEVS  5	   /* how many do we allow */
+-
+-#endif /* _UAPI__CODA_PSDEV_H */</pre><hr><pre>commit b6a18c60080fcff0921e81991fec049394fb04e9
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Tue Jul 16 16:28:44 2019 -0700
+
+    coda: bump module version
+    
+    The out of tree module version had been bumped several times already,
+    but we haven't kept this in-tree one in sync, partly because most
+    changes go from here to the out-of-tree copy.
+    
+    Link: http://lkml.kernel.org/r/8b0ab50a2da2f0180ac32c79d91811b4d1d0bd8b.1558117389.git.jaharkes@cs.cmu.edu
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Arnd Bergmann &lt;arnd@arndb.de&gt;
+    Cc: Colin Ian King &lt;colin.king@canonical.com&gt;
+    Cc: Dan Carpenter &lt;dan.carpenter@oracle.com&gt;
+    Cc: David Howells &lt;dhowells@redhat.com&gt;
+    Cc: Fabian Frederick &lt;fabf@skynet.be&gt;
+    Cc: Mikko Rapeli &lt;mikko.rapeli@iki.fi&gt;
+    Cc: Sam Protsenko &lt;semen.protsenko@linaro.org&gt;
+    Cc: Yann Droneaud &lt;ydroneaud@opteya.com&gt;
+    Cc: Zhouyang Jia &lt;jiazhouyang09@gmail.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/psdev.c b/fs/coda/psdev.c
+index 3ac22a2b97e2..e80bda1de6c5 100644
+--- a/fs/coda/psdev.c
++++ b/fs/coda/psdev.c
+@@ -389,7 +389,7 @@ MODULE_AUTHOR("Jan Harkes, Peter J. Braam");
+ MODULE_DESCRIPTION("Coda Distributed File System VFS interface");
+ MODULE_ALIAS_CHARDEV_MAJOR(CODA_PSDEV_MAJOR);
+ MODULE_LICENSE("GPL");
+-MODULE_VERSION("6.6");
++MODULE_VERSION("6.11");
+ 
+ static int __init init_coda(void)
+ {</pre><hr><pre>commit 5e7c31dfe74703f428220384b2863525957cc160
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Tue Jul 16 16:28:35 2019 -0700
+
+    coda: change Coda's user api to use 64-bit time_t in timespec
+    
+    Move the 32-bit time_t problems to userspace.
+    
+    Link: http://lkml.kernel.org/r/8d089068823bfb292a4020f773922fbd82ffad39.1558117389.git.jaharkes@cs.cmu.edu
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Arnd Bergmann &lt;arnd@arndb.de&gt;
+    Cc: Colin Ian King &lt;colin.king@canonical.com&gt;
+    Cc: Dan Carpenter &lt;dan.carpenter@oracle.com&gt;
+    Cc: David Howells &lt;dhowells@redhat.com&gt;
+    Cc: Fabian Frederick &lt;fabf@skynet.be&gt;
+    Cc: Mikko Rapeli &lt;mikko.rapeli@iki.fi&gt;
+    Cc: Sam Protsenko &lt;semen.protsenko@linaro.org&gt;
+    Cc: Yann Droneaud &lt;ydroneaud@opteya.com&gt;
+    Cc: Zhouyang Jia &lt;jiazhouyang09@gmail.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/Documentation/filesystems/coda.txt b/Documentation/filesystems/coda.txt
+index ea5969068895..545262c167c3 100644
+--- a/Documentation/filesystems/coda.txt
++++ b/Documentation/filesystems/coda.txt
+@@ -481,8 +481,8 @@ kernel support.
+ 
+ 
+ 
+-  struct vtimespec {
+-          long            tv_sec;         /* seconds */
++  struct coda_timespec {
++          int64_t         tv_sec;         /* seconds */
+           long            tv_nsec;        /* nanoseconds */
+   };
+ 
+@@ -496,9 +496,9 @@ kernel support.
+           long            va_fileid;      /* file id */
+           u_quad_t        va_size;        /* file size in bytes */
+           long            va_blocksize;   /* blocksize preferred for i/o */
+-          struct vtimespec va_atime;      /* time of last access */
+-          struct vtimespec va_mtime;      /* time of last modification */
+-          struct vtimespec va_ctime;      /* time file changed */
++          struct coda_timespec va_atime;  /* time of last access */
++          struct coda_timespec va_mtime;  /* time of last modification */
++          struct coda_timespec va_ctime;  /* time file changed */
+           u_long          va_gen;         /* generation number of file */
+           u_long          va_flags;       /* flags defined for file */
+           dev_t           va_rdev;        /* device special file represents */
+diff --git a/fs/coda/coda_linux.c b/fs/coda/coda_linux.c
+index 8addcd166908..e4b5f02f0dd4 100644
+--- a/fs/coda/coda_linux.c
++++ b/fs/coda/coda_linux.c
+@@ -66,13 +66,8 @@ unsigned short coda_flags_to_cflags(unsigned short flags)
+ 	return coda_flags;
+ }
+ 
+-static struct timespec64 coda_to_timespec64(struct vtimespec ts)
++static struct timespec64 coda_to_timespec64(struct coda_timespec ts)
+ {
+-	/*
+-	 * We interpret incoming timestamps as 'signed' to match traditional
+-	 * usage and support pre-1970 timestamps, but this breaks in y2038
+-	 * on 32-bit machines.
+-	 */
+ 	struct timespec64 ts64 = {
+ 		.tv_sec = ts.tv_sec,
+ 		.tv_nsec = ts.tv_nsec,
+@@ -81,12 +76,10 @@ static struct timespec64 coda_to_timespec64(struct vtimespec ts)
+ 	return ts64;
+ }
+ 
+-static struct vtimespec timespec64_to_coda(struct timespec64 ts64)
++static struct coda_timespec timespec64_to_coda(struct timespec64 ts64)
+ {
+-	/* clamp the timestamps to the maximum range rather than wrapping */
+-	struct vtimespec ts = {
+-		.tv_sec = lower_32_bits(clamp_t(time64_t, ts64.tv_sec,
+-						LONG_MIN, LONG_MAX)),
++	struct coda_timespec ts = {
++		.tv_sec = ts64.tv_sec,
+ 		.tv_nsec = ts64.tv_nsec,
+ 	};
+ 
+@@ -156,11 +149,11 @@ void coda_iattr_to_vattr(struct iattr *iattr, struct coda_vattr *vattr)
+         vattr-&gt;va_uid = (vuid_t) -1; 
+         vattr-&gt;va_gid = (vgid_t) -1;
+         vattr-&gt;va_size = (off_t) -1;
+-	vattr-&gt;va_atime.tv_sec = (long) -1;
++	vattr-&gt;va_atime.tv_sec = (int64_t) -1;
+ 	vattr-&gt;va_atime.tv_nsec = (long) -1;
+-	vattr-&gt;va_mtime.tv_sec = (long) -1;
++	vattr-&gt;va_mtime.tv_sec = (int64_t) -1;
+ 	vattr-&gt;va_mtime.tv_nsec = (long) -1;
+-	vattr-&gt;va_ctime.tv_sec = (long) -1;
++	vattr-&gt;va_ctime.tv_sec = (int64_t) -1;
+ 	vattr-&gt;va_ctime.tv_nsec = (long) -1;
+         vattr-&gt;va_type = C_VNON;
+ 	vattr-&gt;va_fileid = -1;
+diff --git a/include/uapi/linux/coda.h b/include/uapi/linux/coda.h
+index fc5f7874208a..5dba636b6e11 100644
+--- a/include/uapi/linux/coda.h
++++ b/include/uapi/linux/coda.h
+@@ -86,10 +86,6 @@ typedef unsigned long long u_quad_t;
+ 
+ #define inline
+ 
+-struct timespec {
+-        long       ts_sec;
+-        long       ts_nsec;
+-};
+ #else  /* DJGPP but not KERNEL */
+ #include &lt;sys/time.h&gt;
+ typedef unsigned long long u_quad_t;
+@@ -110,13 +106,6 @@ typedef unsigned long long u_quad_t;
+ #define cdev_t dev_t
+ #endif
+ 
+-#ifdef __CYGWIN32__
+-struct timespec {
+-        time_t  tv_sec;         /* seconds */
+-        long    tv_nsec;        /* nanoseconds */
+-};
+-#endif
+-
+ #ifndef __BIT_TYPES_DEFINED__
+ #define __BIT_TYPES_DEFINED__
+ typedef signed char	      int8_t;
+@@ -211,19 +200,10 @@ struct CodaFid {
+  */
+ enum coda_vtype	{ C_VNON, C_VREG, C_VDIR, C_VBLK, C_VCHR, C_VLNK, C_VSOCK, C_VFIFO, C_VBAD };
+ 
+-#ifdef __linux__
+-/*
+- * This matches the traditional Linux 'timespec' structure binary layout,
+- * before using 64-bit time_t everywhere. Overflows in y2038 on 32-bit
+- * architectures.
+- */
+-struct vtimespec {
+-	long		tv_sec;		/* seconds */
++struct coda_timespec {
++	int64_t		tv_sec;		/* seconds */
+ 	long		tv_nsec;	/* nanoseconds */
+ };
+-#else
+-#define vtimespec timespec
+-#endif
+ 
+ struct coda_vattr {
+ 	long     	va_type;	/* vnode type (for create) */
+@@ -234,9 +214,9 @@ struct coda_vattr {
+ 	long		va_fileid;	/* file id */
+ 	u_quad_t	va_size;	/* file size in bytes */
+ 	long		va_blocksize;	/* blocksize preferred for i/o */
+-	struct vtimespec va_atime;	/* time of last access */
+-	struct vtimespec va_mtime;	/* time of last modification */
+-	struct vtimespec va_ctime;	/* time file changed */
++	struct coda_timespec va_atime;	/* time of last access */
++	struct coda_timespec va_mtime;	/* time of last modification */
++	struct coda_timespec va_ctime;	/* time file changed */
+ 	u_long		va_gen;		/* generation number of file */
+ 	u_long		va_flags;	/* flags defined for file */
+ 	cdev_t	        va_rdev;	/* device special file represents */
+@@ -301,7 +281,8 @@ struct coda_statfs {
+ 
+ #define CIOC_KERNEL_VERSION _IOWR('c', 10, size_t)
+ 
+-#define CODA_KERNEL_VERSION 3 /* 128-bit file identifiers */
++//      CODA_KERNEL_VERSION 3 /* 128-bit file identifiers */
++#define CODA_KERNEL_VERSION 4 /* 64-bit timespec */
+ 
+ /*
+  *        Venus &lt;-&gt; Coda  RPC arguments</pre><hr><pre>commit 2fe7491d219428a32f09948e88bfaf8e71b9a66b
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Tue Jul 16 16:28:26 2019 -0700
+
+    uapi linux/coda_psdev.h: move CODA_REQ_ from uapi to kernel side headers
+    
+    These constants only used internally and not exposed to userspace.
+    
+    Link: http://lkml.kernel.org/r/baeafc30dad70d8b422ee679420099c2d8aa7da0.1558117389.git.jaharkes@cs.cmu.edu
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Arnd Bergmann &lt;arnd@arndb.de&gt;
+    Cc: Colin Ian King &lt;colin.king@canonical.com&gt;
+    Cc: Dan Carpenter &lt;dan.carpenter@oracle.com&gt;
+    Cc: David Howells &lt;dhowells@redhat.com&gt;
+    Cc: Fabian Frederick &lt;fabf@skynet.be&gt;
+    Cc: Mikko Rapeli &lt;mikko.rapeli@iki.fi&gt;
+    Cc: Sam Protsenko &lt;semen.protsenko@linaro.org&gt;
+    Cc: Yann Droneaud &lt;ydroneaud@opteya.com&gt;
+    Cc: Zhouyang Jia &lt;jiazhouyang09@gmail.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/include/linux/coda_psdev.h b/include/linux/coda_psdev.h
+index d1672fd5e638..9487f792770c 100644
+--- a/include/linux/coda_psdev.h
++++ b/include/linux/coda_psdev.h
+@@ -31,6 +31,11 @@ struct upc_req {
+ 	wait_queue_head_t	uc_sleep;   /* process' wait queue */
+ };
+ 
++#define CODA_REQ_ASYNC  0x1
++#define CODA_REQ_READ   0x2
++#define CODA_REQ_WRITE  0x4
++#define CODA_REQ_ABORT  0x8
++
+ static inline struct venus_comm *coda_vcp(struct super_block *sb)
+ {
+ 	return (struct venus_comm *)((sb)-&gt;s_fs_info);
+diff --git a/include/uapi/linux/coda_psdev.h b/include/uapi/linux/coda_psdev.h
+index d50d51a57fe4..3dacb7fad66a 100644
+--- a/include/uapi/linux/coda_psdev.h
++++ b/include/uapi/linux/coda_psdev.h
+@@ -7,9 +7,4 @@
+ #define CODA_PSDEV_MAJOR 67
+ #define MAX_CODADEVS  5	   /* how many do we allow */
+ 
+-#define CODA_REQ_ASYNC  0x1
+-#define CODA_REQ_READ   0x2
+-#define CODA_REQ_WRITE  0x4
+-#define CODA_REQ_ABORT  0x8
+-
+ #endif /* _UAPI__CODA_PSDEV_H */</pre>
+    <div class="pagination">
+        <span>[1]</span><a href='14_2.html'>2</a><a href='14_3.html'>3</a><a href='14_4.html'>4</a><a href='14_5.html'>5</a><a href='14_6.html'>6</a><a href='14_7.html'>7</a><a href='14_8.html'>8</a><a href='14_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

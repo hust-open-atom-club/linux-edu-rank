@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_56.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><span>[57]</span>
+    </div>
+    <hr>
+    <pre>commit bec50c47aaf6f1f9247f1860547ab394a0802a4c
+Author: J. Bruce Fields &lt;bfields@snoopy.citi.umich.edu&gt;
+Date:   Fri Feb 16 01:28:36 2007 -0800
+
+    [PATCH] knfsd: nfsd4: acls: avoid unnecessary denies
+    
+    We're inserting deny's between some ACEs in order to enforce posix draft acl
+    semantics which prevent permissions from accumulating across entries in an
+    acl.
+    
+    That's fine, but we're doing that by inserting a deny after *every* allow,
+    which is overkill.  We shouldn't be adding them in places where they actually
+    make no difference.
+    
+    Also replaced some helper functions for creating acl entries; I prefer just
+    assigning directly to the struct fields--it takes a few more lines, but the
+    field names provide some documentation that I think makes the result easier
+    understand.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/nfs4acl.c b/fs/nfsd/nfs4acl.c
+index 8daa3f8bb303..0a69cce33efe 100644
+--- a/fs/nfsd/nfs4acl.c
++++ b/fs/nfsd/nfs4acl.c
+@@ -89,12 +89,19 @@ mask_from_posix(unsigned short perm, unsigned int flags)
+ }
+ 
+ static u32
+-deny_mask(u32 allow_mask, unsigned int flags)
++deny_mask_from_posix(unsigned short perm, u32 flags)
+ {
+-	u32 ret = ~allow_mask &amp; ~NFS4_MASK_UNSUPP;
+-	if (!(flags &amp; NFS4_ACL_DIR))
+-		ret &amp;= ~NFS4_ACE_DELETE_CHILD;
+-	return ret;
++	u32 mask = 0;
++
++	if (perm &amp; ACL_READ)
++		mask |= NFS4_READ_MODE;
++	if (perm &amp; ACL_WRITE)
++		mask |= NFS4_WRITE_MODE;
++	if ((perm &amp; ACL_WRITE) &amp;&amp; (flags &amp; NFS4_ACL_DIR))
++		mask |= NFS4_ACE_DELETE_CHILD;
++	if (perm &amp; ACL_EXECUTE)
++		mask |= NFS4_EXECUTE_MODE;
++	return mask;
+ }
+ 
+ /* XXX: modify functions to return NFS errors; they're only ever
+@@ -164,14 +171,51 @@ nfs4_acl_posix_to_nfsv4(struct posix_acl *pacl, struct posix_acl *dpacl,
+ 	return acl;
+ }
+ 
++struct posix_acl_summary {
++	unsigned short owner;
++	unsigned short users;
++	unsigned short group;
++	unsigned short groups;
++	unsigned short other;
++	unsigned short mask;
++};
++
+ static void
+-nfs4_acl_add_pair(struct nfs4_acl *acl, int eflag, u32 mask, int whotype,
+-		uid_t owner, unsigned int flags)
++summarize_posix_acl(struct posix_acl *acl, struct posix_acl_summary *pas)
+ {
+-	nfs4_acl_add_ace(acl, NFS4_ACE_ACCESS_ALLOWED_ACE_TYPE,
+-				 eflag, mask, whotype, owner);
+-	nfs4_acl_add_ace(acl, NFS4_ACE_ACCESS_DENIED_ACE_TYPE,
+-				eflag, deny_mask(mask, flags), whotype, owner);
++	struct posix_acl_entry *pa, *pe;
++	pas-&gt;users = 0;
++	pas-&gt;groups = 0;
++	pas-&gt;mask = 07;
++
++	pe = acl-&gt;a_entries + acl-&gt;a_count;
++
++	FOREACH_ACL_ENTRY(pa, acl, pe) {
++		switch (pa-&gt;e_tag) {
++			case ACL_USER_OBJ:
++				pas-&gt;owner = pa-&gt;e_perm;
++				break;
++			case ACL_GROUP_OBJ:
++				pas-&gt;group = pa-&gt;e_perm;
++				break;
++			case ACL_USER:
++				pas-&gt;users |= pa-&gt;e_perm;
++				break;
++			case ACL_GROUP:
++				pas-&gt;groups |= pa-&gt;e_perm;
++				break;
++			case ACL_OTHER:
++				pas-&gt;other = pa-&gt;e_perm;
++				break;
++			case ACL_MASK:
++				pas-&gt;mask = pa-&gt;e_perm;
++				break;
++		}
++	}
++	/* We'll only care about effective permissions: */
++	pas-&gt;users &amp;= pas-&gt;mask;
++	pas-&gt;group &amp;= pas-&gt;mask;
++	pas-&gt;groups &amp;= pas-&gt;mask;
+ }
+ 
+ /* We assume the acl has been verified with posix_acl_valid. */
+@@ -179,30 +223,63 @@ static void
+ _posix_to_nfsv4_one(struct posix_acl *pacl, struct nfs4_acl *acl,
+ 						unsigned int flags)
+ {
+-	struct posix_acl_entry *pa, *pe, *group_owner_entry;
+-	u32 mask;
+-	unsigned short mask_mask;
++	struct posix_acl_entry *pa, *group_owner_entry;
++	struct nfs4_ace *ace;
++	struct posix_acl_summary pas;
++	unsigned short deny;
+ 	int eflag = ((flags &amp; NFS4_ACL_TYPE_DEFAULT) ?
+ 					NFS4_INHERITANCE_FLAGS : 0);
+ 
+ 	BUG_ON(pacl-&gt;a_count &lt; 3);
+-	pe = pacl-&gt;a_entries + pacl-&gt;a_count;
+-	pa = pe - 2; /* if mask entry exists, it's second from the last. */
+-	if (pa-&gt;e_tag == ACL_MASK)
+-		mask_mask = pa-&gt;e_perm;
+-	else
+-		mask_mask = S_IRWXO;
++	summarize_posix_acl(pacl, &amp;pas);
+ 
+ 	pa = pacl-&gt;a_entries;
+-	BUG_ON(pa-&gt;e_tag != ACL_USER_OBJ);
+-	mask = mask_from_posix(pa-&gt;e_perm, flags | NFS4_ACL_OWNER);
+-	nfs4_acl_add_pair(acl, eflag, mask, NFS4_ACL_WHO_OWNER, 0, flags);
++	ace = acl-&gt;aces + acl-&gt;naces;
++
++	/* We could deny everything not granted by the owner: */
++	deny = ~pas.owner;
++	/*
++	 * but it is equivalent (and simpler) to deny only what is not
++	 * granted by later entries:
++	 */
++	deny &amp;= pas.users | pas.group | pas.groups | pas.other;
++	if (deny) {
++		ace-&gt;type = NFS4_ACE_ACCESS_DENIED_ACE_TYPE;
++		ace-&gt;flag = eflag;
++		ace-&gt;access_mask = deny_mask_from_posix(deny, flags);
++		ace-&gt;whotype = NFS4_ACL_WHO_OWNER;
++		ace++;
++		acl-&gt;naces++;
++	}
++
++	ace-&gt;type = NFS4_ACE_ACCESS_ALLOWED_ACE_TYPE;
++	ace-&gt;flag = eflag;
++	ace-&gt;access_mask = mask_from_posix(pa-&gt;e_perm, flags | NFS4_ACL_OWNER);
++	ace-&gt;whotype = NFS4_ACL_WHO_OWNER;
++	ace++;
++	acl-&gt;naces++;
+ 	pa++;
+ 
+ 	while (pa-&gt;e_tag == ACL_USER) {
+-		mask = mask_from_posix(pa-&gt;e_perm &amp; mask_mask, flags);
+-		nfs4_acl_add_pair(acl, eflag, mask,
+-				NFS4_ACL_WHO_NAMED, pa-&gt;e_id, flags);
++		deny = ~(pa-&gt;e_perm &amp; pas.mask);
++		deny &amp;= pas.groups | pas.group | pas.other;
++		if (deny) {
++			ace-&gt;type = NFS4_ACE_ACCESS_DENIED_ACE_TYPE;
++			ace-&gt;flag = eflag;
++			ace-&gt;access_mask = deny_mask_from_posix(deny, flags);
++			ace-&gt;whotype = NFS4_ACL_WHO_NAMED;
++			ace-&gt;who = pa-&gt;e_id;
++			ace++;
++			acl-&gt;naces++;
++		}
++		ace-&gt;type = NFS4_ACE_ACCESS_ALLOWED_ACE_TYPE;
++		ace-&gt;flag = eflag;
++		ace-&gt;access_mask = mask_from_posix(pa-&gt;e_perm &amp; pas.mask,
++						   flags);
++		ace-&gt;whotype = NFS4_ACL_WHO_NAMED;
++		ace-&gt;who = pa-&gt;e_id;
++		ace++;
++		acl-&gt;naces++;
+ 		pa++;
+ 	}
+ 
+@@ -212,41 +289,64 @@ _posix_to_nfsv4_one(struct posix_acl *pacl, struct nfs4_acl *acl,
+ 	/* allow ACEs */
+ 
+ 	group_owner_entry = pa;
+-	mask = mask_from_posix(pa-&gt;e_perm &amp; mask_mask, flags);
+-	nfs4_acl_add_ace(acl, NFS4_ACE_ACCESS_ALLOWED_ACE_TYPE,
+-			NFS4_ACE_IDENTIFIER_GROUP | eflag, mask,
+-			NFS4_ACL_WHO_GROUP, 0);
++
++	ace-&gt;type = NFS4_ACE_ACCESS_ALLOWED_ACE_TYPE;
++	ace-&gt;flag = eflag;
++	ace-&gt;access_mask = mask_from_posix(pas.group, flags);
++	ace-&gt;whotype = NFS4_ACL_WHO_GROUP;
++	ace++;
++	acl-&gt;naces++;
+ 	pa++;
+ 
+ 	while (pa-&gt;e_tag == ACL_GROUP) {
+-		mask = mask_from_posix(pa-&gt;e_perm &amp; mask_mask, flags);
+-		nfs4_acl_add_ace(acl, NFS4_ACE_ACCESS_ALLOWED_ACE_TYPE,
+-		    		NFS4_ACE_IDENTIFIER_GROUP | eflag, mask,
+-		    		NFS4_ACL_WHO_NAMED, pa-&gt;e_id);
++		ace-&gt;type = NFS4_ACE_ACCESS_ALLOWED_ACE_TYPE;
++		ace-&gt;flag = eflag | NFS4_ACE_IDENTIFIER_GROUP;
++		ace-&gt;access_mask = mask_from_posix(pa-&gt;e_perm &amp; pas.mask,
++						   flags);
++		ace-&gt;whotype = NFS4_ACL_WHO_NAMED;
++		ace-&gt;who = pa-&gt;e_id;
++		ace++;
++		acl-&gt;naces++;
+ 		pa++;
+ 	}
+ 
+ 	/* deny ACEs */
+ 
+ 	pa = group_owner_entry;
+-	mask = mask_from_posix(pa-&gt;e_perm, flags);
+-	nfs4_acl_add_ace(acl, NFS4_ACE_ACCESS_DENIED_ACE_TYPE,
+-			NFS4_ACE_IDENTIFIER_GROUP | eflag,
+-			deny_mask(mask, flags), NFS4_ACL_WHO_GROUP, 0);
++
++	deny = ~pas.group &amp; pas.other;
++	if (deny) {
++		ace-&gt;type = NFS4_ACE_ACCESS_DENIED_ACE_TYPE;
++		ace-&gt;flag = eflag | NFS4_ACE_IDENTIFIER_GROUP;
++		ace-&gt;access_mask = deny_mask_from_posix(deny, flags);
++		ace-&gt;whotype = NFS4_ACL_WHO_GROUP;
++		ace++;
++		acl-&gt;naces++;
++	}
+ 	pa++;
++
+ 	while (pa-&gt;e_tag == ACL_GROUP) {
+-		mask = mask_from_posix(pa-&gt;e_perm, flags);
+-		nfs4_acl_add_ace(acl, NFS4_ACE_ACCESS_DENIED_ACE_TYPE,
+-		    		NFS4_ACE_IDENTIFIER_GROUP | eflag,
+-		    		deny_mask(mask, flags), NFS4_ACL_WHO_NAMED, pa-&gt;e_id);
++		deny = ~(pa-&gt;e_perm &amp; pas.mask);
++		deny &amp;= pas.other;
++		if (deny) {
++			ace-&gt;type = NFS4_ACE_ACCESS_DENIED_ACE_TYPE;
++			ace-&gt;flag = eflag | NFS4_ACE_IDENTIFIER_GROUP;
++			ace-&gt;access_mask = mask_from_posix(deny, flags);
++			ace-&gt;whotype = NFS4_ACL_WHO_NAMED;
++			ace-&gt;who = pa-&gt;e_id;
++			ace++;
++			acl-&gt;naces++;
++		}
+ 		pa++;
+ 	}
+ 
+ 	if (pa-&gt;e_tag == ACL_MASK)
+ 		pa++;
+-	BUG_ON(pa-&gt;e_tag != ACL_OTHER);
+-	mask = mask_from_posix(pa-&gt;e_perm, flags);
+-	nfs4_acl_add_pair(acl, eflag, mask, NFS4_ACL_WHO_EVERYONE, 0, flags);
++	ace-&gt;type = NFS4_ACE_ACCESS_ALLOWED_ACE_TYPE;
++	ace-&gt;flag = eflag;
++	ace-&gt;access_mask = mask_from_posix(pa-&gt;e_perm, flags);
++	ace-&gt;whotype = NFS4_ACL_WHO_EVERYONE;
++	acl-&gt;naces++;
+ }
+ 
+ static void</pre><hr><pre>commit f43daf67871d9da5c638994416b4144eac63c992
+Author: J. Bruce Fields &lt;bfields@snoopy.citi.umich.edu&gt;
+Date:   Fri Feb 16 01:28:34 2007 -0800
+
+    [PATCH] knfsd: nfsd4: acls: don't return explicit mask
+    
+    Return just the effective permissions, and forget about the mask.  It isn't
+    worth the complexity.
+    
+    WARNING: This breaks backwards compatibility with overly-picky nfsv4-&gt;posix
+    acl translation, as may has been included in some patched versions of libacl.
+    To our knowledge no such version was every distributed by anyone outside citi.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/nfs4acl.c b/fs/nfsd/nfs4acl.c
+index 2797051cd2b4..8daa3f8bb303 100644
+--- a/fs/nfsd/nfs4acl.c
++++ b/fs/nfsd/nfs4acl.c
+@@ -180,7 +180,8 @@ _posix_to_nfsv4_one(struct posix_acl *pacl, struct nfs4_acl *acl,
+ 						unsigned int flags)
+ {
+ 	struct posix_acl_entry *pa, *pe, *group_owner_entry;
+-	u32 mask, mask_mask;
++	u32 mask;
++	unsigned short mask_mask;
+ 	int eflag = ((flags &amp; NFS4_ACL_TYPE_DEFAULT) ?
+ 					NFS4_INHERITANCE_FLAGS : 0);
+ 
+@@ -188,9 +189,9 @@ _posix_to_nfsv4_one(struct posix_acl *pacl, struct nfs4_acl *acl,
+ 	pe = pacl-&gt;a_entries + pacl-&gt;a_count;
+ 	pa = pe - 2; /* if mask entry exists, it's second from the last. */
+ 	if (pa-&gt;e_tag == ACL_MASK)
+-		mask_mask = deny_mask(mask_from_posix(pa-&gt;e_perm, flags), flags);
++		mask_mask = pa-&gt;e_perm;
+ 	else
+-		mask_mask = 0;
++		mask_mask = S_IRWXO;
+ 
+ 	pa = pacl-&gt;a_entries;
+ 	BUG_ON(pa-&gt;e_tag != ACL_USER_OBJ);
+@@ -199,10 +200,7 @@ _posix_to_nfsv4_one(struct posix_acl *pacl, struct nfs4_acl *acl,
+ 	pa++;
+ 
+ 	while (pa-&gt;e_tag == ACL_USER) {
+-		mask = mask_from_posix(pa-&gt;e_perm, flags);
+-		nfs4_acl_add_ace(acl, NFS4_ACE_ACCESS_DENIED_ACE_TYPE,
+-				eflag,  mask_mask, NFS4_ACL_WHO_NAMED, pa-&gt;e_id);
+-
++		mask = mask_from_posix(pa-&gt;e_perm &amp; mask_mask, flags);
+ 		nfs4_acl_add_pair(acl, eflag, mask,
+ 				NFS4_ACL_WHO_NAMED, pa-&gt;e_id, flags);
+ 		pa++;
+@@ -213,24 +211,15 @@ _posix_to_nfsv4_one(struct posix_acl *pacl, struct nfs4_acl *acl,
+ 
+ 	/* allow ACEs */
+ 
+-	if (pacl-&gt;a_count &gt; 3) {
+-		BUG_ON(pa-&gt;e_tag != ACL_GROUP_OBJ);
+-		nfs4_acl_add_ace(acl, NFS4_ACE_ACCESS_DENIED_ACE_TYPE,
+-				NFS4_ACE_IDENTIFIER_GROUP | eflag, mask_mask,
+-				NFS4_ACL_WHO_GROUP, 0);
+-	}
+ 	group_owner_entry = pa;
+-	mask = mask_from_posix(pa-&gt;e_perm, flags);
++	mask = mask_from_posix(pa-&gt;e_perm &amp; mask_mask, flags);
+ 	nfs4_acl_add_ace(acl, NFS4_ACE_ACCESS_ALLOWED_ACE_TYPE,
+ 			NFS4_ACE_IDENTIFIER_GROUP | eflag, mask,
+ 			NFS4_ACL_WHO_GROUP, 0);
+ 	pa++;
+ 
+ 	while (pa-&gt;e_tag == ACL_GROUP) {
+-		mask = mask_from_posix(pa-&gt;e_perm, flags);
+-		nfs4_acl_add_ace(acl, NFS4_ACE_ACCESS_DENIED_ACE_TYPE,
+-				NFS4_ACE_IDENTIFIER_GROUP | eflag, mask_mask,
+-				NFS4_ACL_WHO_NAMED, pa-&gt;e_id);
++		mask = mask_from_posix(pa-&gt;e_perm &amp; mask_mask, flags);
+ 		nfs4_acl_add_ace(acl, NFS4_ACE_ACCESS_ALLOWED_ACE_TYPE,
+ 		    		NFS4_ACE_IDENTIFIER_GROUP | eflag, mask,
+ 		    		NFS4_ACL_WHO_NAMED, pa-&gt;e_id);</pre><hr><pre>commit a4db5fe5dfb3a5b5b550f1acd95ef3de01a3f063
+Author: J. Bruce Fields &lt;bfields@snoopy.citi.umich.edu&gt;
+Date:   Fri Feb 16 01:28:30 2007 -0800
+
+    [PATCH] knfsd: nfsd4: fix memory leak on kmalloc failure in savemem
+    
+    The wrong pointer is being kfree'd in savemem() when defer_free returns with
+    an error.
+    
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index fbb4af969243..bb0f1860f582 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -199,24 +199,22 @@ defer_free(struct nfsd4_compoundargs *argp,
+ 
+ static char *savemem(struct nfsd4_compoundargs *argp, __be32 *p, int nbytes)
+ {
+-	void *new = NULL;
+ 	if (p == argp-&gt;tmp) {
+-		new = kmalloc(nbytes, GFP_KERNEL);
+-		if (!new) return NULL;
+-		p = new;
++		p = kmalloc(nbytes, GFP_KERNEL);
++		if (!p)
++			return NULL;
+ 		memcpy(p, argp-&gt;tmp, nbytes);
+ 	} else {
+ 		BUG_ON(p != argp-&gt;tmpp);
+ 		argp-&gt;tmpp = NULL;
+ 	}
+ 	if (defer_free(argp, kfree, p)) {
+-		kfree(new);
++		kfree(p);
+ 		return NULL;
+ 	} else
+ 		return (char *)p;
+ }
+ 
+-
+ static __be32
+ nfsd4_decode_bitmap(struct nfsd4_compoundargs *argp, u32 *bmval)
+ {</pre>
+    <div class="pagination">
+        <a href='4_56.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><span>[57]</span>
+    <div>
+</body>

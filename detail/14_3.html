@@ -1,0 +1,2263 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Carnegie Mellon University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Carnegie Mellon University</h1>
+    <div class="pagination">
+        <a href='14_2.html'>&lt;&lt;Prev</a><a href='14.html'>1</a><a href='14_2.html'>2</a><span>[3]</span><a href='14_4.html'>4</a><a href='14_5.html'>5</a><a href='14_6.html'>6</a><a href='14_7.html'>7</a><a href='14_8.html'>8</a><a href='14_4.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 085751b96897280cc3087920f8c6e7d1283f6d00
+Author: Benjamin Gilbert &lt;bgilbert@cs.cmu.edu&gt;
+Date:   Mon Oct 19 12:57:20 2009 +0900
+
+    crypto: api - Remove digest case from procfs show handler
+    
+    Remove special handling of old-style digest algorithms from the procfs
+    show handler.
+    
+    Signed-off-by: Benjamin Gilbert &lt;bgilbert@cs.cmu.edu&gt;
+    Signed-off-by: Herbert Xu &lt;herbert@gondor.apana.org.au&gt;
+
+diff --git a/crypto/proc.c b/crypto/proc.c
+index 5dc07e442fca..ff4cb4a357f9 100644
+--- a/crypto/proc.c
++++ b/crypto/proc.c
+@@ -115,13 +115,6 @@ static int c_show(struct seq_file *m, void *p)
+ 		seq_printf(m, "max keysize  : %u\n",
+ 					alg-&gt;cra_cipher.cia_max_keysize);
+ 		break;
+-		
+-	case CRYPTO_ALG_TYPE_DIGEST:
+-		seq_printf(m, "type         : digest\n");
+-		seq_printf(m, "blocksize    : %u\n", alg-&gt;cra_blocksize);
+-		seq_printf(m, "digestsize   : %u\n",
+-		           alg-&gt;cra_digest.dia_digestsize);
+-		break;
+ 	case CRYPTO_ALG_TYPE_COMPRESS:
+ 		seq_printf(m, "type         : compression\n");
+ 		break;</pre><hr><pre>commit 2141b6309b1fce535329c195cb5e5274a4c84ebc
+Author: Benjamin Gilbert &lt;bgilbert@cs.cmu.edu&gt;
+Date:   Mon Oct 19 12:53:37 2009 +0900
+
+    crypto: hash - Remove legacy hash/digest code
+    
+    6941c3a0 disabled compilation of the legacy digest code but didn't
+    actually remove it.  Rectify this.  Also, remove the crypto_hash_type
+    extern declaration from algapi.h now that the struct is gone.
+    
+    Signed-off-by: Benjamin Gilbert &lt;bgilbert@cs.cmu.edu&gt;
+    Signed-off-by: Herbert Xu &lt;herbert@gondor.apana.org.au&gt;
+
+diff --git a/crypto/digest.c b/crypto/digest.c
+deleted file mode 100644
+index 5d3f1303da98..000000000000
+--- a/crypto/digest.c
++++ /dev/null
+@@ -1,240 +0,0 @@
+-/*
+- * Cryptographic API.
+- *
+- * Digest operations.
+- *
+- * Copyright (c) 2002 James Morris &lt;jmorris@intercode.com.au&gt;
+- *
+- * This program is free software; you can redistribute it and/or modify it
+- * under the terms of the GNU General Public License as published by the Free
+- * Software Foundation; either version 2 of the License, or (at your option) 
+- * any later version.
+- *
+- */
+-
+-#include &lt;crypto/internal/hash.h&gt;
+-#include &lt;crypto/scatterwalk.h&gt;
+-#include &lt;linux/mm.h&gt;
+-#include &lt;linux/errno.h&gt;
+-#include &lt;linux/hardirq.h&gt;
+-#include &lt;linux/highmem.h&gt;
+-#include &lt;linux/kernel.h&gt;
+-#include &lt;linux/module.h&gt;
+-#include &lt;linux/scatterlist.h&gt;
+-
+-#include "internal.h"
+-
+-static int init(struct hash_desc *desc)
+-{
+-	struct crypto_tfm *tfm = crypto_hash_tfm(desc-&gt;tfm);
+-
+-	tfm-&gt;__crt_alg-&gt;cra_digest.dia_init(tfm);
+-	return 0;
+-}
+-
+-static int update2(struct hash_desc *desc,
+-		   struct scatterlist *sg, unsigned int nbytes)
+-{
+-	struct crypto_tfm *tfm = crypto_hash_tfm(desc-&gt;tfm);
+-	unsigned int alignmask = crypto_tfm_alg_alignmask(tfm);
+-
+-	if (!nbytes)
+-		return 0;
+-
+-	for (;;) {
+-		struct page *pg = sg_page(sg);
+-		unsigned int offset = sg-&gt;offset;
+-		unsigned int l = sg-&gt;length;
+-
+-		if (unlikely(l &gt; nbytes))
+-			l = nbytes;
+-		nbytes -= l;
+-
+-		do {
+-			unsigned int bytes_from_page = min(l, ((unsigned int)
+-							   (PAGE_SIZE)) - 
+-							   offset);
+-			char *src = crypto_kmap(pg, 0);
+-			char *p = src + offset;
+-
+-			if (unlikely(offset &amp; alignmask)) {
+-				unsigned int bytes =
+-					alignmask + 1 - (offset &amp; alignmask);
+-				bytes = min(bytes, bytes_from_page);
+-				tfm-&gt;__crt_alg-&gt;cra_digest.dia_update(tfm, p,
+-								      bytes);
+-				p += bytes;
+-				bytes_from_page -= bytes;
+-				l -= bytes;
+-			}
+-			tfm-&gt;__crt_alg-&gt;cra_digest.dia_update(tfm, p,
+-							      bytes_from_page);
+-			crypto_kunmap(src, 0);
+-			crypto_yield(desc-&gt;flags);
+-			offset = 0;
+-			pg++;
+-			l -= bytes_from_page;
+-		} while (l &gt; 0);
+-
+-		if (!nbytes)
+-			break;
+-		sg = scatterwalk_sg_next(sg);
+-	}
+-
+-	return 0;
+-}
+-
+-static int update(struct hash_desc *desc,
+-		  struct scatterlist *sg, unsigned int nbytes)
+-{
+-	if (WARN_ON_ONCE(in_irq()))
+-		return -EDEADLK;
+-	return update2(desc, sg, nbytes);
+-}
+-
+-static int final(struct hash_desc *desc, u8 *out)
+-{
+-	struct crypto_tfm *tfm = crypto_hash_tfm(desc-&gt;tfm);
+-	unsigned long alignmask = crypto_tfm_alg_alignmask(tfm);
+-	struct digest_alg *digest = &amp;tfm-&gt;__crt_alg-&gt;cra_digest;
+-
+-	if (unlikely((unsigned long)out &amp; alignmask)) {
+-		unsigned long align = alignmask + 1;
+-		unsigned long addr = (unsigned long)crypto_tfm_ctx(tfm);
+-		u8 *dst = (u8 *)ALIGN(addr, align) +
+-			  ALIGN(tfm-&gt;__crt_alg-&gt;cra_ctxsize, align);
+-
+-		digest-&gt;dia_final(tfm, dst);
+-		memcpy(out, dst, digest-&gt;dia_digestsize);
+-	} else
+-		digest-&gt;dia_final(tfm, out);
+-
+-	return 0;
+-}
+-
+-static int nosetkey(struct crypto_hash *tfm, const u8 *key, unsigned int keylen)
+-{
+-	crypto_hash_clear_flags(tfm, CRYPTO_TFM_RES_MASK);
+-	return -ENOSYS;
+-}
+-
+-static int setkey(struct crypto_hash *hash, const u8 *key, unsigned int keylen)
+-{
+-	struct crypto_tfm *tfm = crypto_hash_tfm(hash);
+-
+-	crypto_hash_clear_flags(hash, CRYPTO_TFM_RES_MASK);
+-	return tfm-&gt;__crt_alg-&gt;cra_digest.dia_setkey(tfm, key, keylen);
+-}
+-
+-static int digest(struct hash_desc *desc,
+-		  struct scatterlist *sg, unsigned int nbytes, u8 *out)
+-{
+-	if (WARN_ON_ONCE(in_irq()))
+-		return -EDEADLK;
+-
+-	init(desc);
+-	update2(desc, sg, nbytes);
+-	return final(desc, out);
+-}
+-
+-int crypto_init_digest_ops(struct crypto_tfm *tfm)
+-{
+-	struct hash_tfm *ops = &amp;tfm-&gt;crt_hash;
+-	struct digest_alg *dalg = &amp;tfm-&gt;__crt_alg-&gt;cra_digest;
+-
+-	if (dalg-&gt;dia_digestsize &gt; PAGE_SIZE / 8)
+-		return -EINVAL;
+-	
+-	ops-&gt;init	= init;
+-	ops-&gt;update	= update;
+-	ops-&gt;final	= final;
+-	ops-&gt;digest	= digest;
+-	ops-&gt;setkey	= dalg-&gt;dia_setkey ? setkey : nosetkey;
+-	ops-&gt;digestsize	= dalg-&gt;dia_digestsize;
+-	
+-	return 0;
+-}
+-
+-void crypto_exit_digest_ops(struct crypto_tfm *tfm)
+-{
+-}
+-
+-static int digest_async_nosetkey(struct crypto_ahash *tfm_async, const u8 *key,
+-			unsigned int keylen)
+-{
+-	crypto_ahash_clear_flags(tfm_async, CRYPTO_TFM_RES_MASK);
+-	return -ENOSYS;
+-}
+-
+-static int digest_async_setkey(struct crypto_ahash *tfm_async, const u8 *key,
+-			unsigned int keylen)
+-{
+-	struct crypto_tfm    *tfm        = crypto_ahash_tfm(tfm_async);
+-	struct digest_alg    *dalg       = &amp;tfm-&gt;__crt_alg-&gt;cra_digest;
+-
+-	crypto_ahash_clear_flags(tfm_async, CRYPTO_TFM_RES_MASK);
+-	return dalg-&gt;dia_setkey(tfm, key, keylen);
+-}
+-
+-static int digest_async_init(struct ahash_request *req)
+-{
+-	struct crypto_tfm *tfm  = req-&gt;base.tfm;
+-	struct digest_alg *dalg = &amp;tfm-&gt;__crt_alg-&gt;cra_digest;
+-
+-	dalg-&gt;dia_init(tfm);
+-	return 0;
+-}
+-
+-static int digest_async_update(struct ahash_request *req)
+-{
+-	struct crypto_tfm *tfm = req-&gt;base.tfm;
+-	struct hash_desc  desc = {
+-		.tfm   = __crypto_hash_cast(tfm),
+-		.flags = req-&gt;base.flags,
+-	};
+-
+-	update(&amp;desc, req-&gt;src, req-&gt;nbytes);
+-	return 0;
+-}
+-
+-static int digest_async_final(struct ahash_request *req)
+-{
+-	struct crypto_tfm *tfm  = req-&gt;base.tfm;
+-	struct hash_desc  desc = {
+-		.tfm   = __crypto_hash_cast(tfm),
+-		.flags = req-&gt;base.flags,
+-	};
+-
+-	final(&amp;desc, req-&gt;result);
+-	return 0;
+-}
+-
+-static int digest_async_digest(struct ahash_request *req)
+-{
+-	struct crypto_tfm *tfm  = req-&gt;base.tfm;
+-	struct hash_desc  desc = {
+-		.tfm   = __crypto_hash_cast(tfm),
+-		.flags = req-&gt;base.flags,
+-	};
+-
+-	return digest(&amp;desc, req-&gt;src, req-&gt;nbytes, req-&gt;result);
+-}
+-
+-int crypto_init_digest_ops_async(struct crypto_tfm *tfm)
+-{
+-	struct ahash_tfm  *crt  = &amp;tfm-&gt;crt_ahash;
+-	struct digest_alg *dalg = &amp;tfm-&gt;__crt_alg-&gt;cra_digest;
+-
+-	if (dalg-&gt;dia_digestsize &gt; PAGE_SIZE / 8)
+-		return -EINVAL;
+-
+-	crt-&gt;init       = digest_async_init;
+-	crt-&gt;update     = digest_async_update;
+-	crt-&gt;final      = digest_async_final;
+-	crt-&gt;digest     = digest_async_digest;
+-	crt-&gt;setkey     = dalg-&gt;dia_setkey ? digest_async_setkey :
+-						digest_async_nosetkey;
+-	crt-&gt;digestsize = dalg-&gt;dia_digestsize;
+-
+-	return 0;
+-}
+diff --git a/crypto/hash.c b/crypto/hash.c
+deleted file mode 100644
+index cb86b19fd105..000000000000
+--- a/crypto/hash.c
++++ /dev/null
+@@ -1,183 +0,0 @@
+-/*
+- * Cryptographic Hash operations.
+- * 
+- * Copyright (c) 2006 Herbert Xu &lt;herbert@gondor.apana.org.au&gt;
+- *
+- * This program is free software; you can redistribute it and/or modify it
+- * under the terms of the GNU General Public License as published by the Free
+- * Software Foundation; either version 2 of the License, or (at your option) 
+- * any later version.
+- */
+-
+-#include &lt;crypto/internal/hash.h&gt;
+-#include &lt;linux/errno.h&gt;
+-#include &lt;linux/kernel.h&gt;
+-#include &lt;linux/module.h&gt;
+-#include &lt;linux/slab.h&gt;
+-#include &lt;linux/seq_file.h&gt;
+-
+-#include "internal.h"
+-
+-static unsigned int crypto_hash_ctxsize(struct crypto_alg *alg, u32 type,
+-					u32 mask)
+-{
+-	return alg-&gt;cra_ctxsize;
+-}
+-
+-static int hash_setkey_unaligned(struct crypto_hash *crt, const u8 *key,
+-		                 unsigned int keylen)
+-{
+-	struct crypto_tfm *tfm = crypto_hash_tfm(crt);
+-	struct hash_alg *alg = &amp;tfm-&gt;__crt_alg-&gt;cra_hash;
+-	unsigned long alignmask = crypto_hash_alignmask(crt);
+-	int ret;
+-	u8 *buffer, *alignbuffer;
+-	unsigned long absize;
+-
+-	absize = keylen + alignmask;
+-	buffer = kmalloc(absize, GFP_ATOMIC);
+-	if (!buffer)
+-		return -ENOMEM;
+-
+-	alignbuffer = (u8 *)ALIGN((unsigned long)buffer, alignmask + 1);
+-	memcpy(alignbuffer, key, keylen);
+-	ret = alg-&gt;setkey(crt, alignbuffer, keylen);
+-	memset(alignbuffer, 0, keylen);
+-	kfree(buffer);
+-	return ret;
+-}
+-
+-static int hash_setkey(struct crypto_hash *crt, const u8 *key,
+-		       unsigned int keylen)
+-{
+-	struct crypto_tfm *tfm = crypto_hash_tfm(crt);
+-	struct hash_alg *alg = &amp;tfm-&gt;__crt_alg-&gt;cra_hash;
+-	unsigned long alignmask = crypto_hash_alignmask(crt);
+-
+-	if ((unsigned long)key &amp; alignmask)
+-		return hash_setkey_unaligned(crt, key, keylen);
+-
+-	return alg-&gt;setkey(crt, key, keylen);
+-}
+-
+-static int hash_async_setkey(struct crypto_ahash *tfm_async, const u8 *key,
+-			unsigned int keylen)
+-{
+-	struct crypto_tfm  *tfm      = crypto_ahash_tfm(tfm_async);
+-	struct crypto_hash *tfm_hash = __crypto_hash_cast(tfm);
+-	struct hash_alg    *alg      = &amp;tfm-&gt;__crt_alg-&gt;cra_hash;
+-
+-	return alg-&gt;setkey(tfm_hash, key, keylen);
+-}
+-
+-static int hash_async_init(struct ahash_request *req)
+-{
+-	struct crypto_tfm *tfm = req-&gt;base.tfm;
+-	struct hash_alg   *alg = &amp;tfm-&gt;__crt_alg-&gt;cra_hash;
+-	struct hash_desc  desc = {
+-		.tfm = __crypto_hash_cast(tfm),
+-		.flags = req-&gt;base.flags,
+-	};
+-
+-	return alg-&gt;init(&amp;desc);
+-}
+-
+-static int hash_async_update(struct ahash_request *req)
+-{
+-	struct crypto_tfm *tfm = req-&gt;base.tfm;
+-	struct hash_alg   *alg = &amp;tfm-&gt;__crt_alg-&gt;cra_hash;
+-	struct hash_desc  desc = {
+-		.tfm = __crypto_hash_cast(tfm),
+-		.flags = req-&gt;base.flags,
+-	};
+-
+-	return alg-&gt;update(&amp;desc, req-&gt;src, req-&gt;nbytes);
+-}
+-
+-static int hash_async_final(struct ahash_request *req)
+-{
+-	struct crypto_tfm *tfm = req-&gt;base.tfm;
+-	struct hash_alg   *alg = &amp;tfm-&gt;__crt_alg-&gt;cra_hash;
+-	struct hash_desc  desc = {
+-		.tfm = __crypto_hash_cast(tfm),
+-		.flags = req-&gt;base.flags,
+-	};
+-
+-	return alg-&gt;final(&amp;desc, req-&gt;result);
+-}
+-
+-static int hash_async_digest(struct ahash_request *req)
+-{
+-	struct crypto_tfm *tfm = req-&gt;base.tfm;
+-	struct hash_alg   *alg = &amp;tfm-&gt;__crt_alg-&gt;cra_hash;
+-	struct hash_desc  desc = {
+-		.tfm = __crypto_hash_cast(tfm),
+-		.flags = req-&gt;base.flags,
+-	};
+-
+-	return alg-&gt;digest(&amp;desc, req-&gt;src, req-&gt;nbytes, req-&gt;result);
+-}
+-
+-static int crypto_init_hash_ops_async(struct crypto_tfm *tfm)
+-{
+-	struct ahash_tfm *crt = &amp;tfm-&gt;crt_ahash;
+-	struct hash_alg  *alg = &amp;tfm-&gt;__crt_alg-&gt;cra_hash;
+-
+-	crt-&gt;init       = hash_async_init;
+-	crt-&gt;update     = hash_async_update;
+-	crt-&gt;final      = hash_async_final;
+-	crt-&gt;digest     = hash_async_digest;
+-	crt-&gt;setkey     = hash_async_setkey;
+-	crt-&gt;digestsize = alg-&gt;digestsize;
+-
+-	return 0;
+-}
+-
+-static int crypto_init_hash_ops_sync(struct crypto_tfm *tfm)
+-{
+-	struct hash_tfm *crt = &amp;tfm-&gt;crt_hash;
+-	struct hash_alg *alg = &amp;tfm-&gt;__crt_alg-&gt;cra_hash;
+-
+-	crt-&gt;init       = alg-&gt;init;
+-	crt-&gt;update     = alg-&gt;update;
+-	crt-&gt;final      = alg-&gt;final;
+-	crt-&gt;digest     = alg-&gt;digest;
+-	crt-&gt;setkey     = hash_setkey;
+-	crt-&gt;digestsize = alg-&gt;digestsize;
+-
+-	return 0;
+-}
+-
+-static int crypto_init_hash_ops(struct crypto_tfm *tfm, u32 type, u32 mask)
+-{
+-	struct hash_alg *alg = &amp;tfm-&gt;__crt_alg-&gt;cra_hash;
+-
+-	if (alg-&gt;digestsize &gt; PAGE_SIZE / 8)
+-		return -EINVAL;
+-
+-	if ((mask &amp; CRYPTO_ALG_TYPE_HASH_MASK) != CRYPTO_ALG_TYPE_HASH_MASK)
+-		return crypto_init_hash_ops_async(tfm);
+-	else
+-		return crypto_init_hash_ops_sync(tfm);
+-}
+-
+-static void crypto_hash_show(struct seq_file *m, struct crypto_alg *alg)
+-	__attribute__ ((unused));
+-static void crypto_hash_show(struct seq_file *m, struct crypto_alg *alg)
+-{
+-	seq_printf(m, "type         : hash\n");
+-	seq_printf(m, "blocksize    : %u\n", alg-&gt;cra_blocksize);
+-	seq_printf(m, "digestsize   : %u\n", alg-&gt;cra_hash.digestsize);
+-}
+-
+-const struct crypto_type crypto_hash_type = {
+-	.ctxsize = crypto_hash_ctxsize,
+-	.init = crypto_init_hash_ops,
+-#ifdef CONFIG_PROC_FS
+-	.show = crypto_hash_show,
+-#endif
+-};
+-EXPORT_SYMBOL_GPL(crypto_hash_type);
+-
+-MODULE_LICENSE("GPL");
+-MODULE_DESCRIPTION("Generic cryptographic hash type");
+diff --git a/include/crypto/algapi.h b/include/crypto/algapi.h
+index 1ffb53f74d37..fc0d575c71e0 100644
+--- a/include/crypto/algapi.h
++++ b/include/crypto/algapi.h
+@@ -106,7 +106,6 @@ struct blkcipher_walk {
+ extern const struct crypto_type crypto_ablkcipher_type;
+ extern const struct crypto_type crypto_aead_type;
+ extern const struct crypto_type crypto_blkcipher_type;
+-extern const struct crypto_type crypto_hash_type;
+ 
+ void crypto_mod_put(struct crypto_alg *alg);
+ </pre><hr><pre>commit d3fec424b23c47686efcf3f2004c3f1c1cee4d9c
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Sat Jul 21 04:37:26 2007 -0700
+
+    coda: remove CODA_STORE/CODA_RELEASE upcalls
+    
+    This is an variation on the patch sent by Christoph Hellwig which kills
+    file_count abuse by the Coda kernel module by moving the coda_flush
+    functionality into coda_release.  However part of reason we were using the
+    coda_flush callback was to allow Coda to pass errors that occur during
+    writeback from the userspace cache manager back to close().
+    
+    As Al Viro explained on linux-fsdevel, it is impossible to guarantee that
+    such errors can in fact be returned back to the caller.  There are many
+    cases where the last reference to a file is not released by the close
+    system call and it is also impossible to pick some close as a 'last-close'
+    and delay it until all other references have been destroyed.
+    
+    The CODA_STORE/CODA_RELEASE upcall combination is clearly a broken design,
+    and it is better to remove it completely.
+    
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Christoph Hellwig &lt;hch@lst.de&gt;
+    Cc: Al Viro &lt;viro@ftp.linux.org.uk&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/dir.c b/fs/coda/dir.c
+index 8e61236abf4a..f89ff083079b 100644
+--- a/fs/coda/dir.c
++++ b/fs/coda/dir.c
+@@ -86,7 +86,6 @@ const struct file_operations coda_dir_operations = {
+ 	.read		= generic_read_dir,
+ 	.readdir	= coda_readdir,
+ 	.open		= coda_open,
+-	.flush		= coda_flush,
+ 	.release	= coda_release,
+ 	.fsync		= coda_fsync,
+ };
+diff --git a/fs/coda/file.c b/fs/coda/file.c
+index 7594962604c2..29137ff3ca67 100644
+--- a/fs/coda/file.c
++++ b/fs/coda/file.c
+@@ -25,10 +25,6 @@
+ 
+ #include "coda_int.h"
+ 
+-/* if CODA_STORE fails with EOPNOTSUPP, venus clearly doesn't support
+- * CODA_STORE/CODA_RELEASE and we fall back on using the CODA_CLOSE upcall */
+-static int use_coda_close;
+-
+ static ssize_t
+ coda_file_read(struct file *coda_file, char __user *buf, size_t count, loff_t *ppos)
+ {
+@@ -163,47 +159,6 @@ int coda_open(struct inode *coda_inode, struct file *coda_file)
+ 	return 0;
+ }
+ 
+-int coda_flush(struct file *coda_file, fl_owner_t id)
+-{
+-	unsigned short flags = coda_file-&gt;f_flags &amp; ~O_EXCL;
+-	unsigned short coda_flags = coda_flags_to_cflags(flags);
+-	struct coda_file_info *cfi;
+-	struct inode *coda_inode;
+-	int err = 0, fcnt;
+-
+-	lock_kernel();
+-
+-	/* last close semantics */
+-	fcnt = file_count(coda_file);
+-	if (fcnt &gt; 1)
+-		goto out;
+-
+-	/* No need to make an upcall when we have not made any modifications
+-	 * to the file */
+-	if ((coda_file-&gt;f_flags &amp; O_ACCMODE) == O_RDONLY)
+-		goto out;
+-
+-	if (use_coda_close)
+-		goto out;
+-
+-	cfi = CODA_FTOC(coda_file);
+-	BUG_ON(!cfi || cfi-&gt;cfi_magic != CODA_MAGIC);
+-
+-	coda_inode = coda_file-&gt;f_path.dentry-&gt;d_inode;
+-
+-	err = venus_store(coda_inode-&gt;i_sb, coda_i2f(coda_inode), coda_flags,
+-			  coda_file-&gt;f_uid);
+-
+-	if (err == -EOPNOTSUPP) {
+-		use_coda_close = 1;
+-		err = 0;
+-	}
+-
+-out:
+-	unlock_kernel();
+-	return err;
+-}
+-
+ int coda_release(struct inode *coda_inode, struct file *coda_file)
+ {
+ 	unsigned short flags = (coda_file-&gt;f_flags) &amp; (~O_EXCL);
+@@ -215,21 +170,11 @@ int coda_release(struct inode *coda_inode, struct file *coda_file)
+ 
+ 	lock_kernel();
+ 
+-	if (!use_coda_close) {
+-		err = venus_release(coda_inode-&gt;i_sb, coda_i2f(coda_inode),
+-				    coda_flags);
+-		if (err == -EOPNOTSUPP) {
+-			use_coda_close = 1;
+-			err = 0;
+-		}
+-	}
+-
+ 	cfi = CODA_FTOC(coda_file);
+ 	BUG_ON(!cfi || cfi-&gt;cfi_magic != CODA_MAGIC);
+ 
+-	if (use_coda_close)
+-		err = venus_close(coda_inode-&gt;i_sb, coda_i2f(coda_inode),
+-				  coda_flags, coda_file-&gt;f_uid);
++	err = venus_close(coda_inode-&gt;i_sb, coda_i2f(coda_inode),
++			  coda_flags, coda_file-&gt;f_uid);
+ 
+ 	host_inode = cfi-&gt;cfi_container-&gt;f_path.dentry-&gt;d_inode;
+ 	cii = ITOC(coda_inode);
+@@ -246,7 +191,10 @@ int coda_release(struct inode *coda_inode, struct file *coda_file)
+ 	coda_file-&gt;private_data = NULL;
+ 
+ 	unlock_kernel();
+-	return err;
++
++	/* VFS fput ignores the return value from file_operations-&gt;release, so
++	 * there is no use returning an error here */
++	return 0;
+ }
+ 
+ int coda_fsync(struct file *coda_file, struct dentry *coda_dentry, int datasync)
+@@ -288,7 +236,6 @@ const struct file_operations coda_file_operations = {
+ 	.write		= coda_file_write,
+ 	.mmap		= coda_file_mmap,
+ 	.open		= coda_open,
+-	.flush		= coda_flush,
+ 	.release	= coda_release,
+ 	.fsync		= coda_fsync,
+ 	.splice_read	= coda_file_splice_read,
+diff --git a/fs/coda/upcall.c b/fs/coda/upcall.c
+index cd561d2e90b0..cdb4c07a7870 100644
+--- a/fs/coda/upcall.c
++++ b/fs/coda/upcall.c
+@@ -160,55 +160,8 @@ int venus_lookup(struct super_block *sb, struct CodaFid *fid,
+ 	return error;
+ }
+ 
+-int venus_store(struct super_block *sb, struct CodaFid *fid, int flags,
+-                vuid_t uid)
+-{
+-        union inputArgs *inp;
+-        union outputArgs *outp;
+-        int insize, outsize, error;
+-#ifdef CONFIG_CODA_FS_OLD_API
+-	struct coda_cred cred = { 0, };
+-	cred.cr_fsuid = uid;
+-#endif
+-	
+-	insize = SIZE(store);
+-	UPARG(CODA_STORE);
+-	
+-#ifdef CONFIG_CODA_FS_OLD_API
+-	memcpy(&amp;(inp-&gt;ih.cred), &amp;cred, sizeof(cred));
+-#else
+-	inp-&gt;ih.uid = uid;
+-#endif
+-	
+-        inp-&gt;coda_store.VFid = *fid;
+-        inp-&gt;coda_store.flags = flags;
+-
+-	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+-
+-	CODA_FREE(inp, insize);
+-        return error;
+-}
+-
+-int venus_release(struct super_block *sb, struct CodaFid *fid, int flags)
+-{
+-        union inputArgs *inp;
+-        union outputArgs *outp;
+-        int insize, outsize, error;
+-	
+-	insize = SIZE(release);
+-	UPARG(CODA_RELEASE);
+-	
+-	inp-&gt;coda_release.VFid = *fid;
+-	inp-&gt;coda_release.flags = flags;
+-
+-	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+-
+-	CODA_FREE(inp, insize);
+-	return error;
+-}
+-
+ int venus_close(struct super_block *sb, struct CodaFid *fid, int flags,
+-                vuid_t uid)
++		vuid_t uid)
+ {
+ 	union inputArgs *inp;
+ 	union outputArgs *outp;
+diff --git a/include/linux/coda_linux.h b/include/linux/coda_linux.h
+index c4079b403e9e..1c47a34aa794 100644
+--- a/include/linux/coda_linux.h
++++ b/include/linux/coda_linux.h
+@@ -36,7 +36,6 @@ extern const struct file_operations coda_ioctl_operations;
+ 
+ /* operations shared over more than one file */
+ int coda_open(struct inode *i, struct file *f);
+-int coda_flush(struct file *f, fl_owner_t id);
+ int coda_release(struct inode *i, struct file *f);
+ int coda_permission(struct inode *inode, int mask, struct nameidata *nd);
+ int coda_revalidate_inode(struct dentry *);
+diff --git a/include/linux/coda_psdev.h b/include/linux/coda_psdev.h
+index aa8f454b3b77..07ae8f846055 100644
+--- a/include/linux/coda_psdev.h
++++ b/include/linux/coda_psdev.h
+@@ -33,9 +33,6 @@ int venus_setattr(struct super_block *, struct CodaFid *, struct coda_vattr *);
+ int venus_lookup(struct super_block *sb, struct CodaFid *fid, 
+ 		 const char *name, int length, int *type, 
+ 		 struct CodaFid *resfid);
+-int venus_store(struct super_block *sb, struct CodaFid *fid, int flags,
+-		vuid_t uid);
+-int venus_release(struct super_block *sb, struct CodaFid *fid, int flags);
+ int venus_close(struct super_block *sb, struct CodaFid *fid, int flags,
+ 		vuid_t uid);
+ int venus_open(struct super_block *sb, struct CodaFid *fid, int flags,</pre><hr><pre>commit 5b7f13bd26a0c1d394a1a1f2bb6de5130c3a3843
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Thu Jul 19 01:48:52 2007 -0700
+
+    coda: update module information
+    
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/psdev.c b/fs/coda/psdev.c
+index e3a0a4164d5d..dcc6aead70f5 100644
+--- a/fs/coda/psdev.c
++++ b/fs/coda/psdev.c
+@@ -373,21 +373,20 @@ static int init_coda_psdev(void)
+ 	return err;
+ }
+ 
+-
+-MODULE_AUTHOR("Peter J. Braam &lt;braam@cs.cmu.edu&gt;");
++MODULE_AUTHOR("Jan Harkes, Peter J. Braam");
++MODULE_DESCRIPTION("Coda Distributed File System VFS interface");
++MODULE_ALIAS_CHARDEV_MAJOR(CODA_PSDEV_MAJOR);
+ MODULE_LICENSE("GPL");
++#ifdef CONFIG_CODA_FS_OLD_API
++MODULE_VERSION("5.3.21");
++#else
++MODULE_VERSION("6.6");
++#endif
+ 
+ static int __init init_coda(void)
+ {
+ 	int status;
+ 	int i;
+-	printk(KERN_INFO "Coda Kernel/Venus communications, "
+-#ifdef CONFIG_CODA_FS_OLD_API
+-	       "v5.3.20"
+-#else
+-	       "v6.0.0"
+-#endif
+-	       ", coda@cs.cmu.edu\n");
+ 
+ 	status = coda_init_inodecache();
+ 	if (status)</pre><hr><pre>commit 3cf01f28c303be34f18cb4f6204cf1bdfe12ba7c
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Thu Jul 19 01:48:51 2007 -0700
+
+    coda: remove statistics counters from /proc/fs/coda
+    
+    Similar information can easily be obtained with strace -c.
+    
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/coda_int.h b/fs/coda/coda_int.h
+index 9e6338fea514..8ccd5ed81d9c 100644
+--- a/fs/coda/coda_int.h
++++ b/fs/coda/coda_int.h
+@@ -1,12 +1,19 @@
+ #ifndef _CODA_INT_
+ #define _CODA_INT_
+ 
++struct dentry;
++
+ extern struct file_system_type coda_fs_type;
++extern unsigned long coda_timeout;
++extern int coda_hard;
++extern int coda_fake_statfs;
+ 
+ void coda_destroy_inodecache(void);
+ int coda_init_inodecache(void);
+ int coda_fsync(struct file *coda_file, struct dentry *coda_dentry,
+ 	       int datasync);
++void coda_sysctl_init(void);
++void coda_sysctl_clean(void);
+ 
+ #endif  /*  _CODA_INT_  */
+ 
+diff --git a/fs/coda/dir.c b/fs/coda/dir.c
+index 0c6c48ca7496..04a3dd84c993 100644
+--- a/fs/coda/dir.c
++++ b/fs/coda/dir.c
+@@ -25,7 +25,6 @@
+ #include &lt;linux/coda_psdev.h&gt;
+ #include &lt;linux/coda_fs_i.h&gt;
+ #include &lt;linux/coda_cache.h&gt;
+-#include &lt;linux/coda_proc.h&gt;
+ 
+ #include "coda_int.h"
+ 
+@@ -148,8 +147,6 @@ int coda_permission(struct inode *inode, int mask, struct nameidata *nd)
+ 
+ 	lock_kernel();
+ 
+-	coda_vfs_stat.permission++;
+-
+ 	if (coda_cache_check(inode, mask))
+ 		goto out; 
+ 
+@@ -206,7 +203,6 @@ static int coda_create(struct inode *dir, struct dentry *de, int mode, struct na
+ 	struct coda_vattr attrs;
+ 
+ 	lock_kernel();
+-	coda_vfs_stat.create++;
+ 
+ 	if (coda_isroot(dir) &amp;&amp; coda_iscontrol(name, length)) {
+ 		unlock_kernel();
+@@ -246,7 +242,6 @@ static int coda_mkdir(struct inode *dir, struct dentry *de, int mode)
+ 	struct CodaFid newfid;
+ 
+ 	lock_kernel();
+-	coda_vfs_stat.mkdir++;
+ 
+ 	if (coda_isroot(dir) &amp;&amp; coda_iscontrol(name, len)) {
+ 		unlock_kernel();
+@@ -288,7 +283,6 @@ static int coda_link(struct dentry *source_de, struct inode *dir_inode,
+ 	int error;
+ 
+ 	lock_kernel();
+-	coda_vfs_stat.link++;
+ 
+ 	if (coda_isroot(dir_inode) &amp;&amp; coda_iscontrol(name, len)) {
+ 		unlock_kernel();
+@@ -320,10 +314,9 @@ static int coda_symlink(struct inode *dir_inode, struct dentry *de,
+         const char *name = de-&gt;d_name.name;
+ 	int len = de-&gt;d_name.len;
+ 	int symlen;
+-        int error=0;
+-        
++	int error = 0;
++
+ 	lock_kernel();
+-	coda_vfs_stat.symlink++;
+ 
+ 	if (coda_isroot(dir_inode) &amp;&amp; coda_iscontrol(name, len)) {
+ 		unlock_kernel();
+@@ -360,7 +353,6 @@ int coda_unlink(struct inode *dir, struct dentry *de)
+ 	int len = de-&gt;d_name.len;
+ 
+ 	lock_kernel();
+-	coda_vfs_stat.unlink++;
+ 
+ 	error = venus_remove(dir-&gt;i_sb, coda_i2f(dir), name, len);
+ 	if ( error ) {
+@@ -381,7 +373,6 @@ int coda_rmdir(struct inode *dir, struct dentry *de)
+ 	int error;
+ 
+ 	lock_kernel();
+-	coda_vfs_stat.rmdir++;
+ 
+ 	error = venus_rmdir(dir-&gt;i_sb, coda_i2f(dir), name, len);
+ 	if (!error) {
+@@ -408,7 +399,6 @@ static int coda_rename(struct inode *old_dir, struct dentry *old_dentry,
+ 	int error;
+ 
+ 	lock_kernel();
+-	coda_vfs_stat.rename++;
+ 
+ 	error = venus_rename(old_dir-&gt;i_sb, coda_i2f(old_dir),
+ 			     coda_i2f(new_dir), old_length, new_length,
+@@ -445,8 +435,6 @@ int coda_readdir(struct file *coda_file, void *buf, filldir_t filldir)
+ 	BUG_ON(!cfi || cfi-&gt;cfi_magic != CODA_MAGIC);
+ 	host_file = cfi-&gt;cfi_container;
+ 
+-	coda_vfs_stat.readdir++;
+-
+ 	if (!host_file-&gt;f_op)
+ 		return -ENOTDIR;
+ 
+diff --git a/fs/coda/file.c b/fs/coda/file.c
+index e7d622709c90..7594962604c2 100644
+--- a/fs/coda/file.c
++++ b/fs/coda/file.c
+@@ -22,7 +22,6 @@
+ #include &lt;linux/coda_linux.h&gt;
+ #include &lt;linux/coda_fs_i.h&gt;
+ #include &lt;linux/coda_psdev.h&gt;
+-#include &lt;linux/coda_proc.h&gt;
+ 
+ #include "coda_int.h"
+ 
+@@ -134,8 +133,6 @@ int coda_open(struct inode *coda_inode, struct file *coda_file)
+ 	unsigned short coda_flags = coda_flags_to_cflags(flags);
+ 	struct coda_file_info *cfi;
+ 
+-	coda_vfs_stat.open++;
+-
+ 	cfi = kmalloc(sizeof(struct coda_file_info), GFP_KERNEL);
+ 	if (!cfi)
+ 		return -ENOMEM;
+@@ -176,8 +173,6 @@ int coda_flush(struct file *coda_file, fl_owner_t id)
+ 
+ 	lock_kernel();
+ 
+-	coda_vfs_stat.flush++;
+-
+ 	/* last close semantics */
+ 	fcnt = file_count(coda_file);
+ 	if (fcnt &gt; 1)
+@@ -219,8 +214,7 @@ int coda_release(struct inode *coda_inode, struct file *coda_file)
+ 	int err = 0;
+ 
+ 	lock_kernel();
+-	coda_vfs_stat.release++;
+- 
++
+ 	if (!use_coda_close) {
+ 		err = venus_release(coda_inode-&gt;i_sb, coda_i2f(coda_inode),
+ 				    coda_flags);
+@@ -271,8 +265,6 @@ int coda_fsync(struct file *coda_file, struct dentry *coda_dentry, int datasync)
+ 	BUG_ON(!cfi || cfi-&gt;cfi_magic != CODA_MAGIC);
+ 	host_file = cfi-&gt;cfi_container;
+ 
+-	coda_vfs_stat.fsync++;
+-
+ 	if (host_file-&gt;f_op &amp;&amp; host_file-&gt;f_op-&gt;fsync) {
+ 		host_dentry = host_file-&gt;f_path.dentry;
+ 		host_inode = host_dentry-&gt;d_inode;
+diff --git a/fs/coda/psdev.c b/fs/coda/psdev.c
+index 8a09f19596db..e3a0a4164d5d 100644
+--- a/fs/coda/psdev.c
++++ b/fs/coda/psdev.c
+@@ -45,7 +45,6 @@
+ #include &lt;linux/coda_linux.h&gt;
+ #include &lt;linux/coda_fs_i.h&gt;
+ #include &lt;linux/coda_psdev.h&gt;
+-#include &lt;linux/coda_proc.h&gt;
+ 
+ #include "coda_int.h"
+ 
+diff --git a/fs/coda/symlink.c b/fs/coda/symlink.c
+index 76e00a65a75b..4513b7258458 100644
+--- a/fs/coda/symlink.c
++++ b/fs/coda/symlink.c
+@@ -20,7 +20,6 @@
+ #include &lt;linux/coda_linux.h&gt;
+ #include &lt;linux/coda_psdev.h&gt;
+ #include &lt;linux/coda_fs_i.h&gt;
+-#include &lt;linux/coda_proc.h&gt;
+ 
+ static int coda_symlink_filler(struct file *file, struct page *page)
+ {
+@@ -32,7 +31,6 @@ static int coda_symlink_filler(struct file *file, struct page *page)
+ 
+ 	lock_kernel();
+ 	cii = ITOC(inode);
+-	coda_vfs_stat.follow_link++;
+ 
+ 	error = venus_readlink(inode-&gt;i_sb, &amp;cii-&gt;c_fid, p, &amp;len);
+ 	unlock_kernel();
+diff --git a/fs/coda/sysctl.c b/fs/coda/sysctl.c
+index c57a1fa7cf23..81b7771c6465 100644
+--- a/fs/coda/sysctl.c
++++ b/fs/coda/sysctl.c
+@@ -5,181 +5,14 @@
+  * 
+  * Carnegie Mellon encourages users to contribute improvements to
+  * the Coda project. Contact Peter Braam (coda@cs.cmu.edu).
+- * 
+- * CODA operation statistics
+- * (c) March, 1998 Zhanyong Wan &lt;zhanyong.wan@yale.edu&gt;
+- *
+  */
+ 
+-#include &lt;linux/time.h&gt;
+-#include &lt;linux/mm.h&gt;
+ #include &lt;linux/sysctl.h&gt;
+-#include &lt;linux/proc_fs.h&gt;
+-#include &lt;linux/seq_file.h&gt;
+-#include &lt;linux/slab.h&gt;
+-#include &lt;linux/stat.h&gt;
+-#include &lt;linux/ctype.h&gt;
+-#include &lt;linux/bitops.h&gt;
+-#include &lt;asm/uaccess.h&gt;
+-#include &lt;linux/utsname.h&gt;
+-#include &lt;linux/module.h&gt;
+ 
+-#include &lt;linux/coda.h&gt;
+-#include &lt;linux/coda_linux.h&gt;
+-#include &lt;linux/coda_fs_i.h&gt;
+-#include &lt;linux/coda_psdev.h&gt;
+-#include &lt;linux/coda_cache.h&gt;
+-#include &lt;linux/coda_proc.h&gt;
++#include "coda_int.h"
+ 
+ static struct ctl_table_header *fs_table_header;
+ 
+-#define CODA_TIMEOUT    3       /* timeout on upcalls to become intrble */
+-#define CODA_HARD       5       /* mount type "hard" or "soft" */
+-#define CODA_VFS 	 6       /* vfs statistics */
+-#define CODA_CACHE_INV 	 9       /* cache invalidation statistics */
+-#define CODA_FAKE_STATFS 10	 /* don't query venus for actual cache usage */
+-
+-struct coda_vfs_stats		coda_vfs_stat;
+-static struct coda_cache_inv_stats	coda_cache_inv_stat;
+-
+-static void reset_coda_vfs_stats( void )
+-{
+-	memset( &amp;coda_vfs_stat, 0, sizeof( coda_vfs_stat ) );
+-}
+-
+-static void reset_coda_cache_inv_stats( void )
+-{
+-	memset( &amp;coda_cache_inv_stat, 0, sizeof( coda_cache_inv_stat ) );
+-}
+-
+-static int do_reset_coda_vfs_stats( ctl_table * table, int write,
+-				    struct file * filp, void __user * buffer,
+-				    size_t * lenp, loff_t * ppos )
+-{
+-	if ( write ) {
+-		reset_coda_vfs_stats();
+-
+-		*ppos += *lenp;
+-	} else {
+-		*lenp = 0;
+-	}
+-
+-	return 0;
+-}
+-
+-static int do_reset_coda_cache_inv_stats( ctl_table * table, int write,
+-					  struct file * filp,
+-					  void __user * buffer,
+-					  size_t * lenp, loff_t * ppos )
+-{
+-	if ( write ) {
+-		reset_coda_cache_inv_stats();
+-
+-		*ppos += *lenp;
+-	} else {
+-		*lenp = 0;
+-	}
+-  
+-	return 0;
+-}
+-
+-static int proc_vfs_stats_show(struct seq_file *m, void *v)
+-{
+-	struct coda_vfs_stats * ps = &amp; coda_vfs_stat;
+-  
+-	seq_printf(m,
+-			"Coda VFS statistics\n"
+-			"===================\n\n"
+-			"File Operations:\n"
+-			"\topen\t\t%9d\n"
+-			"\tflush\t\t%9d\n"
+-			"\trelease\t\t%9d\n"
+-			"\tfsync\t\t%9d\n\n"
+-			"Dir Operations:\n"
+-			"\treaddir\t\t%9d\n\n"
+-			"Inode Operations\n"
+-			"\tcreate\t\t%9d\n"
+-			"\tlookup\t\t%9d\n"
+-			"\tlink\t\t%9d\n"
+-			"\tunlink\t\t%9d\n"
+-			"\tsymlink\t\t%9d\n"
+-			"\tmkdir\t\t%9d\n"
+-			"\trmdir\t\t%9d\n"
+-			"\trename\t\t%9d\n"
+-			"\tpermission\t%9d\n",
+-
+-			/* file operations */
+-			ps-&gt;open,
+-			ps-&gt;flush,
+-			ps-&gt;release,
+-			ps-&gt;fsync,
+-
+-			/* dir operations */
+-			ps-&gt;readdir,
+-		  
+-			/* inode operations */
+-			ps-&gt;create,
+-			ps-&gt;lookup,
+-			ps-&gt;link,
+-			ps-&gt;unlink,
+-			ps-&gt;symlink,
+-			ps-&gt;mkdir,
+-			ps-&gt;rmdir,
+-			ps-&gt;rename,
+-			ps-&gt;permission); 
+-	return 0;
+-}
+-
+-static int proc_cache_inv_stats_show(struct seq_file *m, void *v)
+-{
+-	struct coda_cache_inv_stats * ps = &amp; coda_cache_inv_stat;
+-  
+-	seq_printf(m,
+-			"Coda cache invalidation statistics\n"
+-			"==================================\n\n"
+-			"flush\t\t%9d\n"
+-			"purge user\t%9d\n"
+-			"zap_dir\t\t%9d\n"
+-			"zap_file\t%9d\n"
+-			"zap_vnode\t%9d\n"
+-			"purge_fid\t%9d\n"
+-			"replace\t\t%9d\n",
+-			ps-&gt;flush,
+-			ps-&gt;purge_user,
+-			ps-&gt;zap_dir,
+-			ps-&gt;zap_file,
+-			ps-&gt;zap_vnode,
+-			ps-&gt;purge_fid,
+-			ps-&gt;replace );
+-	return 0;
+-}
+-
+-static int proc_vfs_stats_open(struct inode *inode, struct file *file)
+-{
+-	return single_open(file, proc_vfs_stats_show, NULL);
+-}
+-
+-static int proc_cache_inv_stats_open(struct inode *inode, struct file *file)
+-{
+-	return single_open(file, proc_cache_inv_stats_show, NULL);
+-}
+-
+-static const struct file_operations proc_vfs_stats_fops = {
+-	.owner		= THIS_MODULE,
+-	.open		= proc_vfs_stats_open,
+-	.read		= seq_read,
+-	.llseek		= seq_lseek,
+-	.release	= single_release,
+-};
+-
+-static const struct file_operations proc_cache_inv_stats_fops = {
+-	.owner		= THIS_MODULE,
+-	.open		= proc_cache_inv_stats_open,
+-	.read		= seq_read,
+-	.llseek		= seq_lseek,
+-	.release	= single_release,
+-};
+-
+ static ctl_table coda_table[] = {
+ 	{
+ 		.ctl_name	= CTL_UNNUMBERED,
+@@ -197,22 +30,6 @@ static ctl_table coda_table[] = {
+ 		.mode		= 0644,
+ 		.proc_handler	= &amp;proc_dointvec
+ 	},
+-	{
+-		.ctl_name	= CTL_UNNUMBERED,
+-		.procname	= "vfs_stats",
+-		.data		= NULL,
+-		.maxlen		= 0,
+-		.mode		= 0644,
+-		.proc_handler	= &amp;do_reset_coda_vfs_stats
+-	},
+-	{
+-		.ctl_name	= CTL_UNNUMBERED,
+-		.procname	= "cache_inv_stats",
+-		.data		= NULL,
+-		.maxlen		= 0,
+-		.mode		= 0644,
+-		.proc_handler	= &amp;do_reset_coda_cache_inv_stats
+-	},
+ 	{
+ 		.ctl_name	= CTL_UNNUMBERED,
+ 		.procname	= "fake_statfs",
+@@ -235,59 +52,20 @@ static ctl_table fs_table[] = {
+ };
+ 
+ 
+-#ifdef CONFIG_PROC_FS
+-
+-/*
+- target directory structure:
+-   /proc/fs  (see linux/fs/proc/root.c)
+-   /proc/fs/coda
+-   /proc/fs/coda/{vfs_stats,
+-
+-*/
+-
+-static struct proc_dir_entry* proc_fs_coda;
+-
+-#endif
+-
+ void coda_sysctl_init(void)
+ {
+-	reset_coda_vfs_stats();
+-	reset_coda_cache_inv_stats();
+-
+-#ifdef CONFIG_PROC_FS
+-	proc_fs_coda = proc_mkdir("coda", proc_root_fs);
+-	if (proc_fs_coda) {
+-		struct proc_dir_entry *pde;
+-
+-		proc_fs_coda-&gt;owner = THIS_MODULE;
+-		pde = create_proc_entry("vfs_stats", 0, proc_fs_coda);
+-		if (pde)
+-			pde-&gt;proc_fops = &amp;proc_vfs_stats_fops;
+-		pde = create_proc_entry("cache_inv_stats", 0, proc_fs_coda);
+-		if (pde)
+-			pde-&gt;proc_fops = &amp;proc_cache_inv_stats_fops;
+-	}
+-#endif
+-
+ #ifdef CONFIG_SYSCTL
+ 	if ( !fs_table_header )
+ 		fs_table_header = register_sysctl_table(fs_table);
+-#endif 
++#endif
+ }
+ 
+-void coda_sysctl_clean(void) 
++void coda_sysctl_clean(void)
+ {
+-
+ #ifdef CONFIG_SYSCTL
+ 	if ( fs_table_header ) {
+ 		unregister_sysctl_table(fs_table_header);
+ 		fs_table_header = NULL;
+ 	}
+ #endif
+-
+-#ifdef CONFIG_PROC_FS
+-        remove_proc_entry("cache_inv_stats", proc_fs_coda);
+-        remove_proc_entry("vfs_stats", proc_fs_coda);
+-	remove_proc_entry("coda", proc_root_fs);
+-#endif 
+ }
+diff --git a/fs/coda/upcall.c b/fs/coda/upcall.c
+index 9a20a3b1998e..e4e766e5557c 100644
+--- a/fs/coda/upcall.c
++++ b/fs/coda/upcall.c
+@@ -35,7 +35,8 @@
+ #include &lt;linux/coda_psdev.h&gt;
+ #include &lt;linux/coda_fs_i.h&gt;
+ #include &lt;linux/coda_cache.h&gt;
+-#include &lt;linux/coda_proc.h&gt; 
++
++#include "coda_int.h"
+ 
+ static int coda_upcall(struct venus_comm *vc, int inSize, int *outSize,
+ 		       union inputArgs *buffer);
+diff --git a/include/linux/coda_linux.h b/include/linux/coda_linux.h
+index e4ac016ad272..c4079b403e9e 100644
+--- a/include/linux/coda_linux.h
++++ b/include/linux/coda_linux.h
+@@ -43,9 +43,6 @@ int coda_revalidate_inode(struct dentry *);
+ int coda_getattr(struct vfsmount *, struct dentry *, struct kstat *);
+ int coda_setattr(struct dentry *, struct iattr *);
+ 
+-/* global variables */
+-extern int coda_fake_statfs;
+-
+ /* this file:  heloers */
+ static __inline__ struct CodaFid *coda_i2f(struct inode *);
+ static __inline__ char *coda_i2s(struct inode *);
+diff --git a/include/linux/coda_proc.h b/include/linux/coda_proc.h
+deleted file mode 100644
+index 0dc1b0458e75..000000000000
+--- a/include/linux/coda_proc.h
++++ /dev/null
+@@ -1,76 +0,0 @@
+-/*
+- * coda_statis.h
+- * 
+- * CODA operation statistics
+- *
+- * (c) March, 1998
+- * by Michihiro Kuramochi, Zhenyu Xia and Zhanyong Wan
+- * zhanyong.wan@yale.edu
+- *
+- */
+-
+-#ifndef _CODA_PROC_H
+-#define _CODA_PROC_H
+-
+-void coda_sysctl_init(void);
+-void coda_sysctl_clean(void);
+-
+-#include &lt;linux/sysctl.h&gt;
+-#include &lt;linux/coda_fs_i.h&gt;
+-#include &lt;linux/coda.h&gt;
+-
+-/* these four files are presented to show the result of the statistics:
+- *
+- *	/proc/fs/coda/vfs_stats
+- *		      cache_inv_stats
+- *
+- * these four files are presented to reset the statistics to 0:
+- *
+- *	/proc/sys/coda/vfs_stats
+- *		       cache_inv_stats
+- */
+-
+-/* VFS operation statistics */
+-struct coda_vfs_stats 
+-{
+-	/* file operations */
+-	int open;
+-	int flush;
+-	int release;
+-	int fsync;
+-
+-	/* dir operations */
+-	int readdir;
+-  
+-	/* inode operations */
+-	int create;
+-	int lookup;
+-	int link;
+-	int unlink;
+-	int symlink;
+-	int mkdir;
+-	int rmdir;
+-	int rename;
+-	int permission;
+-
+-	/* symlink operatoins*/
+-	int follow_link;
+-	int readlink;
+-};
+-
+-/* cache invalidation statistics */
+-struct coda_cache_inv_stats
+-{
+-	int flush;
+-	int purge_user;
+-	int zap_dir;
+-	int zap_file;
+-	int zap_vnode;
+-	int purge_fid;
+-	int replace;
+-};
+-
+-/* these global variables hold the actual statistics data */
+-extern struct coda_vfs_stats		coda_vfs_stat;
+-
+-#endif /* _CODA_PROC_H */
+diff --git a/include/linux/coda_psdev.h b/include/linux/coda_psdev.h
+index 81b2e4c7d7ce..aa8f454b3b77 100644
+--- a/include/linux/coda_psdev.h
++++ b/include/linux/coda_psdev.h
+@@ -69,8 +69,6 @@ int venus_statfs(struct dentry *dentry, struct kstatfs *sfs);
+ 
+ 
+ /* messages between coda filesystem in kernel and Venus */
+-extern int coda_hard;
+-extern unsigned long coda_timeout;
+ struct upc_req {
+ 	struct list_head    uc_chain;
+ 	caddr_t	            uc_data;</pre><hr><pre>commit a1b0aa87647493c0201821ab884e86298d5da7d6
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Thu Jul 19 01:48:50 2007 -0700
+
+    coda: remove struct coda_sb_info
+    
+    The sb_info structure only contains a single pointer to the character device,
+    there is no need for the added indirection.
+    
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/cache.c b/fs/coda/cache.c
+index 11538a2b5423..8a2370341c7a 100644
+--- a/fs/coda/cache.c
++++ b/fs/coda/cache.c
+@@ -49,11 +49,6 @@ void coda_cache_clear_inode(struct inode *inode)
+ /* remove all acl caches */
+ void coda_cache_clear_all(struct super_block *sb)
+ {
+-        struct coda_sb_info *sbi;
+-
+-        sbi = coda_sbp(sb);
+-	BUG_ON(!sbi);
+-
+ 	atomic_inc(&amp;permission_epoch);
+ }
+ 
+diff --git a/fs/coda/inode.c b/fs/coda/inode.c
+index 29e441765600..6771a4271e33 100644
+--- a/fs/coda/inode.c
++++ b/fs/coda/inode.c
+@@ -141,11 +141,10 @@ static int get_device_index(struct coda_mount_data *data)
+ 
+ static int coda_fill_super(struct super_block *sb, void *data, int silent)
+ {
+-        struct inode *root = NULL; 
+-	struct coda_sb_info *sbi = NULL;
++	struct inode *root = NULL;
+ 	struct venus_comm *vc = NULL;
+ 	struct CodaFid fid;
+-        int error;
++	int error;
+ 	int idx;
+ 
+ 	idx = get_device_index((struct coda_mount_data *) data);
+@@ -167,16 +166,9 @@ static int coda_fill_super(struct super_block *sb, void *data, int silent)
+ 		return -EBUSY;
+ 	}
+ 
+-	sbi = kmalloc(sizeof(struct coda_sb_info), GFP_KERNEL);
+-	if(!sbi) {
+-		return -ENOMEM;
+-	}
+-
+ 	vc-&gt;vc_sb = sb;
+ 
+-	sbi-&gt;sbi_vcomm = vc;
+-
+-	sb-&gt;s_fs_info = sbi;
++	sb-&gt;s_fs_info = vc;
+ 	sb-&gt;s_flags |= MS_NOATIME;
+ 	sb-&gt;s_blocksize = 4096;	/* XXXXX  what do we put here?? */
+ 	sb-&gt;s_blocksize_bits = 12;
+@@ -207,26 +199,20 @@ static int coda_fill_super(struct super_block *sb, void *data, int silent)
+         return 0;
+ 
+  error:
+-	if (sbi) {
+-		kfree(sbi);
+-		if(vc)
+-			vc-&gt;vc_sb = NULL;		
+-	}
+ 	if (root)
+-                iput(root);
++		iput(root);
++	if (vc)
++		vc-&gt;vc_sb = NULL;
+ 
+-        return -EINVAL;
++	return -EINVAL;
+ }
+ 
+ static void coda_put_super(struct super_block *sb)
+ {
+-        struct coda_sb_info *sbi;
+-
+-	sbi = coda_sbp(sb);
+-	sbi-&gt;sbi_vcomm-&gt;vc_sb = NULL;
++	coda_vcp(sb)-&gt;vc_sb = NULL;
++	sb-&gt;s_fs_info = NULL;
+ 
+ 	printk("Coda: Bye bye.\n");
+-	kfree(sbi);
+ }
+ 
+ static void coda_clear_inode(struct inode *inode)
+diff --git a/fs/coda/upcall.c b/fs/coda/upcall.c
+index 87601e147644..9a20a3b1998e 100644
+--- a/fs/coda/upcall.c
++++ b/fs/coda/upcall.c
+@@ -37,7 +37,7 @@
+ #include &lt;linux/coda_cache.h&gt;
+ #include &lt;linux/coda_proc.h&gt; 
+ 
+-static int coda_upcall(struct coda_sb_info *mntinfo, int inSize, int *outSize, 
++static int coda_upcall(struct venus_comm *vc, int inSize, int *outSize,
+ 		       union inputArgs *buffer);
+ 
+ static void *alloc_upcall(int opcode, int size)
+@@ -83,7 +83,7 @@ int venus_rootfid(struct super_block *sb, struct CodaFid *fidp)
+         insize = SIZE(root);
+         UPARG(CODA_ROOT);
+ 
+-	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 	if (!error)
+ 		*fidp = outp-&gt;coda_root.VFid;
+ 
+@@ -102,7 +102,7 @@ int venus_getattr(struct super_block *sb, struct CodaFid *fid,
+ 	UPARG(CODA_GETATTR);
+         inp-&gt;coda_getattr.VFid = *fid;
+ 
+-	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 	if (!error)
+ 		*attr = outp-&gt;coda_getattr.attr;
+ 
+@@ -123,7 +123,7 @@ int venus_setattr(struct super_block *sb, struct CodaFid *fid,
+         inp-&gt;coda_setattr.VFid = *fid;
+ 	inp-&gt;coda_setattr.attr = *vattr;
+ 
+-        error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 
+         CODA_FREE(inp, insize);
+         return error;
+@@ -149,7 +149,7 @@ int venus_lookup(struct super_block *sb, struct CodaFid *fid,
+         memcpy((char *)(inp) + offset, name, length);
+         *((char *)inp + offset + length) = '\0';
+ 
+-	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 	if (!error) {
+ 		*resfid = outp-&gt;coda_lookup.VFid;
+ 		*type = outp-&gt;coda_lookup.vtype;
+@@ -182,7 +182,7 @@ int venus_store(struct super_block *sb, struct CodaFid *fid, int flags,
+         inp-&gt;coda_store.VFid = *fid;
+         inp-&gt;coda_store.flags = flags;
+ 
+-        error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 
+ 	CODA_FREE(inp, insize);
+         return error;
+@@ -200,7 +200,7 @@ int venus_release(struct super_block *sb, struct CodaFid *fid, int flags)
+ 	inp-&gt;coda_release.VFid = *fid;
+ 	inp-&gt;coda_release.flags = flags;
+ 
+-	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 
+ 	CODA_FREE(inp, insize);
+ 	return error;
+@@ -229,7 +229,7 @@ int venus_close(struct super_block *sb, struct CodaFid *fid, int flags,
+         inp-&gt;coda_close.VFid = *fid;
+         inp-&gt;coda_close.flags = flags;
+ 
+-        error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 
+ 	CODA_FREE(inp, insize);
+         return error;
+@@ -248,7 +248,7 @@ int venus_open(struct super_block *sb, struct CodaFid *fid,
+ 	inp-&gt;coda_open_by_fd.VFid = *fid;
+ 	inp-&gt;coda_open_by_fd.flags = flags;
+ 
+-	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 	if (!error)
+ 		*fh = outp-&gt;coda_open_by_fd.fh;
+ 
+@@ -276,7 +276,7 @@ int venus_mkdir(struct super_block *sb, struct CodaFid *dirfid,
+         memcpy((char *)(inp) + offset, name, length);
+         *((char *)inp + offset + length) = '\0';
+ 
+-	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 	if (!error) {
+ 		*attrs = outp-&gt;coda_mkdir.attr;
+ 		*newfid = outp-&gt;coda_mkdir.VFid;
+@@ -318,7 +318,7 @@ int venus_rename(struct super_block *sb, struct CodaFid *old_fid,
+         memcpy((char *)(inp) + offset, new_name, new_length);
+         *((char *)inp + offset + new_length) = '\0';
+ 
+-        error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 
+ 	CODA_FREE(inp, insize);
+ 	return error;
+@@ -347,7 +347,7 @@ int venus_create(struct super_block *sb, struct CodaFid *dirfid,
+         memcpy((char *)(inp) + offset, name, length);
+         *((char *)inp + offset + length) = '\0';
+ 
+-	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 	if (!error) {
+ 		*attrs = outp-&gt;coda_create.attr;
+ 		*newfid = outp-&gt;coda_create.VFid;
+@@ -373,8 +373,8 @@ int venus_rmdir(struct super_block *sb, struct CodaFid *dirfid,
+         inp-&gt;coda_rmdir.name = offset;
+         memcpy((char *)(inp) + offset, name, length);
+ 	*((char *)inp + offset + length) = '\0';
+-        
+-        error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 
+ 	CODA_FREE(inp, insize);
+ 	return error;
+@@ -395,8 +395,8 @@ int venus_remove(struct super_block *sb, struct CodaFid *dirfid,
+         inp-&gt;coda_remove.name = offset;
+         memcpy((char *)(inp) + offset, name, length);
+ 	*((char *)inp + offset + length) = '\0';
+-        
+-        error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 
+ 	CODA_FREE(inp, insize);
+ 	return error;
+@@ -417,7 +417,7 @@ int venus_readlink(struct super_block *sb, struct CodaFid *fid,
+ 
+         inp-&gt;coda_readlink.VFid = *fid;
+ 
+-	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 	if (!error) {
+ 		retlen = outp-&gt;coda_readlink.count;
+ 		if ( retlen &gt; *length )
+@@ -453,8 +453,8 @@ int venus_link(struct super_block *sb, struct CodaFid *fid,
+         /* make sure strings are null terminated */
+         memcpy((char *)(inp) + offset, name, len);
+         *((char *)inp + offset + len) = '\0';
+-        
+-        error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 
+ 	CODA_FREE(inp, insize);
+         return error;
+@@ -489,7 +489,7 @@ int venus_symlink(struct super_block *sb, struct CodaFid *fid,
+         memcpy((char *)(inp) + offset, name, len);
+         *((char *)inp + offset + len) = '\0';
+ 
+-	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 
+ 	CODA_FREE(inp, insize);
+         return error;
+@@ -504,9 +504,9 @@ int venus_fsync(struct super_block *sb, struct CodaFid *fid)
+ 	insize=SIZE(fsync);
+ 	UPARG(CODA_FSYNC);
+ 
+-        inp-&gt;coda_fsync.VFid = *fid;
+-        error = coda_upcall(coda_sbp(sb), sizeof(union inputArgs), 
+-                            &amp;outsize, inp);
++	inp-&gt;coda_fsync.VFid = *fid;
++	error = coda_upcall(coda_vcp(sb), sizeof(union inputArgs),
++			    &amp;outsize, inp);
+ 
+ 	CODA_FREE(inp, insize);
+ 	return error;
+@@ -524,7 +524,7 @@ int venus_access(struct super_block *sb, struct CodaFid *fid, int mask)
+         inp-&gt;coda_access.VFid = *fid;
+         inp-&gt;coda_access.flags = mask;
+ 
+-	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(sb), insize, &amp;outsize, inp);
+ 
+ 	CODA_FREE(inp, insize);
+ 	return error;
+@@ -573,9 +573,9 @@ int venus_pioctl(struct super_block *sb, struct CodaFid *fid,
+ 	        goto exit;
+ 	}
+ 
+-        error = coda_upcall(coda_sbp(sb), SIZE(ioctl) + data-&gt;vi.in_size,
+-                            &amp;outsize, inp);
+-        
++	error = coda_upcall(coda_vcp(sb), SIZE(ioctl) + data-&gt;vi.in_size,
++			    &amp;outsize, inp);
++
+         if (error) {
+ 	        printk("coda_pioctl: Venus returns: %d for %s\n", 
+ 		       error, coda_f2s(fid));
+@@ -615,7 +615,7 @@ int venus_statfs(struct dentry *dentry, struct kstatfs *sfs)
+ 	insize = max_t(unsigned int, INSIZE(statfs), OUTSIZE(statfs));
+ 	UPARG(CODA_STATFS);
+ 
+-	error = coda_upcall(coda_sbp(dentry-&gt;d_sb), insize, &amp;outsize, inp);
++	error = coda_upcall(coda_vcp(dentry-&gt;d_sb), insize, &amp;outsize, inp);
+ 	if (!error) {
+ 		sfs-&gt;f_blocks = outp-&gt;coda_statfs.stat.f_blocks;
+ 		sfs-&gt;f_bfree  = outp-&gt;coda_statfs.stat.f_bfree;
+@@ -710,28 +710,25 @@ static inline void coda_waitfor_upcall(struct upc_req *req)
+ }
+ 
+ 
+-/* 
+- * coda_upcall will return an error in the case of 
++/*
++ * coda_upcall will return an error in the case of
+  * failed communication with Venus _or_ will peek at Venus
+  * reply and return Venus' error.
+  *
+  * As venus has 2 types of errors, normal errors (positive) and internal
+  * errors (negative), normal errors are negated, while internal errors
+  * are all mapped to -EINTR, while showing a nice warning message. (jh)
+- * 
+  */
+-static int coda_upcall(struct coda_sb_info *sbi,
++static int coda_upcall(struct venus_comm *vcp,
+ 		       int inSize, int *outSize,
+ 		       union inputArgs *buffer)
+ {
+-	struct venus_comm *vcommp;
+ 	union outputArgs *out;
+ 	union inputArgs *sig_inputArgs;
+ 	struct upc_req *req, *sig_req;
+ 	int error = 0;
+ 
+-	vcommp = sbi-&gt;sbi_vcomm;
+-	if (!vcommp-&gt;vc_inuse) {
++	if (!vcp-&gt;vc_inuse) {
+ 		printk(KERN_NOTICE "coda: Venus dead, not sending upcall\n");
+ 		return -ENXIO;
+ 	}
+@@ -746,16 +743,16 @@ static int coda_upcall(struct coda_sb_info *sbi,
+ 	req-&gt;uc_inSize = inSize;
+ 	req-&gt;uc_outSize = *outSize ? *outSize : inSize;
+ 	req-&gt;uc_opcode = ((union inputArgs *)buffer)-&gt;ih.opcode;
+-	req-&gt;uc_unique = ++vcommp-&gt;vc_seq;
++	req-&gt;uc_unique = ++vcp-&gt;vc_seq;
+ 	init_waitqueue_head(&amp;req-&gt;uc_sleep);
+ 
+ 	/* Fill in the common input args. */
+ 	((union inputArgs *)buffer)-&gt;ih.unique = req-&gt;uc_unique;
+ 
+ 	/* Append msg to pending queue and poke Venus. */
+-	list_add_tail(&amp;req-&gt;uc_chain, &amp;vcommp-&gt;vc_pending);
++	list_add_tail(&amp;req-&gt;uc_chain, &amp;vcp-&gt;vc_pending);
+ 
+-	wake_up_interruptible(&amp;vcommp-&gt;vc_waitq);
++	wake_up_interruptible(&amp;vcp-&gt;vc_waitq);
+ 	/* We can be interrupted while we wait for Venus to process
+ 	 * our request.  If the interrupt occurs before Venus has read
+ 	 * the request, we dequeue and return. If it occurs after the
+@@ -788,7 +785,7 @@ static int coda_upcall(struct coda_sb_info *sbi,
+ 		goto exit;
+ 
+ 	/* Venus saw the upcall, make sure we can send interrupt signal */
+-	if (!vcommp-&gt;vc_inuse) {
++	if (!vcp-&gt;vc_inuse) {
+ 		printk(KERN_INFO "coda: Venus dead, not sending signal.\n");
+ 		goto exit;
+ 	}
+@@ -815,8 +812,8 @@ static int coda_upcall(struct coda_sb_info *sbi,
+ 	sig_req-&gt;uc_outSize = sizeof(struct coda_in_hdr);
+ 
+ 	/* insert at head of queue! */
+-	list_add(&amp;(sig_req-&gt;uc_chain), &amp;vcommp-&gt;vc_pending);
+-	wake_up_interruptible(&amp;vcommp-&gt;vc_waitq);
++	list_add(&amp;(sig_req-&gt;uc_chain), &amp;vcp-&gt;vc_pending);
++	wake_up_interruptible(&amp;vcp-&gt;vc_waitq);
+ 
+ exit:
+ 	kfree(req);
+diff --git a/include/linux/coda_psdev.h b/include/linux/coda_psdev.h
+index f28c2f7fd454..81b2e4c7d7ce 100644
+--- a/include/linux/coda_psdev.h
++++ b/include/linux/coda_psdev.h
+@@ -8,11 +8,6 @@
+ 
+ struct kstatfs;
+ 
+-struct coda_sb_info
+-{
+-	struct venus_comm *sbi_vcomm;
+-};
+-
+ /* communication pending/processing queues */
+ struct venus_comm {
+ 	u_long		    vc_seq;
+@@ -24,9 +19,9 @@ struct venus_comm {
+ };
+ 
+ 
+-static inline struct coda_sb_info *coda_sbp(struct super_block *sb)
++static inline struct venus_comm *coda_vcp(struct super_block *sb)
+ {
+-    return ((struct coda_sb_info *)((sb)-&gt;s_fs_info));
++	return (struct venus_comm *)((sb)-&gt;s_fs_info);
+ }
+ 
+ </pre><hr><pre>commit 5fd31e9a67dd6c80e49240514cf854c1f054aca2
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Thu Jul 19 01:48:49 2007 -0700
+
+    coda: cleanup downcall handler
+    
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/upcall.c b/fs/coda/upcall.c
+index 097dbb2fd6f5..87601e147644 100644
+--- a/fs/coda/upcall.c
++++ b/fs/coda/upcall.c
+@@ -859,77 +859,66 @@ static int coda_upcall(struct coda_sb_info *sbi,
+ 
+ int coda_downcall(int opcode, union outputArgs * out, struct super_block *sb)
+ {
++	struct inode *inode = NULL;
++	struct CodaFid *fid, *newfid;
++
+ 	/* Handle invalidation requests. */
+-          if ( !sb || !sb-&gt;s_root || !sb-&gt;s_root-&gt;d_inode)
+-		  return 0; 
+-
+-	  switch (opcode) {
+-
+-	  case CODA_FLUSH : {
+-		   coda_cache_clear_all(sb);
+-		   shrink_dcache_sb(sb);
+-		   coda_flag_inode(sb-&gt;s_root-&gt;d_inode, C_FLUSH);
+-		   return(0);
+-	  }
+-
+-	  case CODA_PURGEUSER : {
+-		   coda_cache_clear_all(sb);
+-		   return(0);
+-	  }
+-
+-	  case CODA_ZAPDIR : {
+-	          struct inode *inode;
+-		  struct CodaFid *fid = &amp;out-&gt;coda_zapdir.CodaFid;
+-
+-		  inode = coda_fid_to_inode(fid, sb);
+-		  if (inode) {
+-			  coda_flag_inode_children(inode, C_PURGE);
+-	                  coda_flag_inode(inode, C_VATTR);
+-			  iput(inode);
+-		  }
+-		  
+-		  return(0);
+-	  }
+-
+-	  case CODA_ZAPFILE : {
+-	          struct inode *inode;
+-		  struct CodaFid *fid = &amp;out-&gt;coda_zapfile.CodaFid;
+-		  inode = coda_fid_to_inode(fid, sb);
+-		  if ( inode ) {
+-	                  coda_flag_inode(inode, C_VATTR);
+-			  iput(inode);
+-		  }
+-		  return 0;
+-	  }
+-
+-	  case CODA_PURGEFID : {
+-	          struct inode *inode;
+-		  struct CodaFid *fid = &amp;out-&gt;coda_purgefid.CodaFid;
+-		  inode = coda_fid_to_inode(fid, sb);
+-		  if ( inode ) { 
++	if ( !sb || !sb-&gt;s_root)
++		return 0;
++
++	switch (opcode) {
++	case CODA_FLUSH:
++		coda_cache_clear_all(sb);
++		shrink_dcache_sb(sb);
++		if (sb-&gt;s_root-&gt;d_inode)
++		    coda_flag_inode(sb-&gt;s_root-&gt;d_inode, C_FLUSH);
++		break;
++
++	case CODA_PURGEUSER:
++		coda_cache_clear_all(sb);
++		break;
++
++	case CODA_ZAPDIR:
++		fid = &amp;out-&gt;coda_zapdir.CodaFid;
++		inode = coda_fid_to_inode(fid, sb);
++		if (inode) {
++			coda_flag_inode_children(inode, C_PURGE);
++			coda_flag_inode(inode, C_VATTR);
++		}
++		break;
++
++	case CODA_ZAPFILE:
++		fid = &amp;out-&gt;coda_zapfile.CodaFid;
++		inode = coda_fid_to_inode(fid, sb);
++		if (inode)
++			coda_flag_inode(inode, C_VATTR);
++		break;
++
++	case CODA_PURGEFID:
++		fid = &amp;out-&gt;coda_purgefid.CodaFid;
++		inode = coda_fid_to_inode(fid, sb);
++		if (inode) {
+ 			coda_flag_inode_children(inode, C_PURGE);
+ 
+ 			/* catch the dentries later if some are still busy */
+ 			coda_flag_inode(inode, C_PURGE);
+ 			d_prune_aliases(inode);
+ 
+-			iput(inode);
+-		  }
+-		  return 0;
+-	  }
+-
+-	  case CODA_REPLACE : {
+-	          struct inode *inode;
+-		  struct CodaFid *oldfid = &amp;out-&gt;coda_replace.OldFid;
+-		  struct CodaFid *newfid = &amp;out-&gt;coda_replace.NewFid;
+-		  inode = coda_fid_to_inode(oldfid, sb);
+-		  if ( inode ) { 
+-			  coda_replace_fid(inode, oldfid, newfid);
+-			  iput(inode);
+-		  }
+-		  return 0;
+-	  }
+-	  }
+-	  return 0;
++		}
++		break;
++
++	case CODA_REPLACE:
++		fid = &amp;out-&gt;coda_replace.OldFid;
++		newfid = &amp;out-&gt;coda_replace.NewFid;
++		inode = coda_fid_to_inode(fid, sb);
++		if (inode)
++			coda_replace_fid(inode, fid, newfid);
++		break;
++	}
++
++	if (inode)
++		iput(inode);
++
++	return 0;
+ }
+ </pre><hr><pre>commit ed36f723676b208053d0655cee7e7f1601a2d356
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Thu Jul 19 01:48:49 2007 -0700
+
+    coda: cleanup coda_lookup, use dsplice_alias
+    
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/dir.c b/fs/coda/dir.c
+index 47ac9e21a590..0c6c48ca7496 100644
+--- a/fs/coda/dir.c
++++ b/fs/coda/dir.c
+@@ -97,58 +97,45 @@ const struct file_operations coda_dir_operations = {
+ /* access routines: lookup, readlink, permission */
+ static struct dentry *coda_lookup(struct inode *dir, struct dentry *entry, struct nameidata *nd)
+ {
+-	struct inode *res_inode = NULL;
++	struct inode *inode = NULL;
+ 	struct CodaFid resfid = { { 0, } };
+-	int dropme = 0; /* to indicate entry should not be cached */
+ 	int type = 0;
+ 	int error = 0;
+ 	const char *name = entry-&gt;d_name.name;
+ 	size_t length = entry-&gt;d_name.len;
+-	
+-	if ( length &gt; CODA_MAXNAMLEN ) {
+-	        printk("name too long: lookup, %s (%*s)\n", 
++
++	if (length &gt; CODA_MAXNAMLEN) {
++		printk(KERN_ERR "name too long: lookup, %s (%*s)\n",
+ 		       coda_i2s(dir), (int)length, name);
+ 		return ERR_PTR(-ENAMETOOLONG);
+ 	}
+ 
++	/* control object, create inode on the fly */
++	if (coda_isroot(dir) &amp;&amp; coda_iscontrol(name, length)) {
++		error = coda_cnode_makectl(&amp;inode, dir-&gt;i_sb);
++		type = CODA_NOCACHE;
++		goto exit;
++	}
++
+ 	lock_kernel();
+-        /* control object, create inode on the fly */
+-        if (coda_isroot(dir) &amp;&amp; coda_iscontrol(name, length)) {
+-	        error = coda_cnode_makectl(&amp;res_inode, dir-&gt;i_sb);
+-		dropme = 1;
+-                goto exit;
+-        }
+ 
+-	error = venus_lookup(dir-&gt;i_sb, coda_i2f(dir), 
+-			     (const char *)name, length, &amp;type, &amp;resfid);
++	error = venus_lookup(dir-&gt;i_sb, coda_i2f(dir), name, length,
++			     &amp;type, &amp;resfid);
++	if (!error)
++		error = coda_cnode_make(&amp;inode, &amp;resfid, dir-&gt;i_sb);
+ 
+-	res_inode = NULL;
+-	if (!error) {
+-		if (type &amp; CODA_NOCACHE) {
+-			type &amp;= (~CODA_NOCACHE);
+-			dropme = 1;
+-		}
++	unlock_kernel();
+ 
+-	    	error = coda_cnode_make(&amp;res_inode, &amp;resfid, dir-&gt;i_sb);
+-		if (error) {
+-			unlock_kernel();
+-			return ERR_PTR(error);
+-		}
+-	} else if (error != -ENOENT) {
+-		unlock_kernel();
++	if (error &amp;&amp; error != -ENOENT)
+ 		return ERR_PTR(error);
+-	}
+ 
+ exit:
+-	entry-&gt;d_time = 0;
+ 	entry-&gt;d_op = &amp;coda_dentry_operations;
+-	d_add(entry, res_inode);
+-	if ( dropme ) {
+-		d_drop(entry);
+-		coda_flag_inode(res_inode, C_VATTR);
+-	}
+-	unlock_kernel();
+-        return NULL;
++
++	if (inode &amp;&amp; (type &amp; CODA_NOCACHE))
++		coda_flag_inode(inode, C_VATTR | C_PURGE);
++
++	return d_splice_alias(inode, entry);
+ }
+ 
+ </pre><hr><pre>commit 970648eb03cca7d7405f9a3a5d3fe29929e48aa6
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Thu Jul 19 01:48:48 2007 -0700
+
+    coda: ignore returned values when upcalls return errors
+    
+    Venus returns an ENOENT error on open, so we shouldn't try to grab the
+    filehandle for the returned fd.
+    
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/upcall.c b/fs/coda/upcall.c
+index 330de7dbdcf8..097dbb2fd6f5 100644
+--- a/fs/coda/upcall.c
++++ b/fs/coda/upcall.c
+@@ -84,12 +84,8 @@ int venus_rootfid(struct super_block *sb, struct CodaFid *fidp)
+         UPARG(CODA_ROOT);
+ 
+ 	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
+-	
+-	if (error) {
+-	        printk("coda_get_rootfid: error %d\n", error);
+-	} else {
++	if (!error)
+ 		*fidp = outp-&gt;coda_root.VFid;
+-	}
+ 
+ 	CODA_FREE(inp, insize);
+ 	return error;
+@@ -106,9 +102,9 @@ int venus_getattr(struct super_block *sb, struct CodaFid *fid,
+ 	UPARG(CODA_GETATTR);
+         inp-&gt;coda_getattr.VFid = *fid;
+ 
+-        error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
+-	
+-	*attr = outp-&gt;coda_getattr.attr;
++	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	if (!error)
++		*attr = outp-&gt;coda_getattr.attr;
+ 
+ 	CODA_FREE(inp, insize);
+         return error;
+@@ -153,10 +149,11 @@ int venus_lookup(struct super_block *sb, struct CodaFid *fid,
+         memcpy((char *)(inp) + offset, name, length);
+         *((char *)inp + offset + length) = '\0';
+ 
+-        error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
+-
+-	*resfid = outp-&gt;coda_lookup.VFid;
+-	*type = outp-&gt;coda_lookup.vtype;
++	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	if (!error) {
++		*resfid = outp-&gt;coda_lookup.VFid;
++		*type = outp-&gt;coda_lookup.vtype;
++	}
+ 
+ 	CODA_FREE(inp, insize);
+ 	return error;
+@@ -278,11 +275,12 @@ int venus_mkdir(struct super_block *sb, struct CodaFid *dirfid,
+         /* Venus must get null terminated string */
+         memcpy((char *)(inp) + offset, name, length);
+         *((char *)inp + offset + length) = '\0';
+-        
+-        error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
+ 
+-	*attrs = outp-&gt;coda_mkdir.attr;
+-	*newfid = outp-&gt;coda_mkdir.VFid;
++	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	if (!error) {
++		*attrs = outp-&gt;coda_mkdir.attr;
++		*newfid = outp-&gt;coda_mkdir.VFid;
++	}
+ 
+ 	CODA_FREE(inp, insize);
+ 	return error;        
+@@ -348,11 +346,12 @@ int venus_create(struct super_block *sb, struct CodaFid *dirfid,
+         /* Venus must get null terminated string */
+         memcpy((char *)(inp) + offset, name, length);
+         *((char *)inp + offset + length) = '\0';
+-                
+-        error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
+ 
+-	*attrs = outp-&gt;coda_create.attr;
+-	*newfid = outp-&gt;coda_create.VFid;
++	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	if (!error) {
++		*attrs = outp-&gt;coda_create.attr;
++		*newfid = outp-&gt;coda_create.VFid;
++	}
+ 
+ 	CODA_FREE(inp, insize);
+ 	return error;        
+@@ -417,19 +416,18 @@ int venus_readlink(struct super_block *sb, struct CodaFid *fid,
+ 	UPARG(CODA_READLINK);
+ 
+         inp-&gt;coda_readlink.VFid = *fid;
+-    
+-        error =  coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
+-	
+-	if (! error) {
+-                retlen = outp-&gt;coda_readlink.count;
++
++	error = coda_upcall(coda_sbp(sb), insize, &amp;outsize, inp);
++	if (!error) {
++		retlen = outp-&gt;coda_readlink.count;
+ 		if ( retlen &gt; *length )
+-		        retlen = *length;
++			retlen = *length;
+ 		*length = retlen;
+ 		result =  (char *)outp + (long)outp-&gt;coda_readlink.data;
+ 		memcpy(buffer, result, retlen);
+ 		*(buffer + retlen) = '\0';
+ 	}
+-        
++
+         CODA_FREE(inp, insize);
+         return error;
+ }
+@@ -617,16 +615,13 @@ int venus_statfs(struct dentry *dentry, struct kstatfs *sfs)
+ 	insize = max_t(unsigned int, INSIZE(statfs), OUTSIZE(statfs));
+ 	UPARG(CODA_STATFS);
+ 
+-        error = coda_upcall(coda_sbp(dentry-&gt;d_sb), insize, &amp;outsize, inp);
+-	
+-        if (!error) {
++	error = coda_upcall(coda_sbp(dentry-&gt;d_sb), insize, &amp;outsize, inp);
++	if (!error) {
+ 		sfs-&gt;f_blocks = outp-&gt;coda_statfs.stat.f_blocks;
+ 		sfs-&gt;f_bfree  = outp-&gt;coda_statfs.stat.f_bfree;
+ 		sfs-&gt;f_bavail = outp-&gt;coda_statfs.stat.f_bavail;
+ 		sfs-&gt;f_files  = outp-&gt;coda_statfs.stat.f_files;
+ 		sfs-&gt;f_ffree  = outp-&gt;coda_statfs.stat.f_ffree;
+-	} else {
+-		printk("coda_statfs: Venus returns: %d\n", error);
+ 	}
+ 
+         CODA_FREE(inp, insize);</pre><hr><pre>commit 37461e1957e6262278342a0c1a78e46996b7ff88
+Author: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+Date:   Thu Jul 19 01:48:48 2007 -0700
+
+    coda: replace upc_alloc/upc_free with kmalloc/kfree
+    
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/psdev.c b/fs/coda/psdev.c
+index 6818c20372ca..8a09f19596db 100644
+--- a/fs/coda/psdev.c
++++ b/fs/coda/psdev.c
+@@ -49,8 +49,6 @@
+ 
+ #include "coda_int.h"
+ 
+-#define upc_free(r) kfree(r)
+-
+ /* statistics */
+ int           coda_hard;         /* allows signals during upcalls */
+ unsigned long coda_timeout = 30; /* .. secs, then signals will dequeue */
+@@ -264,7 +262,7 @@ static ssize_t coda_psdev_read(struct file * file, char __user * buf,
+ 	}
+ 
+ 	CODA_FREE(req-&gt;uc_data, sizeof(struct coda_in_hdr));
+-	upc_free(req);
++	kfree(req);
+ out:
+ 	unlock_kernel();
+ 	return (count ? count : retval);
+@@ -320,7 +318,7 @@ static int coda_psdev_release(struct inode * inode, struct file * file)
+ 		/* Async requests need to be freed here */
+ 		if (req-&gt;uc_flags &amp; REQ_ASYNC) {
+ 			CODA_FREE(req-&gt;uc_data, sizeof(struct coda_in_hdr));
+-			upc_free(req);
++			kfree(req);
+ 			continue;
+ 		}
+ 		req-&gt;uc_flags |= REQ_ABORT;
+diff --git a/fs/coda/upcall.c b/fs/coda/upcall.c
+index ad65ee01790f..330de7dbdcf8 100644
+--- a/fs/coda/upcall.c
++++ b/fs/coda/upcall.c
+@@ -37,9 +37,6 @@
+ #include &lt;linux/coda_cache.h&gt;
+ #include &lt;linux/coda_proc.h&gt; 
+ 
+-#define upc_alloc() kmalloc(sizeof(struct upc_req), GFP_KERNEL)
+-#define upc_free(r) kfree(r)
+-
+ static int coda_upcall(struct coda_sb_info *mntinfo, int inSize, int *outSize, 
+ 		       union inputArgs *buffer);
+ 
+@@ -745,7 +742,7 @@ static int coda_upcall(struct coda_sb_info *sbi,
+ 	}
+ 
+ 	/* Format the request message. */
+-	req = upc_alloc();
++	req = kmalloc(sizeof(struct upc_req), GFP_KERNEL);
+ 	if (!req)
+ 		return -ENOMEM;
+ 
+@@ -802,12 +799,12 @@ static int coda_upcall(struct coda_sb_info *sbi,
+ 	}
+ 
+ 	error = -ENOMEM;
+-	sig_req = upc_alloc();
++	sig_req = kmalloc(sizeof(struct upc_req), GFP_KERNEL);
+ 	if (!sig_req) goto exit;
+ 
+ 	CODA_ALLOC((sig_req-&gt;uc_data), char *, sizeof(struct coda_in_hdr));
+ 	if (!sig_req-&gt;uc_data) {
+-		upc_free(sig_req);
++		kfree(sig_req);
+ 		goto exit;
+ 	}
+ 
+@@ -827,7 +824,7 @@ static int coda_upcall(struct coda_sb_info *sbi,
+ 	wake_up_interruptible(&amp;vcommp-&gt;vc_waitq);
+ 
+ exit:
+-	upc_free(req);
++	kfree(req);
+ 	return error;
+ }
+ </pre>
+    <div class="pagination">
+        <a href='14_2.html'>&lt;&lt;Prev</a><a href='14.html'>1</a><a href='14_2.html'>2</a><span>[3]</span><a href='14_4.html'>4</a><a href='14_5.html'>5</a><a href='14_6.html'>6</a><a href='14_7.html'>7</a><a href='14_8.html'>8</a><a href='14_4.html'>Next&gt;&gt;</a>
+    <div>
+</body>

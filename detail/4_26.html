@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_25.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><span>[26]</span><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_27.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit f044ff830f1afe91e4388320f0c7b6e08d2e05f8
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Jan 11 15:24:04 2009 -0500
+
+    nfsd4: split open/lockowner release code
+    
+    The caller always knows specifically whether it's releasing a lockowner
+    or an openowner, and the code is simpler if we use separate functions
+    (and the apparent recursion is gone).
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 6ab30772496e..41a3590ef2cc 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -116,9 +116,6 @@ opaque_hashval(const void *ptr, int nbytes)
+ 	return x;
+ }
+ 
+-/* forward declarations */
+-static void release_stateowner(struct nfs4_stateowner *sop);
+-
+ /*
+  * Delegation state
+  */
+@@ -329,6 +326,26 @@ static void release_lock_stateid(struct nfs4_stateid *stp)
+ 	free_generic_stateid(stp);
+ }
+ 
++static void unhash_lockowner(struct nfs4_stateowner *sop)
++{
++	struct nfs4_stateid *stp;
++
++	list_del(&amp;sop-&gt;so_idhash);
++	list_del(&amp;sop-&gt;so_strhash);
++	list_del(&amp;sop-&gt;so_perstateid);
++	while (!list_empty(&amp;sop-&gt;so_stateids)) {
++		stp = list_first_entry(&amp;sop-&gt;so_stateids,
++				struct nfs4_stateid, st_perstateowner);
++		release_lock_stateid(stp);
++	}
++}
++
++static void release_lockowner(struct nfs4_stateowner *sop)
++{
++	unhash_lockowner(sop);
++	nfs4_put_stateowner(sop);
++}
++
+ static void
+ release_stateid_lockowners(struct nfs4_stateid *open_stp)
+ {
+@@ -339,7 +356,7 @@ release_stateid_lockowners(struct nfs4_stateid *open_stp)
+ 				struct nfs4_stateowner, so_perstateid);
+ 		/* list_del(&amp;open_stp-&gt;st_lockowners);  */
+ 		BUG_ON(lock_sop-&gt;so_is_open_owner);
+-		release_stateowner(lock_sop);
++		release_lockowner(lock_sop);
+ 	}
+ }
+ 
+@@ -351,30 +368,24 @@ static void release_open_stateid(struct nfs4_stateid *stp)
+ 	free_generic_stateid(stp);
+ }
+ 
+-static void
+-unhash_stateowner(struct nfs4_stateowner *sop)
++static void unhash_openowner(struct nfs4_stateowner *sop)
+ {
+ 	struct nfs4_stateid *stp;
+ 
+ 	list_del(&amp;sop-&gt;so_idhash);
+ 	list_del(&amp;sop-&gt;so_strhash);
+-	if (sop-&gt;so_is_open_owner)
+-		list_del(&amp;sop-&gt;so_perclient);
+-	list_del(&amp;sop-&gt;so_perstateid);
++	list_del(&amp;sop-&gt;so_perclient);
++	list_del(&amp;sop-&gt;so_perstateid); /* XXX: necessary? */
+ 	while (!list_empty(&amp;sop-&gt;so_stateids)) {
+-		stp = list_entry(sop-&gt;so_stateids.next,
+-			struct nfs4_stateid, st_perstateowner);
+-		if (sop-&gt;so_is_open_owner)
+-			release_open_stateid(stp);
+-		else
+-			release_lock_stateid(stp);
++		stp = list_first_entry(&amp;sop-&gt;so_stateids,
++				struct nfs4_stateid, st_perstateowner);
++		release_open_stateid(stp);
+ 	}
+ }
+ 
+-static void
+-release_stateowner(struct nfs4_stateowner *sop)
++static void release_openowner(struct nfs4_stateowner *sop)
+ {
+-	unhash_stateowner(sop);
++	unhash_openowner(sop);
+ 	list_del(&amp;sop-&gt;so_close_lru);
+ 	nfs4_put_stateowner(sop);
+ }
+@@ -488,7 +499,7 @@ expire_client(struct nfs4_client *clp)
+ 	list_del(&amp;clp-&gt;cl_lru);
+ 	while (!list_empty(&amp;clp-&gt;cl_openowners)) {
+ 		sop = list_entry(clp-&gt;cl_openowners.next, struct nfs4_stateowner, so_perclient);
+-		release_stateowner(sop);
++		release_openowner(sop);
+ 	}
+ 	put_nfs4_client(clp);
+ }
+@@ -1443,7 +1454,7 @@ nfsd4_process_open1(struct nfsd4_open *open)
+ 	if (!sop-&gt;so_confirmed) {
+ 		/* Replace unconfirmed owners without checking for replay. */
+ 		clp = sop-&gt;so_client;
+-		release_stateowner(sop);
++		release_openowner(sop);
+ 		open-&gt;op_stateowner = NULL;
+ 		goto renew;
+ 	}
+@@ -1906,7 +1917,7 @@ nfs4_laundromat(void)
+ 		}
+ 		dprintk("NFSD: purging unused open stateowner (so_id %d)\n",
+ 			sop-&gt;so_id);
+-		release_stateowner(sop);
++		release_openowner(sop);
+ 	}
+ 	if (clientid_val &lt; NFSD_LAUNDROMAT_MINTIMEOUT)
+ 		clientid_val = NFSD_LAUNDROMAT_MINTIMEOUT;
+@@ -2796,7 +2807,7 @@ nfsd4_lock(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	}
+ out:
+ 	if (status &amp;&amp; lock-&gt;lk_is_new &amp;&amp; lock_sop)
+-		release_stateowner(lock_sop);
++		release_lockowner(lock_sop);
+ 	if (lock-&gt;lk_replay_owner) {
+ 		nfs4_get_stateowner(lock-&gt;lk_replay_owner);
+ 		cstate-&gt;replay_owner = lock-&gt;lk_replay_owner;
+@@ -3045,7 +3056,7 @@ nfsd4_release_lockowner(struct svc_rqst *rqstp,
+ 		/* unhash_stateowner deletes so_perclient only
+ 		 * for openowners. */
+ 		list_del(&amp;sop-&gt;so_perclient);
+-		release_stateowner(sop);
++		release_lockowner(sop);
+ 	}
+ out:
+ 	nfs4_unlock_state();</pre><hr><pre>commit f1d110caf7d759eae2c02c84343f63d83db9b9be
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Jan 11 14:37:31 2009 -0500
+
+    nfsd4: remove a forward declaration
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index e83b3c865aa3..6ab30772496e 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -75,7 +75,6 @@ static stateid_t onestateid;              /* bits all 1 */
+ /* forward declarations */
+ static struct nfs4_stateid * find_stateid(stateid_t *stid, int flags);
+ static struct nfs4_delegation * find_delegation_stateid(struct inode *ino, stateid_t *stid);
+-static void release_stateid_lockowners(struct nfs4_stateid *open_stp);
+ static char user_recovery_dirname[PATH_MAX] = "/var/lib/nfs/v4recovery";
+ static void nfs4_set_recdir(char *recdir);
+ 
+@@ -330,6 +329,20 @@ static void release_lock_stateid(struct nfs4_stateid *stp)
+ 	free_generic_stateid(stp);
+ }
+ 
++static void
++release_stateid_lockowners(struct nfs4_stateid *open_stp)
++{
++	struct nfs4_stateowner *lock_sop;
++
++	while (!list_empty(&amp;open_stp-&gt;st_lockowners)) {
++		lock_sop = list_entry(open_stp-&gt;st_lockowners.next,
++				struct nfs4_stateowner, so_perstateid);
++		/* list_del(&amp;open_stp-&gt;st_lockowners);  */
++		BUG_ON(lock_sop-&gt;so_is_open_owner);
++		release_stateowner(lock_sop);
++	}
++}
++
+ static void release_open_stateid(struct nfs4_stateid *stp)
+ {
+ 	unhash_generic_stateid(stp);
+@@ -338,6 +351,34 @@ static void release_open_stateid(struct nfs4_stateid *stp)
+ 	free_generic_stateid(stp);
+ }
+ 
++static void
++unhash_stateowner(struct nfs4_stateowner *sop)
++{
++	struct nfs4_stateid *stp;
++
++	list_del(&amp;sop-&gt;so_idhash);
++	list_del(&amp;sop-&gt;so_strhash);
++	if (sop-&gt;so_is_open_owner)
++		list_del(&amp;sop-&gt;so_perclient);
++	list_del(&amp;sop-&gt;so_perstateid);
++	while (!list_empty(&amp;sop-&gt;so_stateids)) {
++		stp = list_entry(sop-&gt;so_stateids.next,
++			struct nfs4_stateid, st_perstateowner);
++		if (sop-&gt;so_is_open_owner)
++			release_open_stateid(stp);
++		else
++			release_lock_stateid(stp);
++	}
++}
++
++static void
++release_stateowner(struct nfs4_stateowner *sop)
++{
++	unhash_stateowner(sop);
++	list_del(&amp;sop-&gt;so_close_lru);
++	nfs4_put_stateowner(sop);
++}
++
+ static inline void
+ renew_client(struct nfs4_client *clp)
+ {
+@@ -1064,48 +1105,6 @@ alloc_init_open_stateowner(unsigned int strhashval, struct nfs4_client *clp, str
+ 	return sop;
+ }
+ 
+-static void
+-release_stateid_lockowners(struct nfs4_stateid *open_stp)
+-{
+-	struct nfs4_stateowner *lock_sop;
+-
+-	while (!list_empty(&amp;open_stp-&gt;st_lockowners)) {
+-		lock_sop = list_entry(open_stp-&gt;st_lockowners.next,
+-				struct nfs4_stateowner, so_perstateid);
+-		/* list_del(&amp;open_stp-&gt;st_lockowners);  */
+-		BUG_ON(lock_sop-&gt;so_is_open_owner);
+-		release_stateowner(lock_sop);
+-	}
+-}
+-
+-static void
+-unhash_stateowner(struct nfs4_stateowner *sop)
+-{
+-	struct nfs4_stateid *stp;
+-
+-	list_del(&amp;sop-&gt;so_idhash);
+-	list_del(&amp;sop-&gt;so_strhash);
+-	if (sop-&gt;so_is_open_owner)
+-		list_del(&amp;sop-&gt;so_perclient);
+-	list_del(&amp;sop-&gt;so_perstateid);
+-	while (!list_empty(&amp;sop-&gt;so_stateids)) {
+-		stp = list_entry(sop-&gt;so_stateids.next,
+-			struct nfs4_stateid, st_perstateowner);
+-		if (sop-&gt;so_is_open_owner)
+-			release_open_stateid(stp);
+-		else
+-			release_lock_stateid(stp);
+-	}
+-}
+-
+-static void
+-release_stateowner(struct nfs4_stateowner *sop)
+-{
+-	unhash_stateowner(sop);
+-	list_del(&amp;sop-&gt;so_close_lru);
+-	nfs4_put_stateowner(sop);
+-}
+-
+ static inline void
+ init_stateid(struct nfs4_stateid *stp, struct nfs4_file *fp, struct nfsd4_open *open) {
+ 	struct nfs4_stateowner *sop = open-&gt;op_stateowner;</pre><hr><pre>commit 2283963f27fdd56b185e49a964c290130c7c95ab
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Jan 11 14:27:17 2009 -0500
+
+    nfsd4: split lockstateid/openstateid release logic
+    
+    The flags here attempt to make the code more general, but I find it
+    actually just adds confusion.
+    
+    I think it's clearer to separate the logic for the open and lock cases
+    entirely.  And eventually we may want to separate the stateowner and
+    stateid types as well, as many of the fields aren't shared between the
+    lock and open cases.
+    
+    Also move to eliminate forward references.
+    
+    Start with the stateid's.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Reviewed-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index b6f60f48e94b..e83b3c865aa3 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -119,7 +119,6 @@ opaque_hashval(const void *ptr, int nbytes)
+ 
+ /* forward declarations */
+ static void release_stateowner(struct nfs4_stateowner *sop);
+-static void release_stateid(struct nfs4_stateid *stp, int flags);
+ 
+ /*
+  * Delegation state
+@@ -311,6 +310,34 @@ static struct list_head	unconf_id_hashtbl[CLIENT_HASH_SIZE];
+ static struct list_head client_lru;
+ static struct list_head close_lru;
+ 
++static void unhash_generic_stateid(struct nfs4_stateid *stp)
++{
++	list_del(&amp;stp-&gt;st_hash);
++	list_del(&amp;stp-&gt;st_perfile);
++	list_del(&amp;stp-&gt;st_perstateowner);
++}
++
++static void free_generic_stateid(struct nfs4_stateid *stp)
++{
++	put_nfs4_file(stp-&gt;st_file);
++	kmem_cache_free(stateid_slab, stp);
++}
++
++static void release_lock_stateid(struct nfs4_stateid *stp)
++{
++	unhash_generic_stateid(stp);
++	locks_remove_posix(stp-&gt;st_vfs_file, (fl_owner_t)stp-&gt;st_stateowner);
++	free_generic_stateid(stp);
++}
++
++static void release_open_stateid(struct nfs4_stateid *stp)
++{
++	unhash_generic_stateid(stp);
++	release_stateid_lockowners(stp);
++	nfsd_close(stp-&gt;st_vfs_file);
++	free_generic_stateid(stp);
++}
++
+ static inline void
+ renew_client(struct nfs4_client *clp)
+ {
+@@ -1065,9 +1092,9 @@ unhash_stateowner(struct nfs4_stateowner *sop)
+ 		stp = list_entry(sop-&gt;so_stateids.next,
+ 			struct nfs4_stateid, st_perstateowner);
+ 		if (sop-&gt;so_is_open_owner)
+-			release_stateid(stp, OPEN_STATE);
++			release_open_stateid(stp);
+ 		else
+-			release_stateid(stp, LOCK_STATE);
++			release_lock_stateid(stp);
+ 	}
+ }
+ 
+@@ -1105,24 +1132,6 @@ init_stateid(struct nfs4_stateid *stp, struct nfs4_file *fp, struct nfsd4_open *
+ 	stp-&gt;st_openstp = NULL;
+ }
+ 
+-static void
+-release_stateid(struct nfs4_stateid *stp, int flags)
+-{
+-	struct file *filp = stp-&gt;st_vfs_file;
+-
+-	list_del(&amp;stp-&gt;st_hash);
+-	list_del(&amp;stp-&gt;st_perfile);
+-	list_del(&amp;stp-&gt;st_perstateowner);
+-	if (flags &amp; OPEN_STATE) {
+-		release_stateid_lockowners(stp);
+-		stp-&gt;st_vfs_file = NULL;
+-		nfsd_close(filp);
+-	} else if (flags &amp; LOCK_STATE)
+-		locks_remove_posix(filp, (fl_owner_t) stp-&gt;st_stateowner);
+-	put_nfs4_file(stp-&gt;st_file);
+-	kmem_cache_free(stateid_slab, stp);
+-}
+-
+ static void
+ move_to_close_lru(struct nfs4_stateowner *sop)
+ {
+@@ -1764,7 +1773,7 @@ nfsd4_process_open2(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nf
+ 		init_stateid(stp, fp, open);
+ 		status = nfsd4_truncate(rqstp, current_fh, open);
+ 		if (status) {
+-			release_stateid(stp, OPEN_STATE);
++			release_open_stateid(stp);
+ 			goto out;
+ 		}
+ 	}
+@@ -2373,7 +2382,7 @@ nfsd4_close(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	memcpy(&amp;close-&gt;cl_stateid, &amp;stp-&gt;st_stateid, sizeof(stateid_t));
+ 
+ 	/* release_stateid() calls nfsd_close() if needed */
+-	release_stateid(stp, OPEN_STATE);
++	release_open_stateid(stp);
+ 
+ 	/* place unused nfs4_stateowners on so_close_lru list to be
+ 	 * released by the laundromat service after the lease period</pre><hr><pre>commit 76a67ec6fb79ff3570dcb5342142c16098299911
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Mar 16 18:34:20 2009 -0400
+
+    nfsd: nfsd should drop CAP_MKNOD for non-root
+    
+    Since creating a device node is normally an operation requiring special
+    privilege, Igor Zhbanov points out that it is surprising (to say the
+    least) that a client can, for example, create a device node on a
+    filesystem exported with root_squash.
+    
+    So, make sure CAP_MKNOD is among the capabilities dropped when an nfsd
+    thread handles a request from a non-root user.
+    
+    Reported-by: Igor Zhbanov &lt;izh1979@gmail.com&gt;
+    Cc: stable@kernel.org
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/include/linux/capability.h b/include/linux/capability.h
+index 1b9872556131..4864a43b2b45 100644
+--- a/include/linux/capability.h
++++ b/include/linux/capability.h
+@@ -393,8 +393,10 @@ struct cpu_vfs_cap_data {
+ # define CAP_FULL_SET     ((kernel_cap_t){{ ~0, ~0 }})
+ # define CAP_INIT_EFF_SET ((kernel_cap_t){{ ~CAP_TO_MASK(CAP_SETPCAP), ~0 }})
+ # define CAP_FS_SET       ((kernel_cap_t){{ CAP_FS_MASK_B0, CAP_FS_MASK_B1 } })
+-# define CAP_NFSD_SET     ((kernel_cap_t){{ CAP_FS_MASK_B0|CAP_TO_MASK(CAP_SYS_RESOURCE), \
+-					CAP_FS_MASK_B1 } })
++# define CAP_NFSD_SET     ((kernel_cap_t){{ CAP_FS_MASK_B0 \
++					    | CAP_TO_MASK(CAP_SYS_RESOURCE) \
++					    | CAP_TO_MASK(CAP_MKNOD), \
++					    CAP_FS_MASK_B1 } })
+ 
+ #endif /* _KERNEL_CAPABILITY_U32S != 2 */
+ </pre><hr><pre>commit 9d9b87c1218be78ddecbc85ec3bb91c79c1d56ab
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Feb 4 17:35:38 2009 -0500
+
+    lockd: fix regression in lockd's handling of blocked locks
+    
+    If a client requests a blocking lock, is denied, then requests it again,
+    then here in nlmsvc_lock() we will call vfs_lock_file() without FL_SLEEP
+    set, because we've already queued a block and don't need the locks code
+    to do it again.
+    
+    But that means vfs_lock_file() will return -EAGAIN instead of
+    FILE_LOCK_DENIED.  So we still need to translate that -EAGAIN return
+    into a nlm_lck_blocked error in this case, and put ourselves back on
+    lockd's block list.
+    
+    The bug was introduced by bde74e4bc64415b1 "locks: add special return
+    value for asynchronous locks".
+    
+    Thanks to Frank van Maarseveen for the report; his original test
+    case was essentially
+    
+            for i in `seq 30`; do flock /nfsmount/foo sleep 10 &amp; done
+    
+    Tested-by: Frank van Maarseveen &lt;frankvm@frankvm.com&gt;
+    Reported-by: Frank van Maarseveen &lt;frankvm@frankvm.com&gt;
+    Cc: Miklos Szeredi &lt;mszeredi@suse.cz&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/lockd/svclock.c b/fs/lockd/svclock.c
+index 6063a8e4b9f3..763b78a6e9de 100644
+--- a/fs/lockd/svclock.c
++++ b/fs/lockd/svclock.c
+@@ -427,7 +427,7 @@ nlmsvc_lock(struct svc_rqst *rqstp, struct nlm_file *file,
+ 			goto out;
+ 		case -EAGAIN:
+ 			ret = nlm_lck_denied;
+-			goto out;
++			break;
+ 		case FILE_LOCK_DEFERRED:
+ 			if (wait)
+ 				break;
+@@ -443,6 +443,10 @@ nlmsvc_lock(struct svc_rqst *rqstp, struct nlm_file *file,
+ 			goto out;
+ 	}
+ 
++	ret = nlm_lck_denied;
++	if (!wait)
++		goto out;
++
+ 	ret = nlm_lck_blocked;
+ 
+ 	/* Append to list of blocked */</pre><hr><pre>commit ce0cf6622c9a6f18c2723ea4bef7616799a1ca39
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Nov 2 16:18:08 2008 -0500
+
+    nfs: note that CONFIG_SUNRPC_XPRT_RDMA turns on server side support too
+    
+    We forgot to update this when adding server-side support.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/net/sunrpc/Kconfig b/net/sunrpc/Kconfig
+index eda4a7aee596..dcef600d0bf5 100644
+--- a/net/sunrpc/Kconfig
++++ b/net/sunrpc/Kconfig
+@@ -9,9 +9,8 @@ config SUNRPC_XPRT_RDMA
+ 	depends on SUNRPC &amp;&amp; INFINIBAND &amp;&amp; EXPERIMENTAL
+ 	default SUNRPC &amp;&amp; INFINIBAND
+ 	help
+-	  This option enables an RPC client transport capability that
+-	  allows the NFS client to mount servers via an RDMA-enabled
+-	  transport.
++	  This option allows the NFS client and server to support
++	  an RDMA-enabled transport.
+ 
+ 	  To compile RPC client RDMA transport support as a module,
+ 	  choose M here: the module will be called xprtrdma.</pre><hr><pre>commit 9a8d248e2d2e9c880ac4561f27fea5dc200655bd
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jan 6 13:37:03 2009 -0500
+
+    nfsd: fix double-locks of directory mutex
+    
+    A number of nfsd operations depend on the i_mutex to cover more code
+    than just the fsync, so the approach of 4c728ef583b3d8 "add a vfs_fsync
+    helper" doesn't work for nfsd.  Revert the parts of those patches that
+    touch nfsd.
+    
+    Note: we can't, however, remove the logic from vfs_fsync that was needed
+    only for the special case of nfsd, because a vfs_fsync(NULL,...) call
+    can still result indirectly from a stackable filesystem that was called
+    by nfsd.  (Thanks to Christoph Hellwig for pointing this out.)
+    
+    Reported-by: Eric Sesterhenn &lt;snakebyte@gmx.de&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 44aa92aba891..6e50aaa56ca2 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -744,16 +744,44 @@ nfsd_close(struct file *filp)
+ 	fput(filp);
+ }
+ 
++/*
++ * Sync a file
++ * As this calls fsync (not fdatasync) there is no need for a write_inode
++ * after it.
++ */
++static inline int nfsd_dosync(struct file *filp, struct dentry *dp,
++			      const struct file_operations *fop)
++{
++	struct inode *inode = dp-&gt;d_inode;
++	int (*fsync) (struct file *, struct dentry *, int);
++	int err;
++
++	err = filemap_fdatawrite(inode-&gt;i_mapping);
++	if (err == 0 &amp;&amp; fop &amp;&amp; (fsync = fop-&gt;fsync))
++		err = fsync(filp, dp, 0);
++	if (err == 0)
++		err = filemap_fdatawait(inode-&gt;i_mapping);
++
++	return err;
++}
++
+ static int
+ nfsd_sync(struct file *filp)
+ {
+-	return vfs_fsync(filp, filp-&gt;f_path.dentry, 0);
++        int err;
++	struct inode *inode = filp-&gt;f_path.dentry-&gt;d_inode;
++	dprintk("nfsd: sync file %s\n", filp-&gt;f_path.dentry-&gt;d_name.name);
++	mutex_lock(&amp;inode-&gt;i_mutex);
++	err=nfsd_dosync(filp, filp-&gt;f_path.dentry, filp-&gt;f_op);
++	mutex_unlock(&amp;inode-&gt;i_mutex);
++
++	return err;
+ }
+ 
+ int
+-nfsd_sync_dir(struct dentry *dentry)
++nfsd_sync_dir(struct dentry *dp)
+ {
+-	return vfs_fsync(NULL, dentry, 0);
++	return nfsd_dosync(NULL, dp, dp-&gt;d_inode-&gt;i_fop);
+ }
+ 
+ /*</pre><hr><pre>commit 55ef1274dddd4de387c54d110e354ffbb6cdc706
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sat Dec 20 11:58:38 2008 -0800
+
+    nfsd: Ensure nfsv4 calls the underlying filesystem on LOCKT
+    
+    Since nfsv4 allows LOCKT without an open, but the -&gt;lock() method is a
+    file method, we fake up a struct file in the nfsv4 code with just the
+    fields we need initialized.  But we forgot to initialize the file
+    operations, with the result that LOCKT never results in a call to the
+    filesystem's -&gt;lock() method (if it exists).
+    
+    We could just add that one more initialization.  But this hack of faking
+    up a struct file with only some fields initialized seems the kind of
+    thing that might cause more problems in the future.  We should either do
+    an open and get a real struct file, or make lock-testing an inode (not a
+    file) method.
+    
+    This patch does the former.
+    
+    Reported-by: Marc Eshel &lt;eshel@almaden.ibm.com&gt;
+    Tested-by: Marc Eshel &lt;eshel@almaden.ibm.com&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 06b89df92218..e62d0e3df8b3 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -2781,6 +2781,25 @@ nfsd4_lock(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	return status;
+ }
+ 
++/*
++ * The NFSv4 spec allows a client to do a LOCKT without holding an OPEN,
++ * so we do a temporary open here just to get an open file to pass to
++ * vfs_test_lock.  (Arguably perhaps test_lock should be done with an
++ * inode operation.)
++ */
++static int nfsd_test_lock(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file_lock *lock)
++{
++	struct file *file;
++	int err;
++
++	err = nfsd_open(rqstp, fhp, S_IFREG, NFSD_MAY_READ, &amp;file);
++	if (err)
++		return err;
++	err = vfs_test_lock(file, lock);
++	nfsd_close(file);
++	return err;
++}
++
+ /*
+  * LOCKT operation
+  */
+@@ -2789,7 +2808,6 @@ nfsd4_lockt(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	    struct nfsd4_lockt *lockt)
+ {
+ 	struct inode *inode;
+-	struct file file;
+ 	struct file_lock file_lock;
+ 	int error;
+ 	__be32 status;
+@@ -2847,16 +2865,8 @@ nfsd4_lockt(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 
+ 	nfs4_transform_lock_offset(&amp;file_lock);
+ 
+-	/* vfs_test_lock uses the struct file _only_ to resolve the inode.
+-	 * since LOCKT doesn't require an OPEN, and therefore a struct
+-	 * file may not exist, pass vfs_test_lock a struct file with
+-	 * only the dentry:inode set.
+-	 */
+-	memset(&amp;file, 0, sizeof (struct file));
+-	file.f_path.dentry = cstate-&gt;current_fh.fh_dentry;
+-
+ 	status = nfs_ok;
+-	error = vfs_test_lock(&amp;file, &amp;file_lock);
++	error = nfsd_test_lock(rqstp, &amp;cstate-&gt;current_fh, &amp;file_lock);
+ 	if (error) {
+ 		status = nfserrno(error);
+ 		goto out;</pre><hr><pre>commit 548eaca46b3cf4419b6c2be839a106d8641ffb70
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Oct 20 17:48:43 2008 -0400
+
+    nfsd: document new filehandle fsid types
+    
+    Descriptions taken from mountd code (in nfs-utils/utils/mountd/cache.c).
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/include/linux/nfsd/nfsfh.h b/include/linux/nfsd/nfsfh.h
+index d1941cb965e9..b2e093870bc6 100644
+--- a/include/linux/nfsd/nfsfh.h
++++ b/include/linux/nfsd/nfsfh.h
+@@ -68,6 +68,10 @@ struct nfs_fhbase_old {
+  *     1  - 4 byte user specified identifier
+  *     2  - 4 byte major, 4 byte minor, 4 byte inode number - DEPRECATED
+  *     3  - 4 byte device id, encoded for user-space, 4 byte inode number
++ *     4  - 4 byte inode number and 4 byte uuid
++ *     5  - 8 byte uuid
++ *     6  - 16 byte uuid
++ *     7  - 8 byte inode number and 16 byte uuid
+  *
+  * The fileid_type identified how the file within the filesystem is encoded.
+  * This is (will be) passed to, and set by, the underlying filesystem if it supports</pre><hr><pre>commit b3d47676d474ecd914c72049c87e71e5f0ffe040
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Oct 20 13:01:59 2008 -0400
+
+    nfsd: update fh_verify description
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfsfh.c b/fs/nfsd/nfsfh.c
+index f0da7d9c3a92..019a8a20184d 100644
+--- a/fs/nfsd/nfsfh.c
++++ b/fs/nfsd/nfsfh.c
+@@ -258,14 +258,32 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
+ 	return error;
+ }
+ 
+-/*
+- * Perform sanity checks on the dentry in a client's file handle.
++/**
++ * fh_verify - filehandle lookup and access checking
++ * @rqstp: pointer to current rpc request
++ * @fhp: filehandle to be verified
++ * @type: expected type of object pointed to by filehandle
++ * @access: type of access needed to object
++ *
++ * Look up a dentry from the on-the-wire filehandle, check the client's
++ * access to the export, and set the current task's credentials.
++ *
++ * Regardless of success or failure of fh_verify(), fh_put() should be
++ * called on @fhp when the caller is finished with the filehandle.
++ *
++ * fh_verify() may be called multiple times on a given filehandle, for
++ * example, when processing an NFSv4 compound.  The first call will look
++ * up a dentry using the on-the-wire filehandle.  Subsequent calls will
++ * skip the lookup and just perform the other checks and possibly change
++ * the current task's credentials.
+  *
+- * Note that the file handle dentry may need to be freed even after
+- * an error return.
++ * @type specifies the type of object expected using one of the S_IF*
++ * constants defined in include/linux/stat.h.  The caller may use zero
++ * to indicate that it doesn't care, or a negative integer to indicate
++ * that it expects something not of the given type.
+  *
+- * This is only called at the start of an nfsproc call, so fhp points to
+- * a svc_fh which is all 0 except for the over-the-wire file handle.
++ * @access is formed from the NFSD_MAY_* constants defined in
++ * include/linux/nfsd/nfsd.h.
+  */
+ __be32
+ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)</pre>
+    <div class="pagination">
+        <a href='4_25.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><span>[26]</span><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_27.html'>Next&gt;&gt;</a>
+    <div>
+</body>

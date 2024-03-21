@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Peking University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Peking University</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='11_2.html'>2</a><a href='11_3.html'>3</a><a href='11_4.html'>4</a><a href='11_5.html'>5</a><a href='11_6.html'>6</a><a href='11_7.html'>7</a><a href='11_8.html'>8</a><a href='11_9.html'>9</a><a href='11_10.html'>10</a><a href='11_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 44d0fb387b53e56c8a050bac5c7d460e21eb226f
+Author: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+Date:   Mon May 15 21:09:58 2023 +0800
+
+    mm: page_table_check: Ensure user pages are not slab pages
+    
+    The current uses of PageAnon in page table check functions can lead to
+    type confusion bugs between struct page and slab [1], if slab pages are
+    accidentally mapped into the user space. This is because slab reuses the
+    bits in struct page to store its internal states, which renders PageAnon
+    ineffective on slab pages.
+    
+    Since slab pages are not expected to be mapped into the user space, this
+    patch adds BUG_ON(PageSlab(page)) checks to make sure that slab pages
+    are not inadvertently mapped. Otherwise, there must be some bugs in the
+    kernel.
+    
+    Reported-by: syzbot+fcf1a817ceb50935ce99@syzkaller.appspotmail.com
+    Closes: https://lore.kernel.org/lkml/000000000000258e5e05fae79fc1@google.com/ [1]
+    Fixes: df4e817b7108 ("mm: page table check")
+    Cc: &lt;stable@vger.kernel.org&gt; # 5.17
+    Signed-off-by: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+    Acked-by: Pasha Tatashin &lt;pasha.tatashin@soleen.com&gt;
+    Link: https://lore.kernel.org/r/20230515130958.32471-5-lrh2000@pku.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/include/linux/page-flags.h b/include/linux/page-flags.h
+index 1c68d67b832f..92a2063a0a23 100644
+--- a/include/linux/page-flags.h
++++ b/include/linux/page-flags.h
+@@ -617,6 +617,12 @@ PAGEFLAG_FALSE(VmemmapSelfHosted, vmemmap_self_hosted)
+  * Please note that, confusingly, "page_mapping" refers to the inode
+  * address_space which maps the page from disk; whereas "page_mapped"
+  * refers to user virtual address space into which the page is mapped.
++ *
++ * For slab pages, since slab reuses the bits in struct page to store its
++ * internal states, the page-&gt;mapping does not exist as such, nor do these
++ * flags below.  So in order to avoid testing non-existent bits, please
++ * make sure that PageSlab(page) actually evaluates to false before calling
++ * the following functions (e.g., PageAnon).  See mm/slab.h.
+  */
+ #define PAGE_MAPPING_ANON	0x1
+ #define PAGE_MAPPING_MOVABLE	0x2
+diff --git a/mm/page_table_check.c b/mm/page_table_check.c
+index 25d8610c0042..f2baf97d5f38 100644
+--- a/mm/page_table_check.c
++++ b/mm/page_table_check.c
+@@ -71,6 +71,8 @@ static void page_table_check_clear(struct mm_struct *mm, unsigned long addr,
+ 
+ 	page = pfn_to_page(pfn);
+ 	page_ext = page_ext_get(page);
++
++	BUG_ON(PageSlab(page));
+ 	anon = PageAnon(page);
+ 
+ 	for (i = 0; i &lt; pgcnt; i++) {
+@@ -107,6 +109,8 @@ static void page_table_check_set(struct mm_struct *mm, unsigned long addr,
+ 
+ 	page = pfn_to_page(pfn);
+ 	page_ext = page_ext_get(page);
++
++	BUG_ON(PageSlab(page));
+ 	anon = PageAnon(page);
+ 
+ 	for (i = 0; i &lt; pgcnt; i++) {
+@@ -133,6 +137,8 @@ void __page_table_check_zero(struct page *page, unsigned int order)
+ 	struct page_ext *page_ext;
+ 	unsigned long i;
+ 
++	BUG_ON(PageSlab(page));
++
+ 	page_ext = page_ext_get(page);
+ 	BUG_ON(!page_ext);
+ 	for (i = 0; i &lt; (1ul &lt;&lt; order); i++) {</pre><hr><pre>commit 81a31a860bb61d54eb688af2568d9332ed9b8942
+Author: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+Date:   Mon May 15 21:09:57 2023 +0800
+
+    mm: page_table_check: Make it dependent on EXCLUSIVE_SYSTEM_RAM
+    
+    Without EXCLUSIVE_SYSTEM_RAM, users are allowed to map arbitrary
+    physical memory regions into the userspace via /dev/mem. At the same
+    time, pages may change their properties (e.g., from anonymous pages to
+    named pages) while they are still being mapped in the userspace, leading
+    to "corruption" detected by the page table check.
+    
+    To avoid these false positives, this patch makes PAGE_TABLE_CHECK
+    depends on EXCLUSIVE_SYSTEM_RAM. This dependency is understandable
+    because PAGE_TABLE_CHECK is a hardening technique but /dev/mem without
+    STRICT_DEVMEM (i.e., !EXCLUSIVE_SYSTEM_RAM) is itself a security
+    problem.
+    
+    Even with EXCLUSIVE_SYSTEM_RAM, I/O pages may be still allowed to be
+    mapped via /dev/mem. However, these pages are always considered as named
+    pages, so they won't break the logic used in the page table check.
+    
+    Cc: &lt;stable@vger.kernel.org&gt; # 5.17
+    Signed-off-by: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+    Acked-by: David Hildenbrand &lt;david@redhat.com&gt;
+    Acked-by: Pasha Tatashin &lt;pasha.tatashin@soleen.com&gt;
+    Link: https://lore.kernel.org/r/20230515130958.32471-4-lrh2000@pku.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/Documentation/mm/page_table_check.rst b/Documentation/mm/page_table_check.rst
+index cfd8f4117cf3..c12838ce6b8d 100644
+--- a/Documentation/mm/page_table_check.rst
++++ b/Documentation/mm/page_table_check.rst
+@@ -52,3 +52,22 @@ Build kernel with:
+ 
+ Optionally, build kernel with PAGE_TABLE_CHECK_ENFORCED in order to have page
+ table support without extra kernel parameter.
++
++Implementation notes
++====================
++
++We specifically decided not to use VMA information in order to avoid relying on
++MM states (except for limited "struct page" info). The page table check is a
++separate from Linux-MM state machine that verifies that the user accessible
++pages are not falsely shared.
++
++PAGE_TABLE_CHECK depends on EXCLUSIVE_SYSTEM_RAM. The reason is that without
++EXCLUSIVE_SYSTEM_RAM, users are allowed to map arbitrary physical memory
++regions into the userspace via /dev/mem. At the same time, pages may change
++their properties (e.g., from anonymous pages to named pages) while they are
++still being mapped in the userspace, leading to "corruption" detected by the
++page table check.
++
++Even with EXCLUSIVE_SYSTEM_RAM, I/O pages may be still allowed to be mapped via
++/dev/mem. However, these pages are always considered as named pages, so they
++won't break the logic used in the page table check.
+diff --git a/mm/Kconfig.debug b/mm/Kconfig.debug
+index a925415b4d10..018a5bd2f576 100644
+--- a/mm/Kconfig.debug
++++ b/mm/Kconfig.debug
+@@ -98,6 +98,7 @@ config PAGE_OWNER
+ config PAGE_TABLE_CHECK
+ 	bool "Check for invalid mappings in user page tables"
+ 	depends on ARCH_SUPPORTS_PAGE_TABLE_CHECK
++	depends on EXCLUSIVE_SYSTEM_RAM
+ 	select PAGE_EXTENSION
+ 	help
+ 	  Check that anonymous page is not being mapped twice with read write</pre><hr><pre>commit d0b861653f8c16839c3035875b556afc4472f941
+Author: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+Date:   Mon May 15 21:09:56 2023 +0800
+
+    usb: usbfs: Use consistent mmap functions
+    
+    When hcd-&gt;localmem_pool is non-null, localmem_pool is used to allocate
+    DMA memory. In this case, the dma address will be properly returned (in
+    dma_handle), and dma_mmap_coherent should be used to map this memory
+    into the user space. However, the current implementation uses
+    pfn_remap_range, which is supposed to map normal pages.
+    
+    Instead of repeating the logic in the memory allocation function, this
+    patch introduces a more robust solution. Here, the type of allocated
+    memory is checked by testing whether dma_handle is properly set. If
+    dma_handle is properly returned, it means some DMA pages are allocated
+    and dma_mmap_coherent should be used to map them. Otherwise, normal
+    pages are allocated and pfn_remap_range should be called. This ensures
+    that the correct mmap functions are used consistently, independently
+    with logic details that determine which type of memory gets allocated.
+    
+    Fixes: a0e710a7def4 ("USB: usbfs: fix mmap dma mismatch")
+    Cc: stable@vger.kernel.org
+    Signed-off-by: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230515130958.32471-3-lrh2000@pku.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/core/devio.c b/drivers/usb/core/devio.c
+index 3936ca7f7d2f..fcf68818e999 100644
+--- a/drivers/usb/core/devio.c
++++ b/drivers/usb/core/devio.c
+@@ -235,7 +235,7 @@ static int usbdev_mmap(struct file *file, struct vm_area_struct *vma)
+ 	size_t size = vma-&gt;vm_end - vma-&gt;vm_start;
+ 	void *mem;
+ 	unsigned long flags;
+-	dma_addr_t dma_handle;
++	dma_addr_t dma_handle = DMA_MAPPING_ERROR;
+ 	int ret;
+ 
+ 	ret = usbfs_increase_memory_usage(size + sizeof(struct usb_memory));
+@@ -265,7 +265,14 @@ static int usbdev_mmap(struct file *file, struct vm_area_struct *vma)
+ 	usbm-&gt;vma_use_count = 1;
+ 	INIT_LIST_HEAD(&amp;usbm-&gt;memlist);
+ 
+-	if (hcd-&gt;localmem_pool || !hcd_uses_dma(hcd)) {
++	/*
++	 * In DMA-unavailable cases, hcd_buffer_alloc_pages allocates
++	 * normal pages and assigns DMA_MAPPING_ERROR to dma_handle. Check
++	 * whether we are in such cases, and then use remap_pfn_range (or
++	 * dma_mmap_coherent) to map normal (or DMA) pages into the user
++	 * space, respectively.
++	 */
++	if (dma_handle == DMA_MAPPING_ERROR) {
+ 		if (remap_pfn_range(vma, vma-&gt;vm_start,
+ 				    virt_to_phys(usbm-&gt;mem) &gt;&gt; PAGE_SHIFT,
+ 				    size, vma-&gt;vm_page_prot) &lt; 0) {</pre><hr><pre>commit 0143d148d1e882fb1538dc9974c94d63961719b9
+Author: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+Date:   Mon May 15 21:09:55 2023 +0800
+
+    usb: usbfs: Enforce page requirements for mmap
+    
+    The current implementation of usbdev_mmap uses usb_alloc_coherent to
+    allocate memory pages that will later be mapped into the user space.
+    Meanwhile, usb_alloc_coherent employs three different methods to
+    allocate memory, as outlined below:
+     * If hcd-&gt;localmem_pool is non-null, it uses gen_pool_dma_alloc to
+       allocate memory;
+     * If DMA is not available, it uses kmalloc to allocate memory;
+     * Otherwise, it uses dma_alloc_coherent.
+    
+    However, it should be noted that gen_pool_dma_alloc does not guarantee
+    that the resulting memory will be page-aligned. Furthermore, trying to
+    map slab pages (i.e., memory allocated by kmalloc) into the user space
+    is not resonable and can lead to problems, such as a type confusion bug
+    when PAGE_TABLE_CHECK=y [1].
+    
+    To address these issues, this patch introduces hcd_alloc_coherent_pages,
+    which addresses the above two problems. Specifically,
+    hcd_alloc_coherent_pages uses gen_pool_dma_alloc_align instead of
+    gen_pool_dma_alloc to ensure that the memory is page-aligned. To replace
+    kmalloc, hcd_alloc_coherent_pages directly allocates pages by calling
+    __get_free_pages.
+    
+    Reported-by: syzbot+fcf1a817ceb50935ce99@syzkaller.appspotmail.comm
+    Closes: https://lore.kernel.org/lkml/000000000000258e5e05fae79fc1@google.com/ [1]
+    Fixes: f7d34b445abc ("USB: Add support for usbfs zerocopy.")
+    Fixes: ff2437befd8f ("usb: host: Fix excessive alignment restriction for local memory allocations")
+    Cc: stable@vger.kernel.org
+    Signed-off-by: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+    Acked-by: Alan Stern &lt;stern@rowland.harvard.edu&gt;
+    Link: https://lore.kernel.org/r/20230515130958.32471-2-lrh2000@pku.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/core/buffer.c b/drivers/usb/core/buffer.c
+index fbb087b728dc..268ccbec88f9 100644
+--- a/drivers/usb/core/buffer.c
++++ b/drivers/usb/core/buffer.c
+@@ -172,3 +172,44 @@ void hcd_buffer_free(
+ 	}
+ 	dma_free_coherent(hcd-&gt;self.sysdev, size, addr, dma);
+ }
++
++void *hcd_buffer_alloc_pages(struct usb_hcd *hcd,
++		size_t size, gfp_t mem_flags, dma_addr_t *dma)
++{
++	if (size == 0)
++		return NULL;
++
++	if (hcd-&gt;localmem_pool)
++		return gen_pool_dma_alloc_align(hcd-&gt;localmem_pool,
++				size, dma, PAGE_SIZE);
++
++	/* some USB hosts just use PIO */
++	if (!hcd_uses_dma(hcd)) {
++		*dma = DMA_MAPPING_ERROR;
++		return (void *)__get_free_pages(mem_flags,
++				get_order(size));
++	}
++
++	return dma_alloc_coherent(hcd-&gt;self.sysdev,
++			size, dma, mem_flags);
++}
++
++void hcd_buffer_free_pages(struct usb_hcd *hcd,
++		size_t size, void *addr, dma_addr_t dma)
++{
++	if (!addr)
++		return;
++
++	if (hcd-&gt;localmem_pool) {
++		gen_pool_free(hcd-&gt;localmem_pool,
++				(unsigned long)addr, size);
++		return;
++	}
++
++	if (!hcd_uses_dma(hcd)) {
++		free_pages((unsigned long)addr, get_order(size));
++		return;
++	}
++
++	dma_free_coherent(hcd-&gt;self.sysdev, size, addr, dma);
++}
+diff --git a/drivers/usb/core/devio.c b/drivers/usb/core/devio.c
+index e501a03d6c70..3936ca7f7d2f 100644
+--- a/drivers/usb/core/devio.c
++++ b/drivers/usb/core/devio.c
+@@ -186,6 +186,7 @@ static int connected(struct usb_dev_state *ps)
+ static void dec_usb_memory_use_count(struct usb_memory *usbm, int *count)
+ {
+ 	struct usb_dev_state *ps = usbm-&gt;ps;
++	struct usb_hcd *hcd = bus_to_hcd(ps-&gt;dev-&gt;bus);
+ 	unsigned long flags;
+ 
+ 	spin_lock_irqsave(&amp;ps-&gt;lock, flags);
+@@ -194,8 +195,8 @@ static void dec_usb_memory_use_count(struct usb_memory *usbm, int *count)
+ 		list_del(&amp;usbm-&gt;memlist);
+ 		spin_unlock_irqrestore(&amp;ps-&gt;lock, flags);
+ 
+-		usb_free_coherent(ps-&gt;dev, usbm-&gt;size, usbm-&gt;mem,
+-				usbm-&gt;dma_handle);
++		hcd_buffer_free_pages(hcd, usbm-&gt;size,
++				usbm-&gt;mem, usbm-&gt;dma_handle);
+ 		usbfs_decrease_memory_usage(
+ 			usbm-&gt;size + sizeof(struct usb_memory));
+ 		kfree(usbm);
+@@ -247,8 +248,8 @@ static int usbdev_mmap(struct file *file, struct vm_area_struct *vma)
+ 		goto error_decrease_mem;
+ 	}
+ 
+-	mem = usb_alloc_coherent(ps-&gt;dev, size, GFP_USER | __GFP_NOWARN,
+-			&amp;dma_handle);
++	mem = hcd_buffer_alloc_pages(hcd,
++			size, GFP_USER | __GFP_NOWARN, &amp;dma_handle);
+ 	if (!mem) {
+ 		ret = -ENOMEM;
+ 		goto error_free_usbm;
+diff --git a/include/linux/usb/hcd.h b/include/linux/usb/hcd.h
+index 094c77eaf455..0c7eff91adf4 100644
+--- a/include/linux/usb/hcd.h
++++ b/include/linux/usb/hcd.h
+@@ -501,6 +501,11 @@ void *hcd_buffer_alloc(struct usb_bus *bus, size_t size,
+ void hcd_buffer_free(struct usb_bus *bus, size_t size,
+ 	void *addr, dma_addr_t dma);
+ 
++void *hcd_buffer_alloc_pages(struct usb_hcd *hcd,
++		size_t size, gfp_t mem_flags, dma_addr_t *dma);
++void hcd_buffer_free_pages(struct usb_hcd *hcd,
++		size_t size, void *addr, dma_addr_t dma);
++
+ /* generic bus glue, needed for host controllers that don't use PCI */
+ extern irqreturn_t usb_hcd_irq(int irq, void *__hcd);
+ </pre><hr><pre>commit a2904d2825536aa896a149a9174d11b0958e7095
+Author: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+Date:   Wed May 3 21:39:37 2023 +0800
+
+    Bluetooth: Unlink CISes when LE disconnects in hci_conn_del
+    
+    Currently, hci_conn_del calls hci_conn_unlink for BR/EDR, (e)SCO, and
+    CIS connections, i.e., everything except LE connections. However, if
+    (e)SCO connections are unlinked when BR/EDR disconnects, CIS connections
+    should also be unlinked when LE disconnects.
+    
+    In terms of disconnection behavior, CIS and (e)SCO connections are not
+    too different. One peculiarity of CIS is that when CIS connections are
+    disconnected, the CIS handle isn't deleted, as per [BLUETOOTH CORE
+    SPECIFICATION Version 5.4 | Vol 4, Part E] 7.1.6 Disconnect command:
+    
+            All SCO, eSCO, and CIS connections on a physical link should be
+            disconnected before the ACL connection on the same physical
+            connection is disconnected. If it does not, they will be
+            implicitly disconnected as part of the ACL disconnection.
+            ...
+            Note: As specified in Section 7.7.5, on the Central, the handle
+            for a CIS remains valid even after disconnection and, therefore,
+            the Host can recreate a disconnected CIS at a later point in
+            time using the same connection handle.
+    
+    Since hci_conn_link invokes both hci_conn_get and hci_conn_hold,
+    hci_conn_unlink should perform both hci_conn_put and hci_conn_drop as
+    well. However, currently it performs only hci_conn_put.
+    
+    This patch makes hci_conn_unlink call hci_conn_drop as well, which
+    simplifies the logic in hci_conn_del a bit and may benefit future users
+    of hci_conn_unlink. But it is noted that this change additionally
+    implies that hci_conn_unlink can queue disc_work on conn itself, with
+    the following call stack:
+    
+            hci_conn_unlink(conn)  [conn-&gt;parent == NULL]
+                    -&gt; hci_conn_unlink(child)  [child-&gt;parent == conn]
+                            -&gt; hci_conn_drop(child-&gt;parent)
+                                    -&gt; queue_delayed_work(&amp;conn-&gt;disc_work)
+    
+    Queued disc_work after hci_conn_del can be spurious, so during the
+    process of hci_conn_del, it is necessary to make the call to
+    cancel_delayed_work(&amp;conn-&gt;disc_work) after invoking hci_conn_unlink.
+    
+    Signed-off-by: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+    Co-developed-by: Luiz Augusto von Dentz &lt;luiz.von.dentz@intel.com&gt;
+    Signed-off-by: Luiz Augusto von Dentz &lt;luiz.von.dentz@intel.com&gt;
+
+diff --git a/net/bluetooth/hci_conn.c b/net/bluetooth/hci_conn.c
+index ce588359b290..f75ef12f18f7 100644
+--- a/net/bluetooth/hci_conn.c
++++ b/net/bluetooth/hci_conn.c
+@@ -1100,7 +1100,9 @@ static void hci_conn_unlink(struct hci_conn *conn)
+ 			 * yet at this point. Delete it now, otherwise it is
+ 			 * possible for it to be stuck and can't be deleted.
+ 			 */
+-			if (child-&gt;handle == HCI_CONN_HANDLE_UNSET)
++			if ((child-&gt;type == SCO_LINK ||
++			     child-&gt;type == ESCO_LINK) &amp;&amp;
++			    child-&gt;handle == HCI_CONN_HANDLE_UNSET)
+ 				hci_conn_del(child);
+ 		}
+ 
+@@ -1113,6 +1115,7 @@ static void hci_conn_unlink(struct hci_conn *conn)
+ 	list_del_rcu(&amp;conn-&gt;link-&gt;list);
+ 	synchronize_rcu();
+ 
++	hci_conn_drop(conn-&gt;parent);
+ 	hci_conn_put(conn-&gt;parent);
+ 	conn-&gt;parent = NULL;
+ 
+@@ -1126,12 +1129,13 @@ void hci_conn_del(struct hci_conn *conn)
+ 
+ 	BT_DBG("%s hcon %p handle %d", hdev-&gt;name, conn, conn-&gt;handle);
+ 
++	hci_conn_unlink(conn);
++
+ 	cancel_delayed_work_sync(&amp;conn-&gt;disc_work);
+ 	cancel_delayed_work_sync(&amp;conn-&gt;auto_accept_work);
+ 	cancel_delayed_work_sync(&amp;conn-&gt;idle_work);
+ 
+ 	if (conn-&gt;type == ACL_LINK) {
+-		hci_conn_unlink(conn);
+ 		/* Unacked frames */
+ 		hdev-&gt;acl_cnt += conn-&gt;sent;
+ 	} else if (conn-&gt;type == LE_LINK) {
+@@ -1142,13 +1146,6 @@ void hci_conn_del(struct hci_conn *conn)
+ 		else
+ 			hdev-&gt;acl_cnt += conn-&gt;sent;
+ 	} else {
+-		struct hci_conn *acl = conn-&gt;parent;
+-
+-		if (acl) {
+-			hci_conn_unlink(conn);
+-			hci_conn_drop(acl);
+-		}
+-
+ 		/* Unacked ISO frames */
+ 		if (conn-&gt;type == ISO_LINK) {
+ 			if (hdev-&gt;iso_pkts)
+@@ -2485,12 +2482,6 @@ void hci_conn_hash_flush(struct hci_dev *hdev)
+ 						list)) != NULL) {
+ 		conn-&gt;state = BT_CLOSED;
+ 		hci_disconn_cfm(conn, HCI_ERROR_LOCAL_HOST_TERM);
+-
+-		/* Unlink before deleting otherwise it is possible that
+-		 * hci_conn_del removes the link which may cause the list to
+-		 * contain items already freed.
+-		 */
+-		hci_conn_unlink(conn);
+ 		hci_conn_del(conn);
+ 	}
+ }</pre><hr><pre>commit a2ac591cb4d83e1f2d4b4adb3c14b2c79764650a
+Author: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+Date:   Wed May 3 21:39:36 2023 +0800
+
+    Bluetooth: Fix UAF in hci_conn_hash_flush again
+    
+    Commit 06149746e720 ("Bluetooth: hci_conn: Add support for linking
+    multiple hcon") reintroduced a previously fixed bug [1] ("KASAN:
+    slab-use-after-free Read in hci_conn_hash_flush"). This bug was
+    originally fixed by commit 5dc7d23e167e ("Bluetooth: hci_conn: Fix
+    possible UAF").
+    
+    The hci_conn_unlink function was added to avoid invalidating the link
+    traversal caused by successive hci_conn_del operations releasing extra
+    connections. However, currently hci_conn_unlink itself also releases
+    extra connections, resulted in the reintroduced bug.
+    
+    This patch follows a more robust solution for cleaning up all
+    connections, by repeatedly removing the first connection until there are
+    none left. This approach does not rely on the inner workings of
+    hci_conn_del and ensures proper cleanup of all connections.
+    
+    Meanwhile, we need to make sure that hci_conn_del never fails. Indeed it
+    doesn't, as it now always returns zero. To make this a bit clearer, this
+    patch also changes its return type to void.
+    
+    Reported-by: syzbot+8bb72f86fc823817bc5d@syzkaller.appspotmail.com
+    Closes: https://lore.kernel.org/linux-bluetooth/000000000000aa920505f60d25ad@google.com/
+    Fixes: 06149746e720 ("Bluetooth: hci_conn: Add support for linking multiple hcon")
+    Signed-off-by: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+    Co-developed-by: Luiz Augusto von Dentz &lt;luiz.von.dentz@intel.com&gt;
+    Signed-off-by: Luiz Augusto von Dentz &lt;luiz.von.dentz@intel.com&gt;
+
+diff --git a/include/net/bluetooth/hci_core.h b/include/net/bluetooth/hci_core.h
+index a6c8aee2f256..8baf34639939 100644
+--- a/include/net/bluetooth/hci_core.h
++++ b/include/net/bluetooth/hci_core.h
+@@ -1327,7 +1327,7 @@ int hci_le_create_cis(struct hci_conn *conn);
+ 
+ struct hci_conn *hci_conn_add(struct hci_dev *hdev, int type, bdaddr_t *dst,
+ 			      u8 role);
+-int hci_conn_del(struct hci_conn *conn);
++void hci_conn_del(struct hci_conn *conn);
+ void hci_conn_hash_flush(struct hci_dev *hdev);
+ void hci_conn_check_pending(struct hci_dev *hdev);
+ 
+diff --git a/net/bluetooth/hci_conn.c b/net/bluetooth/hci_conn.c
+index 44d0643fc681..ce588359b290 100644
+--- a/net/bluetooth/hci_conn.c
++++ b/net/bluetooth/hci_conn.c
+@@ -1088,6 +1088,14 @@ static void hci_conn_unlink(struct hci_conn *conn)
+ 
+ 			hci_conn_unlink(child);
+ 
++			/* If hdev is down it means
++			 * hci_dev_close_sync/hci_conn_hash_flush is in progress
++			 * and links don't need to be cleanup as all connections
++			 * would be cleanup.
++			 */
++			if (!test_bit(HCI_UP, &amp;hdev-&gt;flags))
++				continue;
++
+ 			/* Due to race, SCO connection might be not established
+ 			 * yet at this point. Delete it now, otherwise it is
+ 			 * possible for it to be stuck and can't be deleted.
+@@ -1112,7 +1120,7 @@ static void hci_conn_unlink(struct hci_conn *conn)
+ 	conn-&gt;link = NULL;
+ }
+ 
+-int hci_conn_del(struct hci_conn *conn)
++void hci_conn_del(struct hci_conn *conn)
+ {
+ 	struct hci_dev *hdev = conn-&gt;hdev;
+ 
+@@ -1163,8 +1171,6 @@ int hci_conn_del(struct hci_conn *conn)
+ 	 * rest of hci_conn_del.
+ 	 */
+ 	hci_conn_cleanup(conn);
+-
+-	return 0;
+ }
+ 
+ struct hci_dev *hci_get_route(bdaddr_t *dst, bdaddr_t *src, uint8_t src_type)
+@@ -2465,22 +2471,27 @@ void hci_conn_enter_active_mode(struct hci_conn *conn, __u8 force_active)
+ /* Drop all connection on the device */
+ void hci_conn_hash_flush(struct hci_dev *hdev)
+ {
+-	struct hci_conn_hash *h = &amp;hdev-&gt;conn_hash;
+-	struct hci_conn *c, *n;
++	struct list_head *head = &amp;hdev-&gt;conn_hash.list;
++	struct hci_conn *conn;
+ 
+ 	BT_DBG("hdev %s", hdev-&gt;name);
+ 
+-	list_for_each_entry_safe(c, n, &amp;h-&gt;list, list) {
+-		c-&gt;state = BT_CLOSED;
+-
+-		hci_disconn_cfm(c, HCI_ERROR_LOCAL_HOST_TERM);
++	/* We should not traverse the list here, because hci_conn_del
++	 * can remove extra links, which may cause the list traversal
++	 * to hit items that have already been released.
++	 */
++	while ((conn = list_first_entry_or_null(head,
++						struct hci_conn,
++						list)) != NULL) {
++		conn-&gt;state = BT_CLOSED;
++		hci_disconn_cfm(conn, HCI_ERROR_LOCAL_HOST_TERM);
+ 
+ 		/* Unlink before deleting otherwise it is possible that
+ 		 * hci_conn_del removes the link which may cause the list to
+ 		 * contain items already freed.
+ 		 */
+-		hci_conn_unlink(c);
+-		hci_conn_del(c);
++		hci_conn_unlink(conn);
++		hci_conn_del(conn);
+ 	}
+ }
+ </pre><hr><pre>commit 2910431ab0e500dfc5df12299bb15eef0f30b43e
+Author: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+Date:   Wed May 3 21:39:35 2023 +0800
+
+    Bluetooth: Refcnt drop must be placed last in hci_conn_unlink
+    
+    If hci_conn_put(conn-&gt;parent) reduces conn-&gt;parent's reference count to
+    zero, it can immediately deallocate conn-&gt;parent. At the same time,
+    conn-&gt;link-&gt;list has its head in conn-&gt;parent, causing use-after-free
+    problems in the latter list_del_rcu(&amp;conn-&gt;link-&gt;list).
+    
+    This problem can be easily solved by reordering the two operations,
+    i.e., first performing the list removal with list_del_rcu and then
+    decreasing the refcnt with hci_conn_put.
+    
+    Reported-by: Luiz Augusto von Dentz &lt;luiz.dentz@gmail.com&gt;
+    Closes: https://lore.kernel.org/linux-bluetooth/CABBYNZ+1kce8_RJrLNOXd_8=Mdpb=2bx4Nto-hFORk=qiOkoCg@mail.gmail.com/
+    Fixes: 06149746e720 ("Bluetooth: hci_conn: Add support for linking multiple hcon")
+    Signed-off-by: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+    Signed-off-by: Luiz Augusto von Dentz &lt;luiz.von.dentz@intel.com&gt;
+
+diff --git a/net/bluetooth/hci_conn.c b/net/bluetooth/hci_conn.c
+index 70e1655a9df6..44d0643fc681 100644
+--- a/net/bluetooth/hci_conn.c
++++ b/net/bluetooth/hci_conn.c
+@@ -1102,12 +1102,12 @@ static void hci_conn_unlink(struct hci_conn *conn)
+ 	if (!conn-&gt;link)
+ 		return;
+ 
+-	hci_conn_put(conn-&gt;parent);
+-	conn-&gt;parent = NULL;
+-
+ 	list_del_rcu(&amp;conn-&gt;link-&gt;list);
+ 	synchronize_rcu();
+ 
++	hci_conn_put(conn-&gt;parent);
++	conn-&gt;parent = NULL;
++
+ 	kfree(conn-&gt;link);
+ 	conn-&gt;link = NULL;
+ }</pre><hr><pre>commit ca1fd42e7dbfcb34890ffbf1f2f4b356776dab6f
+Author: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+Date:   Wed May 3 21:39:34 2023 +0800
+
+    Bluetooth: Fix potential double free caused by hci_conn_unlink
+    
+    The hci_conn_unlink function is being called by hci_conn_del, which
+    means it should not call hci_conn_del with the input parameter conn
+    again. If it does, conn may have already been released when
+    hci_conn_unlink returns, leading to potential UAF and double-free
+    issues.
+    
+    This patch resolves the problem by modifying hci_conn_unlink to release
+    only conn's child links when necessary, but never release conn itself.
+    
+    Reported-by: syzbot+690b90b14f14f43f4688@syzkaller.appspotmail.com
+    Closes: https://lore.kernel.org/linux-bluetooth/000000000000484a8205faafe216@google.com/
+    Fixes: 06149746e720 ("Bluetooth: hci_conn: Add support for linking multiple hcon")
+    Signed-off-by: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+    Signed-off-by: Luiz Augusto von Dentz &lt;luiz.von.dentz@intel.com&gt;
+    Reported-by: syzbot+690b90b14f14f43f4688@syzkaller.appspotmail.com
+    Reported-by: Luiz Augusto von Dentz &lt;luiz.dentz@gmail.com&gt;
+    Reported-by: syzbot+8bb72f86fc823817bc5d@syzkaller.appspotmail.com
+
+diff --git a/net/bluetooth/hci_conn.c b/net/bluetooth/hci_conn.c
+index 640b951bf40a..70e1655a9df6 100644
+--- a/net/bluetooth/hci_conn.c
++++ b/net/bluetooth/hci_conn.c
+@@ -1083,8 +1083,18 @@ static void hci_conn_unlink(struct hci_conn *conn)
+ 	if (!conn-&gt;parent) {
+ 		struct hci_link *link, *t;
+ 
+-		list_for_each_entry_safe(link, t, &amp;conn-&gt;link_list, list)
+-			hci_conn_unlink(link-&gt;conn);
++		list_for_each_entry_safe(link, t, &amp;conn-&gt;link_list, list) {
++			struct hci_conn *child = link-&gt;conn;
++
++			hci_conn_unlink(child);
++
++			/* Due to race, SCO connection might be not established
++			 * yet at this point. Delete it now, otherwise it is
++			 * possible for it to be stuck and can't be deleted.
++			 */
++			if (child-&gt;handle == HCI_CONN_HANDLE_UNSET)
++				hci_conn_del(child);
++		}
+ 
+ 		return;
+ 	}
+@@ -1100,13 +1110,6 @@ static void hci_conn_unlink(struct hci_conn *conn)
+ 
+ 	kfree(conn-&gt;link);
+ 	conn-&gt;link = NULL;
+-
+-	/* Due to race, SCO connection might be not established
+-	 * yet at this point. Delete it now, otherwise it is
+-	 * possible for it to be stuck and can't be deleted.
+-	 */
+-	if (conn-&gt;handle == HCI_CONN_HANDLE_UNSET)
+-		hci_conn_del(conn);
+ }
+ 
+ int hci_conn_del(struct hci_conn *conn)</pre><hr><pre>commit 1a261a6e10e80cd7c69c3f5bdf47cd41f928fd08
+Author: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+Date:   Tue Apr 25 00:21:10 2023 +0800
+
+    scripts: Remove ICC-related dead code
+    
+    Intel compiler support has already been completely removed in commit
+    95207db8166a ("Remove Intel compiler support").  However, it appears
+    that there is still some ICC-related code in scripts/cc-version.sh.
+    There is no harm in leaving the code as it is, but removing the dead
+    code makes the codebase a bit cleaner.
+    
+    Hopefully all ICC-related stuff in the build scripts will be removed
+    after this commit, given the grep output as below:
+    
+            (linux/scripts) $ grep -i -w -R 'icc'
+            cc-version.sh:ICC)
+            cc-version.sh:  min_version=$($min_tool_version icc)
+            dtc/include-prefixes/arm64/qcom/sm6350.dtsi:#include &lt;dt-bindings/interconnect/qcom,icc.h&gt;
+    
+    Fixes: 95207db8166a ("Remove Intel compiler support")
+    Signed-off-by: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+    Reviewed-by: Nick Desaulniers &lt;ndesaulniers@google.com&gt;
+    Reviewed-by: Nathan Chancellor &lt;nathan@kernel.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/scripts/cc-version.sh b/scripts/cc-version.sh
+index 0573c92e841d..a7e28b6a514e 100755
+--- a/scripts/cc-version.sh
++++ b/scripts/cc-version.sh
+@@ -45,10 +45,6 @@ Clang)
+ 	version=$2.$3.$4
+ 	min_version=$($min_tool_version llvm)
+ 	;;
+-ICC)
+-	version=$(($2 / 100)).$(($2 % 100)).$3
+-	min_version=$($min_tool_version icc)
+-	;;
+ *)
+ 	echo "$orig_args: unknown C compiler" &gt;&amp;2
+ 	exit 1</pre><hr><pre>commit 25c150ac103a4ebeed0319994c742a90634ddf18
+Author: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+Date:   Sun Apr 16 16:14:04 2023 +0800
+
+    bluetooth: Perform careful capability checks in hci_sock_ioctl()
+    
+    Previously, capability was checked using capable(), which verified that the
+    caller of the ioctl system call had the required capability. In addition,
+    the result of the check would be stored in the HCI_SOCK_TRUSTED flag,
+    making it persistent for the socket.
+    
+    However, malicious programs can abuse this approach by deliberately sharing
+    an HCI socket with a privileged task. The HCI socket will be marked as
+    trusted when the privileged task occasionally makes an ioctl call.
+    
+    This problem can be solved by using sk_capable() to check capability, which
+    ensures that not only the current task but also the socket opener has the
+    specified capability, thus reducing the risk of privilege escalation
+    through the previously identified vulnerability.
+    
+    Cc: stable@vger.kernel.org
+    Fixes: f81f5b2db869 ("Bluetooth: Send control open and close messages for HCI raw sockets")
+    Signed-off-by: Ruihan Li &lt;lrh2000@pku.edu.cn&gt;
+    Signed-off-by: Luiz Augusto von Dentz &lt;luiz.von.dentz@intel.com&gt;
+
+diff --git a/net/bluetooth/hci_sock.c b/net/bluetooth/hci_sock.c
+index 8d8950101cee..1d249d839819 100644
+--- a/net/bluetooth/hci_sock.c
++++ b/net/bluetooth/hci_sock.c
+@@ -1031,7 +1031,14 @@ static int hci_sock_ioctl(struct socket *sock, unsigned int cmd,
+ 	if (hci_sock_gen_cookie(sk)) {
+ 		struct sk_buff *skb;
+ 
+-		if (capable(CAP_NET_ADMIN))
++		/* Perform careful checks before setting the HCI_SOCK_TRUSTED
++		 * flag. Make sure that not only the current task but also
++		 * the socket opener has the required capability, since
++		 * privileged programs can be tricked into making ioctl calls
++		 * on HCI sockets, and the socket should not be marked as
++		 * trusted simply because the ioctl caller is privileged.
++		 */
++		if (sk_capable(sk, CAP_NET_ADMIN))
+ 			hci_sock_set_flag(sk, HCI_SOCK_TRUSTED);
+ 
+ 		/* Send event to monitor */</pre>
+    <div class="pagination">
+        <span>[1]</span><a href='11_2.html'>2</a><a href='11_3.html'>3</a><a href='11_4.html'>4</a><a href='11_5.html'>5</a><a href='11_6.html'>6</a><a href='11_7.html'>7</a><a href='11_8.html'>8</a><a href='11_9.html'>9</a><a href='11_10.html'>10</a><a href='11_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

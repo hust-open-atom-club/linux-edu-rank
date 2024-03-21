@@ -1,0 +1,3491 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by California Institute of Technology</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by California Institute of Technology</h1>
+    <div class="pagination">
+        <a href='16_3.html'>&lt;&lt;Prev</a><a href='16.html'>1</a><a href='16_2.html'>2</a><a href='16_3.html'>3</a><span>[4]</span><a href='16_5.html'>5</a><a href='16_6.html'>6</a><a href='16_7.html'>7</a><a href='16_5.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit c14330417ef2050f4bf38ac20e125785fea14351
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Thu Sep 30 11:46:45 2010 +0000
+
+    fsldma: implement support for scatterlist to scatterlist copy
+    
+    Now that the DMAEngine API has support for scatterlist to scatterlist
+    copy, implement support for the Freescale DMA controller.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Dan Williams &lt;dan.j.williams@intel.com&gt;
+
+diff --git a/drivers/dma/fsldma.c b/drivers/dma/fsldma.c
+index cea08bed9cf9..1ed29d10a5fa 100644
+--- a/drivers/dma/fsldma.c
++++ b/drivers/dma/fsldma.c
+@@ -38,6 +38,8 @@
+ #include &lt;asm/fsldma.h&gt;
+ #include "fsldma.h"
+ 
++static const char msg_ld_oom[] = "No free memory for link descriptor\n";
++
+ static void dma_init(struct fsldma_chan *chan)
+ {
+ 	/* Reset the channel */
+@@ -499,7 +501,7 @@ fsl_dma_prep_interrupt(struct dma_chan *dchan, unsigned long flags)
+ 
+ 	new = fsl_dma_alloc_descriptor(chan);
+ 	if (!new) {
+-		dev_err(chan-&gt;dev, "No free memory for link descriptor\n");
++		dev_err(chan-&gt;dev, msg_ld_oom);
+ 		return NULL;
+ 	}
+ 
+@@ -536,8 +538,7 @@ static struct dma_async_tx_descriptor *fsl_dma_prep_memcpy(
+ 		/* Allocate the link descriptor from DMA pool */
+ 		new = fsl_dma_alloc_descriptor(chan);
+ 		if (!new) {
+-			dev_err(chan-&gt;dev,
+-					"No free memory for link descriptor\n");
++			dev_err(chan-&gt;dev, msg_ld_oom);
+ 			goto fail;
+ 		}
+ #ifdef FSL_DMA_LD_DEBUG
+@@ -583,6 +584,125 @@ static struct dma_async_tx_descriptor *fsl_dma_prep_memcpy(
+ 	return NULL;
+ }
+ 
++static struct dma_async_tx_descriptor *fsl_dma_prep_sg(struct dma_chan *dchan,
++	struct scatterlist *dst_sg, unsigned int dst_nents,
++	struct scatterlist *src_sg, unsigned int src_nents,
++	unsigned long flags)
++{
++	struct fsl_desc_sw *first = NULL, *prev = NULL, *new = NULL;
++	struct fsldma_chan *chan = to_fsl_chan(dchan);
++	size_t dst_avail, src_avail;
++	dma_addr_t dst, src;
++	size_t len;
++
++	/* basic sanity checks */
++	if (dst_nents == 0 || src_nents == 0)
++		return NULL;
++
++	if (dst_sg == NULL || src_sg == NULL)
++		return NULL;
++
++	/*
++	 * TODO: should we check that both scatterlists have the same
++	 * TODO: number of bytes in total? Is that really an error?
++	 */
++
++	/* get prepared for the loop */
++	dst_avail = sg_dma_len(dst_sg);
++	src_avail = sg_dma_len(src_sg);
++
++	/* run until we are out of scatterlist entries */
++	while (true) {
++
++		/* create the largest transaction possible */
++		len = min_t(size_t, src_avail, dst_avail);
++		len = min_t(size_t, len, FSL_DMA_BCR_MAX_CNT);
++		if (len == 0)
++			goto fetch;
++
++		dst = sg_dma_address(dst_sg) + sg_dma_len(dst_sg) - dst_avail;
++		src = sg_dma_address(src_sg) + sg_dma_len(src_sg) - src_avail;
++
++		/* allocate and populate the descriptor */
++		new = fsl_dma_alloc_descriptor(chan);
++		if (!new) {
++			dev_err(chan-&gt;dev, msg_ld_oom);
++			goto fail;
++		}
++#ifdef FSL_DMA_LD_DEBUG
++		dev_dbg(chan-&gt;dev, "new link desc alloc %p\n", new);
++#endif
++
++		set_desc_cnt(chan, &amp;new-&gt;hw, len);
++		set_desc_src(chan, &amp;new-&gt;hw, src);
++		set_desc_dst(chan, &amp;new-&gt;hw, dst);
++
++		if (!first)
++			first = new;
++		else
++			set_desc_next(chan, &amp;prev-&gt;hw, new-&gt;async_tx.phys);
++
++		new-&gt;async_tx.cookie = 0;
++		async_tx_ack(&amp;new-&gt;async_tx);
++		prev = new;
++
++		/* Insert the link descriptor to the LD ring */
++		list_add_tail(&amp;new-&gt;node, &amp;first-&gt;tx_list);
++
++		/* update metadata */
++		dst_avail -= len;
++		src_avail -= len;
++
++fetch:
++		/* fetch the next dst scatterlist entry */
++		if (dst_avail == 0) {
++
++			/* no more entries: we're done */
++			if (dst_nents == 0)
++				break;
++
++			/* fetch the next entry: if there are no more: done */
++			dst_sg = sg_next(dst_sg);
++			if (dst_sg == NULL)
++				break;
++
++			dst_nents--;
++			dst_avail = sg_dma_len(dst_sg);
++		}
++
++		/* fetch the next src scatterlist entry */
++		if (src_avail == 0) {
++
++			/* no more entries: we're done */
++			if (src_nents == 0)
++				break;
++
++			/* fetch the next entry: if there are no more: done */
++			src_sg = sg_next(src_sg);
++			if (src_sg == NULL)
++				break;
++
++			src_nents--;
++			src_avail = sg_dma_len(src_sg);
++		}
++	}
++
++	new-&gt;async_tx.flags = flags; /* client is in control of this ack */
++	new-&gt;async_tx.cookie = -EBUSY;
++
++	/* Set End-of-link to the last link descriptor of new list */
++	set_ld_eol(chan, new);
++
++	return &amp;first-&gt;async_tx;
++
++fail:
++	if (!first)
++		return NULL;
++
++	fsldma_free_desc_list_reverse(chan, &amp;first-&gt;tx_list);
++	return NULL;
++}
++
+ /**
+  * fsl_dma_prep_slave_sg - prepare descriptors for a DMA_SLAVE transaction
+  * @chan: DMA channel
+@@ -1327,11 +1447,13 @@ static int __devinit fsldma_of_probe(struct platform_device *op,
+ 
+ 	dma_cap_set(DMA_MEMCPY, fdev-&gt;common.cap_mask);
+ 	dma_cap_set(DMA_INTERRUPT, fdev-&gt;common.cap_mask);
++	dma_cap_set(DMA_SG, fdev-&gt;common.cap_mask);
+ 	dma_cap_set(DMA_SLAVE, fdev-&gt;common.cap_mask);
+ 	fdev-&gt;common.device_alloc_chan_resources = fsl_dma_alloc_chan_resources;
+ 	fdev-&gt;common.device_free_chan_resources = fsl_dma_free_chan_resources;
+ 	fdev-&gt;common.device_prep_dma_interrupt = fsl_dma_prep_interrupt;
+ 	fdev-&gt;common.device_prep_dma_memcpy = fsl_dma_prep_memcpy;
++	fdev-&gt;common.device_prep_dma_sg = fsl_dma_prep_sg;
+ 	fdev-&gt;common.device_tx_status = fsl_tx_status;
+ 	fdev-&gt;common.device_issue_pending = fsl_dma_memcpy_issue_pending;
+ 	fdev-&gt;common.device_prep_slave_sg = fsl_dma_prep_slave_sg;</pre><hr><pre>commit a86ee03ce6f279ebe581a7a8c0c4393eaeb789ee
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Thu Sep 30 11:46:44 2010 +0000
+
+    dma: add support for scatterlist to scatterlist copy
+    
+    This adds support for scatterlist to scatterlist DMA transfers. A
+    similar interface is exposed by the fsldma driver (through the DMA_SLAVE
+    API) and by the ste_dma40 driver (through an exported function).
+    
+    This patch paves the way for making this type of copy operation a part
+    of the generic DMAEngine API. Futher patches will add support in
+    individual drivers.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Dan Williams &lt;dan.j.williams@intel.com&gt;
+
+diff --git a/drivers/dma/dmaengine.c b/drivers/dma/dmaengine.c
+index 9d31d5eb95c1..db403b8ccabd 100644
+--- a/drivers/dma/dmaengine.c
++++ b/drivers/dma/dmaengine.c
+@@ -690,6 +690,8 @@ int dma_async_device_register(struct dma_device *device)
+ 		!device-&gt;device_prep_dma_memset);
+ 	BUG_ON(dma_has_cap(DMA_INTERRUPT, device-&gt;cap_mask) &amp;&amp;
+ 		!device-&gt;device_prep_dma_interrupt);
++	BUG_ON(dma_has_cap(DMA_SG, device-&gt;cap_mask) &amp;&amp;
++		!device-&gt;device_prep_dma_sg);
+ 	BUG_ON(dma_has_cap(DMA_SLAVE, device-&gt;cap_mask) &amp;&amp;
+ 		!device-&gt;device_prep_slave_sg);
+ 	BUG_ON(dma_has_cap(DMA_SLAVE, device-&gt;cap_mask) &amp;&amp;
+diff --git a/include/linux/dmaengine.h b/include/linux/dmaengine.h
+index e2106495cc11..2c9ee98f6c77 100644
+--- a/include/linux/dmaengine.h
++++ b/include/linux/dmaengine.h
+@@ -64,6 +64,7 @@ enum dma_transaction_type {
+ 	DMA_PQ_VAL,
+ 	DMA_MEMSET,
+ 	DMA_INTERRUPT,
++	DMA_SG,
+ 	DMA_PRIVATE,
+ 	DMA_ASYNC_TX,
+ 	DMA_SLAVE,
+@@ -473,6 +474,11 @@ struct dma_device {
+ 		unsigned long flags);
+ 	struct dma_async_tx_descriptor *(*device_prep_dma_interrupt)(
+ 		struct dma_chan *chan, unsigned long flags);
++	struct dma_async_tx_descriptor *(*device_prep_dma_sg)(
++		struct dma_chan *chan,
++		struct scatterlist *dst_sg, unsigned int dst_nents,
++		struct scatterlist *src_sg, unsigned int src_nents,
++		unsigned long flags);
+ 
+ 	struct dma_async_tx_descriptor *(*device_prep_slave_sg)(
+ 		struct dma_chan *chan, struct scatterlist *sgl,</pre><hr><pre>commit 399f1e30ac17b77d383444aff480c7390f5adf2a
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Thu Sep 30 15:15:27 2010 -0700
+
+    kfifo: fix scatterlist usage
+    
+    The kfifo_dma family of functions use sg_mark_end() on the last element in
+    their scatterlist.  This forces use of a fresh scatterlist for each DMA
+    operation, which makes recycling a single scatterlist impossible.
+    
+    Change the behavior of the kfifo_dma functions to match the usage of the
+    dma_map_sg function.  This means that users must respect the returned
+    nents value.  The sample code is updated to reflect the change.
+    
+    This bug is trivial to cause: call kfifo_dma_in_prepare() such that it
+    prepares a scatterlist with a single entry comprising the whole fifo.
+    This is the case when you map the entirety of a newly created empty fifo.
+    This causes the setup_sgl() function to mark the first scatterlist entry
+    as the end of the chain, no matter what comes after it.
+    
+    Afterwards, add and remove some data from the fifo such that another call
+    to kfifo_dma_in_prepare() will create two scatterlist entries.  It returns
+    nents=2.  However, due to the previous sg_mark_end() call, sg_is_last()
+    will now return true for the first scatterlist element.  This causes the
+    sample code to print a single scatterlist element when it should print
+    two.
+    
+    By removing the call to sg_mark_end(), we make the API as similar as
+    possible to the DMA mapping API.  All users are required to respect the
+    returned nents.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Cc: Stefani Seibold &lt;stefani@seibold.net&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/kernel/kfifo.c b/kernel/kfifo.c
+index 6b5580c57644..01a0700e873f 100644
+--- a/kernel/kfifo.c
++++ b/kernel/kfifo.c
+@@ -365,8 +365,6 @@ static unsigned int setup_sgl(struct __kfifo *fifo, struct scatterlist *sgl,
+ 	n = setup_sgl_buf(sgl, fifo-&gt;data + off, nents, l);
+ 	n += setup_sgl_buf(sgl + n, fifo-&gt;data, nents - n, len - l);
+ 
+-	if (n)
+-		sg_mark_end(sgl + n - 1);
+ 	return n;
+ }
+ 
+diff --git a/samples/kfifo/dma-example.c b/samples/kfifo/dma-example.c
+index ee03a4f0b64f..06473791c08a 100644
+--- a/samples/kfifo/dma-example.c
++++ b/samples/kfifo/dma-example.c
+@@ -24,6 +24,7 @@ static int __init example_init(void)
+ {
+ 	int			i;
+ 	unsigned int		ret;
++	unsigned int		nents;
+ 	struct scatterlist	sg[10];
+ 
+ 	printk(KERN_INFO "DMA fifo test start\n");
+@@ -61,9 +62,9 @@ static int __init example_init(void)
+ 	 * byte at the beginning, after the kfifo_skip().
+ 	 */
+ 	sg_init_table(sg, ARRAY_SIZE(sg));
+-	ret = kfifo_dma_in_prepare(&amp;fifo, sg, ARRAY_SIZE(sg), FIFO_SIZE);
+-	printk(KERN_INFO "DMA sgl entries: %d\n", ret);
+-	if (!ret) {
++	nents = kfifo_dma_in_prepare(&amp;fifo, sg, ARRAY_SIZE(sg), FIFO_SIZE);
++	printk(KERN_INFO "DMA sgl entries: %d\n", nents);
++	if (!nents) {
+ 		/* fifo is full and no sgl was created */
+ 		printk(KERN_WARNING "error kfifo_dma_in_prepare\n");
+ 		return -EIO;
+@@ -71,7 +72,7 @@ static int __init example_init(void)
+ 
+ 	/* receive data */
+ 	printk(KERN_INFO "scatterlist for receive:\n");
+-	for (i = 0; i &lt; ARRAY_SIZE(sg); i++) {
++	for (i = 0; i &lt; nents; i++) {
+ 		printk(KERN_INFO
+ 		"sg[%d] -&gt; "
+ 		"page_link 0x%.8lx offset 0x%.8x length 0x%.8x\n",
+@@ -91,16 +92,16 @@ static int __init example_init(void)
+ 	kfifo_dma_in_finish(&amp;fifo, ret);
+ 
+ 	/* Prepare to transmit data, example: 8 bytes */
+-	ret = kfifo_dma_out_prepare(&amp;fifo, sg, ARRAY_SIZE(sg), 8);
+-	printk(KERN_INFO "DMA sgl entries: %d\n", ret);
+-	if (!ret) {
++	nents = kfifo_dma_out_prepare(&amp;fifo, sg, ARRAY_SIZE(sg), 8);
++	printk(KERN_INFO "DMA sgl entries: %d\n", nents);
++	if (!nents) {
+ 		/* no data was available and no sgl was created */
+ 		printk(KERN_WARNING "error kfifo_dma_out_prepare\n");
+ 		return -EIO;
+ 	}
+ 
+ 	printk(KERN_INFO "scatterlist for transmit:\n");
+-	for (i = 0; i &lt; ARRAY_SIZE(sg); i++) {
++	for (i = 0; i &lt; nents; i++) {
+ 		printk(KERN_INFO
+ 		"sg[%d] -&gt; "
+ 		"page_link 0x%.8lx offset 0x%.8x length 0x%.8x\n",</pre><hr><pre>commit 94131e174fedd9f3f9bb148cee4be12f2d46d68e
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Thu Sep 9 16:37:58 2010 -0700
+
+    arch/powerpc/include/asm/fsldma.h needs slab.h
+    
+    The slab.h header is required to use the kmalloc() family of functions.
+    Due to recent kernel changes, this header must be directly included by
+    code that calls into the memory allocator.
+    
+    Without this patch, any code which includes this header fails to build.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Cc: Dan Williams &lt;dan.j.williams@intel.com&gt;
+    Cc: Benjamin Herrenschmidt &lt;benh@kernel.crashing.org&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/arch/powerpc/include/asm/fsldma.h b/arch/powerpc/include/asm/fsldma.h
+index a67aeed17d40..debc5ed96d6e 100644
+--- a/arch/powerpc/include/asm/fsldma.h
++++ b/arch/powerpc/include/asm/fsldma.h
+@@ -11,6 +11,7 @@
+ #ifndef __ARCH_POWERPC_ASM_FSLDMA_H__
+ #define __ARCH_POWERPC_ASM_FSLDMA_H__
+ 
++#include &lt;linux/slab.h&gt;
+ #include &lt;linux/dmaengine.h&gt;
+ 
+ /*</pre><hr><pre>commit 5950ec8d3e47a08ec0b678a0e0ba5d1b9b62dd8e
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Sat Aug 14 21:08:49 2010 +0200
+
+    hwmon: (ltc4245) Expose all GPIO pins as analog voltages
+    
+    Add support for exposing all GPIO pins as analog voltages. Though this is
+    not an ideal use of the chip, some hardware engineers may decide that the
+    LTC4245 meets their design requirements when studying the datasheet.
+    
+    The GPIO pins are sampled in round-robin fashion, meaning that a slow
+    reader will see stale data. A userspace application can detect this,
+    because it will get -EAGAIN when reading from a sysfs file which contains
+    stale data.
+    
+    Users can choose to use this feature on a per-chip basis by using either
+    platform data or the OF device tree (where applicable).
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Jean Delvare &lt;khali@linux-fr.org&gt;
+
+diff --git a/Documentation/hwmon/ltc4245 b/Documentation/hwmon/ltc4245
+index 86b5880d8502..b478b0864965 100644
+--- a/Documentation/hwmon/ltc4245
++++ b/Documentation/hwmon/ltc4245
+@@ -72,9 +72,31 @@ in6_min_alarm		5v  output undervoltage alarm
+ in7_min_alarm		3v  output undervoltage alarm
+ in8_min_alarm		Vee (-12v) output undervoltage alarm
+ 
+-in9_input		GPIO voltage data
++in9_input		GPIO voltage data (see note 1)
++in10_input		GPIO voltage data (see note 1)
++in11_input		GPIO voltage data (see note 1)
+ 
+ power1_input		12v power usage (mW)
+ power2_input		5v  power usage (mW)
+ power3_input		3v  power usage (mW)
+ power4_input		Vee (-12v) power usage (mW)
++
++
++Note 1
++------
++
++If you have NOT configured the driver to sample all GPIO pins as analog
++voltages, then the in10_input and in11_input sysfs attributes will not be
++created. The driver will sample the GPIO pin that is currently connected to the
++ADC as an analog voltage, and report the value in in9_input.
++
++If you have configured the driver to sample all GPIO pins as analog voltages,
++then they will be sampled in round-robin fashion. If userspace reads too
++slowly, -EAGAIN will be returned when you read the sysfs attribute containing
++the sensor reading.
++
++The LTC4245 chip can be configured to sample all GPIO pins with two methods:
++1) platform data -- see include/linux/i2c/ltc4245.h
++2) OF device tree -- add the "ltc4245,use-extra-gpios" property to each chip
++
++The default mode of operation is to sample a single GPIO pin.
+diff --git a/drivers/hwmon/ltc4245.c b/drivers/hwmon/ltc4245.c
+index 21d201befc2c..659308329308 100644
+--- a/drivers/hwmon/ltc4245.c
++++ b/drivers/hwmon/ltc4245.c
+@@ -21,6 +21,7 @@
+ #include &lt;linux/i2c.h&gt;
+ #include &lt;linux/hwmon.h&gt;
+ #include &lt;linux/hwmon-sysfs.h&gt;
++#include &lt;linux/i2c/ltc4245.h&gt;
+ 
+ /* Here are names of the chip's registers (a.k.a. commands) */
+ enum ltc4245_cmd {
+@@ -60,8 +61,72 @@ struct ltc4245_data {
+ 
+ 	/* Voltage registers */
+ 	u8 vregs[0x0d];
++
++	/* GPIO ADC registers */
++	bool use_extra_gpios;
++	int gpios[3];
+ };
+ 
++/*
++ * Update the readings from the GPIO pins. If the driver has been configured to
++ * sample all GPIO's as analog voltages, a round-robin sampling method is used.
++ * Otherwise, only the configured GPIO pin is sampled.
++ *
++ * LOCKING: must hold data-&gt;update_lock
++ */
++static void ltc4245_update_gpios(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct ltc4245_data *data = i2c_get_clientdata(client);
++	u8 gpio_curr, gpio_next, gpio_reg;
++	int i;
++
++	/* no extra gpio support, we're basically done */
++	if (!data-&gt;use_extra_gpios) {
++		data-&gt;gpios[0] = data-&gt;vregs[LTC4245_GPIOADC - 0x10];
++		return;
++	}
++
++	/*
++	 * If the last reading was too long ago, then we mark all old GPIO
++	 * readings as stale by setting them to -EAGAIN
++	 */
++	if (time_after(jiffies, data-&gt;last_updated + 5 * HZ)) {
++		dev_dbg(&amp;client-&gt;dev, "Marking GPIOs invalid\n");
++		for (i = 0; i &lt; ARRAY_SIZE(data-&gt;gpios); i++)
++			data-&gt;gpios[i] = -EAGAIN;
++	}
++
++	/*
++	 * Get the current GPIO pin
++	 *
++	 * The datasheet calls these GPIO[1-3], but we'll calculate the zero
++	 * based array index instead, and call them GPIO[0-2]. This is much
++	 * easier to think about.
++	 */
++	gpio_curr = (data-&gt;cregs[LTC4245_GPIO] &amp; 0xc0) &gt;&gt; 6;
++	if (gpio_curr &gt; 0)
++		gpio_curr -= 1;
++
++	/* Read the GPIO voltage from the GPIOADC register */
++	data-&gt;gpios[gpio_curr] = data-&gt;vregs[LTC4245_GPIOADC - 0x10];
++
++	/* Find the next GPIO pin to read */
++	gpio_next = (gpio_curr + 1) % ARRAY_SIZE(data-&gt;gpios);
++
++	/*
++	 * Calculate the correct setting for the GPIO register so it will
++	 * sample the next GPIO pin
++	 */
++	gpio_reg = (data-&gt;cregs[LTC4245_GPIO] &amp; 0x3f) | ((gpio_next + 1) &lt;&lt; 6);
++
++	/* Update the GPIO register */
++	i2c_smbus_write_byte_data(client, LTC4245_GPIO, gpio_reg);
++
++	/* Update saved data */
++	data-&gt;cregs[LTC4245_GPIO] = gpio_reg;
++}
++
+ static struct ltc4245_data *ltc4245_update_device(struct device *dev)
+ {
+ 	struct i2c_client *client = to_i2c_client(dev);
+@@ -93,6 +158,9 @@ static struct ltc4245_data *ltc4245_update_device(struct device *dev)
+ 				data-&gt;vregs[i] = val;
+ 		}
+ 
++		/* Update GPIO readings */
++		ltc4245_update_gpios(dev);
++
+ 		data-&gt;last_updated = jiffies;
+ 		data-&gt;valid = 1;
+ 	}
+@@ -233,6 +301,22 @@ static ssize_t ltc4245_show_alarm(struct device *dev,
+ 	return snprintf(buf, PAGE_SIZE, "%u\n", (reg &amp; mask) ? 1 : 0);
+ }
+ 
++static ssize_t ltc4245_show_gpio(struct device *dev,
++				 struct device_attribute *da,
++				 char *buf)
++{
++	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
++	struct ltc4245_data *data = ltc4245_update_device(dev);
++	int val = data-&gt;gpios[attr-&gt;index];
++
++	/* handle stale GPIO's */
++	if (val &lt; 0)
++		return val;
++
++	/* Convert to millivolts and print */
++	return snprintf(buf, PAGE_SIZE, "%u\n", val * 10);
++}
++
+ /* These macros are used below in constructing device attribute objects
+  * for use with sysfs_create_group() to make a sysfs device file
+  * for each register.
+@@ -254,6 +338,10 @@ static ssize_t ltc4245_show_alarm(struct device *dev,
+ 	static SENSOR_DEVICE_ATTR_2(name, S_IRUGO, \
+ 	ltc4245_show_alarm, NULL, (mask), reg)
+ 
++#define LTC4245_GPIO_VOLTAGE(name, gpio_num) \
++	static SENSOR_DEVICE_ATTR(name, S_IRUGO, \
++	ltc4245_show_gpio, NULL, gpio_num)
++
+ /* Construct a sensor_device_attribute structure for each register */
+ 
+ /* Input voltages */
+@@ -293,7 +381,9 @@ LTC4245_ALARM(in7_min_alarm,	(1 &lt;&lt; 2),	LTC4245_FAULT2);
+ LTC4245_ALARM(in8_min_alarm,	(1 &lt;&lt; 3),	LTC4245_FAULT2);
+ 
+ /* GPIO voltages */
+-LTC4245_VOLTAGE(in9_input,			LTC4245_GPIOADC);
++LTC4245_GPIO_VOLTAGE(in9_input,			0);
++LTC4245_GPIO_VOLTAGE(in10_input,		1);
++LTC4245_GPIO_VOLTAGE(in11_input,		2);
+ 
+ /* Power Consumption (virtual) */
+ LTC4245_POWER(power1_input,			LTC4245_12VSENSE);
+@@ -304,7 +394,7 @@ LTC4245_POWER(power4_input,			LTC4245_VEESENSE);
+ /* Finally, construct an array of pointers to members of the above objects,
+  * as required for sysfs_create_group()
+  */
+-static struct attribute *ltc4245_attributes[] = {
++static struct attribute *ltc4245_std_attributes[] = {
+ 	&amp;sensor_dev_attr_in1_input.dev_attr.attr,
+ 	&amp;sensor_dev_attr_in2_input.dev_attr.attr,
+ 	&amp;sensor_dev_attr_in3_input.dev_attr.attr,
+@@ -345,10 +435,77 @@ static struct attribute *ltc4245_attributes[] = {
+ 	NULL,
+ };
+ 
+-static const struct attribute_group ltc4245_group = {
+-	.attrs = ltc4245_attributes,
++static struct attribute *ltc4245_gpio_attributes[] = {
++	&amp;sensor_dev_attr_in10_input.dev_attr.attr,
++	&amp;sensor_dev_attr_in11_input.dev_attr.attr,
++	NULL,
++};
++
++static const struct attribute_group ltc4245_std_group = {
++	.attrs = ltc4245_std_attributes,
++};
++
++static const struct attribute_group ltc4245_gpio_group = {
++	.attrs = ltc4245_gpio_attributes,
+ };
+ 
++static int ltc4245_sysfs_create_groups(struct i2c_client *client)
++{
++	struct ltc4245_data *data = i2c_get_clientdata(client);
++	struct device *dev = &amp;client-&gt;dev;
++	int ret;
++
++	/* register the standard sysfs attributes */
++	ret = sysfs_create_group(&amp;dev-&gt;kobj, &amp;ltc4245_std_group);
++	if (ret) {
++		dev_err(dev, "unable to register standard attributes\n");
++		return ret;
++	}
++
++	/* if we're using the extra gpio support, register it's attributes */
++	if (data-&gt;use_extra_gpios) {
++		ret = sysfs_create_group(&amp;dev-&gt;kobj, &amp;ltc4245_gpio_group);
++		if (ret) {
++			dev_err(dev, "unable to register gpio attributes\n");
++			sysfs_remove_group(&amp;dev-&gt;kobj, &amp;ltc4245_std_group);
++			return ret;
++		}
++	}
++
++	return 0;
++}
++
++static void ltc4245_sysfs_remove_groups(struct i2c_client *client)
++{
++	struct ltc4245_data *data = i2c_get_clientdata(client);
++	struct device *dev = &amp;client-&gt;dev;
++
++	if (data-&gt;use_extra_gpios)
++		sysfs_remove_group(&amp;dev-&gt;kobj, &amp;ltc4245_gpio_group);
++
++	sysfs_remove_group(&amp;dev-&gt;kobj, &amp;ltc4245_std_group);
++}
++
++static bool ltc4245_use_extra_gpios(struct i2c_client *client)
++{
++	struct ltc4245_platform_data *pdata = dev_get_platdata(&amp;client-&gt;dev);
++#ifdef CONFIG_OF
++	struct device_node *np = client-&gt;dev.of_node;
++#endif
++
++	/* prefer platform data */
++	if (pdata)
++		return pdata-&gt;use_extra_gpios;
++
++#ifdef CONFIG_OF
++	/* fallback on OF */
++	if (of_find_property(np, "ltc4245,use-extra-gpios", NULL))
++		return true;
++#endif
++
++	return false;
++}
++
+ static int ltc4245_probe(struct i2c_client *client,
+ 			 const struct i2c_device_id *id)
+ {
+@@ -367,15 +524,16 @@ static int ltc4245_probe(struct i2c_client *client,
+ 
+ 	i2c_set_clientdata(client, data);
+ 	mutex_init(&amp;data-&gt;update_lock);
++	data-&gt;use_extra_gpios = ltc4245_use_extra_gpios(client);
+ 
+ 	/* Initialize the LTC4245 chip */
+ 	i2c_smbus_write_byte_data(client, LTC4245_FAULT1, 0x00);
+ 	i2c_smbus_write_byte_data(client, LTC4245_FAULT2, 0x00);
+ 
+ 	/* Register sysfs hooks */
+-	ret = sysfs_create_group(&amp;client-&gt;dev.kobj, &amp;ltc4245_group);
++	ret = ltc4245_sysfs_create_groups(client);
+ 	if (ret)
+-		goto out_sysfs_create_group;
++		goto out_sysfs_create_groups;
+ 
+ 	data-&gt;hwmon_dev = hwmon_device_register(&amp;client-&gt;dev);
+ 	if (IS_ERR(data-&gt;hwmon_dev)) {
+@@ -386,8 +544,8 @@ static int ltc4245_probe(struct i2c_client *client,
+ 	return 0;
+ 
+ out_hwmon_device_register:
+-	sysfs_remove_group(&amp;client-&gt;dev.kobj, &amp;ltc4245_group);
+-out_sysfs_create_group:
++	ltc4245_sysfs_remove_groups(client);
++out_sysfs_create_groups:
+ 	kfree(data);
+ out_kzalloc:
+ 	return ret;
+@@ -398,8 +556,7 @@ static int ltc4245_remove(struct i2c_client *client)
+ 	struct ltc4245_data *data = i2c_get_clientdata(client);
+ 
+ 	hwmon_device_unregister(data-&gt;hwmon_dev);
+-	sysfs_remove_group(&amp;client-&gt;dev.kobj, &amp;ltc4245_group);
+-
++	ltc4245_sysfs_remove_groups(client);
+ 	kfree(data);
+ 
+ 	return 0;
+diff --git a/include/linux/i2c/ltc4245.h b/include/linux/i2c/ltc4245.h
+new file mode 100644
+index 000000000000..56bda4be0016
+--- /dev/null
++++ b/include/linux/i2c/ltc4245.h
+@@ -0,0 +1,21 @@
++/*
++ * Platform Data for LTC4245 hardware monitor chip
++ *
++ * Copyright (c) 2010 Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2 of the License, or (at your
++ * option) any later version.
++ */
++
++#ifndef LINUX_LTC4245_H
++#define LINUX_LTC4245_H
++
++#include &lt;linux/types.h&gt;
++
++struct ltc4245_platform_data {
++	bool use_extra_gpios;
++};
++
++#endif /* LINUX_LTC4245_H */</pre><hr><pre>commit 800e69fbd2faea906cabd10ddb77e36410f2bd9c
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Wed Apr 7 10:08:01 2010 +0200
+
+    gpio: Add support for Janz VMOD-TTL Digital IO module
+    
+    The Janz VMOD-TTL is a MODULbus daughterboard which fits onto any MODULbus
+    carrier board. It essentially consists of some various logic and a Zilog
+    Z8536 CIO Counter/Timer and Parallel IO Unit.
+    
+    The board must be physically configured with jumpers to enable a user to
+    drive output signals. I am only interested in outputs, so I have made this
+    driver as simple as possible. It only supports a very minimal subset of the
+    features provided by the Z8536 chip.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Samuel Ortiz &lt;sameo@linux.intel.com&gt;
+
+diff --git a/drivers/gpio/Kconfig b/drivers/gpio/Kconfig
+index 56eb0c59c512..0e9c16b5bbce 100644
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -325,4 +325,14 @@ config GPIO_UCB1400
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called ucb1400_gpio.
+ 
++comment "MODULbus GPIO expanders:"
++
++config GPIO_JANZ_TTL
++	tristate "Janz VMOD-TTL Digital IO Module"
++	depends on MFD_JANZ_CMODIO
++	help
++	  This enables support for the Janz VMOD-TTL Digital IO module.
++	  This driver provides support for driving the pins in output
++	  mode only. Input mode is not supported.
++
+ endif
+diff --git a/drivers/gpio/Makefile b/drivers/gpio/Makefile
+index d3226d395a90..94a96c51c741 100644
+--- a/drivers/gpio/Makefile
++++ b/drivers/gpio/Makefile
+@@ -29,3 +29,4 @@ obj-$(CONFIG_GPIO_WM8350)	+= wm8350-gpiolib.o
+ obj-$(CONFIG_GPIO_WM8994)	+= wm8994-gpio.o
+ obj-$(CONFIG_GPIO_SCH)		+= sch_gpio.o
+ obj-$(CONFIG_GPIO_RDC321X)	+= rdc321x-gpio.o
++obj-$(CONFIG_GPIO_JANZ_TTL)	+= janz-ttl.o
+diff --git a/drivers/gpio/janz-ttl.c b/drivers/gpio/janz-ttl.c
+new file mode 100644
+index 000000000000..813ac077e5d7
+--- /dev/null
++++ b/drivers/gpio/janz-ttl.c
+@@ -0,0 +1,258 @@
++/*
++ * Janz MODULbus VMOD-TTL GPIO Driver
++ *
++ * Copyright (c) 2010 Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2 of the License, or (at your
++ * option) any later version.
++ */
++
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/module.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/interrupt.h&gt;
++#include &lt;linux/delay.h&gt;
++#include &lt;linux/platform_device.h&gt;
++#include &lt;linux/io.h&gt;
++#include &lt;linux/gpio.h&gt;
++#include &lt;linux/slab.h&gt;
++
++#include &lt;linux/mfd/janz.h&gt;
++
++#define DRV_NAME "janz-ttl"
++
++#define PORTA_DIRECTION		0x23
++#define PORTB_DIRECTION		0x2B
++#define PORTC_DIRECTION		0x06
++#define PORTA_IOCTL		0x24
++#define PORTB_IOCTL		0x2C
++#define PORTC_IOCTL		0x07
++
++#define MASTER_INT_CTL		0x00
++#define MASTER_CONF_CTL		0x01
++
++#define CONF_PAE		(1 &lt;&lt; 2)
++#define CONF_PBE		(1 &lt;&lt; 7)
++#define CONF_PCE		(1 &lt;&lt; 4)
++
++struct ttl_control_regs {
++	__be16 portc;
++	__be16 portb;
++	__be16 porta;
++	__be16 control;
++};
++
++struct ttl_module {
++	struct gpio_chip gpio;
++
++	/* base address of registers */
++	struct ttl_control_regs __iomem *regs;
++
++	u8 portc_shadow;
++	u8 portb_shadow;
++	u8 porta_shadow;
++
++	spinlock_t lock;
++};
++
++static int ttl_get_value(struct gpio_chip *gpio, unsigned offset)
++{
++	struct ttl_module *mod = dev_get_drvdata(gpio-&gt;dev);
++	u8 *shadow;
++	int ret;
++
++	if (offset &lt; 8) {
++		shadow = &amp;mod-&gt;porta_shadow;
++	} else if (offset &lt; 16) {
++		shadow = &amp;mod-&gt;portb_shadow;
++		offset -= 8;
++	} else {
++		shadow = &amp;mod-&gt;portc_shadow;
++		offset -= 16;
++	}
++
++	spin_lock(&amp;mod-&gt;lock);
++	ret = *shadow &amp; (1 &lt;&lt; offset);
++	spin_unlock(&amp;mod-&gt;lock);
++	return ret;
++}
++
++static void ttl_set_value(struct gpio_chip *gpio, unsigned offset, int value)
++{
++	struct ttl_module *mod = dev_get_drvdata(gpio-&gt;dev);
++	void __iomem *port;
++	u8 *shadow;
++
++	if (offset &lt; 8) {
++		port = &amp;mod-&gt;regs-&gt;porta;
++		shadow = &amp;mod-&gt;porta_shadow;
++	} else if (offset &lt; 16) {
++		port = &amp;mod-&gt;regs-&gt;portb;
++		shadow = &amp;mod-&gt;portb_shadow;
++		offset -= 8;
++	} else {
++		port = &amp;mod-&gt;regs-&gt;portc;
++		shadow = &amp;mod-&gt;portc_shadow;
++		offset -= 16;
++	}
++
++	spin_lock(&amp;mod-&gt;lock);
++	if (value)
++		*shadow |= (1 &lt;&lt; offset);
++	else
++		*shadow &amp;= ~(1 &lt;&lt; offset);
++
++	iowrite16be(*shadow, port);
++	spin_unlock(&amp;mod-&gt;lock);
++}
++
++static void __devinit ttl_write_reg(struct ttl_module *mod, u8 reg, u16 val)
++{
++	iowrite16be(reg, &amp;mod-&gt;regs-&gt;control);
++	iowrite16be(val, &amp;mod-&gt;regs-&gt;control);
++}
++
++static void __devinit ttl_setup_device(struct ttl_module *mod)
++{
++	/* reset the device to a known state */
++	iowrite16be(0x0000, &amp;mod-&gt;regs-&gt;control);
++	iowrite16be(0x0001, &amp;mod-&gt;regs-&gt;control);
++	iowrite16be(0x0000, &amp;mod-&gt;regs-&gt;control);
++
++	/* put all ports in open-drain mode */
++	ttl_write_reg(mod, PORTA_IOCTL, 0x00ff);
++	ttl_write_reg(mod, PORTB_IOCTL, 0x00ff);
++	ttl_write_reg(mod, PORTC_IOCTL, 0x000f);
++
++	/* set all ports as outputs */
++	ttl_write_reg(mod, PORTA_DIRECTION, 0x0000);
++	ttl_write_reg(mod, PORTB_DIRECTION, 0x0000);
++	ttl_write_reg(mod, PORTC_DIRECTION, 0x0000);
++
++	/* set all ports to drive zeroes */
++	iowrite16be(0x0000, &amp;mod-&gt;regs-&gt;porta);
++	iowrite16be(0x0000, &amp;mod-&gt;regs-&gt;portb);
++	iowrite16be(0x0000, &amp;mod-&gt;regs-&gt;portc);
++
++	/* enable all ports */
++	ttl_write_reg(mod, MASTER_CONF_CTL, CONF_PAE | CONF_PBE | CONF_PCE);
++}
++
++static int __devinit ttl_probe(struct platform_device *pdev)
++{
++	struct janz_platform_data *pdata;
++	struct device *dev = &amp;pdev-&gt;dev;
++	struct ttl_module *mod;
++	struct gpio_chip *gpio;
++	struct resource *res;
++	int ret;
++
++	pdata = pdev-&gt;dev.platform_data;
++	if (!pdata) {
++		dev_err(dev, "no platform data\n");
++		ret = -ENXIO;
++		goto out_return;
++	}
++
++	mod = kzalloc(sizeof(*mod), GFP_KERNEL);
++	if (!mod) {
++		dev_err(dev, "unable to allocate private data\n");
++		ret = -ENOMEM;
++		goto out_return;
++	}
++
++	platform_set_drvdata(pdev, mod);
++	spin_lock_init(&amp;mod-&gt;lock);
++
++	/* get access to the MODULbus registers for this module */
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res) {
++		dev_err(dev, "MODULbus registers not found\n");
++		ret = -ENODEV;
++		goto out_free_mod;
++	}
++
++	mod-&gt;regs = ioremap(res-&gt;start, resource_size(res));
++	if (!mod-&gt;regs) {
++		dev_err(dev, "MODULbus registers not ioremap\n");
++		ret = -ENOMEM;
++		goto out_free_mod;
++	}
++
++	ttl_setup_device(mod);
++
++	/* Initialize the GPIO data structures */
++	gpio = &amp;mod-&gt;gpio;
++	gpio-&gt;dev = &amp;pdev-&gt;dev;
++	gpio-&gt;label = pdev-&gt;name;
++	gpio-&gt;get = ttl_get_value;
++	gpio-&gt;set = ttl_set_value;
++	gpio-&gt;owner = THIS_MODULE;
++
++	/* request dynamic allocation */
++	gpio-&gt;base = -1;
++	gpio-&gt;ngpio = 20;
++
++	ret = gpiochip_add(gpio);
++	if (ret) {
++		dev_err(dev, "unable to add GPIO chip\n");
++		goto out_iounmap_regs;
++	}
++
++	dev_info(&amp;pdev-&gt;dev, "module %d: registered GPIO device\n",
++			     pdata-&gt;modno);
++	return 0;
++
++out_iounmap_regs:
++	iounmap(mod-&gt;regs);
++out_free_mod:
++	kfree(mod);
++out_return:
++	return ret;
++}
++
++static int __devexit ttl_remove(struct platform_device *pdev)
++{
++	struct ttl_module *mod = platform_get_drvdata(pdev);
++	struct device *dev = &amp;pdev-&gt;dev;
++	int ret;
++
++	ret = gpiochip_remove(&amp;mod-&gt;gpio);
++	if (ret) {
++		dev_err(dev, "unable to remove GPIO chip\n");
++		return ret;
++	}
++
++	iounmap(mod-&gt;regs);
++	kfree(mod);
++	return 0;
++}
++
++static struct platform_driver ttl_driver = {
++	.driver		= {
++		.name	= DRV_NAME,
++		.owner	= THIS_MODULE,
++	},
++	.probe		= ttl_probe,
++	.remove		= __devexit_p(ttl_remove),
++};
++
++static int __init ttl_init(void)
++{
++	return platform_driver_register(&amp;ttl_driver);
++}
++
++static void __exit ttl_exit(void)
++{
++	platform_driver_unregister(&amp;ttl_driver);
++}
++
++MODULE_AUTHOR("Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;");
++MODULE_DESCRIPTION("Janz MODULbus VMOD-TTL Driver");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:janz-ttl");
++
++module_init(ttl_init);
++module_exit(ttl_exit);</pre><hr><pre>commit 631eb227849e3bfdec2d2e628ee5a3f962db82e2
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Mon Mar 29 09:58:51 2010 -0700
+
+    can: Add support for Janz VMOD-ICAN3 Intelligent CAN module
+    
+    The Janz VMOD-ICAN3 is a MODULbus daughterboard which fits onto any
+    MODULbus carrier board. It is an intelligent CAN controller with a
+    microcontroller and associated firmware.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Acked-by: Wolfgang Grandegger &lt;wg@grandegger.com&gt;
+    Acked-by: David S. Miller &lt;davem@davemloft.net&gt;
+    Signed-off-by: Samuel Ortiz &lt;sameo@linux.intel.com&gt;
+
+diff --git a/drivers/net/can/Kconfig b/drivers/net/can/Kconfig
+index 05b751719bd5..2c5227c02fa0 100644
+--- a/drivers/net/can/Kconfig
++++ b/drivers/net/can/Kconfig
+@@ -63,6 +63,16 @@ config CAN_BFIN
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called bfin_can.
+ 
++config CAN_JANZ_ICAN3
++	tristate "Janz VMOD-ICAN3 Intelligent CAN controller"
++	depends on CAN_DEV &amp;&amp; MFD_JANZ_CMODIO
++	---help---
++	  Driver for Janz VMOD-ICAN3 Intelligent CAN controller module, which
++	  connects to a MODULbus carrier board.
++
++	  This driver can also be built as a module. If so, the module will be
++	  called janz-ican3.ko.
++
+ source "drivers/net/can/mscan/Kconfig"
+ 
+ source "drivers/net/can/sja1000/Kconfig"
+diff --git a/drivers/net/can/Makefile b/drivers/net/can/Makefile
+index 7a702f28d01c..9047cd066fea 100644
+--- a/drivers/net/can/Makefile
++++ b/drivers/net/can/Makefile
+@@ -15,5 +15,6 @@ obj-$(CONFIG_CAN_AT91)		+= at91_can.o
+ obj-$(CONFIG_CAN_TI_HECC)	+= ti_hecc.o
+ obj-$(CONFIG_CAN_MCP251X)	+= mcp251x.o
+ obj-$(CONFIG_CAN_BFIN)		+= bfin_can.o
++obj-$(CONFIG_CAN_JANZ_ICAN3)	+= janz-ican3.o
+ 
+ ccflags-$(CONFIG_CAN_DEBUG_DEVICES) := -DDEBUG
+diff --git a/drivers/net/can/janz-ican3.c b/drivers/net/can/janz-ican3.c
+new file mode 100644
+index 000000000000..6e533dcc36c0
+--- /dev/null
++++ b/drivers/net/can/janz-ican3.c
+@@ -0,0 +1,1830 @@
++/*
++ * Janz MODULbus VMOD-ICAN3 CAN Interface Driver
++ *
++ * Copyright (c) 2010 Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2 of the License, or (at your
++ * option) any later version.
++ */
++
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/module.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/interrupt.h&gt;
++#include &lt;linux/delay.h&gt;
++#include &lt;linux/platform_device.h&gt;
++
++#include &lt;linux/netdevice.h&gt;
++#include &lt;linux/can.h&gt;
++#include &lt;linux/can/dev.h&gt;
++#include &lt;linux/can/error.h&gt;
++
++#include &lt;linux/mfd/janz.h&gt;
++
++/* the DPM has 64k of memory, organized into 256x 256 byte pages */
++#define DPM_NUM_PAGES		256
++#define DPM_PAGE_SIZE		256
++#define DPM_PAGE_ADDR(p)	((p) * DPM_PAGE_SIZE)
++
++/* JANZ ICAN3 "old-style" host interface queue page numbers */
++#define QUEUE_OLD_CONTROL	0
++#define QUEUE_OLD_RB0		1
++#define QUEUE_OLD_RB1		2
++#define QUEUE_OLD_WB0		3
++#define QUEUE_OLD_WB1		4
++
++/* Janz ICAN3 "old-style" host interface control registers */
++#define MSYNC_PEER		0x00		/* ICAN only */
++#define MSYNC_LOCL		0x01		/* host only */
++#define TARGET_RUNNING		0x02
++
++#define MSYNC_RB0		0x01
++#define MSYNC_RB1		0x02
++#define MSYNC_RBLW		0x04
++#define MSYNC_RB_MASK		(MSYNC_RB0 | MSYNC_RB1)
++
++#define MSYNC_WB0		0x10
++#define MSYNC_WB1		0x20
++#define MSYNC_WBLW		0x40
++#define MSYNC_WB_MASK		(MSYNC_WB0 | MSYNC_WB1)
++
++/* Janz ICAN3 "new-style" host interface queue page numbers */
++#define QUEUE_TOHOST		5
++#define QUEUE_FROMHOST_MID	6
++#define QUEUE_FROMHOST_HIGH	7
++#define QUEUE_FROMHOST_LOW	8
++
++/* The first free page in the DPM is #9 */
++#define DPM_FREE_START		9
++
++/* Janz ICAN3 "new-style" and "fast" host interface descriptor flags */
++#define DESC_VALID		0x80
++#define DESC_WRAP		0x40
++#define DESC_INTERRUPT		0x20
++#define DESC_IVALID		0x10
++#define DESC_LEN(len)		(len)
++
++/* Janz ICAN3 Firmware Messages */
++#define MSG_CONNECTI		0x02
++#define MSG_DISCONNECT		0x03
++#define MSG_IDVERS		0x04
++#define MSG_MSGLOST		0x05
++#define MSG_NEWHOSTIF		0x08
++#define MSG_INQUIRY		0x0a
++#define MSG_SETAFILMASK		0x10
++#define MSG_INITFDPMQUEUE	0x11
++#define MSG_HWCONF		0x12
++#define MSG_FMSGLOST		0x15
++#define MSG_CEVTIND		0x37
++#define MSG_CBTRREQ		0x41
++#define MSG_COFFREQ		0x42
++#define MSG_CONREQ		0x43
++#define MSG_CCONFREQ		0x47
++
++/*
++ * Janz ICAN3 CAN Inquiry Message Types
++ *
++ * NOTE: there appears to be a firmware bug here. You must send
++ * NOTE: INQUIRY_STATUS and expect to receive an INQUIRY_EXTENDED
++ * NOTE: response. The controller never responds to a message with
++ * NOTE: the INQUIRY_EXTENDED subspec :(
++ */
++#define INQUIRY_STATUS		0x00
++#define INQUIRY_TERMINATION	0x01
++#define INQUIRY_EXTENDED	0x04
++
++/* Janz ICAN3 CAN Set Acceptance Filter Mask Message Types */
++#define SETAFILMASK_REJECT	0x00
++#define SETAFILMASK_FASTIF	0x02
++
++/* Janz ICAN3 CAN Hardware Configuration Message Types */
++#define HWCONF_TERMINATE_ON	0x01
++#define HWCONF_TERMINATE_OFF	0x00
++
++/* Janz ICAN3 CAN Event Indication Message Types */
++#define CEVTIND_EI		0x01
++#define CEVTIND_DOI		0x02
++#define CEVTIND_LOST		0x04
++#define CEVTIND_FULL		0x08
++#define CEVTIND_BEI		0x10
++
++#define CEVTIND_CHIP_SJA1000	0x02
++
++#define ICAN3_BUSERR_QUOTA_MAX	255
++
++/* Janz ICAN3 CAN Frame Conversion */
++#define ICAN3_ECHO	0x10
++#define ICAN3_EFF_RTR	0x40
++#define ICAN3_SFF_RTR	0x10
++#define ICAN3_EFF	0x80
++
++#define ICAN3_CAN_TYPE_MASK	0x0f
++#define ICAN3_CAN_TYPE_SFF	0x00
++#define ICAN3_CAN_TYPE_EFF	0x01
++
++#define ICAN3_CAN_DLC_MASK	0x0f
++
++/*
++ * SJA1000 Status and Error Register Definitions
++ *
++ * Copied from drivers/net/can/sja1000/sja1000.h
++ */
++
++/* status register content */
++#define SR_BS		0x80
++#define SR_ES		0x40
++#define SR_TS		0x20
++#define SR_RS		0x10
++#define SR_TCS		0x08
++#define SR_TBS		0x04
++#define SR_DOS		0x02
++#define SR_RBS		0x01
++
++#define SR_CRIT (SR_BS|SR_ES)
++
++/* ECC register */
++#define ECC_SEG		0x1F
++#define ECC_DIR		0x20
++#define ECC_ERR		6
++#define ECC_BIT		0x00
++#define ECC_FORM	0x40
++#define ECC_STUFF	0x80
++#define ECC_MASK	0xc0
++
++/* Number of buffers for use in the "new-style" host interface */
++#define ICAN3_NEW_BUFFERS	16
++
++/* Number of buffers for use in the "fast" host interface */
++#define ICAN3_TX_BUFFERS	512
++#define ICAN3_RX_BUFFERS	1024
++
++/* SJA1000 Clock Input */
++#define ICAN3_CAN_CLOCK		8000000
++
++/* Driver Name */
++#define DRV_NAME "janz-ican3"
++
++/* DPM Control Registers -- starts at offset 0x100 in the MODULbus registers */
++struct ican3_dpm_control {
++	/* window address register */
++	u8 window_address;
++	u8 unused1;
++
++	/*
++	 * Read access: clear interrupt from microcontroller
++	 * Write access: send interrupt to microcontroller
++	 */
++	u8 interrupt;
++	u8 unused2;
++
++	/* write-only: reset all hardware on the module */
++	u8 hwreset;
++	u8 unused3;
++
++	/* write-only: generate an interrupt to the TPU */
++	u8 tpuinterrupt;
++};
++
++struct ican3_dev {
++
++	/* must be the first member */
++	struct can_priv can;
++
++	/* CAN network device */
++	struct net_device *ndev;
++	struct napi_struct napi;
++
++	/* Device for printing */
++	struct device *dev;
++
++	/* module number */
++	unsigned int num;
++
++	/* base address of registers and IRQ */
++	struct janz_cmodio_onboard_regs __iomem *ctrl;
++	struct ican3_dpm_control __iomem *dpmctrl;
++	void __iomem *dpm;
++	int irq;
++
++	/* CAN bus termination status */
++	struct completion termination_comp;
++	bool termination_enabled;
++
++	/* CAN bus error status registers */
++	struct completion buserror_comp;
++	struct can_berr_counter bec;
++
++	/* old and new style host interface */
++	unsigned int iftype;
++
++	/*
++	 * Any function which changes the current DPM page must hold this
++	 * lock while it is performing data accesses. This ensures that the
++	 * function will not be preempted and end up reading data from a
++	 * different DPM page than it expects.
++	 */
++	spinlock_t lock;
++
++	/* new host interface */
++	unsigned int rx_int;
++	unsigned int rx_num;
++	unsigned int tx_num;
++
++	/* fast host interface */
++	unsigned int fastrx_start;
++	unsigned int fastrx_int;
++	unsigned int fastrx_num;
++	unsigned int fasttx_start;
++	unsigned int fasttx_num;
++
++	/* first free DPM page */
++	unsigned int free_page;
++};
++
++struct ican3_msg {
++	u8 control;
++	u8 spec;
++	__le16 len;
++	u8 data[252];
++};
++
++struct ican3_new_desc {
++	u8 control;
++	u8 pointer;
++};
++
++struct ican3_fast_desc {
++	u8 control;
++	u8 command;
++	u8 data[14];
++};
++
++/* write to the window basic address register */
++static inline void ican3_set_page(struct ican3_dev *mod, unsigned int page)
++{
++	BUG_ON(page &gt;= DPM_NUM_PAGES);
++	iowrite8(page, &amp;mod-&gt;dpmctrl-&gt;window_address);
++}
++
++/*
++ * ICAN3 "old-style" host interface
++ */
++
++/*
++ * Recieve a message from the ICAN3 "old-style" firmware interface
++ *
++ * LOCKING: must hold mod-&gt;lock
++ *
++ * returns 0 on success, -ENOMEM when no message exists
++ */
++static int ican3_old_recv_msg(struct ican3_dev *mod, struct ican3_msg *msg)
++{
++	unsigned int mbox, mbox_page;
++	u8 locl, peer, xord;
++
++	/* get the MSYNC registers */
++	ican3_set_page(mod, QUEUE_OLD_CONTROL);
++	peer = ioread8(mod-&gt;dpm + MSYNC_PEER);
++	locl = ioread8(mod-&gt;dpm + MSYNC_LOCL);
++	xord = locl ^ peer;
++
++	if ((xord &amp; MSYNC_RB_MASK) == 0x00) {
++		dev_dbg(mod-&gt;dev, "no mbox for reading\n");
++		return -ENOMEM;
++	}
++
++	/* find the first free mbox to read */
++	if ((xord &amp; MSYNC_RB_MASK) == MSYNC_RB_MASK)
++		mbox = (xord &amp; MSYNC_RBLW) ? MSYNC_RB0 : MSYNC_RB1;
++	else
++		mbox = (xord &amp; MSYNC_RB0) ? MSYNC_RB0 : MSYNC_RB1;
++
++	/* copy the message */
++	mbox_page = (mbox == MSYNC_RB0) ? QUEUE_OLD_RB0 : QUEUE_OLD_RB1;
++	ican3_set_page(mod, mbox_page);
++	memcpy_fromio(msg, mod-&gt;dpm, sizeof(*msg));
++
++	/*
++	 * notify the firmware that the read buffer is available
++	 * for it to fill again
++	 */
++	locl ^= mbox;
++
++	ican3_set_page(mod, QUEUE_OLD_CONTROL);
++	iowrite8(locl, mod-&gt;dpm + MSYNC_LOCL);
++	return 0;
++}
++
++/*
++ * Send a message through the "old-style" firmware interface
++ *
++ * LOCKING: must hold mod-&gt;lock
++ *
++ * returns 0 on success, -ENOMEM when no free space exists
++ */
++static int ican3_old_send_msg(struct ican3_dev *mod, struct ican3_msg *msg)
++{
++	unsigned int mbox, mbox_page;
++	u8 locl, peer, xord;
++
++	/* get the MSYNC registers */
++	ican3_set_page(mod, QUEUE_OLD_CONTROL);
++	peer = ioread8(mod-&gt;dpm + MSYNC_PEER);
++	locl = ioread8(mod-&gt;dpm + MSYNC_LOCL);
++	xord = locl ^ peer;
++
++	if ((xord &amp; MSYNC_WB_MASK) == MSYNC_WB_MASK) {
++		dev_err(mod-&gt;dev, "no mbox for writing\n");
++		return -ENOMEM;
++	}
++
++	/* calculate a free mbox to use */
++	mbox = (xord &amp; MSYNC_WB0) ? MSYNC_WB1 : MSYNC_WB0;
++
++	/* copy the message to the DPM */
++	mbox_page = (mbox == MSYNC_WB0) ? QUEUE_OLD_WB0 : QUEUE_OLD_WB1;
++	ican3_set_page(mod, mbox_page);
++	memcpy_toio(mod-&gt;dpm, msg, sizeof(*msg));
++
++	locl ^= mbox;
++	if (mbox == MSYNC_WB1)
++		locl |= MSYNC_WBLW;
++
++	ican3_set_page(mod, QUEUE_OLD_CONTROL);
++	iowrite8(locl, mod-&gt;dpm + MSYNC_LOCL);
++	return 0;
++}
++
++/*
++ * ICAN3 "new-style" Host Interface Setup
++ */
++
++static void __devinit ican3_init_new_host_interface(struct ican3_dev *mod)
++{
++	struct ican3_new_desc desc;
++	unsigned long flags;
++	void __iomem *dst;
++	int i;
++
++	spin_lock_irqsave(&amp;mod-&gt;lock, flags);
++
++	/* setup the internal datastructures for RX */
++	mod-&gt;rx_num = 0;
++	mod-&gt;rx_int = 0;
++
++	/* tohost queue descriptors are in page 5 */
++	ican3_set_page(mod, QUEUE_TOHOST);
++	dst = mod-&gt;dpm;
++
++	/* initialize the tohost (rx) queue descriptors: pages 9-24 */
++	for (i = 0; i &lt; ICAN3_NEW_BUFFERS; i++) {
++		desc.control = DESC_INTERRUPT | DESC_LEN(1); /* I L=1 */
++		desc.pointer = mod-&gt;free_page;
++
++		/* set wrap flag on last buffer */
++		if (i == ICAN3_NEW_BUFFERS - 1)
++			desc.control |= DESC_WRAP;
++
++		memcpy_toio(dst, &amp;desc, sizeof(desc));
++		dst += sizeof(desc);
++		mod-&gt;free_page++;
++	}
++
++	/* fromhost (tx) mid queue descriptors are in page 6 */
++	ican3_set_page(mod, QUEUE_FROMHOST_MID);
++	dst = mod-&gt;dpm;
++
++	/* setup the internal datastructures for TX */
++	mod-&gt;tx_num = 0;
++
++	/* initialize the fromhost mid queue descriptors: pages 25-40 */
++	for (i = 0; i &lt; ICAN3_NEW_BUFFERS; i++) {
++		desc.control = DESC_VALID | DESC_LEN(1); /* V L=1 */
++		desc.pointer = mod-&gt;free_page;
++
++		/* set wrap flag on last buffer */
++		if (i == ICAN3_NEW_BUFFERS - 1)
++			desc.control |= DESC_WRAP;
++
++		memcpy_toio(dst, &amp;desc, sizeof(desc));
++		dst += sizeof(desc);
++		mod-&gt;free_page++;
++	}
++
++	/* fromhost hi queue descriptors are in page 7 */
++	ican3_set_page(mod, QUEUE_FROMHOST_HIGH);
++	dst = mod-&gt;dpm;
++
++	/* initialize only a single buffer in the fromhost hi queue (unused) */
++	desc.control = DESC_VALID | DESC_WRAP | DESC_LEN(1); /* VW L=1 */
++	desc.pointer = mod-&gt;free_page;
++	memcpy_toio(dst, &amp;desc, sizeof(desc));
++	mod-&gt;free_page++;
++
++	/* fromhost low queue descriptors are in page 8 */
++	ican3_set_page(mod, QUEUE_FROMHOST_LOW);
++	dst = mod-&gt;dpm;
++
++	/* initialize only a single buffer in the fromhost low queue (unused) */
++	desc.control = DESC_VALID | DESC_WRAP | DESC_LEN(1); /* VW L=1 */
++	desc.pointer = mod-&gt;free_page;
++	memcpy_toio(dst, &amp;desc, sizeof(desc));
++	mod-&gt;free_page++;
++
++	spin_unlock_irqrestore(&amp;mod-&gt;lock, flags);
++}
++
++/*
++ * ICAN3 Fast Host Interface Setup
++ */
++
++static void __devinit ican3_init_fast_host_interface(struct ican3_dev *mod)
++{
++	struct ican3_fast_desc desc;
++	unsigned long flags;
++	unsigned int addr;
++	void __iomem *dst;
++	int i;
++
++	spin_lock_irqsave(&amp;mod-&gt;lock, flags);
++
++	/* save the start recv page */
++	mod-&gt;fastrx_start = mod-&gt;free_page;
++	mod-&gt;fastrx_num = 0;
++	mod-&gt;fastrx_int = 0;
++
++	/* build a single fast tohost queue descriptor */
++	memset(&amp;desc, 0, sizeof(desc));
++	desc.control = 0x00;
++	desc.command = 1;
++
++	/* build the tohost queue descriptor ring in memory */
++	addr = 0;
++	for (i = 0; i &lt; ICAN3_RX_BUFFERS; i++) {
++
++		/* set the wrap bit on the last buffer */
++		if (i == ICAN3_RX_BUFFERS - 1)
++			desc.control |= DESC_WRAP;
++
++		/* switch to the correct page */
++		ican3_set_page(mod, mod-&gt;free_page);
++
++		/* copy the descriptor to the DPM */
++		dst = mod-&gt;dpm + addr;
++		memcpy_toio(dst, &amp;desc, sizeof(desc));
++		addr += sizeof(desc);
++
++		/* move to the next page if necessary */
++		if (addr &gt;= DPM_PAGE_SIZE) {
++			addr = 0;
++			mod-&gt;free_page++;
++		}
++	}
++
++	/* make sure we page-align the next queue */
++	if (addr != 0)
++		mod-&gt;free_page++;
++
++	/* save the start xmit page */
++	mod-&gt;fasttx_start = mod-&gt;free_page;
++	mod-&gt;fasttx_num = 0;
++
++	/* build a single fast fromhost queue descriptor */
++	memset(&amp;desc, 0, sizeof(desc));
++	desc.control = DESC_VALID;
++	desc.command = 1;
++
++	/* build the fromhost queue descriptor ring in memory */
++	addr = 0;
++	for (i = 0; i &lt; ICAN3_TX_BUFFERS; i++) {
++
++		/* set the wrap bit on the last buffer */
++		if (i == ICAN3_TX_BUFFERS - 1)
++			desc.control |= DESC_WRAP;
++
++		/* switch to the correct page */
++		ican3_set_page(mod, mod-&gt;free_page);
++
++		/* copy the descriptor to the DPM */
++		dst = mod-&gt;dpm + addr;
++		memcpy_toio(dst, &amp;desc, sizeof(desc));
++		addr += sizeof(desc);
++
++		/* move to the next page if necessary */
++		if (addr &gt;= DPM_PAGE_SIZE) {
++			addr = 0;
++			mod-&gt;free_page++;
++		}
++	}
++
++	spin_unlock_irqrestore(&amp;mod-&gt;lock, flags);
++}
++
++/*
++ * ICAN3 "new-style" Host Interface Message Helpers
++ */
++
++/*
++ * LOCKING: must hold mod-&gt;lock
++ */
++static int ican3_new_send_msg(struct ican3_dev *mod, struct ican3_msg *msg)
++{
++	struct ican3_new_desc desc;
++	void __iomem *desc_addr = mod-&gt;dpm + (mod-&gt;tx_num * sizeof(desc));
++
++	/* switch to the fromhost mid queue, and read the buffer descriptor */
++	ican3_set_page(mod, QUEUE_FROMHOST_MID);
++	memcpy_fromio(&amp;desc, desc_addr, sizeof(desc));
++
++	if (!(desc.control &amp; DESC_VALID)) {
++		dev_dbg(mod-&gt;dev, "%s: no free buffers\n", __func__);
++		return -ENOMEM;
++	}
++
++	/* switch to the data page, copy the data */
++	ican3_set_page(mod, desc.pointer);
++	memcpy_toio(mod-&gt;dpm, msg, sizeof(*msg));
++
++	/* switch back to the descriptor, set the valid bit, write it back */
++	ican3_set_page(mod, QUEUE_FROMHOST_MID);
++	desc.control ^= DESC_VALID;
++	memcpy_toio(desc_addr, &amp;desc, sizeof(desc));
++
++	/* update the tx number */
++	mod-&gt;tx_num = (desc.control &amp; DESC_WRAP) ? 0 : (mod-&gt;tx_num + 1);
++	return 0;
++}
++
++/*
++ * LOCKING: must hold mod-&gt;lock
++ */
++static int ican3_new_recv_msg(struct ican3_dev *mod, struct ican3_msg *msg)
++{
++	struct ican3_new_desc desc;
++	void __iomem *desc_addr = mod-&gt;dpm + (mod-&gt;rx_num * sizeof(desc));
++
++	/* switch to the tohost queue, and read the buffer descriptor */
++	ican3_set_page(mod, QUEUE_TOHOST);
++	memcpy_fromio(&amp;desc, desc_addr, sizeof(desc));
++
++	if (!(desc.control &amp; DESC_VALID)) {
++		dev_dbg(mod-&gt;dev, "%s: no buffers to recv\n", __func__);
++		return -ENOMEM;
++	}
++
++	/* switch to the data page, copy the data */
++	ican3_set_page(mod, desc.pointer);
++	memcpy_fromio(msg, mod-&gt;dpm, sizeof(*msg));
++
++	/* switch back to the descriptor, toggle the valid bit, write it back */
++	ican3_set_page(mod, QUEUE_TOHOST);
++	desc.control ^= DESC_VALID;
++	memcpy_toio(desc_addr, &amp;desc, sizeof(desc));
++
++	/* update the rx number */
++	mod-&gt;rx_num = (desc.control &amp; DESC_WRAP) ? 0 : (mod-&gt;rx_num + 1);
++	return 0;
++}
++
++/*
++ * Message Send / Recv Helpers
++ */
++
++static int ican3_send_msg(struct ican3_dev *mod, struct ican3_msg *msg)
++{
++	unsigned long flags;
++	int ret;
++
++	spin_lock_irqsave(&amp;mod-&gt;lock, flags);
++
++	if (mod-&gt;iftype == 0)
++		ret = ican3_old_send_msg(mod, msg);
++	else
++		ret = ican3_new_send_msg(mod, msg);
++
++	spin_unlock_irqrestore(&amp;mod-&gt;lock, flags);
++	return ret;
++}
++
++static int ican3_recv_msg(struct ican3_dev *mod, struct ican3_msg *msg)
++{
++	unsigned long flags;
++	int ret;
++
++	spin_lock_irqsave(&amp;mod-&gt;lock, flags);
++
++	if (mod-&gt;iftype == 0)
++		ret = ican3_old_recv_msg(mod, msg);
++	else
++		ret = ican3_new_recv_msg(mod, msg);
++
++	spin_unlock_irqrestore(&amp;mod-&gt;lock, flags);
++	return ret;
++}
++
++/*
++ * Quick Pre-constructed Messages
++ */
++
++static int __devinit ican3_msg_connect(struct ican3_dev *mod)
++{
++	struct ican3_msg msg;
++
++	memset(&amp;msg, 0, sizeof(msg));
++	msg.spec = MSG_CONNECTI;
++	msg.len = cpu_to_le16(0);
++
++	return ican3_send_msg(mod, &amp;msg);
++}
++
++static int __devexit ican3_msg_disconnect(struct ican3_dev *mod)
++{
++	struct ican3_msg msg;
++
++	memset(&amp;msg, 0, sizeof(msg));
++	msg.spec = MSG_DISCONNECT;
++	msg.len = cpu_to_le16(0);
++
++	return ican3_send_msg(mod, &amp;msg);
++}
++
++static int __devinit ican3_msg_newhostif(struct ican3_dev *mod)
++{
++	struct ican3_msg msg;
++	int ret;
++
++	memset(&amp;msg, 0, sizeof(msg));
++	msg.spec = MSG_NEWHOSTIF;
++	msg.len = cpu_to_le16(0);
++
++	/* If we're not using the old interface, switching seems bogus */
++	WARN_ON(mod-&gt;iftype != 0);
++
++	ret = ican3_send_msg(mod, &amp;msg);
++	if (ret)
++		return ret;
++
++	/* mark the module as using the new host interface */
++	mod-&gt;iftype = 1;
++	return 0;
++}
++
++static int __devinit ican3_msg_fasthostif(struct ican3_dev *mod)
++{
++	struct ican3_msg msg;
++	unsigned int addr;
++
++	memset(&amp;msg, 0, sizeof(msg));
++	msg.spec = MSG_INITFDPMQUEUE;
++	msg.len = cpu_to_le16(8);
++
++	/* write the tohost queue start address */
++	addr = DPM_PAGE_ADDR(mod-&gt;fastrx_start);
++	msg.data[0] = addr &amp; 0xff;
++	msg.data[1] = (addr &gt;&gt; 8) &amp; 0xff;
++	msg.data[2] = (addr &gt;&gt; 16) &amp; 0xff;
++	msg.data[3] = (addr &gt;&gt; 24) &amp; 0xff;
++
++	/* write the fromhost queue start address */
++	addr = DPM_PAGE_ADDR(mod-&gt;fasttx_start);
++	msg.data[4] = addr &amp; 0xff;
++	msg.data[5] = (addr &gt;&gt; 8) &amp; 0xff;
++	msg.data[6] = (addr &gt;&gt; 16) &amp; 0xff;
++	msg.data[7] = (addr &gt;&gt; 24) &amp; 0xff;
++
++	/* If we're not using the new interface yet, we cannot do this */
++	WARN_ON(mod-&gt;iftype != 1);
++
++	return ican3_send_msg(mod, &amp;msg);
++}
++
++/*
++ * Setup the CAN filter to either accept or reject all
++ * messages from the CAN bus.
++ */
++static int __devinit ican3_set_id_filter(struct ican3_dev *mod, bool accept)
++{
++	struct ican3_msg msg;
++	int ret;
++
++	/* Standard Frame Format */
++	memset(&amp;msg, 0, sizeof(msg));
++	msg.spec = MSG_SETAFILMASK;
++	msg.len = cpu_to_le16(5);
++	msg.data[0] = 0x00; /* IDLo LSB */
++	msg.data[1] = 0x00; /* IDLo MSB */
++	msg.data[2] = 0xff; /* IDHi LSB */
++	msg.data[3] = 0x07; /* IDHi MSB */
++
++	/* accept all frames for fast host if, or reject all frames */
++	msg.data[4] = accept ? SETAFILMASK_FASTIF : SETAFILMASK_REJECT;
++
++	ret = ican3_send_msg(mod, &amp;msg);
++	if (ret)
++		return ret;
++
++	/* Extended Frame Format */
++	memset(&amp;msg, 0, sizeof(msg));
++	msg.spec = MSG_SETAFILMASK;
++	msg.len = cpu_to_le16(13);
++	msg.data[0] = 0;    /* MUX = 0 */
++	msg.data[1] = 0x00; /* IDLo LSB */
++	msg.data[2] = 0x00;
++	msg.data[3] = 0x00;
++	msg.data[4] = 0x20; /* IDLo MSB */
++	msg.data[5] = 0xff; /* IDHi LSB */
++	msg.data[6] = 0xff;
++	msg.data[7] = 0xff;
++	msg.data[8] = 0x3f; /* IDHi MSB */
++
++	/* accept all frames for fast host if, or reject all frames */
++	msg.data[9] = accept ? SETAFILMASK_FASTIF : SETAFILMASK_REJECT;
++
++	return ican3_send_msg(mod, &amp;msg);
++}
++
++/*
++ * Bring the CAN bus online or offline
++ */
++static int ican3_set_bus_state(struct ican3_dev *mod, bool on)
++{
++	struct ican3_msg msg;
++
++	memset(&amp;msg, 0, sizeof(msg));
++	msg.spec = on ? MSG_CONREQ : MSG_COFFREQ;
++	msg.len = cpu_to_le16(0);
++
++	return ican3_send_msg(mod, &amp;msg);
++}
++
++static int ican3_set_termination(struct ican3_dev *mod, bool on)
++{
++	struct ican3_msg msg;
++
++	memset(&amp;msg, 0, sizeof(msg));
++	msg.spec = MSG_HWCONF;
++	msg.len = cpu_to_le16(2);
++	msg.data[0] = 0x00;
++	msg.data[1] = on ? HWCONF_TERMINATE_ON : HWCONF_TERMINATE_OFF;
++
++	return ican3_send_msg(mod, &amp;msg);
++}
++
++static int ican3_send_inquiry(struct ican3_dev *mod, u8 subspec)
++{
++	struct ican3_msg msg;
++
++	memset(&amp;msg, 0, sizeof(msg));
++	msg.spec = MSG_INQUIRY;
++	msg.len = cpu_to_le16(2);
++	msg.data[0] = subspec;
++	msg.data[1] = 0x00;
++
++	return ican3_send_msg(mod, &amp;msg);
++}
++
++static int ican3_set_buserror(struct ican3_dev *mod, u8 quota)
++{
++	struct ican3_msg msg;
++
++	memset(&amp;msg, 0, sizeof(msg));
++	msg.spec = MSG_CCONFREQ;
++	msg.len = cpu_to_le16(2);
++	msg.data[0] = 0x00;
++	msg.data[1] = quota;
++
++	return ican3_send_msg(mod, &amp;msg);
++}
++
++/*
++ * ICAN3 to Linux CAN Frame Conversion
++ */
++
++static void ican3_to_can_frame(struct ican3_dev *mod,
++			       struct ican3_fast_desc *desc,
++			       struct can_frame *cf)
++{
++	if ((desc-&gt;command &amp; ICAN3_CAN_TYPE_MASK) == ICAN3_CAN_TYPE_SFF) {
++		if (desc-&gt;data[1] &amp; ICAN3_SFF_RTR)
++			cf-&gt;can_id |= CAN_RTR_FLAG;
++
++		cf-&gt;can_id |= desc-&gt;data[0] &lt;&lt; 3;
++		cf-&gt;can_id |= (desc-&gt;data[1] &amp; 0xe0) &gt;&gt; 5;
++		cf-&gt;can_dlc = desc-&gt;data[1] &amp; ICAN3_CAN_DLC_MASK;
++		memcpy(cf-&gt;data, &amp;desc-&gt;data[2], sizeof(cf-&gt;data));
++	} else {
++		cf-&gt;can_dlc = desc-&gt;data[0] &amp; ICAN3_CAN_DLC_MASK;
++		if (desc-&gt;data[0] &amp; ICAN3_EFF_RTR)
++			cf-&gt;can_id |= CAN_RTR_FLAG;
++
++		if (desc-&gt;data[0] &amp; ICAN3_EFF) {
++			cf-&gt;can_id |= CAN_EFF_FLAG;
++			cf-&gt;can_id |= desc-&gt;data[2] &lt;&lt; 21; /* 28-21 */
++			cf-&gt;can_id |= desc-&gt;data[3] &lt;&lt; 13; /* 20-13 */
++			cf-&gt;can_id |= desc-&gt;data[4] &lt;&lt; 5;  /* 12-5  */
++			cf-&gt;can_id |= (desc-&gt;data[5] &amp; 0xf8) &gt;&gt; 3;
++		} else {
++			cf-&gt;can_id |= desc-&gt;data[2] &lt;&lt; 3;  /* 10-3  */
++			cf-&gt;can_id |= desc-&gt;data[3] &gt;&gt; 5;  /* 2-0   */
++		}
++
++		memcpy(cf-&gt;data, &amp;desc-&gt;data[6], sizeof(cf-&gt;data));
++	}
++}
++
++static void can_frame_to_ican3(struct ican3_dev *mod,
++			       struct can_frame *cf,
++			       struct ican3_fast_desc *desc)
++{
++	/* clear out any stale data in the descriptor */
++	memset(desc-&gt;data, 0, sizeof(desc-&gt;data));
++
++	/* we always use the extended format, with the ECHO flag set */
++	desc-&gt;command = ICAN3_CAN_TYPE_EFF;
++	desc-&gt;data[0] |= cf-&gt;can_dlc;
++	desc-&gt;data[1] |= ICAN3_ECHO;
++
++	if (cf-&gt;can_id &amp; CAN_RTR_FLAG)
++		desc-&gt;data[0] |= ICAN3_EFF_RTR;
++
++	/* pack the id into the correct places */
++	if (cf-&gt;can_id &amp; CAN_EFF_FLAG) {
++		desc-&gt;data[0] |= ICAN3_EFF;
++		desc-&gt;data[2] = (cf-&gt;can_id &amp; 0x1fe00000) &gt;&gt; 21; /* 28-21 */
++		desc-&gt;data[3] = (cf-&gt;can_id &amp; 0x001fe000) &gt;&gt; 13; /* 20-13 */
++		desc-&gt;data[4] = (cf-&gt;can_id &amp; 0x00001fe0) &gt;&gt; 5;  /* 12-5  */
++		desc-&gt;data[5] = (cf-&gt;can_id &amp; 0x0000001f) &lt;&lt; 3;  /* 4-0   */
++	} else {
++		desc-&gt;data[2] = (cf-&gt;can_id &amp; 0x7F8) &gt;&gt; 3; /* bits 10-3 */
++		desc-&gt;data[3] = (cf-&gt;can_id &amp; 0x007) &lt;&lt; 5; /* bits 2-0  */
++	}
++
++	/* copy the data bits into the descriptor */
++	memcpy(&amp;desc-&gt;data[6], cf-&gt;data, sizeof(cf-&gt;data));
++}
++
++/*
++ * Interrupt Handling
++ */
++
++/*
++ * Handle an ID + Version message response from the firmware. We never generate
++ * this message in production code, but it is very useful when debugging to be
++ * able to display this message.
++ */
++static void ican3_handle_idvers(struct ican3_dev *mod, struct ican3_msg *msg)
++{
++	dev_dbg(mod-&gt;dev, "IDVERS response: %s\n", msg-&gt;data);
++}
++
++static void ican3_handle_msglost(struct ican3_dev *mod, struct ican3_msg *msg)
++{
++	struct net_device *dev = mod-&gt;ndev;
++	struct net_device_stats *stats = &amp;dev-&gt;stats;
++	struct can_frame *cf;
++	struct sk_buff *skb;
++
++	/*
++	 * Report that communication messages with the microcontroller firmware
++	 * are being lost. These are never CAN frames, so we do not generate an
++	 * error frame for userspace
++	 */
++	if (msg-&gt;spec == MSG_MSGLOST) {
++		dev_err(mod-&gt;dev, "lost %d control messages\n", msg-&gt;data[0]);
++		return;
++	}
++
++	/*
++	 * Oops, this indicates that we have lost messages in the fast queue,
++	 * which are exclusively CAN messages. Our driver isn't reading CAN
++	 * frames fast enough.
++	 *
++	 * We'll pretend that the SJA1000 told us that it ran out of buffer
++	 * space, because there is not a better message for this.
++	 */
++	skb = alloc_can_err_skb(dev, &amp;cf);
++	if (skb) {
++		cf-&gt;can_id |= CAN_ERR_CRTL;
++		cf-&gt;data[1] = CAN_ERR_CRTL_RX_OVERFLOW;
++		stats-&gt;rx_errors++;
++		stats-&gt;rx_bytes += cf-&gt;can_dlc;
++		netif_rx(skb);
++	}
++}
++
++/*
++ * Handle CAN Event Indication Messages from the firmware
++ *
++ * The ICAN3 firmware provides the values of some SJA1000 registers when it
++ * generates this message. The code below is largely copied from the
++ * drivers/net/can/sja1000/sja1000.c file, and adapted as necessary
++ */
++static int ican3_handle_cevtind(struct ican3_dev *mod, struct ican3_msg *msg)
++{
++	struct net_device *dev = mod-&gt;ndev;
++	struct net_device_stats *stats = &amp;dev-&gt;stats;
++	enum can_state state = mod-&gt;can.state;
++	u8 status, isrc, rxerr, txerr;
++	struct can_frame *cf;
++	struct sk_buff *skb;
++
++	/* we can only handle the SJA1000 part */
++	if (msg-&gt;data[1] != CEVTIND_CHIP_SJA1000) {
++		dev_err(mod-&gt;dev, "unable to handle errors on non-SJA1000\n");
++		return -ENODEV;
++	}
++
++	/* check the message length for sanity */
++	if (le16_to_cpu(msg-&gt;len) &lt; 6) {
++		dev_err(mod-&gt;dev, "error message too short\n");
++		return -EINVAL;
++	}
++
++	skb = alloc_can_err_skb(dev, &amp;cf);
++	if (skb == NULL)
++		return -ENOMEM;
++
++	isrc = msg-&gt;data[0];
++	status = msg-&gt;data[3];
++	rxerr = msg-&gt;data[4];
++	txerr = msg-&gt;data[5];
++
++	/* data overrun interrupt */
++	if (isrc == CEVTIND_DOI || isrc == CEVTIND_LOST) {
++		dev_dbg(mod-&gt;dev, "data overrun interrupt\n");
++		cf-&gt;can_id |= CAN_ERR_CRTL;
++		cf-&gt;data[1] = CAN_ERR_CRTL_RX_OVERFLOW;
++		stats-&gt;rx_over_errors++;
++		stats-&gt;rx_errors++;
++	}
++
++	/* error warning + passive interrupt */
++	if (isrc == CEVTIND_EI) {
++		dev_dbg(mod-&gt;dev, "error warning + passive interrupt\n");
++		if (status &amp; SR_BS) {
++			state = CAN_STATE_BUS_OFF;
++			cf-&gt;can_id |= CAN_ERR_BUSOFF;
++			can_bus_off(dev);
++		} else if (status &amp; SR_ES) {
++			if (rxerr &gt;= 128 || txerr &gt;= 128)
++				state = CAN_STATE_ERROR_PASSIVE;
++			else
++				state = CAN_STATE_ERROR_WARNING;
++		} else {
++			state = CAN_STATE_ERROR_ACTIVE;
++		}
++	}
++
++	/* bus error interrupt */
++	if (isrc == CEVTIND_BEI) {
++		u8 ecc = msg-&gt;data[2];
++
++		dev_dbg(mod-&gt;dev, "bus error interrupt\n");
++		mod-&gt;can.can_stats.bus_error++;
++		stats-&gt;rx_errors++;
++		cf-&gt;can_id |= CAN_ERR_PROT | CAN_ERR_BUSERROR;
++
++		switch (ecc &amp; ECC_MASK) {
++		case ECC_BIT:
++			cf-&gt;data[2] |= CAN_ERR_PROT_BIT;
++			break;
++		case ECC_FORM:
++			cf-&gt;data[2] |= CAN_ERR_PROT_FORM;
++			break;
++		case ECC_STUFF:
++			cf-&gt;data[2] |= CAN_ERR_PROT_STUFF;
++			break;
++		default:
++			cf-&gt;data[2] |= CAN_ERR_PROT_UNSPEC;
++			cf-&gt;data[3] = ecc &amp; ECC_SEG;
++			break;
++		}
++
++		if ((ecc &amp; ECC_DIR) == 0)
++			cf-&gt;data[2] |= CAN_ERR_PROT_TX;
++
++		cf-&gt;data[6] = txerr;
++		cf-&gt;data[7] = rxerr;
++	}
++
++	if (state != mod-&gt;can.state &amp;&amp; (state == CAN_STATE_ERROR_WARNING ||
++					state == CAN_STATE_ERROR_PASSIVE)) {
++		cf-&gt;can_id |= CAN_ERR_CRTL;
++		if (state == CAN_STATE_ERROR_WARNING) {
++			mod-&gt;can.can_stats.error_warning++;
++			cf-&gt;data[1] = (txerr &gt; rxerr) ?
++				CAN_ERR_CRTL_TX_WARNING :
++				CAN_ERR_CRTL_RX_WARNING;
++		} else {
++			mod-&gt;can.can_stats.error_passive++;
++			cf-&gt;data[1] = (txerr &gt; rxerr) ?
++				CAN_ERR_CRTL_TX_PASSIVE :
++				CAN_ERR_CRTL_RX_PASSIVE;
++		}
++
++		cf-&gt;data[6] = txerr;
++		cf-&gt;data[7] = rxerr;
++	}
++
++	mod-&gt;can.state = state;
++	stats-&gt;rx_errors++;
++	stats-&gt;rx_bytes += cf-&gt;can_dlc;
++	netif_rx(skb);
++	return 0;
++}
++
++static void ican3_handle_inquiry(struct ican3_dev *mod, struct ican3_msg *msg)
++{
++	switch (msg-&gt;data[0]) {
++	case INQUIRY_STATUS:
++	case INQUIRY_EXTENDED:
++		mod-&gt;bec.rxerr = msg-&gt;data[5];
++		mod-&gt;bec.txerr = msg-&gt;data[6];
++		complete(&amp;mod-&gt;buserror_comp);
++		break;
++	case INQUIRY_TERMINATION:
++		mod-&gt;termination_enabled = msg-&gt;data[6] &amp; HWCONF_TERMINATE_ON;
++		complete(&amp;mod-&gt;termination_comp);
++		break;
++	default:
++		dev_err(mod-&gt;dev, "recieved an unknown inquiry response\n");
++		break;
++	}
++}
++
++static void ican3_handle_unknown_message(struct ican3_dev *mod,
++					struct ican3_msg *msg)
++{
++	dev_warn(mod-&gt;dev, "recieved unknown message: spec 0x%.2x length %d\n",
++			   msg-&gt;spec, le16_to_cpu(msg-&gt;len));
++}
++
++/*
++ * Handle a control message from the firmware
++ */
++static void ican3_handle_message(struct ican3_dev *mod, struct ican3_msg *msg)
++{
++	dev_dbg(mod-&gt;dev, "%s: modno %d spec 0x%.2x len %d bytes\n", __func__,
++			   mod-&gt;num, msg-&gt;spec, le16_to_cpu(msg-&gt;len));
++
++	switch (msg-&gt;spec) {
++	case MSG_IDVERS:
++		ican3_handle_idvers(mod, msg);
++		break;
++	case MSG_MSGLOST:
++	case MSG_FMSGLOST:
++		ican3_handle_msglost(mod, msg);
++		break;
++	case MSG_CEVTIND:
++		ican3_handle_cevtind(mod, msg);
++		break;
++	case MSG_INQUIRY:
++		ican3_handle_inquiry(mod, msg);
++		break;
++	default:
++		ican3_handle_unknown_message(mod, msg);
++		break;
++	}
++}
++
++/*
++ * Check that there is room in the TX ring to transmit another skb
++ *
++ * LOCKING: must hold mod-&gt;lock
++ */
++static bool ican3_txok(struct ican3_dev *mod)
++{
++	struct ican3_fast_desc __iomem *desc;
++	u8 control;
++
++	/* copy the control bits of the descriptor */
++	ican3_set_page(mod, mod-&gt;fasttx_start + (mod-&gt;fasttx_num / 16));
++	desc = mod-&gt;dpm + ((mod-&gt;fasttx_num % 16) * sizeof(*desc));
++	control = ioread8(&amp;desc-&gt;control);
++
++	/* if the control bits are not valid, then we have no more space */
++	if (!(control &amp; DESC_VALID))
++		return false;
++
++	return true;
++}
++
++/*
++ * Recieve one CAN frame from the hardware
++ *
++ * This works like the core of a NAPI function, but is intended to be called
++ * from workqueue context instead. This driver already needs a workqueue to
++ * process control messages, so we use the workqueue instead of using NAPI.
++ * This was done to simplify locking.
++ *
++ * CONTEXT: must be called from user context
++ */
++static int ican3_recv_skb(struct ican3_dev *mod)
++{
++	struct net_device *ndev = mod-&gt;ndev;
++	struct net_device_stats *stats = &amp;ndev-&gt;stats;
++	struct ican3_fast_desc desc;
++	void __iomem *desc_addr;
++	struct can_frame *cf;
++	struct sk_buff *skb;
++	unsigned long flags;
++
++	spin_lock_irqsave(&amp;mod-&gt;lock, flags);
++
++	/* copy the whole descriptor */
++	ican3_set_page(mod, mod-&gt;fastrx_start + (mod-&gt;fastrx_num / 16));
++	desc_addr = mod-&gt;dpm + ((mod-&gt;fastrx_num % 16) * sizeof(desc));
++	memcpy_fromio(&amp;desc, desc_addr, sizeof(desc));
++
++	spin_unlock_irqrestore(&amp;mod-&gt;lock, flags);
++
++	/* check that we actually have a CAN frame */
++	if (!(desc.control &amp; DESC_VALID))
++		return -ENOBUFS;
++
++	/* allocate an skb */
++	skb = alloc_can_skb(ndev, &amp;cf);
++	if (unlikely(skb == NULL)) {
++		stats-&gt;rx_dropped++;
++		goto err_noalloc;
++	}
++
++	/* convert the ICAN3 frame into Linux CAN format */
++	ican3_to_can_frame(mod, &amp;desc, cf);
++
++	/* receive the skb, update statistics */
++	netif_receive_skb(skb);
++	stats-&gt;rx_packets++;
++	stats-&gt;rx_bytes += cf-&gt;can_dlc;
++
++err_noalloc:
++	/* toggle the valid bit and return the descriptor to the ring */
++	desc.control ^= DESC_VALID;
++
++	spin_lock_irqsave(&amp;mod-&gt;lock, flags);
++
++	ican3_set_page(mod, mod-&gt;fastrx_start + (mod-&gt;fastrx_num / 16));
++	memcpy_toio(desc_addr, &amp;desc, 1);
++
++	/* update the next buffer pointer */
++	mod-&gt;fastrx_num = (desc.control &amp; DESC_WRAP) ? 0
++						     : (mod-&gt;fastrx_num + 1);
++
++	/* there are still more buffers to process */
++	spin_unlock_irqrestore(&amp;mod-&gt;lock, flags);
++	return 0;
++}
++
++static int ican3_napi(struct napi_struct *napi, int budget)
++{
++	struct ican3_dev *mod = container_of(napi, struct ican3_dev, napi);
++	struct ican3_msg msg;
++	unsigned long flags;
++	int received = 0;
++	int ret;
++
++	/* process all communication messages */
++	while (true) {
++		ret = ican3_recv_msg(mod, &amp;msg);
++		if (ret)
++			break;
++
++		ican3_handle_message(mod, &amp;msg);
++	}
++
++	/* process all CAN frames from the fast interface */
++	while (received &lt; budget) {
++		ret = ican3_recv_skb(mod);
++		if (ret)
++			break;
++
++		received++;
++	}
++
++	/* We have processed all packets that the adapter had, but it
++	 * was less than our budget, stop polling */
++	if (received &lt; budget)
++		napi_complete(napi);
++
++	spin_lock_irqsave(&amp;mod-&gt;lock, flags);
++
++	/* Wake up the transmit queue if necessary */
++	if (netif_queue_stopped(mod-&gt;ndev) &amp;&amp; ican3_txok(mod))
++		netif_wake_queue(mod-&gt;ndev);
++
++	spin_unlock_irqrestore(&amp;mod-&gt;lock, flags);
++
++	/* re-enable interrupt generation */
++	iowrite8(1 &lt;&lt; mod-&gt;num, &amp;mod-&gt;ctrl-&gt;int_enable);
++	return received;
++}
++
++static irqreturn_t ican3_irq(int irq, void *dev_id)
++{
++	struct ican3_dev *mod = dev_id;
++	u8 stat;
++
++	/*
++	 * The interrupt status register on this device reports interrupts
++	 * as zeroes instead of using ones like most other devices
++	 */
++	stat = ioread8(&amp;mod-&gt;ctrl-&gt;int_disable) &amp; (1 &lt;&lt; mod-&gt;num);
++	if (stat == (1 &lt;&lt; mod-&gt;num))
++		return IRQ_NONE;
++
++	/* clear the MODULbus interrupt from the microcontroller */
++	ioread8(&amp;mod-&gt;dpmctrl-&gt;interrupt);
++
++	/* disable interrupt generation, schedule the NAPI poller */
++	iowrite8(1 &lt;&lt; mod-&gt;num, &amp;mod-&gt;ctrl-&gt;int_disable);
++	napi_schedule(&amp;mod-&gt;napi);
++	return IRQ_HANDLED;
++}
++
++/*
++ * Firmware reset, startup, and shutdown
++ */
++
++/*
++ * Reset an ICAN module to its power-on state
++ *
++ * CONTEXT: no network device registered
++ * LOCKING: work function disabled
++ */
++static int ican3_reset_module(struct ican3_dev *mod)
++{
++	u8 val = 1 &lt;&lt; mod-&gt;num;
++	unsigned long start;
++	u8 runold, runnew;
++
++	/* disable interrupts so no more work is scheduled */
++	iowrite8(1 &lt;&lt; mod-&gt;num, &amp;mod-&gt;ctrl-&gt;int_disable);
++
++	/* flush any pending work */
++	flush_scheduled_work();
++
++	/* the first unallocated page in the DPM is #9 */
++	mod-&gt;free_page = DPM_FREE_START;
++
++	ican3_set_page(mod, QUEUE_OLD_CONTROL);
++	runold = ioread8(mod-&gt;dpm + TARGET_RUNNING);
++
++	/* reset the module */
++	iowrite8(val, &amp;mod-&gt;ctrl-&gt;reset_assert);
++	iowrite8(val, &amp;mod-&gt;ctrl-&gt;reset_deassert);
++
++	/* wait until the module has finished resetting and is running */
++	start = jiffies;
++	do {
++		ican3_set_page(mod, QUEUE_OLD_CONTROL);
++		runnew = ioread8(mod-&gt;dpm + TARGET_RUNNING);
++		if (runnew == (runold ^ 0xff))
++			return 0;
++
++		msleep(10);
++	} while (time_before(jiffies, start + HZ / 4));
++
++	dev_err(mod-&gt;dev, "failed to reset CAN module\n");
++	return -ETIMEDOUT;
++}
++
++static void __devexit ican3_shutdown_module(struct ican3_dev *mod)
++{
++	ican3_msg_disconnect(mod);
++	ican3_reset_module(mod);
++}
++
++/*
++ * Startup an ICAN module, bringing it into fast mode
++ */
++static int __devinit ican3_startup_module(struct ican3_dev *mod)
++{
++	int ret;
++
++	ret = ican3_reset_module(mod);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to reset module\n");
++		return ret;
++	}
++
++	/* re-enable interrupts so we can send messages */
++	iowrite8(1 &lt;&lt; mod-&gt;num, &amp;mod-&gt;ctrl-&gt;int_enable);
++
++	ret = ican3_msg_connect(mod);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to connect to module\n");
++		return ret;
++	}
++
++	ican3_init_new_host_interface(mod);
++	ret = ican3_msg_newhostif(mod);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to switch to new-style interface\n");
++		return ret;
++	}
++
++	/* default to "termination on" */
++	ret = ican3_set_termination(mod, true);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to enable termination\n");
++		return ret;
++	}
++
++	/* default to "bus errors enabled" */
++	ret = ican3_set_buserror(mod, ICAN3_BUSERR_QUOTA_MAX);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to set bus-error\n");
++		return ret;
++	}
++
++	ican3_init_fast_host_interface(mod);
++	ret = ican3_msg_fasthostif(mod);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to switch to fast host interface\n");
++		return ret;
++	}
++
++	ret = ican3_set_id_filter(mod, true);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to set acceptance filter\n");
++		return ret;
++	}
++
++	return 0;
++}
++
++/*
++ * CAN Network Device
++ */
++
++static int ican3_open(struct net_device *ndev)
++{
++	struct ican3_dev *mod = netdev_priv(ndev);
++	u8 quota;
++	int ret;
++
++	/* open the CAN layer */
++	ret = open_candev(ndev);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to start CAN layer\n");
++		return ret;
++	}
++
++	/* set the bus error generation state appropriately */
++	if (mod-&gt;can.ctrlmode &amp; CAN_CTRLMODE_BERR_REPORTING)
++		quota = ICAN3_BUSERR_QUOTA_MAX;
++	else
++		quota = 0;
++
++	ret = ican3_set_buserror(mod, quota);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to set bus-error\n");
++		close_candev(ndev);
++		return ret;
++	}
++
++	/* bring the bus online */
++	ret = ican3_set_bus_state(mod, true);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to set bus-on\n");
++		close_candev(ndev);
++		return ret;
++	}
++
++	/* start up the network device */
++	mod-&gt;can.state = CAN_STATE_ERROR_ACTIVE;
++	netif_start_queue(ndev);
++
++	return 0;
++}
++
++static int ican3_stop(struct net_device *ndev)
++{
++	struct ican3_dev *mod = netdev_priv(ndev);
++	int ret;
++
++	/* stop the network device xmit routine */
++	netif_stop_queue(ndev);
++	mod-&gt;can.state = CAN_STATE_STOPPED;
++
++	/* bring the bus offline, stop receiving packets */
++	ret = ican3_set_bus_state(mod, false);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to set bus-off\n");
++		return ret;
++	}
++
++	/* close the CAN layer */
++	close_candev(ndev);
++	return 0;
++}
++
++static int ican3_xmit(struct sk_buff *skb, struct net_device *ndev)
++{
++	struct ican3_dev *mod = netdev_priv(ndev);
++	struct net_device_stats *stats = &amp;ndev-&gt;stats;
++	struct can_frame *cf = (struct can_frame *)skb-&gt;data;
++	struct ican3_fast_desc desc;
++	void __iomem *desc_addr;
++	unsigned long flags;
++
++	spin_lock_irqsave(&amp;mod-&gt;lock, flags);
++
++	/* check that we can actually transmit */
++	if (!ican3_txok(mod)) {
++		dev_err(mod-&gt;dev, "no free descriptors, stopping queue\n");
++		netif_stop_queue(ndev);
++		spin_unlock_irqrestore(&amp;mod-&gt;lock, flags);
++		return NETDEV_TX_BUSY;
++	}
++
++	/* copy the control bits of the descriptor */
++	ican3_set_page(mod, mod-&gt;fasttx_start + (mod-&gt;fasttx_num / 16));
++	desc_addr = mod-&gt;dpm + ((mod-&gt;fasttx_num % 16) * sizeof(desc));
++	memset(&amp;desc, 0, sizeof(desc));
++	memcpy_fromio(&amp;desc, desc_addr, 1);
++
++	/* convert the Linux CAN frame into ICAN3 format */
++	can_frame_to_ican3(mod, cf, &amp;desc);
++
++	/*
++	 * the programming manual says that you must set the IVALID bit, then
++	 * interrupt, then set the valid bit. Quite weird, but it seems to be
++	 * required for this to work
++	 */
++	desc.control |= DESC_IVALID;
++	memcpy_toio(desc_addr, &amp;desc, sizeof(desc));
++
++	/* generate a MODULbus interrupt to the microcontroller */
++	iowrite8(0x01, &amp;mod-&gt;dpmctrl-&gt;interrupt);
++
++	desc.control ^= DESC_VALID;
++	memcpy_toio(desc_addr, &amp;desc, sizeof(desc));
++
++	/* update the next buffer pointer */
++	mod-&gt;fasttx_num = (desc.control &amp; DESC_WRAP) ? 0
++						     : (mod-&gt;fasttx_num + 1);
++
++	/* update statistics */
++	stats-&gt;tx_packets++;
++	stats-&gt;tx_bytes += cf-&gt;can_dlc;
++	kfree_skb(skb);
++
++	/*
++	 * This hardware doesn't have TX-done notifications, so we'll try and
++	 * emulate it the best we can using ECHO skbs. Get the next TX
++	 * descriptor, and see if we have room to send. If not, stop the queue.
++	 * It will be woken when the ECHO skb for the current packet is recv'd.
++	 */
++
++	/* copy the control bits of the descriptor */
++	if (!ican3_txok(mod))
++		netif_stop_queue(ndev);
++
++	spin_unlock_irqrestore(&amp;mod-&gt;lock, flags);
++	return NETDEV_TX_OK;
++}
++
++static const struct net_device_ops ican3_netdev_ops = {
++	.ndo_open	= ican3_open,
++	.ndo_stop	= ican3_stop,
++	.ndo_start_xmit	= ican3_xmit,
++};
++
++/*
++ * Low-level CAN Device
++ */
++
++/* This structure was stolen from drivers/net/can/sja1000/sja1000.c */
++static struct can_bittiming_const ican3_bittiming_const = {
++	.name = DRV_NAME,
++	.tseg1_min = 1,
++	.tseg1_max = 16,
++	.tseg2_min = 1,
++	.tseg2_max = 8,
++	.sjw_max = 4,
++	.brp_min = 1,
++	.brp_max = 64,
++	.brp_inc = 1,
++};
++
++/*
++ * This routine was stolen from drivers/net/can/sja1000/sja1000.c
++ *
++ * The bittiming register command for the ICAN3 just sets the bit timing
++ * registers on the SJA1000 chip directly
++ */
++static int ican3_set_bittiming(struct net_device *ndev)
++{
++	struct ican3_dev *mod = netdev_priv(ndev);
++	struct can_bittiming *bt = &amp;mod-&gt;can.bittiming;
++	struct ican3_msg msg;
++	u8 btr0, btr1;
++
++	btr0 = ((bt-&gt;brp - 1) &amp; 0x3f) | (((bt-&gt;sjw - 1) &amp; 0x3) &lt;&lt; 6);
++	btr1 = ((bt-&gt;prop_seg + bt-&gt;phase_seg1 - 1) &amp; 0xf) |
++		(((bt-&gt;phase_seg2 - 1) &amp; 0x7) &lt;&lt; 4);
++	if (mod-&gt;can.ctrlmode &amp; CAN_CTRLMODE_3_SAMPLES)
++		btr1 |= 0x80;
++
++	memset(&amp;msg, 0, sizeof(msg));
++	msg.spec = MSG_CBTRREQ;
++	msg.len = cpu_to_le16(4);
++	msg.data[0] = 0x00;
++	msg.data[1] = 0x00;
++	msg.data[2] = btr0;
++	msg.data[3] = btr1;
++
++	return ican3_send_msg(mod, &amp;msg);
++}
++
++static int ican3_set_mode(struct net_device *ndev, enum can_mode mode)
++{
++	struct ican3_dev *mod = netdev_priv(ndev);
++	int ret;
++
++	if (mode != CAN_MODE_START)
++		return -ENOTSUPP;
++
++	/* bring the bus online */
++	ret = ican3_set_bus_state(mod, true);
++	if (ret) {
++		dev_err(mod-&gt;dev, "unable to set bus-on\n");
++		return ret;
++	}
++
++	/* start up the network device */
++	mod-&gt;can.state = CAN_STATE_ERROR_ACTIVE;
++
++	if (netif_queue_stopped(ndev))
++		netif_wake_queue(ndev);
++
++	return 0;
++}
++
++static int ican3_get_berr_counter(const struct net_device *ndev,
++				  struct can_berr_counter *bec)
++{
++	struct ican3_dev *mod = netdev_priv(ndev);
++	int ret;
++
++	ret = ican3_send_inquiry(mod, INQUIRY_STATUS);
++	if (ret)
++		return ret;
++
++	ret = wait_for_completion_timeout(&amp;mod-&gt;buserror_comp, HZ);
++	if (ret &lt;= 0) {
++		dev_info(mod-&gt;dev, "%s timed out\n", __func__);
++		return -ETIMEDOUT;
++	}
++
++	bec-&gt;rxerr = mod-&gt;bec.rxerr;
++	bec-&gt;txerr = mod-&gt;bec.txerr;
++	return 0;
++}
++
++/*
++ * Sysfs Attributes
++ */
++
++static ssize_t ican3_sysfs_show_term(struct device *dev,
++				     struct device_attribute *attr,
++				     char *buf)
++{
++	struct ican3_dev *mod = netdev_priv(to_net_dev(dev));
++	int ret;
++
++	ret = ican3_send_inquiry(mod, INQUIRY_TERMINATION);
++	if (ret)
++		return ret;
++
++	ret = wait_for_completion_timeout(&amp;mod-&gt;termination_comp, HZ);
++	if (ret &lt;= 0) {
++		dev_info(mod-&gt;dev, "%s timed out\n", __func__);
++		return -ETIMEDOUT;
++	}
++
++	return snprintf(buf, PAGE_SIZE, "%u\n", mod-&gt;termination_enabled);
++}
++
++static ssize_t ican3_sysfs_set_term(struct device *dev,
++				    struct device_attribute *attr,
++				    const char *buf, size_t count)
++{
++	struct ican3_dev *mod = netdev_priv(to_net_dev(dev));
++	unsigned long enable;
++	int ret;
++
++	if (strict_strtoul(buf, 0, &amp;enable))
++		return -EINVAL;
++
++	ret = ican3_set_termination(mod, enable);
++	if (ret)
++		return ret;
++
++	return count;
++}
++
++static DEVICE_ATTR(termination, S_IWUGO | S_IRUGO, ican3_sysfs_show_term,
++						   ican3_sysfs_set_term);
++
++static struct attribute *ican3_sysfs_attrs[] = {
++	&amp;dev_attr_termination.attr,
++	NULL,
++};
++
++static struct attribute_group ican3_sysfs_attr_group = {
++	.attrs = ican3_sysfs_attrs,
++};
++
++/*
++ * PCI Subsystem
++ */
++
++static int __devinit ican3_probe(struct platform_device *pdev)
++{
++	struct janz_platform_data *pdata;
++	struct net_device *ndev;
++	struct ican3_dev *mod;
++	struct resource *res;
++	struct device *dev;
++	int ret;
++
++	pdata = pdev-&gt;dev.platform_data;
++	if (!pdata)
++		return -ENXIO;
++
++	dev_dbg(&amp;pdev-&gt;dev, "probe: module number %d\n", pdata-&gt;modno);
++
++	/* save the struct device for printing */
++	dev = &amp;pdev-&gt;dev;
++
++	/* allocate the CAN device and private data */
++	ndev = alloc_candev(sizeof(*mod), 0);
++	if (!ndev) {
++		dev_err(dev, "unable to allocate CANdev\n");
++		ret = -ENOMEM;
++		goto out_return;
++	}
++
++	platform_set_drvdata(pdev, ndev);
++	mod = netdev_priv(ndev);
++	mod-&gt;ndev = ndev;
++	mod-&gt;dev = &amp;pdev-&gt;dev;
++	mod-&gt;num = pdata-&gt;modno;
++	netif_napi_add(ndev, &amp;mod-&gt;napi, ican3_napi, ICAN3_RX_BUFFERS);
++	spin_lock_init(&amp;mod-&gt;lock);
++	init_completion(&amp;mod-&gt;termination_comp);
++	init_completion(&amp;mod-&gt;buserror_comp);
++
++	/* setup device-specific sysfs attributes */
++	ndev-&gt;sysfs_groups[0] = &amp;ican3_sysfs_attr_group;
++
++	/* the first unallocated page in the DPM is 9 */
++	mod-&gt;free_page = DPM_FREE_START;
++
++	ndev-&gt;netdev_ops = &amp;ican3_netdev_ops;
++	ndev-&gt;flags |= IFF_ECHO;
++	SET_NETDEV_DEV(ndev, &amp;pdev-&gt;dev);
++
++	mod-&gt;can.clock.freq = ICAN3_CAN_CLOCK;
++	mod-&gt;can.bittiming_const = &amp;ican3_bittiming_const;
++	mod-&gt;can.do_set_bittiming = ican3_set_bittiming;
++	mod-&gt;can.do_set_mode = ican3_set_mode;
++	mod-&gt;can.do_get_berr_counter = ican3_get_berr_counter;
++	mod-&gt;can.ctrlmode_supported = CAN_CTRLMODE_3_SAMPLES
++				    | CAN_CTRLMODE_BERR_REPORTING;
++
++	/* find our IRQ number */
++	mod-&gt;irq = platform_get_irq(pdev, 0);
++	if (mod-&gt;irq &lt; 0) {
++		dev_err(dev, "IRQ line not found\n");
++		ret = -ENODEV;
++		goto out_free_ndev;
++	}
++
++	ndev-&gt;irq = mod-&gt;irq;
++
++	/* get access to the MODULbus registers for this module */
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res) {
++		dev_err(dev, "MODULbus registers not found\n");
++		ret = -ENODEV;
++		goto out_free_ndev;
++	}
++
++	mod-&gt;dpm = ioremap(res-&gt;start, resource_size(res));
++	if (!mod-&gt;dpm) {
++		dev_err(dev, "MODULbus registers not ioremap\n");
++		ret = -ENOMEM;
++		goto out_free_ndev;
++	}
++
++	mod-&gt;dpmctrl = mod-&gt;dpm + DPM_PAGE_SIZE;
++
++	/* get access to the control registers for this module */
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
++	if (!res) {
++		dev_err(dev, "CONTROL registers not found\n");
++		ret = -ENODEV;
++		goto out_iounmap_dpm;
++	}
++
++	mod-&gt;ctrl = ioremap(res-&gt;start, resource_size(res));
++	if (!mod-&gt;ctrl) {
++		dev_err(dev, "CONTROL registers not ioremap\n");
++		ret = -ENOMEM;
++		goto out_iounmap_dpm;
++	}
++
++	/* disable our IRQ, then hookup the IRQ handler */
++	iowrite8(1 &lt;&lt; mod-&gt;num, &amp;mod-&gt;ctrl-&gt;int_disable);
++	ret = request_irq(mod-&gt;irq, ican3_irq, IRQF_SHARED, DRV_NAME, mod);
++	if (ret) {
++		dev_err(dev, "unable to request IRQ\n");
++		goto out_iounmap_ctrl;
++	}
++
++	/* reset and initialize the CAN controller into fast mode */
++	napi_enable(&amp;mod-&gt;napi);
++	ret = ican3_startup_module(mod);
++	if (ret) {
++		dev_err(dev, "%s: unable to start CANdev\n", __func__);
++		goto out_free_irq;
++	}
++
++	/* register with the Linux CAN layer */
++	ret = register_candev(ndev);
++	if (ret) {
++		dev_err(dev, "%s: unable to register CANdev\n", __func__);
++		goto out_free_irq;
++	}
++
++	dev_info(dev, "module %d: registered CAN device\n", pdata-&gt;modno);
++	return 0;
++
++out_free_irq:
++	napi_disable(&amp;mod-&gt;napi);
++	iowrite8(1 &lt;&lt; mod-&gt;num, &amp;mod-&gt;ctrl-&gt;int_disable);
++	free_irq(mod-&gt;irq, mod);
++out_iounmap_ctrl:
++	iounmap(mod-&gt;ctrl);
++out_iounmap_dpm:
++	iounmap(mod-&gt;dpm);
++out_free_ndev:
++	free_candev(ndev);
++out_return:
++	return ret;
++}
++
++static int __devexit ican3_remove(struct platform_device *pdev)
++{
++	struct net_device *ndev = platform_get_drvdata(pdev);
++	struct ican3_dev *mod = netdev_priv(ndev);
++
++	/* unregister the netdevice, stop interrupts */
++	unregister_netdev(ndev);
++	napi_disable(&amp;mod-&gt;napi);
++	iowrite8(1 &lt;&lt; mod-&gt;num, &amp;mod-&gt;ctrl-&gt;int_disable);
++	free_irq(mod-&gt;irq, mod);
++
++	/* put the module into reset */
++	ican3_shutdown_module(mod);
++
++	/* unmap all registers */
++	iounmap(mod-&gt;ctrl);
++	iounmap(mod-&gt;dpm);
++
++	free_candev(ndev);
++
++	return 0;
++}
++
++static struct platform_driver ican3_driver = {
++	.driver		= {
++		.name	= DRV_NAME,
++		.owner	= THIS_MODULE,
++	},
++	.probe		= ican3_probe,
++	.remove		= __devexit_p(ican3_remove),
++};
++
++static int __init ican3_init(void)
++{
++	return platform_driver_register(&amp;ican3_driver);
++}
++
++static void __exit ican3_exit(void)
++{
++	platform_driver_unregister(&amp;ican3_driver);
++}
++
++MODULE_AUTHOR("Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;");
++MODULE_DESCRIPTION("Janz MODULbus VMOD-ICAN3 Driver");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:janz-ican3");
++
++module_init(ican3_init);
++module_exit(ican3_exit);</pre><hr><pre>commit bd3581323cc02aefc79a21780a4ca8c578642892
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Wed Apr 7 09:43:00 2010 +0200
+
+    mfd: Janz CMOD-IO PCI MODULbus Carrier Board support
+    
+    The Janz CMOD-IO PCI MODULbus carrier board is a PCI to MODULbus bridge,
+    which may host many different types of MODULbus daughterboards, including
+    CAN and GPIO controllers.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Reviewed-by: Wolfgang Grandegger &lt;wg@grandegger.com&gt;
+    Signed-off-by: Samuel Ortiz &lt;sameo@linux.intel.com&gt;
+
+diff --git a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
+index 93d0e31c0438..05c137d16b04 100644
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -418,6 +418,16 @@ config MFD_RDC321X
+ 	  southbridge which provides access to GPIOs and Watchdog using the
+ 	  southbridge PCI device configuration space.
+ 
++config MFD_JANZ_CMODIO
++	tristate "Support for Janz CMOD-IO PCI MODULbus Carrier Board"
++	select MFD_CORE
++	depends on PCI
++	help
++	  This is the core driver for the Janz CMOD-IO PCI MODULbus
++	  carrier board. This device is a PCI to MODULbus bridge which may
++	  host many different types of MODULbus daughterboards, including
++	  CAN and GPIO controllers.
++
+ endmenu
+ 
+ menu "Multimedia Capabilities Port drivers"
+diff --git a/drivers/mfd/Makefile b/drivers/mfd/Makefile
+index f177e064b31b..21eff85b288a 100644
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -65,3 +65,4 @@ obj-$(CONFIG_MFD_TIMBERDALE)    += timberdale.o
+ obj-$(CONFIG_PMIC_ADP5520)	+= adp5520.o
+ obj-$(CONFIG_LPC_SCH)		+= lpc_sch.o
+ obj-$(CONFIG_MFD_RDC321X)	+= rdc321x-southbridge.o
++obj-$(CONFIG_MFD_JANZ_CMODIO)	+= janz-cmodio.o
+diff --git a/drivers/mfd/janz-cmodio.c b/drivers/mfd/janz-cmodio.c
+new file mode 100644
+index 000000000000..9ed630799acc
+--- /dev/null
++++ b/drivers/mfd/janz-cmodio.c
+@@ -0,0 +1,304 @@
++/*
++ * Janz CMOD-IO MODULbus Carrier Board PCI Driver
++ *
++ * Copyright (c) 2010 Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
++ *
++ * Lots of inspiration and code was copied from drivers/mfd/sm501.c
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2 of the License, or (at your
++ * option) any later version.
++ */
++
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/module.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/pci.h&gt;
++#include &lt;linux/interrupt.h&gt;
++#include &lt;linux/delay.h&gt;
++#include &lt;linux/platform_device.h&gt;
++#include &lt;linux/mfd/core.h&gt;
++
++#include &lt;linux/mfd/janz.h&gt;
++
++#define DRV_NAME "janz-cmodio"
++
++/* Size of each MODULbus module in PCI BAR4 */
++#define CMODIO_MODULBUS_SIZE	0x200
++
++/* Maximum number of MODULbus modules on a CMOD-IO carrier board */
++#define CMODIO_MAX_MODULES	4
++
++/* Module Parameters */
++static unsigned int num_modules = CMODIO_MAX_MODULES;
++static unsigned char *modules[CMODIO_MAX_MODULES] = {
++	"empty", "empty", "empty", "empty",
++};
++
++module_param_array(modules, charp, &amp;num_modules, S_IRUGO);
++MODULE_PARM_DESC(modules, "MODULbus modules attached to the carrier board");
++
++/* Unique Device Id */
++static unsigned int cmodio_id;
++
++struct cmodio_device {
++	/* Parent PCI device */
++	struct pci_dev *pdev;
++
++	/* PLX control registers */
++	struct janz_cmodio_onboard_regs __iomem *ctrl;
++
++	/* hex switch position */
++	u8 hex;
++
++	/* mfd-core API */
++	struct mfd_cell cells[CMODIO_MAX_MODULES];
++	struct resource resources[3 * CMODIO_MAX_MODULES];
++	struct janz_platform_data pdata[CMODIO_MAX_MODULES];
++};
++
++/*
++ * Subdevices using the mfd-core API
++ */
++
++static int __devinit cmodio_setup_subdevice(struct cmodio_device *priv,
++					    char *name, unsigned int devno,
++					    unsigned int modno)
++{
++	struct janz_platform_data *pdata;
++	struct mfd_cell *cell;
++	struct resource *res;
++	struct pci_dev *pci;
++
++	pci = priv-&gt;pdev;
++	cell = &amp;priv-&gt;cells[devno];
++	res = &amp;priv-&gt;resources[devno * 3];
++	pdata = &amp;priv-&gt;pdata[devno];
++
++	cell-&gt;name = name;
++	cell-&gt;resources = res;
++	cell-&gt;num_resources = 3;
++
++	/* Setup the subdevice ID -- must be unique */
++	cell-&gt;id = cmodio_id++;
++
++	/* Add platform data */
++	pdata-&gt;modno = modno;
++	cell-&gt;platform_data = pdata;
++	cell-&gt;data_size = sizeof(*pdata);
++
++	/* MODULbus registers -- PCI BAR3 is big-endian MODULbus access */
++	res-&gt;flags = IORESOURCE_MEM;
++	res-&gt;parent = &amp;pci-&gt;resource[3];
++	res-&gt;start = pci-&gt;resource[3].start + (CMODIO_MODULBUS_SIZE * modno);
++	res-&gt;end = res-&gt;start + CMODIO_MODULBUS_SIZE - 1;
++	res++;
++
++	/* PLX Control Registers -- PCI BAR4 is interrupt and other registers */
++	res-&gt;flags = IORESOURCE_MEM;
++	res-&gt;parent = &amp;pci-&gt;resource[4];
++	res-&gt;start = pci-&gt;resource[4].start;
++	res-&gt;end = pci-&gt;resource[4].end;
++	res++;
++
++	/*
++	 * IRQ
++	 *
++	 * The start and end fields are used as an offset to the irq_base
++	 * parameter passed into the mfd_add_devices() function call. All
++	 * devices share the same IRQ.
++	 */
++	res-&gt;flags = IORESOURCE_IRQ;
++	res-&gt;parent = NULL;
++	res-&gt;start = 0;
++	res-&gt;end = 0;
++	res++;
++
++	return 0;
++}
++
++/* Probe each submodule using kernel parameters */
++static int __devinit cmodio_probe_submodules(struct cmodio_device *priv)
++{
++	struct pci_dev *pdev = priv-&gt;pdev;
++	unsigned int num_probed = 0;
++	char *name;
++	int i;
++
++	for (i = 0; i &lt; num_modules; i++) {
++		name = modules[i];
++		if (!strcmp(name, "") || !strcmp(name, "empty"))
++			continue;
++
++		dev_dbg(&amp;priv-&gt;pdev-&gt;dev, "MODULbus %d: name %s\n", i, name);
++		cmodio_setup_subdevice(priv, name, num_probed, i);
++		num_probed++;
++	}
++
++	/* print an error message if no modules were probed */
++	if (num_probed == 0) {
++		dev_err(&amp;priv-&gt;pdev-&gt;dev, "no MODULbus modules specified, "
++					  "please set the ``modules'' kernel "
++					  "parameter according to your "
++					  "hardware configuration\n");
++		return -ENODEV;
++	}
++
++	return mfd_add_devices(&amp;pdev-&gt;dev, 0, priv-&gt;cells,
++			       num_probed, NULL, pdev-&gt;irq);
++}
++
++/*
++ * SYSFS Attributes
++ */
++
++static ssize_t mbus_show(struct device *dev, struct device_attribute *attr,
++			 char *buf)
++{
++	struct cmodio_device *priv = dev_get_drvdata(dev);
++
++	return snprintf(buf, PAGE_SIZE, "%x\n", priv-&gt;hex);
++}
++
++static DEVICE_ATTR(modulbus_number, S_IRUGO, mbus_show, NULL);
++
++static struct attribute *cmodio_sysfs_attrs[] = {
++	&amp;dev_attr_modulbus_number.attr,
++	NULL,
++};
++
++static const struct attribute_group cmodio_sysfs_attr_group = {
++	.attrs = cmodio_sysfs_attrs,
++};
++
++/*
++ * PCI Driver
++ */
++
++static int __devinit cmodio_pci_probe(struct pci_dev *dev,
++				      const struct pci_device_id *id)
++{
++	struct cmodio_device *priv;
++	int ret;
++
++	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
++	if (!priv) {
++		dev_err(&amp;dev-&gt;dev, "unable to allocate private data\n");
++		ret = -ENOMEM;
++		goto out_return;
++	}
++
++	pci_set_drvdata(dev, priv);
++	priv-&gt;pdev = dev;
++
++	/* Hardware Initialization */
++	ret = pci_enable_device(dev);
++	if (ret) {
++		dev_err(&amp;dev-&gt;dev, "unable to enable device\n");
++		goto out_free_priv;
++	}
++
++	pci_set_master(dev);
++	ret = pci_request_regions(dev, DRV_NAME);
++	if (ret) {
++		dev_err(&amp;dev-&gt;dev, "unable to request regions\n");
++		goto out_pci_disable_device;
++	}
++
++	/* Onboard configuration registers */
++	priv-&gt;ctrl = pci_ioremap_bar(dev, 4);
++	if (!priv-&gt;ctrl) {
++		dev_err(&amp;dev-&gt;dev, "unable to remap onboard regs\n");
++		ret = -ENOMEM;
++		goto out_pci_release_regions;
++	}
++
++	/* Read the hex switch on the carrier board */
++	priv-&gt;hex = ioread8(&amp;priv-&gt;ctrl-&gt;int_enable);
++
++	/* Add the MODULbus number (hex switch value) to the device's sysfs */
++	ret = sysfs_create_group(&amp;dev-&gt;dev.kobj, &amp;cmodio_sysfs_attr_group);
++	if (ret) {
++		dev_err(&amp;dev-&gt;dev, "unable to create sysfs attributes\n");
++		goto out_unmap_ctrl;
++	}
++
++	/*
++	 * Disable all interrupt lines, each submodule will enable its
++	 * own interrupt line if needed
++	 */
++	iowrite8(0xf, &amp;priv-&gt;ctrl-&gt;int_disable);
++
++	/* Register drivers for all submodules */
++	ret = cmodio_probe_submodules(priv);
++	if (ret) {
++		dev_err(&amp;dev-&gt;dev, "unable to probe submodules\n");
++		goto out_sysfs_remove_group;
++	}
++
++	return 0;
++
++out_sysfs_remove_group:
++	sysfs_remove_group(&amp;dev-&gt;dev.kobj, &amp;cmodio_sysfs_attr_group);
++out_unmap_ctrl:
++	iounmap(priv-&gt;ctrl);
++out_pci_release_regions:
++	pci_release_regions(dev);
++out_pci_disable_device:
++	pci_disable_device(dev);
++out_free_priv:
++	kfree(priv);
++out_return:
++	return ret;
++}
++
++static void __devexit cmodio_pci_remove(struct pci_dev *dev)
++{
++	struct cmodio_device *priv = pci_get_drvdata(dev);
++
++	mfd_remove_devices(&amp;dev-&gt;dev);
++	sysfs_remove_group(&amp;dev-&gt;dev.kobj, &amp;cmodio_sysfs_attr_group);
++	iounmap(priv-&gt;ctrl);
++	pci_release_regions(dev);
++	pci_disable_device(dev);
++	kfree(priv);
++}
++
++#define PCI_VENDOR_ID_JANZ		0x13c3
++
++/* The list of devices that this module will support */
++static DEFINE_PCI_DEVICE_TABLE(cmodio_pci_ids) = {
++	{ PCI_VENDOR_ID_PLX, PCI_DEVICE_ID_PLX_9030, PCI_VENDOR_ID_JANZ, 0x0101 },
++	{ PCI_VENDOR_ID_PLX, PCI_DEVICE_ID_PLX_9050, PCI_VENDOR_ID_JANZ, 0x0100 },
++	{ 0, }
++};
++MODULE_DEVICE_TABLE(pci, cmodio_pci_ids);
++
++static struct pci_driver cmodio_pci_driver = {
++	.name     = DRV_NAME,
++	.id_table = cmodio_pci_ids,
++	.probe    = cmodio_pci_probe,
++	.remove   = __devexit_p(cmodio_pci_remove),
++};
++
++/*
++ * Module Init / Exit
++ */
++
++static int __init cmodio_init(void)
++{
++	return pci_register_driver(&amp;cmodio_pci_driver);
++}
++
++static void __exit cmodio_exit(void)
++{
++	pci_unregister_driver(&amp;cmodio_pci_driver);
++}
++
++MODULE_AUTHOR("Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;");
++MODULE_DESCRIPTION("Janz CMOD-IO PCI MODULbus Carrier Board Driver");
++MODULE_LICENSE("GPL");
++
++module_init(cmodio_init);
++module_exit(cmodio_exit);
+diff --git a/include/linux/mfd/janz.h b/include/linux/mfd/janz.h
+new file mode 100644
+index 000000000000..e9994c469803
+--- /dev/null
++++ b/include/linux/mfd/janz.h
+@@ -0,0 +1,54 @@
++/*
++ * Common Definitions for Janz MODULbus devices
++ *
++ * Copyright (c) 2010 Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2 of the License, or (at your
++ * option) any later version.
++ */
++
++#ifndef JANZ_H
++#define JANZ_H
++
++struct janz_platform_data {
++	/* MODULbus Module Number */
++	unsigned int modno;
++};
++
++/* PLX bridge chip onboard registers */
++struct janz_cmodio_onboard_regs {
++	u8 unused1;
++
++	/*
++	 * Read access: interrupt status
++	 * Write access: interrupt disable
++	 */
++	u8 int_disable;
++	u8 unused2;
++
++	/*
++	 * Read access: MODULbus number (hex switch)
++	 * Write access: interrupt enable
++	 */
++	u8 int_enable;
++	u8 unused3;
++
++	/* write-only */
++	u8 reset_assert;
++	u8 unused4;
++
++	/* write-only */
++	u8 reset_deassert;
++	u8 unused5;
++
++	/* read-write access to serial EEPROM */
++	u8 eep;
++	u8 unused6;
++
++	/* write-only access to EEPROM chip select */
++	u8 enid;
++};
++
++#endif /* JANZ_H */</pre><hr><pre>commit df16dd53c575d0cb9dbee20a3149927c862a9ff6
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Thu May 27 19:59:02 2010 +0200
+
+    hwmon: (ltc4245) Read only one GPIO pin
+    
+    Read only one of the GPIO pins as an analog voltage. The ADC can be
+    switched to a different GPIO pin at runtime, but this is not supported.
+    
+    Previously, this driver would report the analog voltage of the currently
+    selected GPIO pin as all three GPIO voltages: in9_input, in10_input and
+    in11_input.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Jean Delvare &lt;khali@linux-fr.org&gt;
+    Cc: stable@kernel.org
+
+diff --git a/Documentation/hwmon/ltc4245 b/Documentation/hwmon/ltc4245
+index 02838a47d862..86b5880d8502 100644
+--- a/Documentation/hwmon/ltc4245
++++ b/Documentation/hwmon/ltc4245
+@@ -72,9 +72,7 @@ in6_min_alarm		5v  output undervoltage alarm
+ in7_min_alarm		3v  output undervoltage alarm
+ in8_min_alarm		Vee (-12v) output undervoltage alarm
+ 
+-in9_input		GPIO #1 voltage data
+-in10_input		GPIO #2 voltage data
+-in11_input		GPIO #3 voltage data
++in9_input		GPIO voltage data
+ 
+ power1_input		12v power usage (mW)
+ power2_input		5v  power usage (mW)
+diff --git a/drivers/hwmon/ltc4245.c b/drivers/hwmon/ltc4245.c
+index 65c232a9d0c5..21d201befc2c 100644
+--- a/drivers/hwmon/ltc4245.c
++++ b/drivers/hwmon/ltc4245.c
+@@ -45,9 +45,7 @@ enum ltc4245_cmd {
+ 	LTC4245_VEEIN			= 0x19,
+ 	LTC4245_VEESENSE		= 0x1a,
+ 	LTC4245_VEEOUT			= 0x1b,
+-	LTC4245_GPIOADC1		= 0x1c,
+-	LTC4245_GPIOADC2		= 0x1d,
+-	LTC4245_GPIOADC3		= 0x1e,
++	LTC4245_GPIOADC			= 0x1c,
+ };
+ 
+ struct ltc4245_data {
+@@ -61,7 +59,7 @@ struct ltc4245_data {
+ 	u8 cregs[0x08];
+ 
+ 	/* Voltage registers */
+-	u8 vregs[0x0f];
++	u8 vregs[0x0d];
+ };
+ 
+ static struct ltc4245_data *ltc4245_update_device(struct device *dev)
+@@ -86,7 +84,7 @@ static struct ltc4245_data *ltc4245_update_device(struct device *dev)
+ 				data-&gt;cregs[i] = val;
+ 		}
+ 
+-		/* Read voltage registers -- 0x10 to 0x1f */
++		/* Read voltage registers -- 0x10 to 0x1c */
+ 		for (i = 0; i &lt; ARRAY_SIZE(data-&gt;vregs); i++) {
+ 			val = i2c_smbus_read_byte_data(client, i+0x10);
+ 			if (unlikely(val &lt; 0))
+@@ -128,9 +126,7 @@ static int ltc4245_get_voltage(struct device *dev, u8 reg)
+ 	case LTC4245_VEEOUT:
+ 		voltage = regval * -55;
+ 		break;
+-	case LTC4245_GPIOADC1:
+-	case LTC4245_GPIOADC2:
+-	case LTC4245_GPIOADC3:
++	case LTC4245_GPIOADC:
+ 		voltage = regval * 10;
+ 		break;
+ 	default:
+@@ -297,9 +293,7 @@ LTC4245_ALARM(in7_min_alarm,	(1 &lt;&lt; 2),	LTC4245_FAULT2);
+ LTC4245_ALARM(in8_min_alarm,	(1 &lt;&lt; 3),	LTC4245_FAULT2);
+ 
+ /* GPIO voltages */
+-LTC4245_VOLTAGE(in9_input,			LTC4245_GPIOADC1);
+-LTC4245_VOLTAGE(in10_input,			LTC4245_GPIOADC2);
+-LTC4245_VOLTAGE(in11_input,			LTC4245_GPIOADC3);
++LTC4245_VOLTAGE(in9_input,			LTC4245_GPIOADC);
+ 
+ /* Power Consumption (virtual) */
+ LTC4245_POWER(power1_input,			LTC4245_12VSENSE);
+@@ -342,8 +336,6 @@ static struct attribute *ltc4245_attributes[] = {
+ 	&amp;sensor_dev_attr_in8_min_alarm.dev_attr.attr,
+ 
+ 	&amp;sensor_dev_attr_in9_input.dev_attr.attr,
+-	&amp;sensor_dev_attr_in10_input.dev_attr.attr,
+-	&amp;sensor_dev_attr_in11_input.dev_attr.attr,
+ 
+ 	&amp;sensor_dev_attr_power1_input.dev_attr.attr,
+ 	&amp;sensor_dev_attr_power2_input.dev_attr.attr,</pre><hr><pre>commit d2b847d489ee4e9921bc61f47c3d0e992692fc0f
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Thu May 27 19:58:45 2010 +0200
+
+    hwmon: Add description of the update_rate sysfs attribute
+    
+    The update_rate attribute can be used by drivers to let userspace choose
+    the update rate of the chip, if it is configurable.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Jean Delvare &lt;khali@linux-fr.org&gt;
+
+diff --git a/Documentation/hwmon/sysfs-interface b/Documentation/hwmon/sysfs-interface
+index 3de6b0bcb147..d4e2917c6f18 100644
+--- a/Documentation/hwmon/sysfs-interface
++++ b/Documentation/hwmon/sysfs-interface
+@@ -80,9 +80,9 @@ All entries (except name) are optional, and should only be created in a
+ given driver if the chip has the feature.
+ 
+ 
+-********
+-* Name *
+-********
++*********************
++* Global attributes *
++*********************
+ 
+ name		The chip name.
+ 		This should be a short, lowercase string, not containing
+@@ -91,6 +91,13 @@ name		The chip name.
+ 		I2C devices get this attribute created automatically.
+ 		RO
+ 
++update_rate	The rate at which the chip will update readings.
++		Unit: millisecond
++		RW
++		Some devices have a variable update rate. This attribute
++		can be used to change the update rate to the desired
++		frequency.
++
+ 
+ ************
+ * Voltages *</pre>
+    <div class="pagination">
+        <a href='16_3.html'>&lt;&lt;Prev</a><a href='16.html'>1</a><a href='16_2.html'>2</a><a href='16_3.html'>3</a><span>[4]</span><a href='16_5.html'>5</a><a href='16_6.html'>6</a><a href='16_7.html'>7</a><a href='16_5.html'>Next&gt;&gt;</a>
+    <div>
+</body>

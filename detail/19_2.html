@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Georgia</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Georgia</h1>
+    <div class="pagination">
+        <a href='19.html'>&lt;&lt;Prev</a><a href='19.html'>1</a><span>[2]</span><a href='19_3.html'>3</a><a href='19_4.html'>4</a><a href='19_5.html'>5</a><a href='19_6.html'>6</a><a href='19_3.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 22d11eacc32cab558e2620b6aad55d07e661847c
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Aug 11 15:07:47 2019 -0500
+
+    ixgbe: fix memory leaks
+    
+    In ixgbe_configure_clsu32(), 'jump', 'input', and 'mask' are allocated
+    through kzalloc() respectively in a for loop body. Then,
+    ixgbe_clsu32_build_input() is invoked to build the input. If this process
+    fails, next iteration of the for loop will be executed. However, the
+    allocated 'jump', 'input', and 'mask' are not deallocated on this execution
+    path, leading to memory leaks.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Tested-by: Andrew Bowers &lt;andrewx.bowers@intel.com&gt;
+    Signed-off-by: Jeff Kirsher &lt;jeffrey.t.kirsher@intel.com&gt;
+
+diff --git a/drivers/net/ethernet/intel/ixgbe/ixgbe_main.c b/drivers/net/ethernet/intel/ixgbe/ixgbe_main.c
+index 99df595abfba..95c0827dfd4c 100644
+--- a/drivers/net/ethernet/intel/ixgbe/ixgbe_main.c
++++ b/drivers/net/ethernet/intel/ixgbe/ixgbe_main.c
+@@ -9490,6 +9490,10 @@ static int ixgbe_configure_clsu32(struct ixgbe_adapter *adapter,
+ 				jump-&gt;mat = nexthdr[i].jump;
+ 				adapter-&gt;jump_tables[link_uhtid] = jump;
+ 				break;
++			} else {
++				kfree(mask);
++				kfree(input);
++				kfree(jump);
+ 			}
+ 		}
+ 		return 0;</pre><hr><pre>commit 145a32fe57e3ce195f52611ebadd0df911a56615
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Thu Aug 15 22:50:02 2019 -0500
+
+    airo: fix memory leaks
+    
+    In proc_BSSList_open(), 'file-&gt;private_data' is allocated through kzalloc()
+    and 'data-&gt;rbuffer' is allocated through kmalloc(). In the following
+    execution, if an error occurs, they are not deallocated, leading to memory
+    leaks. To fix this issue, free the allocated memory regions before
+    returning the error.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@codeaurora.org&gt;
+
+diff --git a/drivers/net/wireless/cisco/airo.c b/drivers/net/wireless/cisco/airo.c
+index 9342ffbe1e81..f43c06569ea1 100644
+--- a/drivers/net/wireless/cisco/airo.c
++++ b/drivers/net/wireless/cisco/airo.c
+@@ -5441,11 +5441,18 @@ static int proc_BSSList_open( struct inode *inode, struct file *file ) {
+ 			Cmd cmd;
+ 			Resp rsp;
+ 
+-			if (ai-&gt;flags &amp; FLAG_RADIO_MASK) return -ENETDOWN;
++			if (ai-&gt;flags &amp; FLAG_RADIO_MASK) {
++				kfree(data-&gt;rbuffer);
++				kfree(file-&gt;private_data);
++				return -ENETDOWN;
++			}
+ 			memset(&amp;cmd, 0, sizeof(cmd));
+ 			cmd.cmd=CMD_LISTBSS;
+-			if (down_interruptible(&amp;ai-&gt;sem))
++			if (down_interruptible(&amp;ai-&gt;sem)) {
++				kfree(data-&gt;rbuffer);
++				kfree(file-&gt;private_data);
+ 				return -ERESTARTSYS;
++			}
+ 			issuecommand(ai, &amp;cmd, &amp;rsp);
+ 			up(&amp;ai-&gt;sem);
+ 			data-&gt;readlen = 0;</pre><hr><pre>commit 29b49958cf73b439b17fa29e9a25210809a6c01c
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Tue Aug 20 22:44:19 2019 -0500
+
+    ACPI / PCI: fix acpi_pci_irq_enable() memory leak
+    
+    In acpi_pci_irq_enable(), 'entry' is allocated by kzalloc() in
+    acpi_pci_irq_check_entry() (invoked from acpi_pci_irq_lookup()). However,
+    it is not deallocated if acpi_pci_irq_valid() returns false, leading to a
+    memory leak. To fix this issue, free 'entry' before returning 0.
+    
+    Fixes: e237a5518425 ("x86/ACPI/PCI: Recognize that Interrupt Line 255 means "not connected"")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Rafael J. Wysocki &lt;rafael.j.wysocki@intel.com&gt;
+
+diff --git a/drivers/acpi/pci_irq.c b/drivers/acpi/pci_irq.c
+index d2549ae65e1b..dea8a60e18a4 100644
+--- a/drivers/acpi/pci_irq.c
++++ b/drivers/acpi/pci_irq.c
+@@ -449,8 +449,10 @@ int acpi_pci_irq_enable(struct pci_dev *dev)
+ 		 * No IRQ known to the ACPI subsystem - maybe the BIOS /
+ 		 * driver reported one, then use it. Exit in any case.
+ 		 */
+-		if (!acpi_pci_irq_valid(dev, pin))
++		if (!acpi_pci_irq_valid(dev, pin)) {
++			kfree(entry);
+ 			return 0;
++		}
+ 
+ 		if (acpi_isa_register_gsi(dev))
+ 			dev_warn(&amp;dev-&gt;dev, "PCI INT %c: no GSI\n",</pre><hr><pre>commit 03d1571d9513369c17e6848476763ebbd10ec2cb
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Fri Aug 16 00:08:27 2019 -0500
+
+    ACPI: custom_method: fix memory leaks
+    
+    In cm_write(), 'buf' is allocated through kzalloc(). In the following
+    execution, if an error occurs, 'buf' is not deallocated, leading to memory
+    leaks. To fix this issue, free 'buf' before returning the error.
+    
+    Fixes: 526b4af47f44 ("ACPI: Split out custom_method functionality into an own driver")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Rafael J. Wysocki &lt;rafael.j.wysocki@intel.com&gt;
+
+diff --git a/drivers/acpi/custom_method.c b/drivers/acpi/custom_method.c
+index b2ef4c2ec955..fd66a736621c 100644
+--- a/drivers/acpi/custom_method.c
++++ b/drivers/acpi/custom_method.c
+@@ -49,8 +49,10 @@ static ssize_t cm_write(struct file *file, const char __user * user_buf,
+ 	if ((*ppos &gt; max_size) ||
+ 	    (*ppos + count &gt; max_size) ||
+ 	    (*ppos + count &lt; count) ||
+-	    (count &gt; uncopied_bytes))
++	    (count &gt; uncopied_bytes)) {
++		kfree(buf);
+ 		return -EINVAL;
++	}
+ 
+ 	if (copy_from_user(buf + (*ppos), user_buf, count)) {
+ 		kfree(buf);
+@@ -70,6 +72,7 @@ static ssize_t cm_write(struct file *file, const char __user * user_buf,
+ 		add_taint(TAINT_OVERRIDDEN_ACPI_TABLE, LOCKDEP_NOW_UNRELIABLE);
+ 	}
+ 
++	kfree(buf);
+ 	return count;
+ }
+ </pre><hr><pre>commit e027a2dea5fdde05740a98f571fc2903060559ce
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Mon Aug 19 16:00:02 2019 -0500
+
+    hwmon (coretemp) Fix a memory leak bug
+    
+    In coretemp_init(), 'zone_devices' is allocated through kcalloc().
+    However, it is not deallocated in the following execution if
+    platform_driver_register() fails, leading to a memory leak. To fix this
+    issue, introduce the 'outzone' label to free 'zone_devices' before
+    returning the error.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Link: https://lore.kernel.org/r/1566248402-6538-1-git-send-email-wenwen@cs.uga.edu
+    Signed-off-by: Guenter Roeck &lt;linux@roeck-us.net&gt;
+
+diff --git a/drivers/hwmon/coretemp.c b/drivers/hwmon/coretemp.c
+index fe6618e49dc4..d855c78fb8be 100644
+--- a/drivers/hwmon/coretemp.c
++++ b/drivers/hwmon/coretemp.c
+@@ -736,7 +736,7 @@ static int __init coretemp_init(void)
+ 
+ 	err = platform_driver_register(&amp;coretemp_driver);
+ 	if (err)
+-		return err;
++		goto outzone;
+ 
+ 	err = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "hwmon/coretemp:online",
+ 				coretemp_cpu_online, coretemp_cpu_offline);
+@@ -747,6 +747,7 @@ static int __init coretemp_init(void)
+ 
+ outdrv:
+ 	platform_driver_unregister(&amp;coretemp_driver);
++outzone:
+ 	kfree(zone_devices);
+ 	return err;
+ }</pre><hr><pre>commit 6ca5989e44d3a33710aef8c3f3e8e72156913412
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Aug 18 03:40:04 2019 -0300
+
+    media: ti-vpe: Add cleanup in vpdma_list_cleanup()
+    
+    If an error occurs in this function, no cleanup is executed, leading to
+    memory/resource leaks. To fix this issue, introduce two labels to perform
+    the cleanup work.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/platform/ti-vpe/vpdma.c b/drivers/media/platform/ti-vpe/vpdma.c
+index fd37d79e1619..53d27cd6e10a 100644
+--- a/drivers/media/platform/ti-vpe/vpdma.c
++++ b/drivers/media/platform/ti-vpe/vpdma.c
+@@ -445,23 +445,25 @@ int vpdma_list_cleanup(struct vpdma_data *vpdma, int list_num,
+ 
+ 	ret = vpdma_map_desc_buf(vpdma, &amp;abort_list.buf);
+ 	if (ret)
+-		return ret;
++		goto free_desc;
+ 	ret = vpdma_submit_descs(vpdma, &amp;abort_list, list_num);
+ 	if (ret)
+-		return ret;
++		goto unmap_desc;
+ 
+ 	while (vpdma_list_busy(vpdma, list_num) &amp;&amp; --timeout)
+ 		;
+ 
+ 	if (timeout == 0) {
+ 		dev_err(&amp;vpdma-&gt;pdev-&gt;dev, "Timed out cleaning up VPDMA list\n");
+-		return -EBUSY;
++		ret = -EBUSY;
+ 	}
+ 
++unmap_desc:
+ 	vpdma_unmap_desc_buf(vpdma, &amp;abort_list.buf);
++free_desc:
+ 	vpdma_free_desc_buf(&amp;abort_list.buf);
+ 
+-	return 0;
++	return ret;
+ }
+ EXPORT_SYMBOL(vpdma_list_cleanup);
+ </pre><hr><pre>commit 51d47e578a74c687bd71e462ef7db039ce38a964
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Aug 18 02:58:53 2019 -0300
+
+    media: fdp1: Fix a memory leak bug
+    
+    In fdp1_open(), 'ctx' is allocated through kzalloc(). However, it is not
+    deallocated if v4l2_ctrl_new_std() fails, leading to a memory leak bug. To
+    fix this issue, free 'ctx' before going to the 'done' label.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Reviewed-by: Kieran Bingham &lt;kieran.bingham+renesas@ideasonboard.com&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/platform/rcar_fdp1.c b/drivers/media/platform/rcar_fdp1.c
+index c23ec127c277..cb93a13e1777 100644
+--- a/drivers/media/platform/rcar_fdp1.c
++++ b/drivers/media/platform/rcar_fdp1.c
+@@ -2122,6 +2122,7 @@ static int fdp1_open(struct file *file)
+ 	if (ctx-&gt;hdl.error) {
+ 		ret = ctx-&gt;hdl.error;
+ 		v4l2_ctrl_handler_free(&amp;ctx-&gt;hdl);
++		kfree(ctx);
+ 		goto done;
+ 	}
+ </pre><hr><pre>commit 42e64117d3b4a759013f77bbcf25ab6700e55de7
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Aug 18 02:40:14 2019 -0300
+
+    media: saa7146: add cleanup in hexium_attach()
+    
+    If saa7146_register_device() fails, no cleanup is executed, leading to
+    memory/resource leaks. To fix this issue, perform necessary cleanup work
+    before returning the error.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/pci/saa7146/hexium_gemini.c b/drivers/media/pci/saa7146/hexium_gemini.c
+index dca20a3d98e2..f96226930670 100644
+--- a/drivers/media/pci/saa7146/hexium_gemini.c
++++ b/drivers/media/pci/saa7146/hexium_gemini.c
+@@ -292,6 +292,9 @@ static int hexium_attach(struct saa7146_dev *dev, struct saa7146_pci_extension_d
+ 	ret = saa7146_register_device(&amp;hexium-&gt;video_dev, dev, "hexium gemini", VFL_TYPE_GRABBER);
+ 	if (ret &lt; 0) {
+ 		pr_err("cannot register capture v4l2 device. skipping.\n");
++		saa7146_vv_release(dev);
++		i2c_del_adapter(&amp;hexium-&gt;i2c_adapter);
++		kfree(hexium);
+ 		return ret;
+ 	}
+ </pre><hr><pre>commit 725a28290a53bcc02a3de1c1bf64a416d567b283
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sat Aug 17 03:14:54 2019 -0300
+
+    media: usb: cx231xx-417: fix a memory leak bug
+    
+    In cx231xx_load_firmware(), 'p_buffer' is allocated through vmalloc() to
+    hold the firmware. However, after the usage, it is not deallocated, leading
+    to a memory leak bug.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/usb/cx231xx/cx231xx-417.c b/drivers/media/usb/cx231xx/cx231xx-417.c
+index 30624376679b..6d218a036966 100644
+--- a/drivers/media/usb/cx231xx/cx231xx-417.c
++++ b/drivers/media/usb/cx231xx/cx231xx-417.c
+@@ -1051,6 +1051,7 @@ static int cx231xx_load_firmware(struct cx231xx *dev)
+ 	p_current_fw = p_fw;
+ 	vfree(p_current_fw);
+ 	p_current_fw = NULL;
++	vfree(p_buffer);
+ 	uninitGPIO(dev);
+ 	release_firmware(firmware);
+ 	dprintk(1, "Firmware upload successful.\n");</pre><hr><pre>commit 1c770f0f52dca1a2323c594f01f5ec6f1dddc97f
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sat Aug 17 02:27:46 2019 -0300
+
+    media: cpia2_usb: fix memory leaks
+    
+    In submit_urbs(), 'cam-&gt;sbuf[i].data' is allocated through kmalloc_array().
+    However, it is not deallocated if the following allocation for urbs fails.
+    To fix this issue, free 'cam-&gt;sbuf[i].data' if usb_alloc_urb() fails.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/usb/cpia2/cpia2_usb.c b/drivers/media/usb/cpia2/cpia2_usb.c
+index 17468f7d78ed..3ab80a7b4498 100644
+--- a/drivers/media/usb/cpia2/cpia2_usb.c
++++ b/drivers/media/usb/cpia2/cpia2_usb.c
+@@ -676,6 +676,10 @@ static int submit_urbs(struct camera_data *cam)
+ 		if (!urb) {
+ 			for (j = 0; j &lt; i; j++)
+ 				usb_free_urb(cam-&gt;sbuf[j].urb);
++			for (j = 0; j &lt; NUM_SBUF; j++) {
++				kfree(cam-&gt;sbuf[j].data);
++				cam-&gt;sbuf[j].data = NULL;
++			}
+ 			return -ENOMEM;
+ 		}
+ </pre>
+    <div class="pagination">
+        <a href='19.html'>&lt;&lt;Prev</a><a href='19.html'>1</a><span>[2]</span><a href='19_3.html'>3</a><a href='19_4.html'>4</a><a href='19_5.html'>5</a><a href='19_6.html'>6</a><a href='19_3.html'>Next&gt;&gt;</a>
+    <div>
+</body>

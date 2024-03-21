@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Huazhong University of Science and Technology</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Huazhong University of Science and Technology</h1>
+    <div class="pagination">
+        <a href='17.html'>&lt;&lt;Prev</a><a href='17.html'>1</a><span>[2]</span><a href='17_3.html'>3</a><a href='17_4.html'>4</a><a href='17_5.html'>5</a><a href='17_6.html'>6</a><a href='17_7.html'>7</a><a href='17_3.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 095bb8ba45f28ed15296eb5b7662e03e57d5e34e
+Author: Yi Yingao &lt;m202271736@hust.edu.cn&gt;
+Date:   Tue May 9 16:52:36 2023 +0800
+
+    nvmem: sunplus-ocotp: release otp-&gt;clk before return
+    
+    Smatch reports:
+    drivers/nvmem/sunplus-ocotp.c:205 sp_ocotp_probe()
+    warn: 'otp-&gt;clk' from clk_prepare() not released on lines: 196.
+    
+    In the function sp_ocotp_probe(struct platform_device *pdev), otp-&gt;clk may
+    not be released before return.
+    
+    To fix this issue, using function clk_unprepare() to release otp-&gt;clk.
+    
+    Fixes: 8747ec2e9762 ("nvmem: Add driver for OCOTP in Sunplus SP7021")
+    Signed-off-by: Yi Yingao &lt;m202271736@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Message-ID: &lt;20230509085237.5917-1-m202271736@hust.edu.cn&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/nvmem/sunplus-ocotp.c b/drivers/nvmem/sunplus-ocotp.c
+index 52b928a7a6d5..f85350b17d67 100644
+--- a/drivers/nvmem/sunplus-ocotp.c
++++ b/drivers/nvmem/sunplus-ocotp.c
+@@ -192,9 +192,11 @@ static int sp_ocotp_probe(struct platform_device *pdev)
+ 	sp_ocotp_nvmem_config.dev = dev;
+ 
+ 	nvmem = devm_nvmem_register(dev, &amp;sp_ocotp_nvmem_config);
+-	if (IS_ERR(nvmem))
+-		return dev_err_probe(&amp;pdev-&gt;dev, PTR_ERR(nvmem),
++	if (IS_ERR(nvmem)) {
++		ret = dev_err_probe(&amp;pdev-&gt;dev, PTR_ERR(nvmem),
+ 						"register nvmem device fail\n");
++		goto err;
++	}
+ 
+ 	platform_set_drvdata(pdev, nvmem);
+ 
+@@ -203,6 +205,9 @@ static int sp_ocotp_probe(struct platform_device *pdev)
+ 		(int)OTP_WORD_SIZE, (int)QAC628_OTP_SIZE);
+ 
+ 	return 0;
++err:
++	clk_unprepare(otp-&gt;clk);
++	return ret;
+ }
+ 
+ static const struct of_device_id sp_ocotp_dt_ids[] = {</pre><hr><pre>commit 3db7285e044144fd88a356f5b641b9cd4b231a77
+Author: Bosi Zhang &lt;u201911157@hust.edu.cn&gt;
+Date:   Sat Apr 22 08:43:31 2023 +0000
+
+    clk: mediatek: fix of_iomap memory leak
+    
+    Smatch reports:
+    drivers/clk/mediatek/clk-mtk.c:583 mtk_clk_simple_probe() warn:
+        'base' from of_iomap() not released on lines: 496.
+    
+    This problem was also found in linux-next. In mtk_clk_simple_probe(),
+    base is not released when handling errors
+    if clk_data is not existed, which may cause a leak.
+    So free_base should be added here to release base.
+    
+    Fixes: c58cd0e40ffa ("clk: mediatek: Add mtk_clk_simple_probe() to simplify clock providers")
+    Signed-off-by: Bosi Zhang &lt;u201911157@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230422084331.47198-1-u201911157@hust.edu.cn
+    Signed-off-by: Stephen Boyd &lt;sboyd@kernel.org&gt;
+
+diff --git a/drivers/clk/mediatek/clk-mtk.c b/drivers/clk/mediatek/clk-mtk.c
+index fd2214c3242f..3c50f48e93a7 100644
+--- a/drivers/clk/mediatek/clk-mtk.c
++++ b/drivers/clk/mediatek/clk-mtk.c
+@@ -500,8 +500,10 @@ static int __mtk_clk_simple_probe(struct platform_device *pdev,
+ 	num_clks += mcd-&gt;num_mux_clks + mcd-&gt;num_divider_clks;
+ 
+ 	clk_data = mtk_alloc_clk_data(num_clks);
+-	if (!clk_data)
+-		return -ENOMEM;
++	if (!clk_data) {
++		r = -ENOMEM;
++		goto free_base;
++	}
+ 
+ 	if (mcd-&gt;fixed_clks) {
+ 		r = mtk_clk_register_fixed_clks(mcd-&gt;fixed_clks,
+@@ -599,6 +601,7 @@ static int __mtk_clk_simple_probe(struct platform_device *pdev,
+ 					      mcd-&gt;num_fixed_clks, clk_data);
+ free_data:
+ 	mtk_free_clk_data(clk_data);
++free_base:
+ 	if (mcd-&gt;shared_io &amp;&amp; base)
+ 		iounmap(base);
+ 	return r;</pre><hr><pre>commit 878b02d5f3b56cb090dbe2c70c89273be144087f
+Author: Yuxing Liu &lt;lyx2022@hust.edu.cn&gt;
+Date:   Wed May 3 07:06:07 2023 +0000
+
+    clk: imx: clk-imx8mp: improve error handling in imx8mp_clocks_probe()
+    
+    Replace of_iomap() and kzalloc() with devm_of_iomap() and devm_kzalloc()
+    which can automatically release the related memory when the device
+    or driver is removed or unloaded to avoid potential memory leak.
+    
+    In this case, iounmap(anatop_base) in line 427,433 are removed
+    as manual release is not required.
+    
+    Besides, referring to clk-imx8mq.c, check the return code of
+    of_clk_add_hw_provider, if it returns negtive, print error info
+    and unregister hws, which makes the program more robust.
+    
+    Fixes: 9c140d992676 ("clk: imx: Add support for i.MX8MP clock driver")
+    Signed-off-by: Yuxing Liu &lt;lyx2022@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Reviewed-by: Abel Vesa &lt;abel.vesa@linaro.org&gt;
+    Link: https://lore.kernel.org/r/20230503070607.2462-1-lyx2022@hust.edu.cn
+    Signed-off-by: Abel Vesa &lt;abel.vesa@linaro.org&gt;
+
+diff --git a/drivers/clk/imx/clk-imx8mp.c b/drivers/clk/imx/clk-imx8mp.c
+index f26ae8de4cc6..1469249386dd 100644
+--- a/drivers/clk/imx/clk-imx8mp.c
++++ b/drivers/clk/imx/clk-imx8mp.c
+@@ -414,25 +414,22 @@ static int imx8mp_clocks_probe(struct platform_device *pdev)
+ 	struct device *dev = &amp;pdev-&gt;dev;
+ 	struct device_node *np;
+ 	void __iomem *anatop_base, *ccm_base;
++	int err;
+ 
+ 	np = of_find_compatible_node(NULL, NULL, "fsl,imx8mp-anatop");
+-	anatop_base = of_iomap(np, 0);
++	anatop_base = devm_of_iomap(dev, np, 0, NULL);
+ 	of_node_put(np);
+-	if (WARN_ON(!anatop_base))
+-		return -ENOMEM;
++	if (WARN_ON(IS_ERR(anatop_base)))
++		return PTR_ERR(anatop_base);
+ 
+ 	np = dev-&gt;of_node;
+ 	ccm_base = devm_platform_ioremap_resource(pdev, 0);
+-	if (WARN_ON(IS_ERR(ccm_base))) {
+-		iounmap(anatop_base);
++	if (WARN_ON(IS_ERR(ccm_base)))
+ 		return PTR_ERR(ccm_base);
+-	}
+ 
+-	clk_hw_data = kzalloc(struct_size(clk_hw_data, hws, IMX8MP_CLK_END), GFP_KERNEL);
+-	if (WARN_ON(!clk_hw_data)) {
+-		iounmap(anatop_base);
++	clk_hw_data = devm_kzalloc(dev, struct_size(clk_hw_data, hws, IMX8MP_CLK_END), GFP_KERNEL);
++	if (WARN_ON(!clk_hw_data))
+ 		return -ENOMEM;
+-	}
+ 
+ 	clk_hw_data-&gt;num = IMX8MP_CLK_END;
+ 	hws = clk_hw_data-&gt;hws;
+@@ -722,7 +719,12 @@ static int imx8mp_clocks_probe(struct platform_device *pdev)
+ 
+ 	imx_check_clk_hws(hws, IMX8MP_CLK_END);
+ 
+-	of_clk_add_hw_provider(np, of_clk_hw_onecell_get, clk_hw_data);
++	err = of_clk_add_hw_provider(np, of_clk_hw_onecell_get, clk_hw_data);
++	if (err &lt; 0) {
++		dev_err(dev, "failed to register hws for i.MX8MP\n");
++		imx_unregister_hw_clocks(hws, IMX8MP_CLK_END);
++		return err;
++	}
+ 
+ 	imx_register_uart_clocks();
+ </pre><hr><pre>commit e02ba11b457647050cb16e7cad16cec3c252fade
+Author: Zhanhao Hu &lt;zero12113@hust.edu.cn&gt;
+Date:   Thu Jun 1 03:38:25 2023 +0000
+
+    clk: imx93: fix memory leak and missing unwind goto in imx93_clocks_probe
+    
+    In function probe(), it returns directly without unregistered hws
+    when error occurs.
+    
+    Fix this by adding 'goto unregister_hws;' on line 295 and
+    line 310.
+    
+    Use devm_kzalloc() instead of kzalloc() to automatically
+    free the memory using devm_kfree() when error occurs.
+    
+    Replace of_iomap() with devm_of_iomap() to automatically
+    handle the unused ioremap region and delete 'iounmap(anatop_base);'
+    in unregister_hws.
+    
+    Fixes: 24defbe194b6 ("clk: imx: add i.MX93 clk")
+    Signed-off-by: Zhanhao Hu &lt;zero12113@hust.edu.cn&gt;
+    Reviewed-by: Abel Vesa &lt;abel.vesa@linaro.org&gt;
+    Link: https://lore.kernel.org/r/20230601033825.336558-1-zero12113@hust.edu.cn
+    Signed-off-by: Abel Vesa &lt;abel.vesa@linaro.org&gt;
+
+diff --git a/drivers/clk/imx/clk-imx93.c b/drivers/clk/imx/clk-imx93.c
+index 07b4a043e449..b6c7c2725906 100644
+--- a/drivers/clk/imx/clk-imx93.c
++++ b/drivers/clk/imx/clk-imx93.c
+@@ -264,7 +264,7 @@ static int imx93_clocks_probe(struct platform_device *pdev)
+ 	void __iomem *base, *anatop_base;
+ 	int i, ret;
+ 
+-	clk_hw_data = kzalloc(struct_size(clk_hw_data, hws,
++	clk_hw_data = devm_kzalloc(dev, struct_size(clk_hw_data, hws,
+ 					  IMX93_CLK_END), GFP_KERNEL);
+ 	if (!clk_hw_data)
+ 		return -ENOMEM;
+@@ -288,10 +288,12 @@ static int imx93_clocks_probe(struct platform_device *pdev)
+ 								    "sys_pll_pfd2", 1, 2);
+ 
+ 	np = of_find_compatible_node(NULL, NULL, "fsl,imx93-anatop");
+-	anatop_base = of_iomap(np, 0);
++	anatop_base = devm_of_iomap(dev, np, 0, NULL);
+ 	of_node_put(np);
+-	if (WARN_ON(!anatop_base))
+-		return -ENOMEM;
++	if (WARN_ON(IS_ERR(anatop_base))) {
++		ret = PTR_ERR(base);
++		goto unregister_hws;
++	}
+ 
+ 	clks[IMX93_CLK_ARM_PLL] = imx_clk_fracn_gppll_integer("arm_pll", "osc_24m",
+ 							      anatop_base + 0x1000,
+@@ -304,8 +306,8 @@ static int imx93_clocks_probe(struct platform_device *pdev)
+ 	np = dev-&gt;of_node;
+ 	base = devm_platform_ioremap_resource(pdev, 0);
+ 	if (WARN_ON(IS_ERR(base))) {
+-		iounmap(anatop_base);
+-		return PTR_ERR(base);
++		ret = PTR_ERR(base);
++		goto unregister_hws;
+ 	}
+ 
+ 	for (i = 0; i &lt; ARRAY_SIZE(root_array); i++) {
+@@ -345,7 +347,6 @@ static int imx93_clocks_probe(struct platform_device *pdev)
+ 
+ unregister_hws:
+ 	imx_unregister_hw_clocks(clks, IMX93_CLK_END);
+-	iounmap(anatop_base);
+ 
+ 	return ret;
+ }</pre><hr><pre>commit 188d070de9132667956f5aadd98d2bd87d3eac89
+Author: Hao Luo &lt;m202171776@hust.edu.cn&gt;
+Date:   Tue Apr 11 09:51:07 2023 +0800
+
+    clk: imx: clk-imx8mn: fix memory leak in imx8mn_clocks_probe
+    
+    Use devm_of_iomap() instead of of_iomap() to automatically handle
+    the unused ioremap region.
+    
+    If any error occurs, regions allocated by kzalloc() will leak,
+    but using devm_kzalloc() instead will automatically free the memory
+    using devm_kfree().
+    
+    Fixes: daeb14545514 ("clk: imx: imx8mn: Switch to clk_hw based API")
+    Fixes: 96d6392b54db ("clk: imx: Add support for i.MX8MN clock driver")
+    Signed-off-by: Hao Luo &lt;m202171776@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Reviewed-by: Peng Fan &lt;peng.fan@nxp.com&gt;
+    Link: https://lore.kernel.org/r/20230411015107.2645-1-m202171776@hust.edu.cn
+    Signed-off-by: Abel Vesa &lt;abel.vesa@linaro.org&gt;
+
+diff --git a/drivers/clk/imx/clk-imx8mn.c b/drivers/clk/imx/clk-imx8mn.c
+index 4b23a4648600..4bd1ed11353b 100644
+--- a/drivers/clk/imx/clk-imx8mn.c
++++ b/drivers/clk/imx/clk-imx8mn.c
+@@ -323,7 +323,7 @@ static int imx8mn_clocks_probe(struct platform_device *pdev)
+ 	void __iomem *base;
+ 	int ret;
+ 
+-	clk_hw_data = kzalloc(struct_size(clk_hw_data, hws,
++	clk_hw_data = devm_kzalloc(dev, struct_size(clk_hw_data, hws,
+ 					  IMX8MN_CLK_END), GFP_KERNEL);
+ 	if (WARN_ON(!clk_hw_data))
+ 		return -ENOMEM;
+@@ -340,10 +340,10 @@ static int imx8mn_clocks_probe(struct platform_device *pdev)
+ 	hws[IMX8MN_CLK_EXT4] = imx_get_clk_hw_by_name(np, "clk_ext4");
+ 
+ 	np = of_find_compatible_node(NULL, NULL, "fsl,imx8mn-anatop");
+-	base = of_iomap(np, 0);
++	base = devm_of_iomap(dev, np, 0, NULL);
+ 	of_node_put(np);
+-	if (WARN_ON(!base)) {
+-		ret = -ENOMEM;
++	if (WARN_ON(IS_ERR(base))) {
++		ret = PTR_ERR(base);
+ 		goto unregister_hws;
+ 	}
+ </pre><hr><pre>commit 1b280598ab3bd8a2dc8b96a12530d5b1ee7a8f4a
+Author: Kai Ma &lt;kaima@hust.edu.cn&gt;
+Date:   Tue Apr 18 11:34:51 2023 +0000
+
+    clk: imx: clk-imxrt1050: fix memory leak in imxrt1050_clocks_probe
+    
+    Use devm_of_iomap() instead of of_iomap() to automatically
+    handle the unused ioremap region. If any error occurs, regions allocated by
+    kzalloc() will leak, but using devm_kzalloc() instead will automatically
+    free the memory using devm_kfree().
+    
+    Also, fix error handling of hws by adding unregister_hws label, which
+    unregisters remaining hws when iomap failed.
+    
+    Fixes: 7154b046d8f3 ("clk: imx: Add initial support for i.MXRT1050 clock driver")
+    Signed-off-by: Kai Ma &lt;kaima@hust.edu.cn&gt;
+    Reviewed-by: Peng Fan &lt;peng.fan@nxp.com&gt;
+    Acked-by: Jesse Taube &lt;Mr.Bossman075@gmail.com&gt;
+    Reviewed-by: Abel Vesa &lt;abel.vesa@linaro.org&gt;
+    Link: https://lore.kernel.org/r/20230418113451.151312-1-kaima@hust.edu.cn
+    Signed-off-by: Abel Vesa &lt;abel.vesa@linaro.org&gt;
+
+diff --git a/drivers/clk/imx/clk-imxrt1050.c b/drivers/clk/imx/clk-imxrt1050.c
+index fd5c51fc92c0..08d155feb035 100644
+--- a/drivers/clk/imx/clk-imxrt1050.c
++++ b/drivers/clk/imx/clk-imxrt1050.c
+@@ -42,7 +42,7 @@ static int imxrt1050_clocks_probe(struct platform_device *pdev)
+ 	struct device_node *anp;
+ 	int ret;
+ 
+-	clk_hw_data = kzalloc(struct_size(clk_hw_data, hws,
++	clk_hw_data = devm_kzalloc(dev, struct_size(clk_hw_data, hws,
+ 					  IMXRT1050_CLK_END), GFP_KERNEL);
+ 	if (WARN_ON(!clk_hw_data))
+ 		return -ENOMEM;
+@@ -53,10 +53,12 @@ static int imxrt1050_clocks_probe(struct platform_device *pdev)
+ 	hws[IMXRT1050_CLK_OSC] = imx_get_clk_hw_by_name(np, "osc");
+ 
+ 	anp = of_find_compatible_node(NULL, NULL, "fsl,imxrt-anatop");
+-	pll_base = of_iomap(anp, 0);
++	pll_base = devm_of_iomap(dev, anp, 0, NULL);
+ 	of_node_put(anp);
+-	if (WARN_ON(!pll_base))
+-		return -ENOMEM;
++	if (WARN_ON(IS_ERR(pll_base))) {
++		ret = PTR_ERR(pll_base);
++		goto unregister_hws;
++	}
+ 
+ 	/* Anatop clocks */
+ 	hws[IMXRT1050_CLK_DUMMY] = imx_clk_hw_fixed("dummy", 0UL);
+@@ -104,8 +106,10 @@ static int imxrt1050_clocks_probe(struct platform_device *pdev)
+ 
+ 	/* CCM clocks */
+ 	ccm_base = devm_platform_ioremap_resource(pdev, 0);
+-	if (WARN_ON(IS_ERR(ccm_base)))
+-		return PTR_ERR(ccm_base);
++	if (WARN_ON(IS_ERR(ccm_base))) {
++		ret = PTR_ERR(ccm_base);
++		goto unregister_hws;
++	}
+ 
+ 	hws[IMXRT1050_CLK_ARM_PODF] = imx_clk_hw_divider("arm_podf", "pll1_arm", ccm_base + 0x10, 0, 3);
+ 	hws[IMXRT1050_CLK_PRE_PERIPH_SEL] = imx_clk_hw_mux("pre_periph_sel", ccm_base + 0x18, 18, 2,
+@@ -149,8 +153,12 @@ static int imxrt1050_clocks_probe(struct platform_device *pdev)
+ 	ret = of_clk_add_hw_provider(np, of_clk_hw_onecell_get, clk_hw_data);
+ 	if (ret &lt; 0) {
+ 		dev_err(dev, "Failed to register clks for i.MXRT1050.\n");
+-		imx_unregister_hw_clocks(hws, IMXRT1050_CLK_END);
++		goto unregister_hws;
+ 	}
++	return 0;
++
++unregister_hws:
++	imx_unregister_hw_clocks(hws, IMXRT1050_CLK_END);
+ 	return ret;
+ }
+ static const struct of_device_id imxrt1050_clk_of_match[] = {</pre><hr><pre>commit 342161c11403ea00e9febc16baab1d883d589d04
+Author: Li Yang &lt;lidaxian@hust.edu.cn&gt;
+Date:   Thu Apr 20 22:08:31 2023 +0800
+
+    usb: phy: phy-tahvo: fix memory leak in tahvo_usb_probe()
+    
+    Smatch reports:
+    drivers/usb/phy/phy-tahvo.c: tahvo_usb_probe()
+    warn: missing unwind goto?
+    
+    After geting irq, if ret &lt; 0, it will return without error handling to
+    free memory.
+    Just add error handling to fix this problem.
+    
+    Fixes: 0d45a1373e66 ("usb: phy: tahvo: add IRQ check")
+    Signed-off-by: Li Yang &lt;lidaxian@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230420140832.9110-1-lidaxian@hust.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/phy/phy-tahvo.c b/drivers/usb/phy/phy-tahvo.c
+index 47562d49dfc1..5cac31c6029b 100644
+--- a/drivers/usb/phy/phy-tahvo.c
++++ b/drivers/usb/phy/phy-tahvo.c
+@@ -391,7 +391,7 @@ static int tahvo_usb_probe(struct platform_device *pdev)
+ 
+ 	tu-&gt;irq = ret = platform_get_irq(pdev, 0);
+ 	if (ret &lt; 0)
+-		return ret;
++		goto err_remove_phy;
+ 	ret = request_threaded_irq(tu-&gt;irq, NULL, tahvo_usb_vbus_interrupt,
+ 				   IRQF_ONESHOT,
+ 				   "tahvo-vbus", tu);</pre><hr><pre>commit c60738de85f40b0b9f5cb23c21f9246e5a47908c
+Author: Junyan Ye &lt;yejunyan@hust.edu.cn&gt;
+Date:   Mon May 8 12:36:41 2023 +0800
+
+    PCI: ftpci100: Release the clock resources
+    
+    Smatch reported:
+    1. drivers/pci/controller/pci-ftpci100.c:526 faraday_pci_probe() warn:
+    'clk' from clk_prepare_enable() not released on lines: 442,451,462,478,512,517.
+    2. drivers/pci/controller/pci-ftpci100.c:526 faraday_pci_probe() warn:
+    'p-&gt;bus_clk' from clk_prepare_enable() not released on lines: 451,462,478,512,517.
+    
+    The clock resource is obtained by devm_clk_get(), and then
+    clk_prepare_enable() makes the clock resource ready for use. After that,
+    clk_disable_unprepare() should be called to release the clock resource
+    when it is no longer needed. However, while doing some error handling
+    in faraday_pci_probe(), clk_disable_unprepare() is not called to release
+    clk and p-&gt;bus_clk before returning. These return lines are exactly 442,
+    451, 462, 478, 512, 517.
+    
+    Fix this warning by replacing devm_clk_get() with devm_clk_get_enabled(),
+    which is equivalent to devm_clk_get() + clk_prepare_enable(). And with
+    devm_clk_get_enabled(), the clock will automatically be disabled,
+    unprepared and freed when the device is unbound from the bus.
+    
+    Link: https://lore.kernel.org/r/20230508043641.23807-1-yejunyan@hust.edu.cn
+    Fixes: b3c433efb8a3 ("PCI: faraday: Fix wrong pointer passed to PTR_ERR()")
+    Fixes: 2eeb02b28579 ("PCI: faraday: Add clock handling")
+    Fixes: 783a862563f7 ("PCI: faraday: Use pci_parse_request_of_pci_ranges()")
+    Fixes: d3c68e0a7e34 ("PCI: faraday: Add Faraday Technology FTPCI100 PCI Host Bridge driver")
+    Fixes: f1e8bd21e39e ("PCI: faraday: Convert IRQ masking to raw PCI config accessors")
+    Signed-off-by: Junyan Ye &lt;yejunyan@hust.edu.cn&gt;
+    Signed-off-by: Lorenzo Pieralisi &lt;lpieralisi@kernel.org&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Reviewed-by: Linus Walleij &lt;linus.walleij@linaro.org&gt;
+
+diff --git a/drivers/pci/controller/pci-ftpci100.c b/drivers/pci/controller/pci-ftpci100.c
+index ecd3009df586..6e7981d2ed5e 100644
+--- a/drivers/pci/controller/pci-ftpci100.c
++++ b/drivers/pci/controller/pci-ftpci100.c
+@@ -429,22 +429,12 @@ static int faraday_pci_probe(struct platform_device *pdev)
+ 	p-&gt;dev = dev;
+ 
+ 	/* Retrieve and enable optional clocks */
+-	clk = devm_clk_get(dev, "PCLK");
++	clk = devm_clk_get_enabled(dev, "PCLK");
+ 	if (IS_ERR(clk))
+ 		return PTR_ERR(clk);
+-	ret = clk_prepare_enable(clk);
+-	if (ret) {
+-		dev_err(dev, "could not prepare PCLK\n");
+-		return ret;
+-	}
+-	p-&gt;bus_clk = devm_clk_get(dev, "PCICLK");
++	p-&gt;bus_clk = devm_clk_get_enabled(dev, "PCICLK");
+ 	if (IS_ERR(p-&gt;bus_clk))
+ 		return PTR_ERR(p-&gt;bus_clk);
+-	ret = clk_prepare_enable(p-&gt;bus_clk);
+-	if (ret) {
+-		dev_err(dev, "could not prepare PCICLK\n");
+-		return ret;
+-	}
+ 
+ 	p-&gt;base = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(p-&gt;base))</pre><hr><pre>commit 072210c725c4938682e58236eeeb19a2ddd0b817
+Author: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+Date:   Thu Mar 16 21:32:36 2023 +0800
+
+    wifi: ray_cs: add sanity check on local-&gt;sram/rmem/amem
+    
+    The ray_config uses ray_release as its unified error handling function.
+    However, it does not know if local-&gt;sram/rmem/amem succeeds or not.
+    
+    Fix this by adding sanity check on local-&gt;sram/rmem/amem in the
+    ray_relase.
+    
+    Signed-off-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@kernel.org&gt;
+    Link: https://lore.kernel.org/r/20230316133236.556198-3-dzm91@hust.edu.cn
+
+diff --git a/drivers/net/wireless/legacy/ray_cs.c b/drivers/net/wireless/legacy/ray_cs.c
+index 93eaf3dba6a9..4b53a9c70e7e 100644
+--- a/drivers/net/wireless/legacy/ray_cs.c
++++ b/drivers/net/wireless/legacy/ray_cs.c
+@@ -738,9 +738,12 @@ static void ray_release(struct pcmcia_device *link)
+ 
+ 	del_timer_sync(&amp;local-&gt;timer);
+ 
+-	iounmap(local-&gt;sram);
+-	iounmap(local-&gt;rmem);
+-	iounmap(local-&gt;amem);
++	if (local-&gt;sram)
++		iounmap(local-&gt;sram);
++	if (local-&gt;rmem)
++		iounmap(local-&gt;rmem);
++	if (local-&gt;amem)
++		iounmap(local-&gt;amem);
+ 	pcmcia_disable_device(link);
+ 
+ 	dev_dbg(&amp;link-&gt;dev, "ray_release ending\n");</pre><hr><pre>commit daef020558bc34e8031263aa7cf9e803d709f93a
+Author: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+Date:   Thu Mar 16 21:32:35 2023 +0800
+
+    wifi: ray_cs: remove one redundant del_timer
+    
+    In ray_detach, it and its child function ray_release both call
+    del_timer(_sync) on the same timer.
+    
+    Fix this by removing the del_timer_sync in the ray_detach, and revising
+    the del_timer to del_timer_sync.
+    
+    Signed-off-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@kernel.org&gt;
+    Link: https://lore.kernel.org/r/20230316133236.556198-2-dzm91@hust.edu.cn
+
+diff --git a/drivers/net/wireless/legacy/ray_cs.c b/drivers/net/wireless/legacy/ray_cs.c
+index 38782d4c4694..93eaf3dba6a9 100644
+--- a/drivers/net/wireless/legacy/ray_cs.c
++++ b/drivers/net/wireless/legacy/ray_cs.c
+@@ -328,7 +328,6 @@ static int ray_probe(struct pcmcia_device *p_dev)
+ static void ray_detach(struct pcmcia_device *link)
+ {
+ 	struct net_device *dev;
+-	ray_dev_t *local;
+ 
+ 	dev_dbg(&amp;link-&gt;dev, "ray_detach\n");
+ 
+@@ -337,9 +336,6 @@ static void ray_detach(struct pcmcia_device *link)
+ 
+ 	ray_release(link);
+ 
+-	local = netdev_priv(dev);
+-	del_timer_sync(&amp;local-&gt;timer);
+-
+ 	if (link-&gt;priv) {
+ 		unregister_netdev(dev);
+ 		free_netdev(dev);
+@@ -740,7 +736,7 @@ static void ray_release(struct pcmcia_device *link)
+ 
+ 	dev_dbg(&amp;link-&gt;dev, "ray_release\n");
+ 
+-	del_timer(&amp;local-&gt;timer);
++	del_timer_sync(&amp;local-&gt;timer);
+ 
+ 	iounmap(local-&gt;sram);
+ 	iounmap(local-&gt;rmem);</pre>
+    <div class="pagination">
+        <a href='17.html'>&lt;&lt;Prev</a><a href='17.html'>1</a><span>[2]</span><a href='17_3.html'>3</a><a href='17_4.html'>4</a><a href='17_5.html'>5</a><a href='17_6.html'>6</a><a href='17_7.html'>7</a><a href='17_3.html'>Next&gt;&gt;</a>
+    <div>
+</body>

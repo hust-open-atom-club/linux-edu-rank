@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by New York University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by New York University</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit f4a31a428d0d2fcd52e874b3e63c52de5839bfa0
+Author: Jonathan Singer &lt;jes965@nyu.edu&gt;
+Date:   Wed Apr 26 14:48:54 2023 -0400
+
+    platform/x86: hp-wmi: Add HP Envy special key support
+    
+    Previously, some support for certain keys on the HP keyboard has been
+    added already in commit 3ee5447b2048 ("platform/x86: hp-wmi: Handle Omen
+    Key event"), however this as tested did not allow even the fn+esc key on
+    my HP Envy which uses the same keycode on my HP Envy x360 laptop to work
+    --the keycode rather than being passed in as a separate int from WMI, was
+    being passed in as the event_data for the HPWMI_OMEN_KEY event.
+    
+    This patch, as tested was able to properly get the keycode for fn+esc,
+    and for fn+f12 which is supposed to be a programmable key according to
+    HP's keyboard diagram and is thus mapped to KEY_PROG2. The fn+f8 key
+    combination (mute microphone) was a standard HPWMI_BEZEL_BUTTON key,
+    however it did not previously have an entry in the sparse keymap. This
+    patch preserves the original HPWMI_OMEN_KEY behavior for laptops that
+    use it by only taking the keycode from the event_data only when the
+    event_data is nonzero.
+    
+    Signed-off-by: Jonathan Singer &lt;jes965@nyu.edu&gt;
+    Reviewed-by: Mario Limonciello &lt;mario.limonciello@amd.com&gt;
+    Link: https://lore.kernel.org/r/20230426184852.2100-2-jes965@nyu.edu
+    Reviewed-by: Hans de Goede &lt;hdegoede@redhat.com&gt;
+    Signed-off-by: Hans de Goede &lt;hdegoede@redhat.com&gt;
+
+diff --git a/drivers/platform/x86/hp/hp-wmi.c b/drivers/platform/x86/hp/hp-wmi.c
+index c1b122944df5..2749433b713f 100644
+--- a/drivers/platform/x86/hp/hp-wmi.c
++++ b/drivers/platform/x86/hp/hp-wmi.c
+@@ -223,6 +223,7 @@ static const struct key_entry hp_wmi_keymap[] = {
+ 	{ KE_IGNORE, 0x121a4, }, /* Win Lock Off */
+ 	{ KE_KEY, 0x21a5,  { KEY_PROG2 } }, /* HP Omen Key */
+ 	{ KE_KEY, 0x21a7,  { KEY_FN_ESC } },
++	{ KE_KEY, 0x21a8,  { KEY_PROG2 } }, /* HP Envy x360 programmable key */
+ 	{ KE_KEY, 0x21a9,  { KEY_TOUCHPAD_OFF } },
+ 	{ KE_KEY, 0x121a9, { KEY_TOUCHPAD_ON } },
+ 	{ KE_KEY, 0x231b,  { KEY_HELP } },
+@@ -845,11 +846,20 @@ static void hp_wmi_notify(u32 value, void *context)
+ 	case HPWMI_SMART_ADAPTER:
+ 		break;
+ 	case HPWMI_BEZEL_BUTTON:
+-	case HPWMI_OMEN_KEY:
+ 		key_code = hp_wmi_read_int(HPWMI_HOTKEY_QUERY);
+ 		if (key_code &lt; 0)
+ 			break;
+ 
++		if (!sparse_keymap_report_event(hp_wmi_input_dev,
++						key_code, 1, true))
++			pr_info("Unknown key code - 0x%x\n", key_code);
++		break;
++	case HPWMI_OMEN_KEY:
++		if (event_data) /* Only should be true for HP Omen */
++			key_code = event_data;
++		else
++			key_code = hp_wmi_read_int(HPWMI_HOTKEY_QUERY);
++
+ 		if (!sparse_keymap_report_event(hp_wmi_input_dev,
+ 						key_code, 1, true))
+ 			pr_info("Unknown key code - 0x%x\n", key_code);</pre><hr><pre>commit 604915f1c7b22a9c6ecbd6e16b092cdd5981f21e
+Author: Jonathan Singer &lt;jes965@nyu.edu&gt;
+Date:   Wed Apr 26 14:48:52 2023 -0400
+
+    platform/x86: hp-wmi: Add HP WMI camera switch
+    
+    Previously, when the camera toggle switch was hit, the hp-wmi driver
+    would report an invalid event code. By adding a case for that in the
+    event handling switch statement we can eliminate that error code and
+    enable a framework for potential further kernel handling of that key.
+    This change was tested on my HP Envy x360 15-ey0023dx laptop, but it
+    would likely work for any HP laptop with a camera toggle button. Now
+    we emit an SW_CAMERA_LENS_COVER event, on a device that gets created
+    on the first such event so as to not report incorrectly the state of
+    the camera shutter before we can know its state.
+    
+    Signed-off-by: Jonathan Singer &lt;jes965@nyu.edu&gt;
+    Reviewed-by: Mario Limonciello &lt;mario.limonciello@amd.com&gt;
+    Link: https://lore.kernel.org/r/20230426184852.2100-1-jes965@nyu.edu
+    Reviewed-by: Hans de Goede &lt;hdegoede@redhat.com&gt;
+    Signed-off-by: Hans de Goede &lt;hdegoede@redhat.com&gt;
+
+diff --git a/drivers/platform/x86/hp/hp-wmi.c b/drivers/platform/x86/hp/hp-wmi.c
+index 6364ae262705..c1b122944df5 100644
+--- a/drivers/platform/x86/hp/hp-wmi.c
++++ b/drivers/platform/x86/hp/hp-wmi.c
+@@ -90,6 +90,7 @@ enum hp_wmi_event_ids {
+ 	HPWMI_PEAKSHIFT_PERIOD		= 0x0F,
+ 	HPWMI_BATTERY_CHARGE_PERIOD	= 0x10,
+ 	HPWMI_SANITIZATION_MODE		= 0x17,
++	HPWMI_CAMERA_TOGGLE		= 0x1A,
+ 	HPWMI_OMEN_KEY			= 0x1D,
+ 	HPWMI_SMART_EXPERIENCE_APP	= 0x21,
+ };
+@@ -229,6 +230,7 @@ static const struct key_entry hp_wmi_keymap[] = {
+ };
+ 
+ static struct input_dev *hp_wmi_input_dev;
++static struct input_dev *camera_shutter_input_dev;
+ static struct platform_device *hp_wmi_platform_dev;
+ static struct platform_profile_handler platform_profile_handler;
+ static bool platform_profile_support;
+@@ -740,6 +742,33 @@ static ssize_t postcode_store(struct device *dev, struct device_attribute *attr,
+ 	return count;
+ }
+ 
++static int camera_shutter_input_setup(void)
++{
++	int err;
++
++	camera_shutter_input_dev = input_allocate_device();
++	if (!camera_shutter_input_dev)
++		return -ENOMEM;
++
++	camera_shutter_input_dev-&gt;name = "HP WMI camera shutter";
++	camera_shutter_input_dev-&gt;phys = "wmi/input1";
++	camera_shutter_input_dev-&gt;id.bustype = BUS_HOST;
++
++	__set_bit(EV_SW, camera_shutter_input_dev-&gt;evbit);
++	__set_bit(SW_CAMERA_LENS_COVER, camera_shutter_input_dev-&gt;swbit);
++
++	err = input_register_device(camera_shutter_input_dev);
++	if (err)
++		goto err_free_dev;
++
++	return 0;
++
++ err_free_dev:
++	input_free_device(camera_shutter_input_dev);
++	camera_shutter_input_dev = NULL;
++	return err;
++}
++
+ static DEVICE_ATTR_RO(display);
+ static DEVICE_ATTR_RO(hddtemp);
+ static DEVICE_ATTR_RW(als);
+@@ -867,6 +896,20 @@ static void hp_wmi_notify(u32 value, void *context)
+ 		break;
+ 	case HPWMI_SANITIZATION_MODE:
+ 		break;
++	case HPWMI_CAMERA_TOGGLE:
++		if (!camera_shutter_input_dev)
++			if (camera_shutter_input_setup()) {
++				pr_err("Failed to setup camera shutter input device\n");
++				break;
++			}
++		if (event_data == 0xff)
++			input_report_switch(camera_shutter_input_dev, SW_CAMERA_LENS_COVER, 1);
++		else if (event_data == 0xfe)
++			input_report_switch(camera_shutter_input_dev, SW_CAMERA_LENS_COVER, 0);
++		else
++			pr_warn("Unknown camera shutter state - 0x%x\n", event_data);
++		input_sync(camera_shutter_input_dev);
++		break;
+ 	case HPWMI_SMART_EXPERIENCE_APP:
+ 		break;
+ 	default:
+@@ -1565,6 +1608,9 @@ static void __exit hp_wmi_exit(void)
+ 	if (wmi_has_guid(HPWMI_EVENT_GUID))
+ 		hp_wmi_input_destroy();
+ 
++	if (camera_shutter_input_dev)
++		input_unregister_device(camera_shutter_input_dev);
++
+ 	if (hp_wmi_platform_dev) {
+ 		platform_device_unregister(hp_wmi_platform_dev);
+ 		platform_driver_unregister(&amp;hp_wmi_driver);</pre><hr><pre>commit 7aa92c4229fefff0cab6930cf977f4a0e3e606d8
+Author: Dan Gopstein &lt;dgopstein@nyu.edu&gt;
+Date:   Mon Dec 25 16:16:14 2017 -0500
+
+    media: ABS macro parameter parenthesization
+    
+    Replace usages of the locally defined ABS() macro with calls to the
+    canonical abs() from kernel.h and remove the old definitions of ABS()
+    
+    This change was originally motivated by two local definitions of the
+    ABS (absolute value) macro that fail to parenthesize their parameter
+    properly. This can lead to a bad expansion for low-precedence
+    expression arguments.
+    
+    For example: ABS(1-2) currently expands to ((1-2) &lt; 0 ? (-1-2) : (1-2))
+    which evaluates to -3. But the correct expansion would be
+    ((1-2) &lt; 0 ? -(1-2) : (1-2)) which evaluates to 1.
+    
+    Signed-off-by: Dan Gopstein &lt;dgopstein@nyu.edu&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@s-opensource.com&gt;
+
+diff --git a/drivers/media/dvb-frontends/dib0090.c b/drivers/media/dvb-frontends/dib0090.c
+index 64f49c8eb1fb..ee7af34979ed 100644
+--- a/drivers/media/dvb-frontends/dib0090.c
++++ b/drivers/media/dvb-frontends/dib0090.c
+@@ -1285,7 +1285,7 @@ int dib0090_gain_control(struct dvb_frontend *fe)
+ #endif
+ 
+ 			if (*tune_state == CT_AGC_STEP_1) {	/* quickly go to the correct range of the ADC power */
+-				if (ABS(adc_error) &lt; 50 || state-&gt;agc_step++ &gt; 5) {
++				if (abs(adc_error) &lt; 50 || state-&gt;agc_step++ &gt; 5) {
+ 
+ #ifdef CONFIG_STANDARD_DAB
+ 					if (state-&gt;fe-&gt;dtv_property_cache.delivery_system == STANDARD_DAB) {
+@@ -1754,7 +1754,7 @@ static int dib0090_dc_offset_calibration(struct dib0090_state *state, enum front
+ 			*tune_state = CT_TUNER_STEP_1;
+ 		} else {
+ 			/* the minimum was what we have seen in the step before */
+-			if (ABS(state-&gt;adc_diff) &gt; ABS(state-&gt;min_adc_diff)) {
++			if (abs(state-&gt;adc_diff) &gt; abs(state-&gt;min_adc_diff)) {
+ 				dprintk("Since adc_diff N = %d  &gt; adc_diff step N-1 = %d, Come back one step\n", state-&gt;adc_diff, state-&gt;min_adc_diff);
+ 				state-&gt;step--;
+ 			}
+diff --git a/drivers/media/dvb-frontends/dib7000p.c b/drivers/media/dvb-frontends/dib7000p.c
+index 90ace707a80d..902af482448e 100644
+--- a/drivers/media/dvb-frontends/dib7000p.c
++++ b/drivers/media/dvb-frontends/dib7000p.c
+@@ -809,7 +809,7 @@ static int dib7000p_set_dds(struct dib7000p_state *state, s32 offset_khz)
+ {
+ 	u32 internal = dib7000p_get_internal_freq(state);
+ 	s32 unit_khz_dds_val;
+-	u32 abs_offset_khz = ABS(offset_khz);
++	u32 abs_offset_khz = abs(offset_khz);
+ 	u32 dds = state-&gt;cfg.bw-&gt;ifreq &amp; 0x1ffffff;
+ 	u8 invert = !!(state-&gt;cfg.bw-&gt;ifreq &amp; (1 &lt;&lt; 25));
+ 	if (internal == 0) {
+diff --git a/drivers/media/dvb-frontends/dib8000.c b/drivers/media/dvb-frontends/dib8000.c
+index e64014f338fb..6f35173d2968 100644
+--- a/drivers/media/dvb-frontends/dib8000.c
++++ b/drivers/media/dvb-frontends/dib8000.c
+@@ -2677,7 +2677,7 @@ static void dib8000_viterbi_state(struct dib8000_state *state, u8 onoff)
+ static void dib8000_set_dds(struct dib8000_state *state, s32 offset_khz)
+ {
+ 	s16 unit_khz_dds_val;
+-	u32 abs_offset_khz = ABS(offset_khz);
++	u32 abs_offset_khz = abs(offset_khz);
+ 	u32 dds = state-&gt;cfg.pll-&gt;ifreq &amp; 0x1ffffff;
+ 	u8 invert = !!(state-&gt;cfg.pll-&gt;ifreq &amp; (1 &lt;&lt; 25));
+ 	u8 ratio;
+diff --git a/drivers/media/dvb-frontends/dibx000_common.h b/drivers/media/dvb-frontends/dibx000_common.h
+index 8784af962eba..12b58f5c677d 100644
+--- a/drivers/media/dvb-frontends/dibx000_common.h
++++ b/drivers/media/dvb-frontends/dibx000_common.h
+@@ -223,8 +223,6 @@ struct dvb_frontend_parametersContext {
+ 
+ #define FE_CALLBACK_TIME_NEVER 0xffffffff
+ 
+-#define ABS(x) ((x &lt; 0) ? (-x) : (x))
+-
+ #define DATA_BUS_ACCESS_MODE_8BIT                 0x01
+ #define DATA_BUS_ACCESS_MODE_16BIT                0x02
+ #define DATA_BUS_ACCESS_MODE_NO_ADDRESS_INCREMENT 0x10
+diff --git a/drivers/media/dvb-frontends/mb86a16.c b/drivers/media/dvb-frontends/mb86a16.c
+index 2969ba6ed9e1..377cd984b069 100644
+--- a/drivers/media/dvb-frontends/mb86a16.c
++++ b/drivers/media/dvb-frontends/mb86a16.c
+@@ -31,8 +31,6 @@
+ static unsigned int verbose = 5;
+ module_param(verbose, int, 0644);
+ 
+-#define ABS(x)		((x) &lt; 0 ? (-x) : (x))
+-
+ struct mb86a16_state {
+ 	struct i2c_adapter		*i2c_adap;
+ 	const struct mb86a16_config	*config;
+@@ -1202,12 +1200,12 @@ static int mb86a16_set_fe(struct mb86a16_state *state)
+ 
+ 			signal_dupl = 0;
+ 			for (j = 0; j &lt; prev_freq_num; j++) {
+-				if ((ABS(prev_swp_freq[j] - swp_freq)) &lt; (swp_ofs * 3 / 2)) {
++				if ((abs(prev_swp_freq[j] - swp_freq)) &lt; (swp_ofs * 3 / 2)) {
+ 					signal_dupl = 1;
+ 					dprintk(verbose, MB86A16_INFO, 1, "Probably Duplicate Signal, j = %d", j);
+ 				}
+ 			}
+-			if ((signal_dupl == 0) &amp;&amp; (swp_freq &gt; 0) &amp;&amp; (ABS(swp_freq - state-&gt;frequency * 1000) &lt; fcp + state-&gt;srate / 6)) {
++			if ((signal_dupl == 0) &amp;&amp; (swp_freq &gt; 0) &amp;&amp; (abs(swp_freq - state-&gt;frequency * 1000) &lt; fcp + state-&gt;srate / 6)) {
+ 				dprintk(verbose, MB86A16_DEBUG, 1, "------ Signal detect ------ [swp_freq=[%07d, srate=%05d]]", swp_freq, state-&gt;srate);
+ 				prev_swp_freq[prev_freq_num] = swp_freq;
+ 				prev_freq_num++;
+@@ -1381,7 +1379,7 @@ static int mb86a16_set_fe(struct mb86a16_state *state)
+ 			dprintk(verbose, MB86A16_INFO, 1, "SWEEP Frequency = %d", swp_freq);
+ 			swp_freq += delta_freq;
+ 			dprintk(verbose, MB86A16_INFO, 1, "Adjusting .., DELTA Freq = %d, SWEEP Freq=%d", delta_freq, swp_freq);
+-			if (ABS(state-&gt;frequency * 1000 - swp_freq) &gt; 3800) {
++			if (abs(state-&gt;frequency * 1000 - swp_freq) &gt; 3800) {
+ 				dprintk(verbose, MB86A16_INFO, 1, "NO  --  SIGNAL !");
+ 			} else {
+ 
+diff --git a/drivers/media/dvb-frontends/stv0367_priv.h b/drivers/media/dvb-frontends/stv0367_priv.h
+index 8abc451dd524..460066a391b7 100644
+--- a/drivers/media/dvb-frontends/stv0367_priv.h
++++ b/drivers/media/dvb-frontends/stv0367_priv.h
+@@ -35,7 +35,6 @@
+ #endif
+ 
+ /* MACRO definitions */
+-#define ABS(X) ((X) &lt; 0 ? (-1 * (X)) : (X))
+ #define MAX(X, Y) ((X) &gt;= (Y) ? (X) : (Y))
+ #define MIN(X, Y) ((X) &lt;= (Y) ? (X) : (Y))
+ #define INRANGE(X, Y, Z) \
+diff --git a/drivers/media/dvb-frontends/stv0900_priv.h b/drivers/media/dvb-frontends/stv0900_priv.h
+index d1fc06ff27d3..09a46477eae4 100644
+--- a/drivers/media/dvb-frontends/stv0900_priv.h
++++ b/drivers/media/dvb-frontends/stv0900_priv.h
+@@ -24,7 +24,6 @@
+ 
+ #include &lt;linux/i2c.h&gt;
+ 
+-#define ABS(X) ((X) &lt; 0 ? (-1 * (X)) : (X))
+ #define INRANGE(X, Y, Z) ((((X) &lt;= (Y)) &amp;&amp; ((Y) &lt;= (Z))) \
+ 		|| (((Z) &lt;= (Y)) &amp;&amp; ((Y) &lt;= (X))) ? 1 : 0)
+ 
+diff --git a/drivers/media/dvb-frontends/stv0900_sw.c b/drivers/media/dvb-frontends/stv0900_sw.c
+index c97a39120ea5..d406c83e4744 100644
+--- a/drivers/media/dvb-frontends/stv0900_sw.c
++++ b/drivers/media/dvb-frontends/stv0900_sw.c
+@@ -1255,14 +1255,14 @@ fe_stv0900_signal_type stv0900_get_signal_params(struct dvb_frontend *fe)
+ 		else
+ 			intp-&gt;freq[d] = stv0900_get_tuner_freq(fe);
+ 
+-		if (ABS(offsetFreq) &lt;= ((intp-&gt;srch_range[d] / 2000) + 500))
++		if (abs(offsetFreq) &lt;= ((intp-&gt;srch_range[d] / 2000) + 500))
+ 			range = STV0900_RANGEOK;
+-		else if (ABS(offsetFreq) &lt;=
++		else if (abs(offsetFreq) &lt;=
+ 				(stv0900_carrier_width(result-&gt;symbol_rate,
+ 						result-&gt;rolloff) / 2000))
+ 			range = STV0900_RANGEOK;
+ 
+-	} else if (ABS(offsetFreq) &lt;= ((intp-&gt;srch_range[d] / 2000) + 500))
++	} else if (abs(offsetFreq) &lt;= ((intp-&gt;srch_range[d] / 2000) + 500))
+ 		range = STV0900_RANGEOK;
+ 
+ 	dprintk("%s: range %d\n", __func__, range);</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

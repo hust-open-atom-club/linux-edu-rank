@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Sydney</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Sydney</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit cadf9df27e7cf40e390e060a1c71bb86ecde798b
+Author: Stephen Mallon &lt;stephen.mallon@sydney.edu.au&gt;
+Date:   Tue Nov 20 19:15:02 2018 +1100
+
+    tcp: Fix SOF_TIMESTAMPING_RX_HARDWARE to use the latest timestamp during TCP coalescing
+    
+    During tcp coalescing ensure that the skb hardware timestamp refers to the
+    highest sequence number data.
+    Previously only the software timestamp was updated during coalescing.
+    
+    Signed-off-by: Stephen Mallon &lt;stephen.mallon@sydney.edu.au&gt;
+    Signed-off-by: Eric Dumazet &lt;edumazet@google.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+index 2868ef28ce52..e695584bb33f 100644
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -4363,6 +4363,7 @@ static bool tcp_try_coalesce(struct sock *sk,
+ 	if (TCP_SKB_CB(from)-&gt;has_rxtstamp) {
+ 		TCP_SKB_CB(to)-&gt;has_rxtstamp = true;
+ 		to-&gt;tstamp = from-&gt;tstamp;
++		skb_hwtstamps(to)-&gt;hwtstamp = skb_hwtstamps(from)-&gt;hwtstamp;
+ 	}
+ 
+ 	return true;</pre><hr><pre>commit ed84825b785ceb932af7dd5aa08614801721320b
+Author: paul.szabo@sydney.edu.au &lt;paul.szabo@sydney.edu.au&gt;
+Date:   Sun Jan 20 11:02:10 2013 +1100
+
+    Negative (setpoint-dirty) in bdi_position_ratio()
+    
+    In bdi_position_ratio(), get difference (setpoint-dirty) right even when
+    negative. Both setpoint and dirty are unsigned long, the difference was
+    zero-padded thus wrongly sign-extended to s64. This issue affects all
+    32-bit architectures, does not affect 64-bit architectures where long
+    and s64 are equivalent.
+    
+    In this function, dirty is between freerun and limit, the pseudo-float x
+    is between [-1,1], expected to be negative about half the time. With
+    zero-padding, instead of a small negative x we obtained a large positive
+    one so bdi_position_ratio() returned garbage.
+    
+    Casting the difference to s64 also prevents overflow with left-shift;
+    though normally these numbers are small and I never observed a 32-bit
+    overflow there.
+    
+    (This patch does not solve the PAE OOM issue.)
+    
+    Paul Szabo   psz@maths.usyd.edu.au   http://www.maths.usyd.edu.au/u/psz/
+    School of Mathematics and Statistics   University of Sydney    Australia
+    
+    Reviewed-by: Jan Kara &lt;jack@suse.cz&gt;
+    Reported-by: Paul Szabo &lt;psz@maths.usyd.edu.au&gt;
+    Reference: http://bugs.debian.org/695182
+    Signed-off-by: Paul Szabo &lt;psz@maths.usyd.edu.au&gt;
+    Signed-off-by: Fengguang Wu &lt;fengguang.wu@intel.com&gt;
+
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index 0713bfbf0954..1534ebd6e70f 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -692,7 +692,7 @@ static unsigned long bdi_position_ratio(struct backing_dev_info *bdi,
+ 	 *     =&gt; fast response on large errors; small oscillation near setpoint
+ 	 */
+ 	setpoint = (freerun + limit) / 2;
+-	x = div_s64((setpoint - dirty) &lt;&lt; RATELIMIT_CALC_SHIFT,
++	x = div_s64(((s64)setpoint - (s64)dirty) &lt;&lt; RATELIMIT_CALC_SHIFT,
+ 		    limit - setpoint + 1);
+ 	pos_ratio = x;
+ 	pos_ratio = pos_ratio * x &gt;&gt; RATELIMIT_CALC_SHIFT;</pre><hr><pre>commit 75f7ad8e043d9383337d917584297f7737154bbf
+Author: Paul Szabo &lt;psz@maths.usyd.edu.au&gt;
+Date:   Fri Feb 22 16:34:42 2013 -0800
+
+    page-writeback.c: subtract min_free_kbytes from dirtyable memory
+    
+    When calculating amount of dirtyable memory, min_free_kbytes should be
+    subtracted because it is not intended for dirty pages.
+    
+    Addresses http://bugs.debian.org/695182
+    
+    [akpm@linux-foundation.org: fix up min_free_kbytes extern declarations]
+    [akpm@linux-foundation.org: fix min() warning]
+    Signed-off-by: Paul Szabo &lt;psz@maths.usyd.edu.au&gt;
+    Acked-by: Rik van Riel &lt;riel@redhat.com&gt;
+    Cc: Wu Fengguang &lt;fengguang.wu@intel.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 1d4122bf6f27..437da0ce78c7 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -1393,6 +1393,9 @@ extern void setup_per_cpu_pageset(void);
+ extern void zone_pcp_update(struct zone *zone);
+ extern void zone_pcp_reset(struct zone *zone);
+ 
++/* page_alloc.c */
++extern int min_free_kbytes;
++
+ /* nommu.c */
+ extern atomic_long_t mmap_pages_allocated;
+ extern int nommu_shrink_inode_mappings(struct inode *, size_t, size_t);
+diff --git a/kernel/sysctl.c b/kernel/sysctl.c
+index 467d8b923fcd..95e9e55602a8 100644
+--- a/kernel/sysctl.c
++++ b/kernel/sysctl.c
+@@ -105,7 +105,6 @@ extern char core_pattern[];
+ extern unsigned int core_pipe_limit;
+ #endif
+ extern int pid_max;
+-extern int min_free_kbytes;
+ extern int pid_max_min, pid_max_max;
+ extern int sysctl_drop_caches;
+ extern int percpu_pagelist_fraction;
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index b1cc6591ed83..c63a21d0e991 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -105,7 +105,6 @@ static int set_recommended_min_free_kbytes(void)
+ 	struct zone *zone;
+ 	int nr_zones = 0;
+ 	unsigned long recommended_min;
+-	extern int min_free_kbytes;
+ 
+ 	if (!khugepaged_enabled())
+ 		return 0;
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index 7300c9d5e1d9..cdc377c456c0 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -241,6 +241,9 @@ static unsigned long global_dirtyable_memory(void)
+ 	if (!vm_highmem_is_dirtyable)
+ 		x -= highmem_dirtyable_memory(x);
+ 
++	/* Subtract min_free_kbytes */
++	x -= min_t(unsigned long, x, min_free_kbytes &gt;&gt; (PAGE_SHIFT - 10));
++
+ 	return x + 1;	/* Ensure that we never return 0 */
+ }
+ </pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Science and Technology of China</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Science and Technology of China</h1>
+    <div class="pagination">
+        <a href='12_5.html'>&lt;&lt;Prev</a><a href='12.html'>1</a><a href='12_2.html'>2</a><a href='12_3.html'>3</a><a href='12_4.html'>4</a><a href='12_5.html'>5</a><span>[6]</span><a href='12_7.html'>7</a><a href='12_8.html'>8</a><a href='12_9.html'>9</a><a href='12_7.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 2e6883bdf49abd0e7f0d9b6297fc3be7ebb2250b
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Tue Oct 16 23:30:43 2007 -0700
+
+    writeback: introduce writeback_control.more_io to indicate more io
+    
+    After making dirty a 100M file, the normal behavior is to start the writeback
+    for all data after 30s delays.  But sometimes the following happens instead:
+    
+            - after 30s:    ~4M
+            - after 5s:     ~4M
+            - after 5s:     all remaining 92M
+    
+    Some analyze shows that the internal io dispatch queues goes like this:
+    
+                    s_io            s_more_io
+                    -------------------------
+            1)      100M,1K         0
+            2)      1K              96M
+            3)      0               96M
+    
+    1) initial state with a 100M file and a 1K file
+    2) 4M written, nr_to_write &lt;= 0, so write more
+    3) 1K written, nr_to_write &gt; 0, no more writes(BUG)
+    
+    nr_to_write &gt; 0 in (3) fools the upper layer to think that data have all been
+    written out.  The big dirty file is actually still sitting in s_more_io.  We
+    cannot simply splice s_more_io back to s_io as soon as s_io becomes empty, and
+    let the loop in generic_sync_sb_inodes() continue: this may starve newly
+    expired inodes in s_dirty.  It is also not an option to draw inodes from both
+    s_more_io and s_dirty, an let the loop go on: this might lead to live locks,
+    and might also starve other superblocks in sync time(well kupdate may still
+    starve some superblocks, that's another bug).
+    
+    We have to return when a full scan of s_io completes.  So nr_to_write &gt; 0 does
+    not necessarily mean that "all data are written".  This patch introduces a
+    flag writeback_control.more_io to indicate this situation.  With it the big
+    dirty file no longer has to wait for the next kupdate invocation 5s later.
+    
+    Cc: David Chinner &lt;dgc@sgi.com&gt;
+    Cc: Ken Chen &lt;kenchen@google.com&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/fs-writeback.c b/fs/fs-writeback.c
+index 414df43706c7..71c158ac60a3 100644
+--- a/fs/fs-writeback.c
++++ b/fs/fs-writeback.c
+@@ -473,6 +473,8 @@ sync_sb_inodes(struct super_block *sb, struct writeback_control *wbc)
+ 		if (wbc-&gt;nr_to_write &lt;= 0)
+ 			break;
+ 	}
++	if (!list_empty(&amp;sb-&gt;s_more_io))
++		wbc-&gt;more_io = 1;
+ 	return;		/* Leave any unwritten inodes on s_io */
+ }
+ 
+diff --git a/include/linux/writeback.h b/include/linux/writeback.h
+index 52be879793ed..1200868a5dee 100644
+--- a/include/linux/writeback.h
++++ b/include/linux/writeback.h
+@@ -62,6 +62,7 @@ struct writeback_control {
+ 	unsigned for_reclaim:1;		/* Invoked from the page allocator */
+ 	unsigned for_writepages:1;	/* This is a writepages() call */
+ 	unsigned range_cyclic:1;	/* range_start is cyclic */
++	unsigned more_io:1;		/* more io to be dispatched */
+ };
+ 
+ /*
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index 334852131588..bcdbbf6c4a85 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -553,6 +553,7 @@ static void background_writeout(unsigned long _min_pages)
+ 			global_page_state(NR_UNSTABLE_NFS) &lt; background_thresh
+ 				&amp;&amp; min_pages &lt;= 0)
+ 			break;
++		wbc.more_io = 0;
+ 		wbc.encountered_congestion = 0;
+ 		wbc.nr_to_write = MAX_WRITEBACK_PAGES;
+ 		wbc.pages_skipped = 0;
+@@ -560,8 +561,9 @@ static void background_writeout(unsigned long _min_pages)
+ 		min_pages -= MAX_WRITEBACK_PAGES - wbc.nr_to_write;
+ 		if (wbc.nr_to_write &gt; 0 || wbc.pages_skipped &gt; 0) {
+ 			/* Wrote less than expected */
+-			congestion_wait(WRITE, HZ/10);
+-			if (!wbc.encountered_congestion)
++			if (wbc.encountered_congestion || wbc.more_io)
++				congestion_wait(WRITE, HZ/10);
++			else
+ 				break;
+ 		}
+ 	}
+@@ -626,11 +628,12 @@ static void wb_kupdate(unsigned long arg)
+ 			global_page_state(NR_UNSTABLE_NFS) +
+ 			(inodes_stat.nr_inodes - inodes_stat.nr_unused);
+ 	while (nr_to_write &gt; 0) {
++		wbc.more_io = 0;
+ 		wbc.encountered_congestion = 0;
+ 		wbc.nr_to_write = MAX_WRITEBACK_PAGES;
+ 		writeback_inodes(&amp;wbc);
+ 		if (wbc.nr_to_write &gt; 0) {
+-			if (wbc.encountered_congestion)
++			if (wbc.encountered_congestion || wbc.more_io)
+ 				congestion_wait(WRITE, HZ/10);
+ 			else
+ 				break;	/* All the old data is written */</pre><hr><pre>commit 1f7decf6d9f06dac008b8d66935c0c3b18e564f9
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Tue Oct 16 23:30:42 2007 -0700
+
+    writeback: remove pages_skipped accounting in __block_write_full_page()
+    
+    Miklos Szeredi &lt;miklos@szeredi.hu&gt; and me identified a writeback bug:
+    
+    &gt; The following strange behavior can be observed:
+    &gt;
+    &gt; 1. large file is written
+    &gt; 2. after 30 seconds, nr_dirty goes down by 1024
+    &gt; 3. then for some time (&lt; 30 sec) nothing happens (disk idle)
+    &gt; 4. then nr_dirty again goes down by 1024
+    &gt; 5. repeat from 3. until whole file is written
+    &gt;
+    &gt; So basically a 4Mbyte chunk of the file is written every 30 seconds.
+    &gt; I'm quite sure this is not the intended behavior.
+    
+    It can be produced by the following test scheme:
+    
+    # cat bin/test-writeback.sh
+    grep nr_dirty /proc/vmstat
+    echo 1 &gt; /proc/sys/fs/inode_debug
+    dd if=/dev/zero of=/var/x bs=1K count=204800&amp;
+    while true; do grep nr_dirty /proc/vmstat; sleep 1; done
+    
+    # bin/test-writeback.sh
+    nr_dirty 19207
+    nr_dirty 19207
+    nr_dirty 30924
+    204800+0 records in
+    204800+0 records out
+    209715200 bytes (210 MB) copied, 1.58363 seconds, 132 MB/s
+    nr_dirty 47150
+    nr_dirty 47141
+    nr_dirty 47142
+    nr_dirty 47142
+    nr_dirty 47142
+    nr_dirty 47142
+    nr_dirty 47205
+    nr_dirty 47214
+    nr_dirty 47214
+    nr_dirty 47214
+    nr_dirty 47214
+    nr_dirty 47214
+    nr_dirty 47215
+    nr_dirty 47216
+    nr_dirty 47216
+    nr_dirty 47216
+    nr_dirty 47154
+    nr_dirty 47143
+    nr_dirty 47143
+    nr_dirty 47143
+    nr_dirty 47143
+    nr_dirty 47143
+    nr_dirty 47142
+    nr_dirty 47142
+    nr_dirty 47142
+    nr_dirty 47142
+    nr_dirty 47134
+    nr_dirty 47134
+    nr_dirty 47135
+    nr_dirty 47135
+    nr_dirty 47135
+    nr_dirty 46097 &lt;== -1038
+    nr_dirty 46098
+    nr_dirty 46098
+    nr_dirty 46098
+    [...]
+    nr_dirty 46091
+    nr_dirty 46092
+    nr_dirty 46092
+    nr_dirty 45069 &lt;== -1023
+    nr_dirty 45056
+    nr_dirty 45056
+    nr_dirty 45056
+    [...]
+    nr_dirty 37822
+    nr_dirty 36799 &lt;== -1023
+    [...]
+    nr_dirty 36781
+    nr_dirty 35758 &lt;== -1023
+    [...]
+    nr_dirty 34708
+    nr_dirty 33672 &lt;== -1024
+    [...]
+    nr_dirty 33692
+    nr_dirty 32669 &lt;== -1023
+    
+    % ls -li /var/x
+    847824 -rw-r--r-- 1 root root 200M 2007-08-12 04:12 /var/x
+    
+    % dmesg|grep 847824  # generated by a debug printk
+    [  529.263184] redirtied inode 847824 line 548
+    [  564.250872] redirtied inode 847824 line 548
+    [  594.272797] redirtied inode 847824 line 548
+    [  629.231330] redirtied inode 847824 line 548
+    [  659.224674] redirtied inode 847824 line 548
+    [  689.219890] redirtied inode 847824 line 548
+    [  724.226655] redirtied inode 847824 line 548
+    [  759.198568] redirtied inode 847824 line 548
+    
+    # line 548 in fs/fs-writeback.c:
+    543                 if (wbc-&gt;pages_skipped != pages_skipped) {
+    544                         /*
+    545                          * writeback is not making progress due to locked
+    546                          * buffers.  Skip this inode for now.
+    547                          */
+    548                         redirty_tail(inode);
+    549                 }
+    
+    More debug efforts show that __block_write_full_page()
+    never has the chance to call submit_bh() for that big dirty file:
+    the buffer head is *clean*. So basicly no page io is issued by
+    __block_write_full_page(), hence pages_skipped goes up.
+    
+    Also the comment in generic_sync_sb_inodes():
+    
+    544                         /*
+    545                          * writeback is not making progress due to locked
+    546                          * buffers.  Skip this inode for now.
+    547                          */
+    
+    and the comment in __block_write_full_page():
+    
+    1713                 /*
+    1714                  * The page was marked dirty, but the buffers were
+    1715                  * clean.  Someone wrote them back by hand with
+    1716                  * ll_rw_block/submit_bh.  A rare case.
+    1717                  */
+    
+    do not quite agree with each other. The page writeback should be skipped for
+    'locked buffer', but here it is 'clean buffer'!
+    
+    This patch fixes this bug. Though I'm not sure why __block_write_full_page()
+    is called only to do nothing and who actually issued the writeback for us.
+    
+    This is the two possible new behaviors after the patch:
+    
+    1) pretty nice: wait 30s and write ALL:)
+    2) not so good:
+            - during the dd: ~16M
+            - after 30s:      ~4M
+            - after 5s:       ~4M
+            - after 5s:     ~176M
+    
+    The next patch will fix case (2).
+    
+    Cc: David Chinner &lt;dgc@sgi.com&gt;
+    Cc: Ken Chen &lt;kenchen@google.com&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Signed-off-by: David Chinner &lt;dgc@sgi.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/buffer.c b/fs/buffer.c
+index 86e58b1dcd9c..76403b1764c5 100644
+--- a/fs/buffer.c
++++ b/fs/buffer.c
+@@ -1730,7 +1730,6 @@ static int __block_write_full_page(struct inode *inode, struct page *page,
+ 		 * The page and buffer_heads can be released at any time from
+ 		 * here on.
+ 		 */
+-		wbc-&gt;pages_skipped++;	/* We didn't write this page */
+ 	}
+ 	return err;
+ 
+diff --git a/fs/xfs/linux-2.6/xfs_aops.c b/fs/xfs/linux-2.6/xfs_aops.c
+index 354d68a32d4a..52bd08c0a278 100644
+--- a/fs/xfs/linux-2.6/xfs_aops.c
++++ b/fs/xfs/linux-2.6/xfs_aops.c
+@@ -402,10 +402,9 @@ xfs_start_page_writeback(
+ 		clear_page_dirty_for_io(page);
+ 	set_page_writeback(page);
+ 	unlock_page(page);
+-	if (!buffers) {
++	/* If no buffers on the page are to be written, finish it here */
++	if (!buffers)
+ 		end_page_writeback(page);
+-		wbc-&gt;pages_skipped++;	/* We didn't write this page */
+-	}
+ }
+ 
+ static inline int bio_add_buffer(struct bio *bio, struct buffer_head *bh)</pre><hr><pre>commit 08d8e9749e7f0435ba4683b620e8d30d59276b4c
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Tue Oct 16 23:30:39 2007 -0700
+
+    writeback: fix ntfs with sb_has_dirty_inodes()
+    
+    NTFS's if-condition on dirty inodes is not complete.  Fix it with
+    sb_has_dirty_inodes().
+    
+    Cc: Anton Altaparmakov &lt;aia21@cantab.net&gt;
+    Cc: Ken Chen &lt;kenchen@google.com&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/fs-writeback.c b/fs/fs-writeback.c
+index 1f22fb5217c0..414df43706c7 100644
+--- a/fs/fs-writeback.c
++++ b/fs/fs-writeback.c
+@@ -199,6 +199,14 @@ static void queue_io(struct super_block *sb,
+ 	move_expired_inodes(&amp;sb-&gt;s_dirty, &amp;sb-&gt;s_io, older_than_this);
+ }
+ 
++int sb_has_dirty_inodes(struct super_block *sb)
++{
++	return !list_empty(&amp;sb-&gt;s_dirty) ||
++	       !list_empty(&amp;sb-&gt;s_io) ||
++	       !list_empty(&amp;sb-&gt;s_more_io);
++}
++EXPORT_SYMBOL(sb_has_dirty_inodes);
++
+ /*
+  * Write a single inode's dirty pages and inode data out to disk.
+  * If `wait' is set, wait on the writeout.
+@@ -497,7 +505,7 @@ writeback_inodes(struct writeback_control *wbc)
+ restart:
+ 	sb = sb_entry(super_blocks.prev);
+ 	for (; sb != sb_entry(&amp;super_blocks); sb = sb_entry(sb-&gt;s_list.prev)) {
+-		if (!list_empty(&amp;sb-&gt;s_dirty) || !list_empty(&amp;sb-&gt;s_io)) {
++		if (sb_has_dirty_inodes(sb)) {
+ 			/* we're making our own get_super here */
+ 			sb-&gt;s_count++;
+ 			spin_unlock(&amp;sb_lock);
+diff --git a/fs/ntfs/super.c b/fs/ntfs/super.c
+index ad2124573024..3e76f3b216bc 100644
+--- a/fs/ntfs/super.c
++++ b/fs/ntfs/super.c
+@@ -2381,14 +2381,14 @@ static void ntfs_put_super(struct super_block *sb)
+ 	 */
+ 	ntfs_commit_inode(vol-&gt;mft_ino);
+ 	write_inode_now(vol-&gt;mft_ino, 1);
+-	if (!list_empty(&amp;sb-&gt;s_dirty)) {
++	if (sb_has_dirty_inodes(sb)) {
+ 		const char *s1, *s2;
+ 
+ 		mutex_lock(&amp;vol-&gt;mft_ino-&gt;i_mutex);
+ 		truncate_inode_pages(vol-&gt;mft_ino-&gt;i_mapping, 0);
+ 		mutex_unlock(&amp;vol-&gt;mft_ino-&gt;i_mutex);
+ 		write_inode_now(vol-&gt;mft_ino, 1);
+-		if (!list_empty(&amp;sb-&gt;s_dirty)) {
++		if (sb_has_dirty_inodes(sb)) {
+ 			static const char *_s1 = "inodes";
+ 			static const char *_s2 = "";
+ 			s1 = _s1;
+diff --git a/include/linux/fs.h b/include/linux/fs.h
+index 0b38a897c114..b70331f9f5b7 100644
+--- a/include/linux/fs.h
++++ b/include/linux/fs.h
+@@ -1729,6 +1729,7 @@ extern int bdev_read_only(struct block_device *);
+ extern int set_blocksize(struct block_device *, int);
+ extern int sb_set_blocksize(struct super_block *, int);
+ extern int sb_min_blocksize(struct super_block *, int);
++extern int sb_has_dirty_inodes(struct super_block *);
+ 
+ extern int generic_file_mmap(struct file *, struct vm_area_struct *);
+ extern int generic_file_readonly_mmap(struct file *, struct vm_area_struct *);</pre><hr><pre>commit 2c1365791048e8aff42138ed5f6040b3c7824a69
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Tue Oct 16 23:30:39 2007 -0700
+
+    writeback: fix time ordering of the per superblock inode lists 8
+    
+    Streamline the management of dirty inode lists and fix time ordering bugs.
+    
+    The writeback logic used to move not-yet-expired dirty inodes from s_dirty to
+    s_io, *only to* move them back.  The move-inodes-back-and-forth thing is a
+    mess, which is eliminated by this patch.
+    
+    The new scheme is:
+    - s_dirty acts as a time ordered io delaying queue;
+    - s_io/s_more_io together acts as an io dispatching queue.
+    
+    On kupdate writeback, we pull some inodes from s_dirty to s_io at the start of
+    every full scan of s_io.  Otherwise  (i.e. for sync/throttle/background
+    writeback), we always pull from s_dirty on each run (a partial scan).
+    
+    Note that the line
+            list_splice_init(&amp;sb-&gt;s_more_io, &amp;sb-&gt;s_io);
+    is moved to queue_io() to leave s_io empty. Otherwise a big dirtied file will
+    sit in s_io for a long time, preventing new expired inodes to get in.
+    
+    Cc: Ken Chen &lt;kenchen@google.com&gt;
+    Cc: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/fs-writeback.c b/fs/fs-writeback.c
+index c9d105ff7970..1f22fb5217c0 100644
+--- a/fs/fs-writeback.c
++++ b/fs/fs-writeback.c
+@@ -119,7 +119,7 @@ void __mark_inode_dirty(struct inode *inode, int flags)
+ 			goto out;
+ 
+ 		/*
+-		 * If the inode was already on s_dirty or s_io, don't
++		 * If the inode was already on s_dirty/s_io/s_more_io, don't
+ 		 * reposition it (that would break s_dirty time-ordering).
+ 		 */
+ 		if (!was_dirty) {
+@@ -172,6 +172,33 @@ static void requeue_io(struct inode *inode)
+ 	list_move(&amp;inode-&gt;i_list, &amp;inode-&gt;i_sb-&gt;s_more_io);
+ }
+ 
++/*
++ * Move expired dirty inodes from @delaying_queue to @dispatch_queue.
++ */
++static void move_expired_inodes(struct list_head *delaying_queue,
++			       struct list_head *dispatch_queue,
++				unsigned long *older_than_this)
++{
++	while (!list_empty(delaying_queue)) {
++		struct inode *inode = list_entry(delaying_queue-&gt;prev,
++						struct inode, i_list);
++		if (older_than_this &amp;&amp;
++			time_after(inode-&gt;dirtied_when, *older_than_this))
++			break;
++		list_move(&amp;inode-&gt;i_list, dispatch_queue);
++	}
++}
++
++/*
++ * Queue all expired dirty inodes for io, eldest first.
++ */
++static void queue_io(struct super_block *sb,
++				unsigned long *older_than_this)
++{
++	list_splice_init(&amp;sb-&gt;s_more_io, sb-&gt;s_io.prev);
++	move_expired_inodes(&amp;sb-&gt;s_dirty, &amp;sb-&gt;s_io, older_than_this);
++}
++
+ /*
+  * Write a single inode's dirty pages and inode data out to disk.
+  * If `wait' is set, wait on the writeout.
+@@ -222,7 +249,7 @@ __sync_single_inode(struct inode *inode, struct writeback_control *wbc)
+ 			/*
+ 			 * We didn't write back all the pages.  nfs_writepages()
+ 			 * sometimes bales out without doing anything. Redirty
+-			 * the inode.  It is moved from s_io onto s_dirty.
++			 * the inode; Move it from s_io onto s_more_io/s_dirty.
+ 			 */
+ 			/*
+ 			 * akpm: if the caller was the kupdate function we put
+@@ -235,10 +262,9 @@ __sync_single_inode(struct inode *inode, struct writeback_control *wbc)
+ 			 */
+ 			if (wbc-&gt;for_kupdate) {
+ 				/*
+-				 * For the kupdate function we leave the inode
+-				 * at the head of sb_dirty so it will get more
+-				 * writeout as soon as the queue becomes
+-				 * uncongested.
++				 * For the kupdate function we move the inode
++				 * to s_more_io so it will get more writeout as
++				 * soon as the queue becomes uncongested.
+ 				 */
+ 				inode-&gt;i_state |= I_DIRTY_PAGES;
+ 				requeue_io(inode);
+@@ -296,10 +322,10 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
+ 
+ 		/*
+ 		 * We're skipping this inode because it's locked, and we're not
+-		 * doing writeback-for-data-integrity.  Move it to the head of
+-		 * s_dirty so that writeback can proceed with the other inodes
+-		 * on s_io.  We'll have another go at writing back this inode
+-		 * when the s_dirty iodes get moved back onto s_io.
++		 * doing writeback-for-data-integrity.  Move it to s_more_io so
++		 * that writeback can proceed with the other inodes on s_io.
++		 * We'll have another go at writing back this inode when we
++		 * completed a full scan of s_io.
+ 		 */
+ 		requeue_io(inode);
+ 
+@@ -366,7 +392,7 @@ sync_sb_inodes(struct super_block *sb, struct writeback_control *wbc)
+ 	const unsigned long start = jiffies;	/* livelock avoidance */
+ 
+ 	if (!wbc-&gt;for_kupdate || list_empty(&amp;sb-&gt;s_io))
+-		list_splice_init(&amp;sb-&gt;s_dirty, &amp;sb-&gt;s_io);
++		queue_io(sb, wbc-&gt;older_than_this);
+ 
+ 	while (!list_empty(&amp;sb-&gt;s_io)) {
+ 		struct inode *inode = list_entry(sb-&gt;s_io.prev,
+@@ -411,13 +437,6 @@ sync_sb_inodes(struct super_block *sb, struct writeback_control *wbc)
+ 		if (time_after(inode-&gt;dirtied_when, start))
+ 			break;
+ 
+-		/* Was this inode dirtied too recently? */
+-		if (wbc-&gt;older_than_this &amp;&amp; time_after(inode-&gt;dirtied_when,
+-						*wbc-&gt;older_than_this)) {
+-			list_splice_init(&amp;sb-&gt;s_io, sb-&gt;s_dirty.prev);
+-			break;
+-		}
+-
+ 		/* Is another pdflush already flushing this queue? */
+ 		if (current_is_pdflush() &amp;&amp; !writeback_acquire(bdi))
+ 			break;
+@@ -446,10 +465,6 @@ sync_sb_inodes(struct super_block *sb, struct writeback_control *wbc)
+ 		if (wbc-&gt;nr_to_write &lt;= 0)
+ 			break;
+ 	}
+-
+-	if (list_empty(&amp;sb-&gt;s_io))
+-		list_splice_init(&amp;sb-&gt;s_more_io, &amp;sb-&gt;s_io);
+-
+ 	return;		/* Leave any unwritten inodes on s_io */
+ }
+ 
+@@ -459,7 +474,7 @@ sync_sb_inodes(struct super_block *sb, struct writeback_control *wbc)
+  * Note:
+  * We don't need to grab a reference to superblock here. If it has non-empty
+  * -&gt;s_dirty it's hadn't been killed yet and kill_super() won't proceed
+- * past sync_inodes_sb() until both the -&gt;s_dirty and -&gt;s_io lists are
++ * past sync_inodes_sb() until the -&gt;s_dirty/s_io/s_more_io lists are all
+  * empty. Since __sync_single_inode() regains inode_lock before it finally moves
+  * inode from superblock lists we are OK.
+  *</pre><hr><pre>commit 57f6b96c09c30e444e0d3fc3080feba037657a7b
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Tue Oct 16 01:24:37 2007 -0700
+
+    filemap: convert some unsigned long to pgoff_t
+    
+    Convert some 'unsigned long' to pgoff_t.
+    
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Cc: Rusty Russell &lt;rusty@rustcorp.com.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index 8a83537d6978..862fc07dc6c0 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -84,11 +84,11 @@ static inline struct page *page_cache_alloc_cold(struct address_space *x)
+ typedef int filler_t(void *, struct page *);
+ 
+ extern struct page * find_get_page(struct address_space *mapping,
+-				unsigned long index);
++				pgoff_t index);
+ extern struct page * find_lock_page(struct address_space *mapping,
+-				unsigned long index);
++				pgoff_t index);
+ extern struct page * find_or_create_page(struct address_space *mapping,
+-				unsigned long index, gfp_t gfp_mask);
++				pgoff_t index, gfp_t gfp_mask);
+ unsigned find_get_pages(struct address_space *mapping, pgoff_t start,
+ 			unsigned int nr_pages, struct page **pages);
+ unsigned find_get_pages_contig(struct address_space *mapping, pgoff_t start,
+@@ -99,41 +99,42 @@ unsigned find_get_pages_tag(struct address_space *mapping, pgoff_t *index,
+ /*
+  * Returns locked page at given index in given cache, creating it if needed.
+  */
+-static inline struct page *grab_cache_page(struct address_space *mapping, unsigned long index)
++static inline struct page *grab_cache_page(struct address_space *mapping,
++								pgoff_t index)
+ {
+ 	return find_or_create_page(mapping, index, mapping_gfp_mask(mapping));
+ }
+ 
+ extern struct page * grab_cache_page_nowait(struct address_space *mapping,
+-				unsigned long index);
++				pgoff_t index);
+ extern struct page * read_cache_page_async(struct address_space *mapping,
+-				unsigned long index, filler_t *filler,
++				pgoff_t index, filler_t *filler,
+ 				void *data);
+ extern struct page * read_cache_page(struct address_space *mapping,
+-				unsigned long index, filler_t *filler,
++				pgoff_t index, filler_t *filler,
+ 				void *data);
+ extern int read_cache_pages(struct address_space *mapping,
+ 		struct list_head *pages, filler_t *filler, void *data);
+ 
+ static inline struct page *read_mapping_page_async(
+ 						struct address_space *mapping,
+-					     unsigned long index, void *data)
++						     pgoff_t index, void *data)
+ {
+ 	filler_t *filler = (filler_t *)mapping-&gt;a_ops-&gt;readpage;
+ 	return read_cache_page_async(mapping, index, filler, data);
+ }
+ 
+ static inline struct page *read_mapping_page(struct address_space *mapping,
+-					     unsigned long index, void *data)
++					     pgoff_t index, void *data)
+ {
+ 	filler_t *filler = (filler_t *)mapping-&gt;a_ops-&gt;readpage;
+ 	return read_cache_page(mapping, index, filler, data);
+ }
+ 
+ int add_to_page_cache(struct page *page, struct address_space *mapping,
+-				unsigned long index, gfp_t gfp_mask);
++				pgoff_t index, gfp_t gfp_mask);
+ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
+-				unsigned long index, gfp_t gfp_mask);
++				pgoff_t index, gfp_t gfp_mask);
+ extern void remove_from_page_cache(struct page *page);
+ extern void __remove_from_page_cache(struct page *page);
+ 
+diff --git a/mm/filemap.c b/mm/filemap.c
+index c1b94054cbbe..b436cbb3a834 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -593,7 +593,7 @@ void fastcall __lock_page_nosync(struct page *page)
+  * Is there a pagecache struct page at the given (mapping, offset) tuple?
+  * If yes, increment its refcount and return it; if no, return NULL.
+  */
+-struct page * find_get_page(struct address_space *mapping, unsigned long offset)
++struct page * find_get_page(struct address_space *mapping, pgoff_t offset)
+ {
+ 	struct page *page;
+ 
+@@ -617,7 +617,7 @@ EXPORT_SYMBOL(find_get_page);
+  * Returns zero if the page was not present. find_lock_page() may sleep.
+  */
+ struct page *find_lock_page(struct address_space *mapping,
+-				unsigned long offset)
++				pgoff_t offset)
+ {
+ 	struct page *page;
+ 
+@@ -663,7 +663,7 @@ EXPORT_SYMBOL(find_lock_page);
+  * memory exhaustion.
+  */
+ struct page *find_or_create_page(struct address_space *mapping,
+-		unsigned long index, gfp_t gfp_mask)
++		pgoff_t index, gfp_t gfp_mask)
+ {
+ 	struct page *page, *cached_page = NULL;
+ 	int err;
+@@ -797,7 +797,7 @@ EXPORT_SYMBOL(find_get_pages_tag);
+  * and deadlock against the caller's locked page.
+  */
+ struct page *
+-grab_cache_page_nowait(struct address_space *mapping, unsigned long index)
++grab_cache_page_nowait(struct address_space *mapping, pgoff_t index)
+ {
+ 	struct page *page = find_get_page(mapping, index);
+ 
+@@ -866,10 +866,10 @@ void do_generic_mapping_read(struct address_space *mapping,
+ 			     read_actor_t actor)
+ {
+ 	struct inode *inode = mapping-&gt;host;
+-	unsigned long index;
+-	unsigned long offset;
+-	unsigned long last_index;
+-	unsigned long prev_index;
++	pgoff_t index;
++	pgoff_t last_index;
++	pgoff_t prev_index;
++	unsigned long offset;      /* offset into pagecache page */
+ 	unsigned int prev_offset;
+ 	struct page *cached_page;
+ 	int error;
+@@ -883,7 +883,7 @@ void do_generic_mapping_read(struct address_space *mapping,
+ 
+ 	for (;;) {
+ 		struct page *page;
+-		unsigned long end_index;
++		pgoff_t end_index;
+ 		loff_t isize;
+ 		unsigned long nr, ret;
+ 
+@@ -1217,7 +1217,7 @@ EXPORT_SYMBOL(generic_file_aio_read);
+ 
+ static ssize_t
+ do_readahead(struct address_space *mapping, struct file *filp,
+-	     unsigned long index, unsigned long nr)
++	     pgoff_t index, unsigned long nr)
+ {
+ 	if (!mapping || !mapping-&gt;a_ops || !mapping-&gt;a_ops-&gt;readpage)
+ 		return -EINVAL;
+@@ -1237,8 +1237,8 @@ asmlinkage ssize_t sys_readahead(int fd, loff_t offset, size_t count)
+ 	if (file) {
+ 		if (file-&gt;f_mode &amp; FMODE_READ) {
+ 			struct address_space *mapping = file-&gt;f_mapping;
+-			unsigned long start = offset &gt;&gt; PAGE_CACHE_SHIFT;
+-			unsigned long end = (offset + count - 1) &gt;&gt; PAGE_CACHE_SHIFT;
++			pgoff_t start = offset &gt;&gt; PAGE_CACHE_SHIFT;
++			pgoff_t end = (offset + count - 1) &gt;&gt; PAGE_CACHE_SHIFT;
+ 			unsigned long len = end - start + 1;
+ 			ret = do_readahead(mapping, file, start, len);
+ 		}
+@@ -1256,7 +1256,7 @@ asmlinkage ssize_t sys_readahead(int fd, loff_t offset, size_t count)
+  * This adds the requested page to the page cache if it isn't already there,
+  * and schedules an I/O to read in its contents from disk.
+  */
+-static int fastcall page_cache_read(struct file * file, unsigned long offset)
++static int fastcall page_cache_read(struct file * file, pgoff_t offset)
+ {
+ 	struct address_space *mapping = file-&gt;f_mapping;
+ 	struct page *page; 
+@@ -1497,7 +1497,7 @@ EXPORT_SYMBOL(generic_file_mmap);
+ EXPORT_SYMBOL(generic_file_readonly_mmap);
+ 
+ static struct page *__read_cache_page(struct address_space *mapping,
+-				unsigned long index,
++				pgoff_t index,
+ 				int (*filler)(void *,struct page*),
+ 				void *data)
+ {
+@@ -1538,7 +1538,7 @@ static struct page *__read_cache_page(struct address_space *mapping,
+  * after submitting it to the filler.
+  */
+ struct page *read_cache_page_async(struct address_space *mapping,
+-				unsigned long index,
++				pgoff_t index,
+ 				int (*filler)(void *,struct page*),
+ 				void *data)
+ {
+@@ -1586,7 +1586,7 @@ EXPORT_SYMBOL(read_cache_page_async);
+  * If the page does not get brought uptodate, return -EIO.
+  */
+ struct page *read_cache_page(struct address_space *mapping,
+-				unsigned long index,
++				pgoff_t index,
+ 				int (*filler)(void *,struct page*),
+ 				void *data)
+ {</pre><hr><pre>commit b2c3843b1e25e2c67347c4671f33fbe6f5067e6b
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Tue Oct 16 01:24:37 2007 -0700
+
+    filemap: trivial code cleanups
+    
+    - remove unused local next_index in do_generic_mapping_read()
+    - remove a redudant page_cache_read() declaration
+    
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Cc: Rusty Russell &lt;rusty@rustcorp.com.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 3c97bdc74a85..c1b94054cbbe 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -869,7 +869,6 @@ void do_generic_mapping_read(struct address_space *mapping,
+ 	unsigned long index;
+ 	unsigned long offset;
+ 	unsigned long last_index;
+-	unsigned long next_index;
+ 	unsigned long prev_index;
+ 	unsigned int prev_offset;
+ 	struct page *cached_page;
+@@ -877,7 +876,6 @@ void do_generic_mapping_read(struct address_space *mapping,
+ 
+ 	cached_page = NULL;
+ 	index = *ppos &gt;&gt; PAGE_CACHE_SHIFT;
+-	next_index = index;
+ 	prev_index = ra-&gt;prev_pos &gt;&gt; PAGE_CACHE_SHIFT;
+ 	prev_offset = ra-&gt;prev_pos &amp; (PAGE_CACHE_SIZE-1);
+ 	last_index = (*ppos + desc-&gt;count + PAGE_CACHE_SIZE-1) &gt;&gt; PAGE_CACHE_SHIFT;
+@@ -1250,7 +1248,6 @@ asmlinkage ssize_t sys_readahead(int fd, loff_t offset, size_t count)
+ }
+ 
+ #ifdef CONFIG_MMU
+-static int FASTCALL(page_cache_read(struct file * file, unsigned long offset));
+ /**
+  * page_cache_read - adds requested page to the page cache if not already there
+  * @file:	file to read</pre><hr><pre>commit f2e189827a914b66e435e68b1c9e37775cb995ed
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Tue Oct 16 01:24:36 2007 -0700
+
+    readahead: remove the limit max_sectors_kb imposed on max_readahead_kb
+    
+    Remove the size limit max_sectors_kb imposed on max_readahead_kb.
+    
+    The size restriction is unreasonable.  Especially when max_sectors_kb cannot
+    grow larger than max_hw_sectors_kb, which can be rather small for some disk
+    drives.
+    
+    Cc: Jens Axboe &lt;jens.axboe@oracle.com&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Acked-by: Jens Axboe &lt;jens.axboe@oracle.com&gt;
+    Cc: Rusty Russell &lt;rusty@rustcorp.com.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/block/ll_rw_blk.c b/block/ll_rw_blk.c
+index d875673e76cd..a83823fcd74f 100644
+--- a/block/ll_rw_blk.c
++++ b/block/ll_rw_blk.c
+@@ -3928,7 +3928,6 @@ queue_max_sectors_store(struct request_queue *q, const char *page, size_t count)
+ 			max_hw_sectors_kb = q-&gt;max_hw_sectors &gt;&gt; 1,
+ 			page_kb = 1 &lt;&lt; (PAGE_CACHE_SHIFT - 10);
+ 	ssize_t ret = queue_var_store(&amp;max_sectors_kb, page, count);
+-	int ra_kb;
+ 
+ 	if (max_sectors_kb &gt; max_hw_sectors_kb || max_sectors_kb &lt; page_kb)
+ 		return -EINVAL;
+@@ -3937,14 +3936,6 @@ queue_max_sectors_store(struct request_queue *q, const char *page, size_t count)
+ 	 * values synchronously:
+ 	 */
+ 	spin_lock_irq(q-&gt;queue_lock);
+-	/*
+-	 * Trim readahead window as well, if necessary:
+-	 */
+-	ra_kb = q-&gt;backing_dev_info.ra_pages &lt;&lt; (PAGE_CACHE_SHIFT - 10);
+-	if (ra_kb &gt; max_sectors_kb)
+-		q-&gt;backing_dev_info.ra_pages =
+-				max_sectors_kb &gt;&gt; (PAGE_CACHE_SHIFT - 10);
+-
+ 	q-&gt;max_sectors = max_sectors_kb &lt;&lt; 1;
+ 	spin_unlock_irq(q-&gt;queue_lock);
+ </pre><hr><pre>commit 535443f51543df61111bbd234300ae549d220448
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Tue Oct 16 01:24:36 2007 -0700
+
+    readahead: remove several readahead macros
+    
+    Remove VM_MAX_CACHE_HIT, MAX_RA_PAGES and MIN_RA_PAGES.
+    
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Cc: Rusty Russell &lt;rusty@rustcorp.com.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index fbff8e481cc4..291c4cc06ea7 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -1106,8 +1106,6 @@ int write_one_page(struct page *page, int wait);
+ /* readahead.c */
+ #define VM_MAX_READAHEAD	128	/* kbytes */
+ #define VM_MIN_READAHEAD	16	/* kbytes (includes current page) */
+-#define VM_MAX_CACHE_HIT    	256	/* max pages in a row in cache before
+-					 * turning readahead off */
+ 
+ int do_page_cache_readahead(struct address_space *mapping, struct file *filp,
+ 			pgoff_t offset, unsigned long nr_to_read);
+diff --git a/mm/readahead.c b/mm/readahead.c
+index fd588ffc5086..fc52f9f1b80c 100644
+--- a/mm/readahead.c
++++ b/mm/readahead.c
+@@ -22,16 +22,8 @@ void default_unplug_io_fn(struct backing_dev_info *bdi, struct page *page)
+ }
+ EXPORT_SYMBOL(default_unplug_io_fn);
+ 
+-/*
+- * Convienent macros for min/max read-ahead pages.
+- * Note that MAX_RA_PAGES is rounded down, while MIN_RA_PAGES is rounded up.
+- * The latter is necessary for systems with large page size(i.e. 64k).
+- */
+-#define MAX_RA_PAGES	(VM_MAX_READAHEAD*1024 / PAGE_CACHE_SIZE)
+-#define MIN_RA_PAGES	DIV_ROUND_UP(VM_MIN_READAHEAD*1024, PAGE_CACHE_SIZE)
+-
+ struct backing_dev_info default_backing_dev_info = {
+-	.ra_pages	= MAX_RA_PAGES,
++	.ra_pages	= VM_MAX_READAHEAD * 1024 / PAGE_CACHE_SIZE,
+ 	.state		= 0,
+ 	.capabilities	= BDI_CAP_MAP_COPY,
+ 	.unplug_io_fn	= default_unplug_io_fn,</pre><hr><pre>commit 7ff81078d8b9f3d05a27b7bd3786ffb1ef1b0d1f
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Tue Oct 16 01:24:35 2007 -0700
+
+    readahead: remove the local copy of ra in do_generic_mapping_read()
+    
+    The local copy of ra in do_generic_mapping_read() can now go away.
+    
+    It predates readanead(req_size).  In a time when the readahead code was called
+    on *every* single page.  Hence a local has to be made to reduce the chance of
+    the readahead state being overwritten by a concurrent reader.  More details
+    in: Linux: Random File I/O Regressions In 2.6
+    &lt;http://kerneltrap.org/node/3039&gt;
+    
+    Cc: Nick Piggin &lt;nickpiggin@yahoo.com.au&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Cc: Rusty Russell &lt;rusty@rustcorp.com.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index bbcca456d8a6..3c97bdc74a85 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -859,7 +859,7 @@ static void shrink_readahead_size_eio(struct file *filp,
+  * It may be NULL.
+  */
+ void do_generic_mapping_read(struct address_space *mapping,
+-			     struct file_ra_state *_ra,
++			     struct file_ra_state *ra,
+ 			     struct file *filp,
+ 			     loff_t *ppos,
+ 			     read_descriptor_t *desc,
+@@ -874,13 +874,12 @@ void do_generic_mapping_read(struct address_space *mapping,
+ 	unsigned int prev_offset;
+ 	struct page *cached_page;
+ 	int error;
+-	struct file_ra_state ra = *_ra;
+ 
+ 	cached_page = NULL;
+ 	index = *ppos &gt;&gt; PAGE_CACHE_SHIFT;
+ 	next_index = index;
+-	prev_index = ra.prev_pos &gt;&gt; PAGE_CACHE_SHIFT;
+-	prev_offset = ra.prev_pos &amp; (PAGE_CACHE_SIZE-1);
++	prev_index = ra-&gt;prev_pos &gt;&gt; PAGE_CACHE_SHIFT;
++	prev_offset = ra-&gt;prev_pos &amp; (PAGE_CACHE_SIZE-1);
+ 	last_index = (*ppos + desc-&gt;count + PAGE_CACHE_SIZE-1) &gt;&gt; PAGE_CACHE_SHIFT;
+ 	offset = *ppos &amp; ~PAGE_CACHE_MASK;
+ 
+@@ -895,7 +894,7 @@ void do_generic_mapping_read(struct address_space *mapping,
+ 		page = find_get_page(mapping, index);
+ 		if (!page) {
+ 			page_cache_sync_readahead(mapping,
+-					&amp;ra, filp,
++					ra, filp,
+ 					index, last_index - index);
+ 			page = find_get_page(mapping, index);
+ 			if (unlikely(page == NULL))
+@@ -903,7 +902,7 @@ void do_generic_mapping_read(struct address_space *mapping,
+ 		}
+ 		if (PageReadahead(page)) {
+ 			page_cache_async_readahead(mapping,
+-					&amp;ra, filp, page,
++					ra, filp, page,
+ 					index, last_index - index);
+ 		}
+ 		if (!PageUptodate(page))
+@@ -1014,7 +1013,7 @@ void do_generic_mapping_read(struct address_space *mapping,
+ 				}
+ 				unlock_page(page);
+ 				error = -EIO;
+-				shrink_readahead_size_eio(filp, &amp;ra);
++				shrink_readahead_size_eio(filp, ra);
+ 				goto readpage_error;
+ 			}
+ 			unlock_page(page);
+@@ -1054,10 +1053,9 @@ void do_generic_mapping_read(struct address_space *mapping,
+ 	}
+ 
+ out:
+-	*_ra = ra;
+-	_ra-&gt;prev_pos = prev_index;
+-	_ra-&gt;prev_pos &lt;&lt;= PAGE_CACHE_SHIFT;
+-	_ra-&gt;prev_pos |= prev_offset;
++	ra-&gt;prev_pos = prev_index;
++	ra-&gt;prev_pos &lt;&lt;= PAGE_CACHE_SHIFT;
++	ra-&gt;prev_pos |= prev_offset;
+ 
+ 	*ppos = ((loff_t)index &lt;&lt; PAGE_CACHE_SHIFT) + offset;
+ 	if (cached_page)</pre><hr><pre>commit 6b10c6c9fbfe754e8482efb8c8b84f8e40c0f2eb
+Author: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+Date:   Tue Oct 16 01:24:34 2007 -0700
+
+    readahead: basic support of interleaved reads
+    
+    This is a simplified version of the pagecache context based readahead.  It
+    handles the case of multiple threads reading on the same fd and invalidating
+    each others' readahead state.  It does the trick by scanning the pagecache and
+    recovering the current read stream's readahead status.
+    
+    The algorithm works in a opportunistic way, in that it does not try to detect
+    interleaved reads _actively_, which requires a probe into the page cache
+    (which means a little more overhead for random reads).  It only tries to
+    handle a previously started sequential readahead whose state was overwritten
+    by another concurrent stream, and it can do this job pretty well.
+    
+    Negative and positive examples(or what you can expect from it):
+    
+    1) it cannot detect and serve perfect request-by-request interleaved reads
+       right:
+            time    stream 1  stream 2
+            0       1
+            1                 1001
+            2       2
+            3                 1002
+            4       3
+            5                 1003
+            6       4
+            7                 1004
+            8       5
+            9                 1005
+    
+    Here no single readahead will be carried out.
+    
+    2) However, if it's two concurrent reads by two threads, the chance of the
+       initial sequential readahead be started is huge. Once the first sequential
+       readahead is started for a stream, this patch will ensure that the readahead
+       window continues to rampup and won't be disturbed by other streams.
+    
+            time    stream 1  stream 2
+            0       1
+            1       2
+            2                 1001
+            3       3
+            4                 1002
+            5                 1003
+            6       4
+            7       5
+            8                 1004
+            9       6
+            10                1005
+            11      7
+            12                1006
+            13                1007
+    
+    Here stream 1 will start a readahead at page 2, and stream 2 will start its
+    first readahead at page 1003.  From then on the two streams will be served
+    right.
+    
+    Cc: Rusty Russell &lt;rusty@rustcorp.com.au&gt;
+    Signed-off-by: Fengguang Wu &lt;wfg@mail.ustc.edu.cn&gt;
+    Cc: Rusty Russell &lt;rusty@rustcorp.com.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/mm/readahead.c b/mm/readahead.c
+index 4a58befbde4a..fd588ffc5086 100644
+--- a/mm/readahead.c
++++ b/mm/readahead.c
+@@ -379,6 +379,29 @@ ondemand_readahead(struct address_space *mapping,
+ 						offset, req_size, 0);
+ 	}
+ 
++	/*
++	 * Hit a marked page without valid readahead state.
++	 * E.g. interleaved reads.
++	 * Query the pagecache for async_size, which normally equals to
++	 * readahead size. Ramp it up and use it as the new readahead size.
++	 */
++	if (hit_readahead_marker) {
++		pgoff_t start;
++
++		read_lock_irq(&amp;mapping-&gt;tree_lock);
++		start = radix_tree_next_hole(&amp;mapping-&gt;page_tree, offset, max+1);
++		read_unlock_irq(&amp;mapping-&gt;tree_lock);
++
++		if (!start || start - offset &gt; max)
++			return 0;
++
++		ra-&gt;start = start;
++		ra-&gt;size = start - offset;	/* old async_size */
++		ra-&gt;size = get_next_ra_size(ra, max);
++		ra-&gt;async_size = ra-&gt;size;
++		goto readit;
++	}
++
+ 	/*
+ 	 * It may be one of
+ 	 * 	- first read on start of file
+@@ -390,16 +413,6 @@ ondemand_readahead(struct address_space *mapping,
+ 	ra-&gt;size = get_init_ra_size(req_size, max);
+ 	ra-&gt;async_size = ra-&gt;size &gt; req_size ? ra-&gt;size - req_size : ra-&gt;size;
+ 
+-	/*
+-	 * Hit on a marked page without valid readahead state.
+-	 * E.g. interleaved reads.
+-	 * Not knowing its readahead pos/size, bet on the minimal possible one.
+-	 */
+-	if (hit_readahead_marker) {
+-		ra-&gt;start++;
+-		ra-&gt;size = get_next_ra_size(ra, max);
+-	}
+-
+ readit:
+ 	return ra_submit(ra, mapping, filp);
+ }</pre>
+    <div class="pagination">
+        <a href='12_5.html'>&lt;&lt;Prev</a><a href='12.html'>1</a><a href='12_2.html'>2</a><a href='12_3.html'>3</a><a href='12_4.html'>4</a><a href='12_5.html'>5</a><span>[6]</span><a href='12_7.html'>7</a><a href='12_8.html'>8</a><a href='12_9.html'>9</a><a href='12_7.html'>Next&gt;&gt;</a>
+    <div>
+</body>

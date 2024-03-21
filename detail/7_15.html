@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Minnesota</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Minnesota</h1>
+    <div class="pagination">
+        <a href='7_14.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><span>[15]</span><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><a href='7_28.html'>28</a><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_16.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 8e949363f017e2011464812a714fb29710fb95b4
+Author: Aditya Pakki &lt;pakki001@umn.edu&gt;
+Date:   Tue Mar 19 16:42:40 2019 -0500
+
+    net: mlx5: Add a missing check on idr_find, free buf
+    
+    idr_find() can return a NULL value to 'flow' which is used without a
+    check. The patch adds a check to avoid potential NULL pointer dereference.
+    
+    In case of mlx5_fpga_sbu_conn_sendmsg() failure, free buf allocated
+    using kzalloc.
+    
+    Fixes: ab412e1dd7db ("net/mlx5: Accel, add TLS rx offload routines")
+    Signed-off-by: Aditya Pakki &lt;pakki001@umn.edu&gt;
+    Reviewed-by: Yuval Shaia &lt;yuval.shaia@oracle.com&gt;
+    Signed-off-by: Saeed Mahameed &lt;saeedm@mellanox.com&gt;
+
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/fpga/tls.c b/drivers/net/ethernet/mellanox/mlx5/core/fpga/tls.c
+index 5cf5f2a9d51f..8de64e88c670 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/fpga/tls.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/fpga/tls.c
+@@ -217,15 +217,21 @@ int mlx5_fpga_tls_resync_rx(struct mlx5_core_dev *mdev, u32 handle, u32 seq,
+ 	void *cmd;
+ 	int ret;
+ 
++	rcu_read_lock();
++	flow = idr_find(&amp;mdev-&gt;fpga-&gt;tls-&gt;rx_idr, ntohl(handle));
++	rcu_read_unlock();
++
++	if (!flow) {
++		WARN_ONCE(1, "Received NULL pointer for handle\n");
++		return -EINVAL;
++	}
++
+ 	buf = kzalloc(size, GFP_ATOMIC);
+ 	if (!buf)
+ 		return -ENOMEM;
+ 
+ 	cmd = (buf + 1);
+ 
+-	rcu_read_lock();
+-	flow = idr_find(&amp;mdev-&gt;fpga-&gt;tls-&gt;rx_idr, ntohl(handle));
+-	rcu_read_unlock();
+ 	mlx5_fpga_tls_flow_to_cmd(flow, cmd);
+ 
+ 	MLX5_SET(tls_cmd, cmd, swid, ntohl(handle));
+@@ -238,6 +244,8 @@ int mlx5_fpga_tls_resync_rx(struct mlx5_core_dev *mdev, u32 handle, u32 seq,
+ 	buf-&gt;complete = mlx_tls_kfree_complete;
+ 
+ 	ret = mlx5_fpga_sbu_conn_sendmsg(mdev-&gt;fpga-&gt;tls-&gt;conn, buf);
++	if (ret &lt; 0)
++		kfree(buf);
+ 
+ 	return ret;
+ }</pre><hr><pre>commit b5af36e3e5aa074605a4d90a89dd8f714b30909b
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Thu Mar 14 01:45:24 2019 -0500
+
+    staging: greybus: audio_manager: fix a missing check of ida_simple_get
+    
+    ida_simple_get could fail. The fix inserts a check for its
+    return value.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Reviewed-by: Vaibhav Agarwal &lt;vaibhav.sr@gmail.com&gt;
+    Acked-by: Viresh Kumar &lt;viresh.kumar@linaro.org&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/greybus/audio_manager.c b/drivers/staging/greybus/audio_manager.c
+index d44b070d8862..c2a4af4c1d06 100644
+--- a/drivers/staging/greybus/audio_manager.c
++++ b/drivers/staging/greybus/audio_manager.c
+@@ -45,6 +45,9 @@ int gb_audio_manager_add(struct gb_audio_manager_module_descriptor *desc)
+ 	int err;
+ 
+ 	id = ida_simple_get(&amp;module_id, 0, 0, GFP_KERNEL);
++	if (id &lt; 0)
++		return id;
++
+ 	err = gb_audio_manager_module_create(&amp;module, manager_kset,
+ 					     id, desc);
+ 	if (err) {</pre><hr><pre>commit 699ca30162686bf305cdf94861be02eb0cf9bda2
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Mon Mar 25 17:19:09 2019 -0500
+
+    PCI: xilinx: Check for __get_free_pages() failure
+    
+    If __get_free_pages() fails, return -ENOMEM to avoid a NULL pointer
+    dereference.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Signed-off-by: Lorenzo Pieralisi &lt;lorenzo.pieralisi@arm.com&gt;
+    Reviewed-by: Steven Price &lt;steven.price@arm.com&gt;
+    Reviewed-by: Mukesh Ojha &lt;mojha@codeaurora.org&gt;
+
+diff --git a/drivers/pci/controller/pcie-xilinx.c b/drivers/pci/controller/pcie-xilinx.c
+index 9bd1a35cd5d8..5bf3af3b28e6 100644
+--- a/drivers/pci/controller/pcie-xilinx.c
++++ b/drivers/pci/controller/pcie-xilinx.c
+@@ -336,14 +336,19 @@ static const struct irq_domain_ops msi_domain_ops = {
+  * xilinx_pcie_enable_msi - Enable MSI support
+  * @port: PCIe port information
+  */
+-static void xilinx_pcie_enable_msi(struct xilinx_pcie_port *port)
++static int xilinx_pcie_enable_msi(struct xilinx_pcie_port *port)
+ {
+ 	phys_addr_t msg_addr;
+ 
+ 	port-&gt;msi_pages = __get_free_pages(GFP_KERNEL, 0);
++	if (!port-&gt;msi_pages)
++		return -ENOMEM;
++
+ 	msg_addr = virt_to_phys((void *)port-&gt;msi_pages);
+ 	pcie_write(port, 0x0, XILINX_PCIE_REG_MSIBASE1);
+ 	pcie_write(port, msg_addr, XILINX_PCIE_REG_MSIBASE2);
++
++	return 0;
+ }
+ 
+ /* INTx Functions */
+@@ -498,6 +503,7 @@ static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port)
+ 	struct device *dev = port-&gt;dev;
+ 	struct device_node *node = dev-&gt;of_node;
+ 	struct device_node *pcie_intc_node;
++	int ret;
+ 
+ 	/* Setup INTx */
+ 	pcie_intc_node = of_get_next_child(node, NULL);
+@@ -526,7 +532,9 @@ static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port)
+ 			return -ENODEV;
+ 		}
+ 
+-		xilinx_pcie_enable_msi(port);
++		ret = xilinx_pcie_enable_msi(port);
++		if (ret)
++			return ret;
+ 	}
+ 
+ 	return 0;</pre><hr><pre>commit f8ee34c3e77afd8cfc13f98e326325f17494f1e5
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Sat Mar 9 02:42:26 2019 -0500
+
+    media: usbvision: fix a potential NULL pointer dereference
+    
+    In case usb_alloc_coherent fails, the fix returns -ENOMEM to
+    avoid a potential NULL pointer dereference.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/usb/usbvision/usbvision-core.c b/drivers/media/usb/usbvision/usbvision-core.c
+index 92d166bf8c12..abc4eed832a3 100644
+--- a/drivers/media/usb/usbvision/usbvision-core.c
++++ b/drivers/media/usb/usbvision/usbvision-core.c
+@@ -2302,6 +2302,9 @@ int usbvision_init_isoc(struct usb_usbvision *usbvision)
+ 					   sb_size,
+ 					   GFP_KERNEL,
+ 					   &amp;urb-&gt;transfer_dma);
++		if (!usbvision-&gt;sbuf[buf_idx].data)
++			return -ENOMEM;
++
+ 		urb-&gt;dev = dev;
+ 		urb-&gt;context = usbvision;
+ 		urb-&gt;pipe = usb_rcvisocpipe(dev, usbvision-&gt;video_endp);</pre><hr><pre>commit aeb0d0f581e2079868e64a2e5ee346d340376eae
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Sat Mar 9 02:20:56 2019 -0500
+
+    media: video-mux: fix null pointer dereferences
+    
+    devm_kcalloc may fail and return a null pointer. The fix returns
+    -ENOMEM upon failures to avoid null pointer dereferences.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Reviewed-by: Philipp Zabel &lt;p.zabel@pengutronix.de&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/platform/video-mux.c b/drivers/media/platform/video-mux.c
+index 0ba30756e1e4..d8cd5f5cb10d 100644
+--- a/drivers/media/platform/video-mux.c
++++ b/drivers/media/platform/video-mux.c
+@@ -419,9 +419,14 @@ static int video_mux_probe(struct platform_device *pdev)
+ 	vmux-&gt;active = -1;
+ 	vmux-&gt;pads = devm_kcalloc(dev, num_pads, sizeof(*vmux-&gt;pads),
+ 				  GFP_KERNEL);
++	if (!vmux-&gt;pads)
++		return -ENOMEM;
++
+ 	vmux-&gt;format_mbus = devm_kcalloc(dev, num_pads,
+ 					 sizeof(*vmux-&gt;format_mbus),
+ 					 GFP_KERNEL);
++	if (!vmux-&gt;format_mbus)
++		return -ENOMEM;
+ 
+ 	for (i = 0; i &lt; num_pads; i++) {
+ 		vmux-&gt;pads[i].flags = (i &lt; num_pads - 1) ? MEDIA_PAD_FL_SINK</pre><hr><pre>commit fd21b79e541e4666c938a344f3ad2df74b4f5120
+Author: Aditya Pakki &lt;pakki001@umn.edu&gt;
+Date:   Mon Mar 25 16:25:22 2019 -0500
+
+    thunderbolt: Fix to check the return value of kmemdup
+    
+    uuid in add_switch is allocted via kmemdup which can fail. The patch
+    logs the error and cleans up the allocated memory for switch.
+    
+    Signed-off-by: Aditya Pakki &lt;pakki001@umn.edu&gt;
+    Reviewed-by: Mukesh Ojha &lt;mojha@codeaurora.org&gt;
+    Signed-off-by: Mika Westerberg &lt;mika.westerberg@linux.intel.com&gt;
+
+diff --git a/drivers/thunderbolt/icm.c b/drivers/thunderbolt/icm.c
+index e3fc920af682..8b7f9131e9d1 100644
+--- a/drivers/thunderbolt/icm.c
++++ b/drivers/thunderbolt/icm.c
+@@ -473,6 +473,11 @@ static void add_switch(struct tb_switch *parent_sw, u64 route,
+ 		goto out;
+ 
+ 	sw-&gt;uuid = kmemdup(uuid, sizeof(*uuid), GFP_KERNEL);
++	if (!sw-&gt;uuid) {
++		tb_sw_warn(sw, "cannot allocate memory for switch\n");
++		tb_switch_put(sw);
++		goto out;
++	}
+ 	sw-&gt;connection_id = connection_id;
+ 	sw-&gt;connection_key = connection_key;
+ 	sw-&gt;link = link;</pre><hr><pre>commit 6183d5a51866f3acdeeb66b75e87d44025b01a55
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Mon Mar 25 15:23:08 2019 -0500
+
+    thunderbolt: property: Fix a missing check of kzalloc
+    
+    No check is enforced for the return value of kzalloc,
+    which may lead to NULL-pointer dereference.
+    
+    The patch fixes this issue.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Reviewed-by: Mukesh Ojha &lt;mojha@codeaurora.org&gt;
+    Signed-off-by: Mika Westerberg &lt;mika.westerberg@linux.intel.com&gt;
+
+diff --git a/drivers/thunderbolt/property.c b/drivers/thunderbolt/property.c
+index 841314deb446..d5b0cdb8f0b1 100644
+--- a/drivers/thunderbolt/property.c
++++ b/drivers/thunderbolt/property.c
+@@ -587,7 +587,12 @@ int tb_property_add_text(struct tb_property_dir *parent, const char *key,
+ 		return -ENOMEM;
+ 
+ 	property-&gt;length = size / 4;
+-	property-&gt;value.data = kzalloc(size, GFP_KERNEL);
++	property-&gt;value.text = kzalloc(size, GFP_KERNEL);
++	if (!property-&gt;value.text) {
++		kfree(property);
++		return -ENOMEM;
++	}
++
+ 	strcpy(property-&gt;value.text, text);
+ 
+ 	list_add_tail(&amp;property-&gt;list, &amp;parent-&gt;properties);</pre><hr><pre>commit 13bd14a41ce3105d5b1f3cd8b4d1e249d17b6d9b
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Fri Mar 8 21:50:24 2019 -0600
+
+    char: hpet: fix a missing check of ioremap
+    
+    Check if ioremap fails, and if so, return AE_ERROR.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/char/hpet.c b/drivers/char/hpet.c
+index d0ad85900b79..3a1e6b3ccd10 100644
+--- a/drivers/char/hpet.c
++++ b/drivers/char/hpet.c
+@@ -973,6 +973,8 @@ static acpi_status hpet_resources(struct acpi_resource *res, void *data)
+ 	if (ACPI_SUCCESS(status)) {
+ 		hdp-&gt;hd_phys_address = addr.address.minimum;
+ 		hdp-&gt;hd_address = ioremap(addr.address.minimum, addr.address.address_length);
++		if (!hdp-&gt;hd_address)
++			return AE_ERROR;
+ 
+ 		if (hpet_is_known(hdp)) {
+ 			iounmap(hdp-&gt;hd_address);</pre><hr><pre>commit 486fa92df4707b5df58d6508728bdb9321a59766
+Author: Aditya Pakki &lt;pakki001@umn.edu&gt;
+Date:   Mon Mar 25 16:55:27 2019 -0500
+
+    libnvdimm/btt: Fix a kmemdup failure check
+    
+    In case kmemdup fails, the fix releases resources and returns to
+    avoid the NULL pointer dereference.
+    
+    Signed-off-by: Aditya Pakki &lt;pakki001@umn.edu&gt;
+    Signed-off-by: Dan Williams &lt;dan.j.williams@intel.com&gt;
+
+diff --git a/drivers/nvdimm/btt_devs.c b/drivers/nvdimm/btt_devs.c
+index b72a303176c7..9486acc08402 100644
+--- a/drivers/nvdimm/btt_devs.c
++++ b/drivers/nvdimm/btt_devs.c
+@@ -198,14 +198,15 @@ static struct device *__nd_btt_create(struct nd_region *nd_region,
+ 		return NULL;
+ 
+ 	nd_btt-&gt;id = ida_simple_get(&amp;nd_region-&gt;btt_ida, 0, 0, GFP_KERNEL);
+-	if (nd_btt-&gt;id &lt; 0) {
+-		kfree(nd_btt);
+-		return NULL;
+-	}
++	if (nd_btt-&gt;id &lt; 0)
++		goto out_nd_btt;
+ 
+ 	nd_btt-&gt;lbasize = lbasize;
+-	if (uuid)
++	if (uuid) {
+ 		uuid = kmemdup(uuid, 16, GFP_KERNEL);
++		if (!uuid)
++			goto out_put_id;
++	}
+ 	nd_btt-&gt;uuid = uuid;
+ 	dev = &amp;nd_btt-&gt;dev;
+ 	dev_set_name(dev, "btt%d.%d", nd_region-&gt;id, nd_btt-&gt;id);
+@@ -220,6 +221,13 @@ static struct device *__nd_btt_create(struct nd_region *nd_region,
+ 		return NULL;
+ 	}
+ 	return dev;
++
++out_put_id:
++	ida_simple_remove(&amp;nd_region-&gt;btt_ida, nd_btt-&gt;id);
++
++out_nd_btt:
++	kfree(nd_btt);
++	return NULL;
+ }
+ 
+ struct device *nd_btt_create(struct nd_region *nd_region)</pre><hr><pre>commit 1bbb1c318cd8a3a39e8c3e2e83d5e90542d6c3e3
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Fri Mar 15 02:07:12 2019 -0500
+
+    tty: ipwireless: fix missing checks for ioremap
+    
+    ipw-&gt;attr_memory and ipw-&gt;common_memory are assigned with the
+    return value of ioremap. ioremap may fail, but no checks
+    are enforced. The fix inserts the checks to avoid potential
+    NULL pointer dereferences.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Reviewed-by: David Sterba &lt;dsterba@suse.com&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/tty/ipwireless/main.c b/drivers/tty/ipwireless/main.c
+index 3475e841ef5c..4c18bbfe1a92 100644
+--- a/drivers/tty/ipwireless/main.c
++++ b/drivers/tty/ipwireless/main.c
+@@ -114,6 +114,10 @@ static int ipwireless_probe(struct pcmcia_device *p_dev, void *priv_data)
+ 
+ 	ipw-&gt;common_memory = ioremap(p_dev-&gt;resource[2]-&gt;start,
+ 				resource_size(p_dev-&gt;resource[2]));
++	if (!ipw-&gt;common_memory) {
++		ret = -ENOMEM;
++		goto exit1;
++	}
+ 	if (!request_mem_region(p_dev-&gt;resource[2]-&gt;start,
+ 				resource_size(p_dev-&gt;resource[2]),
+ 				IPWIRELESS_PCCARD_NAME)) {
+@@ -134,6 +138,10 @@ static int ipwireless_probe(struct pcmcia_device *p_dev, void *priv_data)
+ 
+ 	ipw-&gt;attr_memory = ioremap(p_dev-&gt;resource[3]-&gt;start,
+ 				resource_size(p_dev-&gt;resource[3]));
++	if (!ipw-&gt;attr_memory) {
++		ret = -ENOMEM;
++		goto exit3;
++	}
+ 	if (!request_mem_region(p_dev-&gt;resource[3]-&gt;start,
+ 				resource_size(p_dev-&gt;resource[3]),
+ 				IPWIRELESS_PCCARD_NAME)) {</pre>
+    <div class="pagination">
+        <a href='7_14.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><span>[15]</span><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><a href='7_28.html'>28</a><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_16.html'>Next&gt;&gt;</a>
+    <div>
+</body>

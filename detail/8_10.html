@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of New South Wales</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of New South Wales</h1>
+    <div class="pagination">
+        <a href='8_9.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><span>[10]</span><a href='8_11.html'>11</a><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_11.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 46be925fa6f4796e732e16a020fa0ef9d48ea7c8
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:03:11 2005 -0700
+
+    [PATCH] knfsd: lockd: flush signals on shutdown
+    
+    Silence another annoying "failed to contact portmap (errno -512)" on shutdown.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/lockd/svc.c b/fs/lockd/svc.c
+index b82e470912e8..6e242556b903 100644
+--- a/fs/lockd/svc.c
++++ b/fs/lockd/svc.c
+@@ -191,7 +191,9 @@ lockd(struct svc_rqst *rqstp)
+ 		printk(KERN_DEBUG
+ 			"lockd: new process, skipping host shutdown\n");
+ 	wake_up(&amp;lockd_exit);
+-		
++
++	flush_signals(current);
++
+ 	/* Exit the RPC thread */
+ 	svc_exit_thread(rqstp);
+ </pre><hr><pre>commit 13cd21845d6a9729ca95e36ae6e8c669623fbfd4
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:03:10 2005 -0700
+
+    [PATCH] nfsd4: reference count struct nfs4_file
+    
+    Add a struct kref to each nfs4_file and take a reference to it from each
+    stateid and delegation that refers to it.  The atomicity guarantees are
+    overkill given that all this stuff is done under the single nfsd4 state lock,
+    but a) we'd like finer-grained locking some day, and b) this simplifies the
+    cleanup of the structures a bit, something that has previously been a bit
+    complicated and bug-prone.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index a84a80e8c0cf..6ba428afa433 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -111,7 +111,6 @@ opaque_hashval(const void *ptr, int nbytes)
+ /* forward declarations */
+ static void release_stateowner(struct nfs4_stateowner *sop);
+ static void release_stateid(struct nfs4_stateid *stp, int flags);
+-static void release_file(struct nfs4_file *fp);
+ 
+ /*
+  * Delegation state
+@@ -121,6 +120,27 @@ static void release_file(struct nfs4_file *fp);
+ spinlock_t recall_lock;
+ static struct list_head del_recall_lru;
+ 
++static void
++free_nfs4_file(struct kref *kref)
++{
++	struct nfs4_file *fp = container_of(kref, struct nfs4_file, fi_ref);
++	list_del(&amp;fp-&gt;fi_hash);
++	iput(fp-&gt;fi_inode);
++	kmem_cache_free(file_slab, fp);
++}
++
++static inline void
++put_nfs4_file(struct nfs4_file *fi)
++{
++	kref_put(&amp;fi-&gt;fi_ref, free_nfs4_file);
++}
++
++static inline void
++get_nfs4_file(struct nfs4_file *fi)
++{
++	kref_get(&amp;fi-&gt;fi_ref);
++}
++
+ static struct nfs4_delegation *
+ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_stateid *stp, struct svc_fh *current_fh, u32 type)
+ {
+@@ -136,6 +156,7 @@ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_stateid *stp, struct svc_f
+ 	INIT_LIST_HEAD(&amp;dp-&gt;dl_del_perclnt);
+ 	INIT_LIST_HEAD(&amp;dp-&gt;dl_recall_lru);
+ 	dp-&gt;dl_client = clp;
++	get_nfs4_file(fp);
+ 	dp-&gt;dl_file = fp;
+ 	dp-&gt;dl_flock = NULL;
+ 	get_file(stp-&gt;st_vfs_file);
+@@ -163,6 +184,7 @@ nfs4_put_delegation(struct nfs4_delegation *dp)
+ {
+ 	if (atomic_dec_and_test(&amp;dp-&gt;dl_count)) {
+ 		dprintk("NFSD: freeing dp %p\n",dp);
++		put_nfs4_file(dp-&gt;dl_file);
+ 		kmem_cache_free(deleg_slab, dp);
+ 	}
+ }
+@@ -953,6 +975,7 @@ alloc_init_file(struct inode *ino)
+ 
+ 	fp = kmem_cache_alloc(file_slab, GFP_KERNEL);
+ 	if (fp) {
++		kref_init(&amp;fp-&gt;fi_ref);
+ 		INIT_LIST_HEAD(&amp;fp-&gt;fi_hash);
+ 		INIT_LIST_HEAD(&amp;fp-&gt;fi_stateids);
+ 		INIT_LIST_HEAD(&amp;fp-&gt;fi_delegations);
+@@ -964,24 +987,6 @@ alloc_init_file(struct inode *ino)
+ 	return NULL;
+ }
+ 
+-static void
+-release_all_files(void)
+-{
+-	int i;
+-	struct nfs4_file *fp;
+-
+-	for (i=0;i&lt;FILE_HASH_SIZE;i++) {
+-		while (!list_empty(&amp;file_hashtbl[i])) {
+-			fp = list_entry(file_hashtbl[i].next, struct nfs4_file, fi_hash);
+-			/* this should never be more than once... */
+-			if (!list_empty(&amp;fp-&gt;fi_stateids) || !list_empty(&amp;fp-&gt;fi_delegations)) {
+-				printk("ERROR: release_all_files: file %p is open, creating dangling state !!!\n",fp);
+-			}
+-			release_file(fp);
+-		}
+-	}
+-}
+-
+ static void
+ nfsd4_free_slab(kmem_cache_t **slab)
+ {
+@@ -1141,6 +1146,7 @@ init_stateid(struct nfs4_stateid *stp, struct nfs4_file *fp, struct nfsd4_open *
+ 	list_add(&amp;stp-&gt;st_perfilestate, &amp;sop-&gt;so_perfilestate);
+ 	list_add(&amp;stp-&gt;st_perfile, &amp;fp-&gt;fi_stateids);
+ 	stp-&gt;st_stateowner = sop;
++	get_nfs4_file(fp);
+ 	stp-&gt;st_file = fp;
+ 	stp-&gt;st_stateid.si_boot = boot_time;
+ 	stp-&gt;st_stateid.si_stateownerid = sop-&gt;so_id;
+@@ -1166,18 +1172,11 @@ release_stateid(struct nfs4_stateid *stp, int flags)
+ 		nfsd_close(filp);
+ 	} else if (flags &amp; LOCK_STATE)
+ 		locks_remove_posix(filp, (fl_owner_t) stp-&gt;st_stateowner);
++	put_nfs4_file(stp-&gt;st_file);
+ 	kmem_cache_free(stateid_slab, stp);
+ 	stp = NULL;
+ }
+ 
+-static void
+-release_file(struct nfs4_file *fp)
+-{
+-	list_del(&amp;fp-&gt;fi_hash);
+-	iput(fp-&gt;fi_inode);
+-	kmem_cache_free(file_slab, fp);
+-}	
+-
+ void
+ move_to_close_lru(struct nfs4_stateowner *sop)
+ {
+@@ -1192,7 +1191,6 @@ void
+ release_state_owner(struct nfs4_stateid *stp, int flag)
+ {
+ 	struct nfs4_stateowner *sop = stp-&gt;st_stateowner;
+-	struct nfs4_file *fp = stp-&gt;st_file;
+ 
+ 	dprintk("NFSD: release_state_owner\n");
+ 	release_stateid(stp, flag);
+@@ -1203,10 +1201,6 @@ release_state_owner(struct nfs4_stateid *stp, int flag)
+ 	 */
+ 	if (sop-&gt;so_confirmed &amp;&amp; list_empty(&amp;sop-&gt;so_perfilestate))
+ 		move_to_close_lru(sop);
+-	/* unused nfs4_file's are releseed. XXX slab cache? */
+-	if (list_empty(&amp;fp-&gt;fi_stateids) &amp;&amp; list_empty(&amp;fp-&gt;fi_delegations)) {
+-		release_file(fp);
+-	}
+ }
+ 
+ static int
+@@ -1236,8 +1230,10 @@ find_file(struct inode *ino)
+ 	struct nfs4_file *fp;
+ 
+ 	list_for_each_entry(fp, &amp;file_hashtbl[hashval], fi_hash) {
+-		if (fp-&gt;fi_inode == ino)
++		if (fp-&gt;fi_inode == ino) {
++			get_nfs4_file(fp);
+ 			return fp;
++		}
+ 	}
+ 	return NULL;
+ }
+@@ -1288,19 +1284,24 @@ nfs4_share_conflict(struct svc_fh *current_fh, unsigned int deny_type)
+ 	struct inode *ino = current_fh-&gt;fh_dentry-&gt;d_inode;
+ 	struct nfs4_file *fp;
+ 	struct nfs4_stateid *stp;
++	int ret;
+ 
+ 	dprintk("NFSD: nfs4_share_conflict\n");
+ 
+ 	fp = find_file(ino);
+-	if (fp) {
++	if (!fp)
++		return nfs_ok;
++	ret = nfserr_share_denied;
+ 	/* Search for conflicting share reservations */
+-		list_for_each_entry(stp, &amp;fp-&gt;fi_stateids, st_perfile) {
+-			if (test_bit(deny_type, &amp;stp-&gt;st_deny_bmap) ||
+-			    test_bit(NFS4_SHARE_DENY_BOTH, &amp;stp-&gt;st_deny_bmap))
+-				return nfserr_share_denied;
+-		}
++	list_for_each_entry(stp, &amp;fp-&gt;fi_stateids, st_perfile) {
++		if (test_bit(deny_type, &amp;stp-&gt;st_deny_bmap) ||
++		    test_bit(NFS4_SHARE_DENY_BOTH, &amp;stp-&gt;st_deny_bmap))
++			goto out;
+ 	}
+-	return nfs_ok;
++	ret = nfs_ok;
++out:
++	put_nfs4_file(fp);
++	return ret;
+ }
+ 
+ static inline void
+@@ -1829,10 +1830,8 @@ nfsd4_process_open2(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nf
+ 	            stp-&gt;st_stateid.si_boot, stp-&gt;st_stateid.si_stateownerid,
+ 	            stp-&gt;st_stateid.si_fileid, stp-&gt;st_stateid.si_generation);
+ out:
+-	/* take the opportunity to clean up unused state */
+-	if (fp &amp;&amp; list_empty(&amp;fp-&gt;fi_stateids) &amp;&amp; list_empty(&amp;fp-&gt;fi_delegations))
+-		release_file(fp);
+-
++	if (fp)
++		put_nfs4_file(fp);
+ 	/* CLAIM_PREVIOUS has different error returns */
+ 	nfs4_set_claim_prev(open, &amp;status);
+ 	/*
+@@ -2480,16 +2479,19 @@ find_stateid(stateid_t *stid, int flags)
+ static struct nfs4_delegation *
+ find_delegation_stateid(struct inode *ino, stateid_t *stid)
+ {
+-	struct nfs4_file *fp = NULL;
++	struct nfs4_file *fp;
++	struct nfs4_delegation *dl;
+ 
+ 	dprintk("NFSD:find_delegation_stateid stateid=(%08x/%08x/%08x/%08x)\n",
+                     stid-&gt;si_boot, stid-&gt;si_stateownerid,
+                     stid-&gt;si_fileid, stid-&gt;si_generation);
+ 
+ 	fp = find_file(ino);
+-	if (fp)
+-		return find_delegation_file(fp, stid);
+-	return NULL;
++	if (!fp)
++		return NULL;
++	dl = find_delegation_file(fp, stid);
++	put_nfs4_file(fp);
++	return dl;
+ }
+ 
+ /*
+@@ -2636,6 +2638,7 @@ alloc_init_lock_stateid(struct nfs4_stateowner *sop, struct nfs4_file *fp, struc
+ 	list_add(&amp;stp-&gt;st_perfile, &amp;fp-&gt;fi_stateids);
+ 	list_add(&amp;stp-&gt;st_perfilestate, &amp;sop-&gt;so_perfilestate);
+ 	stp-&gt;st_stateowner = sop;
++	get_nfs4_file(fp);
+ 	stp-&gt;st_file = fp;
+ 	stp-&gt;st_stateid.si_boot = boot_time;
+ 	stp-&gt;st_stateid.si_stateownerid = sop-&gt;so_id;
+@@ -3287,7 +3290,6 @@ __nfs4_state_shutdown(void)
+ 		unhash_delegation(dp);
+ 	}
+ 
+-	release_all_files();
+ 	cancel_delayed_work(&amp;laundromat_work);
+ 	flush_scheduled_work();
+ 	nfs4_init = 0;
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index 2c3b42674a4c..296e6429fc3b 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -217,6 +217,7 @@ struct nfs4_stateowner {
+ *      share_acces, share_deny on the file.
+ */
+ struct nfs4_file {
++	struct kref		fi_ref;
+ 	struct list_head        fi_hash;    /* hash by "struct inode *" */
+ 	struct list_head        fi_stateids;
+ 	struct list_head	fi_delegations;</pre><hr><pre>commit 8beefa249371f55432394ac96864c83b0b309c28
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:03:08 2005 -0700
+
+    [PATCH] nfsd4: rename nfs4_file fields
+    
+    Trivial renaming patch:
+    
+    I can never remember, while looking at various lists relating the nfsd4 state
+    structures, which are the "heads" and which are items on other lists, or which
+    structures are actually on the various lists.  The following convention helps
+    me: given structures foo and bar, with foo containing the head of a list of
+    bars, use "bars" for the name of the head of the list contained in the struct
+    foo, and use "per_foo" for the entries in the struct bars.
+    
+    Go ahead and do this for struct nfs4_file.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index f03a4180fa11..a84a80e8c0cf 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -153,7 +153,7 @@ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_stateid *stp, struct svc_f
+ 		        current_fh-&gt;fh_handle.fh_size);
+ 	dp-&gt;dl_time = 0;
+ 	atomic_set(&amp;dp-&gt;dl_count, 1);
+-	list_add(&amp;dp-&gt;dl_del_perfile, &amp;fp-&gt;fi_del_perfile);
++	list_add(&amp;dp-&gt;dl_del_perfile, &amp;fp-&gt;fi_delegations);
+ 	list_add(&amp;dp-&gt;dl_del_perclnt, &amp;clp-&gt;cl_del_perclnt);
+ 	return dp;
+ }
+@@ -954,8 +954,8 @@ alloc_init_file(struct inode *ino)
+ 	fp = kmem_cache_alloc(file_slab, GFP_KERNEL);
+ 	if (fp) {
+ 		INIT_LIST_HEAD(&amp;fp-&gt;fi_hash);
+-		INIT_LIST_HEAD(&amp;fp-&gt;fi_perfile);
+-		INIT_LIST_HEAD(&amp;fp-&gt;fi_del_perfile);
++		INIT_LIST_HEAD(&amp;fp-&gt;fi_stateids);
++		INIT_LIST_HEAD(&amp;fp-&gt;fi_delegations);
+ 		list_add(&amp;fp-&gt;fi_hash, &amp;file_hashtbl[hashval]);
+ 		fp-&gt;fi_inode = igrab(ino);
+ 		fp-&gt;fi_id = current_fileid++;
+@@ -974,7 +974,7 @@ release_all_files(void)
+ 		while (!list_empty(&amp;file_hashtbl[i])) {
+ 			fp = list_entry(file_hashtbl[i].next, struct nfs4_file, fi_hash);
+ 			/* this should never be more than once... */
+-			if (!list_empty(&amp;fp-&gt;fi_perfile) || !list_empty(&amp;fp-&gt;fi_del_perfile)) {
++			if (!list_empty(&amp;fp-&gt;fi_stateids) || !list_empty(&amp;fp-&gt;fi_delegations)) {
+ 				printk("ERROR: release_all_files: file %p is open, creating dangling state !!!\n",fp);
+ 			}
+ 			release_file(fp);
+@@ -1139,7 +1139,7 @@ init_stateid(struct nfs4_stateid *stp, struct nfs4_file *fp, struct nfsd4_open *
+ 	INIT_LIST_HEAD(&amp;stp-&gt;st_perfile);
+ 	list_add(&amp;stp-&gt;st_hash, &amp;stateid_hashtbl[hashval]);
+ 	list_add(&amp;stp-&gt;st_perfilestate, &amp;sop-&gt;so_perfilestate);
+-	list_add(&amp;stp-&gt;st_perfile, &amp;fp-&gt;fi_perfile);
++	list_add(&amp;stp-&gt;st_perfile, &amp;fp-&gt;fi_stateids);
+ 	stp-&gt;st_stateowner = sop;
+ 	stp-&gt;st_file = fp;
+ 	stp-&gt;st_stateid.si_boot = boot_time;
+@@ -1204,7 +1204,7 @@ release_state_owner(struct nfs4_stateid *stp, int flag)
+ 	if (sop-&gt;so_confirmed &amp;&amp; list_empty(&amp;sop-&gt;so_perfilestate))
+ 		move_to_close_lru(sop);
+ 	/* unused nfs4_file's are releseed. XXX slab cache? */
+-	if (list_empty(&amp;fp-&gt;fi_perfile) &amp;&amp; list_empty(&amp;fp-&gt;fi_del_perfile)) {
++	if (list_empty(&amp;fp-&gt;fi_stateids) &amp;&amp; list_empty(&amp;fp-&gt;fi_delegations)) {
+ 		release_file(fp);
+ 	}
+ }
+@@ -1294,7 +1294,7 @@ nfs4_share_conflict(struct svc_fh *current_fh, unsigned int deny_type)
+ 	fp = find_file(ino);
+ 	if (fp) {
+ 	/* Search for conflicting share reservations */
+-		list_for_each_entry(stp, &amp;fp-&gt;fi_perfile, st_perfile) {
++		list_for_each_entry(stp, &amp;fp-&gt;fi_stateids, st_perfile) {
+ 			if (test_bit(deny_type, &amp;stp-&gt;st_deny_bmap) ||
+ 			    test_bit(NFS4_SHARE_DENY_BOTH, &amp;stp-&gt;st_deny_bmap))
+ 				return nfserr_share_denied;
+@@ -1545,7 +1545,7 @@ find_delegation_file(struct nfs4_file *fp, stateid_t *stid)
+ {
+ 	struct nfs4_delegation *dp;
+ 
+-	list_for_each_entry(dp, &amp;fp-&gt;fi_del_perfile, dl_del_perfile) {
++	list_for_each_entry(dp, &amp;fp-&gt;fi_delegations, dl_del_perfile) {
+ 		if (dp-&gt;dl_stateid.si_stateownerid == stid-&gt;si_stateownerid)
+ 			return dp;
+ 	}
+@@ -1583,7 +1583,7 @@ nfs4_check_open(struct nfs4_file *fp, struct nfsd4_open *open, struct nfs4_state
+ 	int status = nfserr_share_denied;
+ 	struct nfs4_stateowner *sop = open-&gt;op_stateowner;
+ 
+-	list_for_each_entry(local, &amp;fp-&gt;fi_perfile, st_perfile) {
++	list_for_each_entry(local, &amp;fp-&gt;fi_stateids, st_perfile) {
+ 		/* ignore lock owners */
+ 		if (local-&gt;st_stateowner-&gt;so_is_open_owner == 0)
+ 			continue;
+@@ -1830,7 +1830,7 @@ nfsd4_process_open2(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nf
+ 	            stp-&gt;st_stateid.si_fileid, stp-&gt;st_stateid.si_generation);
+ out:
+ 	/* take the opportunity to clean up unused state */
+-	if (fp &amp;&amp; list_empty(&amp;fp-&gt;fi_perfile) &amp;&amp; list_empty(&amp;fp-&gt;fi_del_perfile))
++	if (fp &amp;&amp; list_empty(&amp;fp-&gt;fi_stateids) &amp;&amp; list_empty(&amp;fp-&gt;fi_delegations))
+ 		release_file(fp);
+ 
+ 	/* CLAIM_PREVIOUS has different error returns */
+@@ -2633,7 +2633,7 @@ alloc_init_lock_stateid(struct nfs4_stateowner *sop, struct nfs4_file *fp, struc
+ 	INIT_LIST_HEAD(&amp;stp-&gt;st_perfilestate);
+ 	INIT_LIST_HEAD(&amp;stp-&gt;st_perlockowner); /* not used */
+ 	list_add(&amp;stp-&gt;st_hash, &amp;lockstateid_hashtbl[hashval]);
+-	list_add(&amp;stp-&gt;st_perfile, &amp;fp-&gt;fi_perfile);
++	list_add(&amp;stp-&gt;st_perfile, &amp;fp-&gt;fi_stateids);
+ 	list_add(&amp;stp-&gt;st_perfilestate, &amp;sop-&gt;so_perfilestate);
+ 	stp-&gt;st_stateowner = sop;
+ 	stp-&gt;st_file = fp;
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index b6b2fe1e7c63..2c3b42674a4c 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -218,8 +218,8 @@ struct nfs4_stateowner {
+ */
+ struct nfs4_file {
+ 	struct list_head        fi_hash;    /* hash by "struct inode *" */
+-	struct list_head        fi_perfile; /* list: nfs4_stateid */
+-	struct list_head	fi_del_perfile; /* list: nfs4_delegation */
++	struct list_head        fi_stateids;
++	struct list_head	fi_delegations;
+ 	struct inode		*fi_inode;
+ 	u32                     fi_id;      /* used with stateowner-&gt;so_id 
+ 					     * for stateid_hashtbl hash */</pre><hr><pre>commit 6fa305ded4cc859deb4727ad9b25df0bbc064e99
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:03:06 2005 -0700
+
+    [PATCH] nfsd4: remove debugging counters
+    
+    These remaining debugging counters haven't proved that useful.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 927d2007d5ab..f03a4180fa11 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -65,14 +65,6 @@ static u32 nfs4_init;
+ stateid_t zerostateid;             /* bits all 0 */
+ stateid_t onestateid;              /* bits all 1 */
+ 
+-/* debug counters */
+-u32 list_add_perfile = 0; 
+-u32 list_del_perfile = 0;
+-u32 add_perclient = 0;
+-u32 del_perclient = 0;
+-u32 vfsopen = 0;
+-u32 vfsclose = 0;
+-
+ /* forward declarations */
+ struct nfs4_stateid * find_stateid(stateid_t *stid, int flags);
+ static struct nfs4_delegation * find_delegation_stateid(struct inode *ino, stateid_t *stid);
+@@ -192,7 +184,6 @@ nfs4_close_delegation(struct nfs4_delegation *dp)
+ 	if (dp-&gt;dl_flock)
+ 		setlease(filp, F_UNLCK, &amp;dp-&gt;dl_flock);
+ 	nfsd_close(filp);
+-	vfsclose++;
+ }
+ 
+ /* Called under the state lock. */
+@@ -1083,7 +1074,6 @@ alloc_init_open_stateowner(unsigned int strhashval, struct nfs4_client *clp, str
+ 	list_add(&amp;sop-&gt;so_idhash, &amp;ownerid_hashtbl[idhashval]);
+ 	list_add(&amp;sop-&gt;so_strhash, &amp;ownerstr_hashtbl[strhashval]);
+ 	list_add(&amp;sop-&gt;so_perclient, &amp;clp-&gt;cl_perclient);
+-	add_perclient++;
+ 	sop-&gt;so_is_open_owner = 1;
+ 	sop-&gt;so_id = current_ownerid++;
+ 	sop-&gt;so_client = clp;
+@@ -1117,10 +1107,8 @@ unhash_stateowner(struct nfs4_stateowner *sop)
+ 
+ 	list_del(&amp;sop-&gt;so_idhash);
+ 	list_del(&amp;sop-&gt;so_strhash);
+-	if (sop-&gt;so_is_open_owner) {
++	if (sop-&gt;so_is_open_owner)
+ 		list_del(&amp;sop-&gt;so_perclient);
+-		del_perclient++;
+-	}
+ 	list_del(&amp;sop-&gt;so_perlockowner);
+ 	while (!list_empty(&amp;sop-&gt;so_perfilestate)) {
+ 		stp = list_entry(sop-&gt;so_perfilestate.next, 
+@@ -1151,7 +1139,6 @@ init_stateid(struct nfs4_stateid *stp, struct nfs4_file *fp, struct nfsd4_open *
+ 	INIT_LIST_HEAD(&amp;stp-&gt;st_perfile);
+ 	list_add(&amp;stp-&gt;st_hash, &amp;stateid_hashtbl[hashval]);
+ 	list_add(&amp;stp-&gt;st_perfilestate, &amp;sop-&gt;so_perfilestate);
+-	list_add_perfile++;
+ 	list_add(&amp;stp-&gt;st_perfile, &amp;fp-&gt;fi_perfile);
+ 	stp-&gt;st_stateowner = sop;
+ 	stp-&gt;st_file = fp;
+@@ -1171,14 +1158,12 @@ release_stateid(struct nfs4_stateid *stp, int flags)
+ 	struct file *filp = stp-&gt;st_vfs_file;
+ 
+ 	list_del(&amp;stp-&gt;st_hash);
+-	list_del_perfile++;
+ 	list_del(&amp;stp-&gt;st_perfile);
+ 	list_del(&amp;stp-&gt;st_perfilestate);
+ 	if (flags &amp; OPEN_STATE) {
+ 		release_stateid_lockowners(stp);
+ 		stp-&gt;st_vfs_file = NULL;
+ 		nfsd_close(filp);
+-		vfsclose++;
+ 	} else if (flags &amp; LOCK_STATE)
+ 		locks_remove_posix(filp, (fl_owner_t) stp-&gt;st_stateowner);
+ 	kmem_cache_free(stateid_slab, stp);
+@@ -1645,7 +1630,6 @@ nfs4_new_open(struct svc_rqst *rqstp, struct nfs4_stateid **stpp,
+ 			return status;
+ 		}
+ 	}
+-	vfsopen++;
+ 	*stpp = stp;
+ 	return 0;
+ }
+@@ -2650,7 +2634,6 @@ alloc_init_lock_stateid(struct nfs4_stateowner *sop, struct nfs4_file *fp, struc
+ 	INIT_LIST_HEAD(&amp;stp-&gt;st_perlockowner); /* not used */
+ 	list_add(&amp;stp-&gt;st_hash, &amp;lockstateid_hashtbl[hashval]);
+ 	list_add(&amp;stp-&gt;st_perfile, &amp;fp-&gt;fi_perfile);
+-	list_add_perfile++;
+ 	list_add(&amp;stp-&gt;st_perfilestate, &amp;sop-&gt;so_perfilestate);
+ 	stp-&gt;st_stateowner = sop;
+ 	stp-&gt;st_file = fp;
+@@ -3308,12 +3291,6 @@ __nfs4_state_shutdown(void)
+ 	cancel_delayed_work(&amp;laundromat_work);
+ 	flush_scheduled_work();
+ 	nfs4_init = 0;
+-	dprintk("NFSD: list_add_perfile %d list_del_perfile %d\n",
+-			list_add_perfile, list_del_perfile);
+-	dprintk("NFSD: add_perclient %d del_perclient %d\n",
+-			add_perclient, del_perclient);
+-	dprintk("NFSD: vfsopen %d vfsclose %d\n",
+-			vfsopen, vfsclose);
+ }
+ 
+ void</pre><hr><pre>commit 5b2d21c1965859acc881dd862b6ebbfae67cdc14
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:03:04 2005 -0700
+
+    [PATCH] nfsd4: slabify delegations
+    
+    Allocate delegations from a slab cache.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index c5fce309d87e..927d2007d5ab 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -72,8 +72,6 @@ u32 add_perclient = 0;
+ u32 del_perclient = 0;
+ u32 vfsopen = 0;
+ u32 vfsclose = 0;
+-u32 alloc_delegation= 0;
+-u32 free_delegation= 0;
+ 
+ /* forward declarations */
+ struct nfs4_stateid * find_stateid(stateid_t *stid, int flags);
+@@ -91,6 +89,7 @@ static DECLARE_MUTEX(client_sema);
+ kmem_cache_t *stateowner_slab = NULL;
+ kmem_cache_t *file_slab = NULL;
+ kmem_cache_t *stateid_slab = NULL;
++kmem_cache_t *deleg_slab = NULL;
+ 
+ void
+ nfs4_lock_state(void)
+@@ -138,8 +137,8 @@ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_stateid *stp, struct svc_f
+ 	struct nfs4_callback *cb = &amp;stp-&gt;st_stateowner-&gt;so_client-&gt;cl_callback;
+ 
+ 	dprintk("NFSD alloc_init_deleg\n");
+-	if ((dp = kmalloc(sizeof(struct nfs4_delegation),
+-		GFP_KERNEL)) == NULL)
++	dp = kmem_cache_alloc(deleg_slab, GFP_KERNEL);
++	if (dp == NULL)
+ 		return dp;
+ 	INIT_LIST_HEAD(&amp;dp-&gt;dl_del_perfile);
+ 	INIT_LIST_HEAD(&amp;dp-&gt;dl_del_perclnt);
+@@ -164,7 +163,6 @@ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_stateid *stp, struct svc_f
+ 	atomic_set(&amp;dp-&gt;dl_count, 1);
+ 	list_add(&amp;dp-&gt;dl_del_perfile, &amp;fp-&gt;fi_del_perfile);
+ 	list_add(&amp;dp-&gt;dl_del_perclnt, &amp;clp-&gt;cl_del_perclnt);
+-	alloc_delegation++;
+ 	return dp;
+ }
+ 
+@@ -173,8 +171,7 @@ nfs4_put_delegation(struct nfs4_delegation *dp)
+ {
+ 	if (atomic_dec_and_test(&amp;dp-&gt;dl_count)) {
+ 		dprintk("NFSD: freeing dp %p\n",dp);
+-		kfree(dp);
+-		free_delegation++;
++		kmem_cache_free(deleg_slab, dp);
+ 	}
+ }
+ 
+@@ -1012,6 +1009,7 @@ nfsd4_free_slabs(void)
+ 	nfsd4_free_slab(&amp;stateowner_slab);
+ 	nfsd4_free_slab(&amp;file_slab);
+ 	nfsd4_free_slab(&amp;stateid_slab);
++	nfsd4_free_slab(&amp;deleg_slab);
+ }
+ 
+ static int
+@@ -1029,6 +1027,10 @@ nfsd4_init_slabs(void)
+ 			sizeof(struct nfs4_stateid), 0, 0, NULL, NULL);
+ 	if (stateid_slab == NULL)
+ 		goto out_nomem;
++	deleg_slab = kmem_cache_create("nfsd4_delegations",
++			sizeof(struct nfs4_delegation), 0, 0, NULL, NULL);
++	if (deleg_slab == NULL)
++		goto out_nomem;
+ 	return 0;
+ out_nomem:
+ 	nfsd4_free_slabs();
+@@ -3312,9 +3314,6 @@ __nfs4_state_shutdown(void)
+ 			add_perclient, del_perclient);
+ 	dprintk("NFSD: vfsopen %d vfsclose %d\n",
+ 			vfsopen, vfsclose);
+-	dprintk("NFSD: alloc_delegation %d free_delegation %d\n",
+-			alloc_delegation, free_delegation);
+-
+ }
+ 
+ void</pre><hr><pre>commit 5ac049ac66416bbe84923f7c2384f23f6ee4aa88
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:03:03 2005 -0700
+
+    [PATCH] nfsd4: slabify stateids
+    
+    Allocate stateid's from a slab cache.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 260c1cbe25c4..c5fce309d87e 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -90,6 +90,7 @@ static DECLARE_MUTEX(client_sema);
+ 
+ kmem_cache_t *stateowner_slab = NULL;
+ kmem_cache_t *file_slab = NULL;
++kmem_cache_t *stateid_slab = NULL;
+ 
+ void
+ nfs4_lock_state(void)
+@@ -1010,6 +1011,7 @@ nfsd4_free_slabs(void)
+ {
+ 	nfsd4_free_slab(&amp;stateowner_slab);
+ 	nfsd4_free_slab(&amp;file_slab);
++	nfsd4_free_slab(&amp;stateid_slab);
+ }
+ 
+ static int
+@@ -1023,6 +1025,10 @@ nfsd4_init_slabs(void)
+ 			sizeof(struct nfs4_file), 0, 0, NULL, NULL);
+ 	if (file_slab == NULL)
+ 		goto out_nomem;
++	stateid_slab = kmem_cache_create("nfsd4_stateids",
++			sizeof(struct nfs4_stateid), 0, 0, NULL, NULL);
++	if (stateid_slab == NULL)
++		goto out_nomem;
+ 	return 0;
+ out_nomem:
+ 	nfsd4_free_slabs();
+@@ -1173,7 +1179,7 @@ release_stateid(struct nfs4_stateid *stp, int flags)
+ 		vfsclose++;
+ 	} else if (flags &amp; LOCK_STATE)
+ 		locks_remove_posix(filp, (fl_owner_t) stp-&gt;st_stateowner);
+-	kfree(stp);
++	kmem_cache_free(stateid_slab, stp);
+ 	stp = NULL;
+ }
+ 
+@@ -1606,6 +1612,12 @@ nfs4_check_open(struct nfs4_file *fp, struct nfsd4_open *open, struct nfs4_state
+ 	return status;
+ }
+ 
++static inline struct nfs4_stateid *
++nfs4_alloc_stateid(void)
++{
++	return kmem_cache_alloc(stateid_slab, GFP_KERNEL);
++}
++
+ static int
+ nfs4_new_open(struct svc_rqst *rqstp, struct nfs4_stateid **stpp,
+ 		struct nfs4_delegation *dp,
+@@ -1613,7 +1625,7 @@ nfs4_new_open(struct svc_rqst *rqstp, struct nfs4_stateid **stpp,
+ {
+ 	struct nfs4_stateid *stp;
+ 
+-	stp = kmalloc(sizeof(struct nfs4_stateid), GFP_KERNEL);
++	stp = nfs4_alloc_stateid();
+ 	if (stp == NULL)
+ 		return nfserr_resource;
+ 
+@@ -1627,7 +1639,7 @@ nfs4_new_open(struct svc_rqst *rqstp, struct nfs4_stateid **stpp,
+ 		if (status) {
+ 			if (status == nfserr_dropit)
+ 				status = nfserr_jukebox;
+-			kfree(stp);
++			kmem_cache_free(stateid_slab, stp);
+ 			return status;
+ 		}
+ 	}
+@@ -2627,8 +2639,8 @@ alloc_init_lock_stateid(struct nfs4_stateowner *sop, struct nfs4_file *fp, struc
+ 	struct nfs4_stateid *stp;
+ 	unsigned int hashval = stateid_hashval(sop-&gt;so_id, fp-&gt;fi_id);
+ 
+-	if ((stp = kmalloc(sizeof(struct nfs4_stateid), 
+-					GFP_KERNEL)) == NULL)
++	stp = nfs4_alloc_stateid();
++	if (stp == NULL)
+ 		goto out;
+ 	INIT_LIST_HEAD(&amp;stp-&gt;st_hash);
+ 	INIT_LIST_HEAD(&amp;stp-&gt;st_perfile);</pre><hr><pre>commit e60d4398a7c20fbe9c4a6cc39d7188ef9f65d2f1
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:03:01 2005 -0700
+
+    [PATCH] nfsd4: slabify nfs4_files
+    
+    The structures the server uses to keep track of various pieces of nfsv4 state
+    (open files, outstanding delegations, etc.) are likely to be allocated and
+    deallocated frequently and seem reasonable candidates for slab caches.
+    
+    While we're at it, the slab code keeps statistics that help catch leaks and
+    such, so we may as well take this chance to eliminate some debugging counters
+    that we've been keeping ourselves.
+    
+    Start with the struct nfs4_file.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 8ac0c9abe941..260c1cbe25c4 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -70,8 +70,6 @@ u32 list_add_perfile = 0;
+ u32 list_del_perfile = 0;
+ u32 add_perclient = 0;
+ u32 del_perclient = 0;
+-u32 alloc_file = 0;
+-u32 free_file = 0;
+ u32 vfsopen = 0;
+ u32 vfsclose = 0;
+ u32 alloc_delegation= 0;
+@@ -90,6 +88,9 @@ static void release_stateid_lockowners(struct nfs4_stateid *open_stp);
+  */
+ static DECLARE_MUTEX(client_sema);
+ 
++kmem_cache_t *stateowner_slab = NULL;
++kmem_cache_t *file_slab = NULL;
++
+ void
+ nfs4_lock_state(void)
+ {
+@@ -961,14 +962,14 @@ alloc_init_file(struct inode *ino)
+ 	struct nfs4_file *fp;
+ 	unsigned int hashval = file_hashval(ino);
+ 
+-	if ((fp = kmalloc(sizeof(struct nfs4_file),GFP_KERNEL))) {
++	fp = kmem_cache_alloc(file_slab, GFP_KERNEL);
++	if (fp) {
+ 		INIT_LIST_HEAD(&amp;fp-&gt;fi_hash);
+ 		INIT_LIST_HEAD(&amp;fp-&gt;fi_perfile);
+ 		INIT_LIST_HEAD(&amp;fp-&gt;fi_del_perfile);
+ 		list_add(&amp;fp-&gt;fi_hash, &amp;file_hashtbl[hashval]);
+ 		fp-&gt;fi_inode = igrab(ino);
+ 		fp-&gt;fi_id = current_fileid++;
+-		alloc_file++;
+ 		return fp;
+ 	}
+ 	return NULL;
+@@ -992,29 +993,41 @@ release_all_files(void)
+ 	}
+ }
+ 
+-kmem_cache_t *stateowner_slab = NULL;
+-
+-static int
+-nfsd4_init_slabs(void)
++static void
++nfsd4_free_slab(kmem_cache_t **slab)
+ {
+-	stateowner_slab = kmem_cache_create("nfsd4_stateowners",
+-			sizeof(struct nfs4_stateowner), 0, 0, NULL, NULL);
+-	if (stateowner_slab == NULL) {
+-		dprintk("nfsd4: out of memory while initializing nfsv4\n");
+-		return -ENOMEM;
+-	}
+-	return 0;
++	int status;
++
++	if (*slab == NULL)
++		return;
++	status = kmem_cache_destroy(*slab);
++	*slab = NULL;
++	WARN_ON(status);
+ }
+ 
+ static void
+ nfsd4_free_slabs(void)
+ {
+-	int status = 0;
++	nfsd4_free_slab(&amp;stateowner_slab);
++	nfsd4_free_slab(&amp;file_slab);
++}
+ 
+-	if (stateowner_slab)
+-		status = kmem_cache_destroy(stateowner_slab);
+-	stateowner_slab = NULL;
+-	BUG_ON(status);
++static int
++nfsd4_init_slabs(void)
++{
++	stateowner_slab = kmem_cache_create("nfsd4_stateowners",
++			sizeof(struct nfs4_stateowner), 0, 0, NULL, NULL);
++	if (stateowner_slab == NULL)
++		goto out_nomem;
++	file_slab = kmem_cache_create("nfsd4_files",
++			sizeof(struct nfs4_file), 0, 0, NULL, NULL);
++	if (file_slab == NULL)
++		goto out_nomem;
++	return 0;
++out_nomem:
++	nfsd4_free_slabs();
++	dprintk("nfsd4: out of memory while initializing nfsv4\n");
++	return -ENOMEM;
+ }
+ 
+ void
+@@ -1167,10 +1180,9 @@ release_stateid(struct nfs4_stateid *stp, int flags)
+ static void
+ release_file(struct nfs4_file *fp)
+ {
+-	free_file++;
+ 	list_del(&amp;fp-&gt;fi_hash);
+ 	iput(fp-&gt;fi_inode);
+-	kfree(fp);
++	kmem_cache_free(file_slab, fp);
+ }	
+ 
+ void
+@@ -3286,8 +3298,6 @@ __nfs4_state_shutdown(void)
+ 			list_add_perfile, list_del_perfile);
+ 	dprintk("NFSD: add_perclient %d del_perclient %d\n",
+ 			add_perclient, del_perclient);
+-	dprintk("NFSD: alloc_file %d free_file %d\n",
+-			alloc_file, free_file);
+ 	dprintk("NFSD: vfsopen %d vfsclose %d\n",
+ 			vfsopen, vfsclose);
+ 	dprintk("NFSD: alloc_delegation %d free_delegation %d\n",</pre><hr><pre>commit c815afc73eeef089922449857ca4ed4d2e8950cb
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:03:00 2005 -0700
+
+    [PATCH] nfsd4: block metadata ops during grace period
+    
+    We currently return err_grace if a user attempts a non-reclaim open during the
+    grace period.  But we also need to prevent renames and removes, at least, to
+    ensure clients have the chance to recover state on files before they are moved
+    or deleted.
+    
+    Of course, local users could also do renames and removes during the lease
+    period, and there's not much we can do about that.  This at least will help
+    with remote users.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4proc.c b/fs/nfsd/nfs4proc.c
+index eb8c1337d9ba..ac4878ac2213 100644
+--- a/fs/nfsd/nfs4proc.c
++++ b/fs/nfsd/nfs4proc.c
+@@ -536,6 +536,8 @@ nfsd4_remove(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_rem
+ {
+ 	int status;
+ 
++	if (nfs4_in_grace())
++		return nfserr_grace;
+ 	status = nfsd_unlink(rqstp, current_fh, 0, remove-&gt;rm_name, remove-&gt;rm_namelen);
+ 	if (status == nfserr_symlink)
+ 		return nfserr_notdir;
+@@ -554,6 +556,9 @@ nfsd4_rename(struct svc_rqst *rqstp, struct svc_fh *current_fh,
+ 
+ 	if (!save_fh-&gt;fh_dentry)
+ 		return status;
++	if (nfs4_in_grace() &amp;&amp; !(save_fh-&gt;fh_export-&gt;ex_flags
++					&amp; NFSEXP_NOSUBTREECHECK))
++		return nfserr_grace;
+ 	status = nfsd_rename(rqstp, save_fh, rename-&gt;rn_sname,
+ 			     rename-&gt;rn_snamelen, current_fh,
+ 			     rename-&gt;rn_tname, rename-&gt;rn_tnamelen);</pre><hr><pre>commit 496400014f22c4dbdbc1e89249a2feba46939708
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:02:58 2005 -0700
+
+    [PATCH] nfsd4: fix fh_expire_type
+    
+    We're returning NFS4_FH_NOEXPIRE_WITH_OPEN | NFS4_FH_VOL_RENAME for the
+    fh_expire_type attribute.  This is incorrect:
+            1. The spec actually only allows NOEXPIRE_WITH_OPEN when
+               VOLATILE_ANY is also set.
+            2. Filehandles for open files can expire, if the file is removed
+               and there is a reboot.
+            3. Filehandles are only volatile on rename in the nosubtree check
+               case.
+    
+    Unfortunately, there's no way to indicate that we only expire on remove.  So
+    our only choice is FH4_VOLATILE_ANY.  Although it's redundant, we also set
+    FH4_VOL_RENAME in the subtree check case, since subtreecheck does actually
+    cause problems in practice and it seems possibly useful to give clients some
+    way to distinguish that case.
+    
+    Fix a mispelled #define while we're at it.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index 36a058a112d5..0ae1467c3bc3 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -1366,7 +1366,10 @@ nfsd4_encode_fattr(struct svc_fh *fhp, struct svc_export *exp,
+ 	if (bmval0 &amp; FATTR4_WORD0_FH_EXPIRE_TYPE) {
+ 		if ((buflen -= 4) &lt; 0)
+ 			goto out_resource;
+-		WRITE32( NFS4_FH_NOEXPIRE_WITH_OPEN | NFS4_FH_VOL_RENAME );
++		if (exp-&gt;ex_flags &amp; NFSEXP_NOSUBTREECHECK)
++			WRITE32(NFS4_FH_VOLATILE_ANY);
++		else
++			WRITE32(NFS4_FH_VOLATILE_ANY|NFS4_FH_VOL_RENAME);
+ 	}
+ 	if (bmval0 &amp; FATTR4_WORD0_CHANGE) {
+ 		/*
+diff --git a/include/linux/nfs4.h b/include/linux/nfs4.h
+index 5bb5b2fd7ba2..0c1c306cdaec 100644
+--- a/include/linux/nfs4.h
++++ b/include/linux/nfs4.h
+@@ -28,7 +28,7 @@
+ #define NFS4_ACCESS_DELETE      0x0010
+ #define NFS4_ACCESS_EXECUTE     0x0020
+ 
+-#define NFS4_FH_PERISTENT		0x0000
++#define NFS4_FH_PERSISTENT		0x0000
+ #define NFS4_FH_NOEXPIRE_WITH_OPEN	0x0001
+ #define NFS4_FH_VOLATILE_ANY		0x0002
+ #define NFS4_FH_VOL_MIGRATION		0x0004</pre><hr><pre>commit 0dd3c19212961453817f219cd6200981c38564bc
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:02:56 2005 -0700
+
+    [PATCH] nfsd4: support CLAIM_DELEGATE_CUR
+    
+    Add OPEN claim type NFS4_OPEN_CLAIM_DELEGATE_CUR to nfsd4_open().
+    
+    A delegation stateid and a name are provided.  OPEN with O_CREAT is not legal
+    with this claim type; otherwise, use the NFS4_OPEN_CLAIM_NULL code path to
+    lookup the filename to be opened.
+    
+    Signed-off-by: Andy Adamson &lt;andros@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4proc.c b/fs/nfsd/nfs4proc.c
+index e8158741e8b5..eb8c1337d9ba 100644
+--- a/fs/nfsd/nfs4proc.c
++++ b/fs/nfsd/nfs4proc.c
+@@ -198,6 +198,11 @@ nfsd4_open(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_open
+ 	if (status)
+ 		goto out;
+ 	switch (open-&gt;op_claim_type) {
++		case NFS4_OPEN_CLAIM_DELEGATE_CUR:
++			status = nfserr_inval;
++			if (open-&gt;op_create)
++				goto out;
++			/* fall through */
+ 		case NFS4_OPEN_CLAIM_NULL:
+ 			/*
+ 			 * (1) set CURRENT_FH to the file being opened,
+@@ -220,7 +225,6 @@ nfsd4_open(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_open
+ 			if (status)
+ 				goto out;
+ 			break;
+-		case NFS4_OPEN_CLAIM_DELEGATE_CUR:
+              	case NFS4_OPEN_CLAIM_DELEGATE_PREV:
+ 			printk("NFSD: unsupported OPEN claim type %d\n",
+ 				open-&gt;op_claim_type);</pre>
+    <div class="pagination">
+        <a href='8_9.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><span>[10]</span><a href='8_11.html'>11</a><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_11.html'>Next&gt;&gt;</a>
+    <div>
+</body>

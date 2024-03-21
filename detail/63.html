@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Beijing University of Aeronautics and Astronautics</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Beijing University of Aeronautics and Astronautics</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit 2535b848fa0f42ddff3e5255cf5e742c9b77bb26
+Author: Yuxuan Hu &lt;20373622@buaa.edu.cn&gt;
+Date:   Wed Jan 3 17:10:43 2024 +0800
+
+    Bluetooth: rfcomm: Fix null-ptr-deref in rfcomm_check_security
+    
+    During our fuzz testing of the connection and disconnection process at the
+    RFCOMM layer, we discovered this bug. By comparing the packets from a
+    normal connection and disconnection process with the testcase that
+    triggered a KASAN report. We analyzed the cause of this bug as follows:
+    
+    1. In the packets captured during a normal connection, the host sends a
+    `Read Encryption Key Size` type of `HCI_CMD` packet
+    (Command Opcode: 0x1408) to the controller to inquire the length of
+    encryption key.After receiving this packet, the controller immediately
+    replies with a Command Completepacket (Event Code: 0x0e) to return the
+    Encryption Key Size.
+    
+    2. In our fuzz test case, the timing of the controller's response to this
+    packet was delayed to an unexpected point: after the RFCOMM and L2CAP
+    layers had disconnected but before the HCI layer had disconnected.
+    
+    3. After receiving the Encryption Key Size Response at the time described
+    in point 2, the host still called the rfcomm_check_security function.
+    However, by this time `struct l2cap_conn *conn = l2cap_pi(sk)-&gt;chan-&gt;conn;`
+    had already been released, and when the function executed
+    `return hci_conn_security(conn-&gt;hcon, d-&gt;sec_level, auth_type, d-&gt;out);`,
+    specifically when accessing `conn-&gt;hcon`, a null-ptr-deref error occurred.
+    
+    To fix this bug, check if `sk-&gt;sk_state` is BT_CLOSED before calling
+    rfcomm_recv_frame in rfcomm_process_rx.
+    
+    Signed-off-by: Yuxuan Hu &lt;20373622@buaa.edu.cn&gt;
+    Signed-off-by: Luiz Augusto von Dentz &lt;luiz.von.dentz@intel.com&gt;
+
+diff --git a/net/bluetooth/rfcomm/core.c b/net/bluetooth/rfcomm/core.c
+index 053ef8f25fae..1d34d8497033 100644
+--- a/net/bluetooth/rfcomm/core.c
++++ b/net/bluetooth/rfcomm/core.c
+@@ -1941,7 +1941,7 @@ static struct rfcomm_session *rfcomm_process_rx(struct rfcomm_session *s)
+ 	/* Get data directly from socket receive queue without copying it. */
+ 	while ((skb = skb_dequeue(&amp;sk-&gt;sk_receive_queue))) {
+ 		skb_orphan(skb);
+-		if (!skb_linearize(skb)) {
++		if (!skb_linearize(skb) &amp;&amp; sk-&gt;sk_state != BT_CLOSED) {
+ 			s = rfcomm_recv_frame(s, skb);
+ 			if (!s)
+ 				break;</pre><hr><pre>commit ef307bc6ef04e8c1ea843231db58e3afaafa9fa6
+Author: Jia-Ju Bai &lt;baijiaju@buaa.edu.cn&gt;
+Date:   Tue Sep 26 10:44:04 2023 +0800
+
+    usb: dwc2: fix possible NULL pointer dereference caused by driver concurrency
+    
+    In _dwc2_hcd_urb_enqueue(), "urb-&gt;hcpriv = NULL" is executed without
+    holding the lock "hsotg-&gt;lock". In _dwc2_hcd_urb_dequeue():
+    
+        spin_lock_irqsave(&amp;hsotg-&gt;lock, flags);
+        ...
+            if (!urb-&gt;hcpriv) {
+                    dev_dbg(hsotg-&gt;dev, "## urb-&gt;hcpriv is NULL ##\n");
+                    goto out;
+            }
+        rc = dwc2_hcd_urb_dequeue(hsotg, urb-&gt;hcpriv); // Use urb-&gt;hcpriv
+        ...
+    out:
+        spin_unlock_irqrestore(&amp;hsotg-&gt;lock, flags);
+    
+    When _dwc2_hcd_urb_enqueue() and _dwc2_hcd_urb_dequeue() are
+    concurrently executed, the NULL check of "urb-&gt;hcpriv" can be executed
+    before "urb-&gt;hcpriv = NULL". After urb-&gt;hcpriv is NULL, it can be used
+    in the function call to dwc2_hcd_urb_dequeue(), which can cause a NULL
+    pointer dereference.
+    
+    This possible bug is found by an experimental static analysis tool
+    developed by myself. This tool analyzes the locking APIs to extract
+    function pairs that can be concurrently executed, and then analyzes the
+    instructions in the paired functions to identify possible concurrency
+    bugs including data races and atomicity violations. The above possible
+    bug is reported, when my tool analyzes the source code of Linux 6.5.
+    
+    To fix this possible bug, "urb-&gt;hcpriv = NULL" should be executed with
+    holding the lock "hsotg-&gt;lock". After using this patch, my tool never
+    reports the possible bug, with the kernelconfiguration allyesconfig for
+    x86_64. Because I have no associated hardware, I cannot test the patch
+    in runtime testing, and just verify it according to the code logic.
+    
+    Fixes: 33ad261aa62b ("usb: dwc2: host: spinlock urb_enqueue")
+    Signed-off-by: Jia-Ju Bai &lt;baijiaju@buaa.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230926024404.832096-1-baijiaju@buaa.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/dwc2/hcd.c b/drivers/usb/dwc2/hcd.c
+index 657f1f659ffa..35c7a4df8e71 100644
+--- a/drivers/usb/dwc2/hcd.c
++++ b/drivers/usb/dwc2/hcd.c
+@@ -4769,8 +4769,8 @@ static int _dwc2_hcd_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
+ 	if (qh_allocated &amp;&amp; qh-&gt;channel &amp;&amp; qh-&gt;channel-&gt;qh == qh)
+ 		qh-&gt;channel-&gt;qh = NULL;
+ fail2:
+-	spin_unlock_irqrestore(&amp;hsotg-&gt;lock, flags);
+ 	urb-&gt;hcpriv = NULL;
++	spin_unlock_irqrestore(&amp;hsotg-&gt;lock, flags);
+ 	kfree(qtd);
+ fail1:
+ 	if (qh_allocated) {</pre><hr><pre>commit 97498cd610c0d030a7bd49a7efad974790661162
+Author: Jia-Ju Bai &lt;baijiaju@buaa.edu.cn&gt;
+Date:   Tue Mar 21 21:22:11 2023 +0800
+
+    fs: ntfs3: Fix possible null-pointer dereferences in mi_read()
+    
+    In a previous commit 2681631c2973 ("fs/ntfs3: Add null pointer check to
+    attr_load_runs_vcn"), ni can be NULL in attr_load_runs_vcn(), and thus it
+    should be checked before being used.
+    
+    However, in the call stack of this commit, mft_ni in mi_read() is
+    aliased with ni in attr_load_runs_vcn(), and it is also used in
+    mi_read() at two places:
+    
+    mi_read()
+      rw_lock = &amp;mft_ni-&gt;file.run_lock -&gt; No check
+      attr_load_runs_vcn(mft_ni, ...)
+        ni (namely mft_ni) is checked in the previous commit
+      attr_load_runs_vcn(..., &amp;mft_ni-&gt;file.run) -&gt; No check
+    
+    Thus, to avoid possible null-pointer dereferences, the related checks
+    should be added.
+    
+    These bugs are reported by a static analysis tool implemented by myself,
+    and they are found by extending a known bug fixed in the previous commit.
+    Thus, they could be theoretical bugs.
+    
+    Signed-off-by: Jia-Ju Bai &lt;baijiaju@buaa.edu.cn&gt;
+    Signed-off-by: Konstantin Komarov &lt;almaz.alexandrovich@paragon-software.com&gt;
+
+diff --git a/fs/ntfs3/record.c b/fs/ntfs3/record.c
+index 2a281cead2bc..7060f784c2d7 100644
+--- a/fs/ntfs3/record.c
++++ b/fs/ntfs3/record.c
+@@ -124,7 +124,7 @@ int mi_read(struct mft_inode *mi, bool is_mft)
+ 	struct rw_semaphore *rw_lock = NULL;
+ 
+ 	if (is_mounted(sbi)) {
+-		if (!is_mft) {
++		if (!is_mft &amp;&amp; mft_ni) {
+ 			rw_lock = &amp;mft_ni-&gt;file.run_lock;
+ 			down_read(rw_lock);
+ 		}
+@@ -148,7 +148,7 @@ int mi_read(struct mft_inode *mi, bool is_mft)
+ 		ni_lock(mft_ni);
+ 		down_write(rw_lock);
+ 	}
+-	err = attr_load_runs_vcn(mft_ni, ATTR_DATA, NULL, 0, &amp;mft_ni-&gt;file.run,
++	err = attr_load_runs_vcn(mft_ni, ATTR_DATA, NULL, 0, run,
+ 				 vbo &gt;&gt; sbi-&gt;cluster_bits);
+ 	if (rw_lock) {
+ 		up_write(rw_lock);</pre><hr><pre>commit 4ff40d140e2a2060ef6051800a4a9eab07624f42
+Author: Yunhao Tian &lt;18373444@buaa.edu.cn&gt;
+Date:   Mon Nov 25 20:58:32 2019 +0800
+
+    clk: sunxi-ng: v3s: Fix incorrect number of hw_clks.
+    
+    The hws field of sun8i_v3s_hw_clks has only 74
+    members. However, the number specified by CLK_NUMBER
+    is 77 (= CLK_I2S0 + 1). This leads to runtime segmentation
+    fault that is not always reproducible.
+    
+    This patch fixes the problem by specifying correct clock number.
+    
+    Signed-off-by: Yunhao Tian &lt;18373444@buaa.edu.cn&gt;
+    [Maxime: Also remove the CLK_NUMBER definition]
+    Signed-off-by: Maxime Ripard &lt;maxime@cerno.tech&gt;
+
+diff --git a/drivers/clk/sunxi-ng/ccu-sun8i-v3s.c b/drivers/clk/sunxi-ng/ccu-sun8i-v3s.c
+index 5c779eec454b..0e36ca3bf3d5 100644
+--- a/drivers/clk/sunxi-ng/ccu-sun8i-v3s.c
++++ b/drivers/clk/sunxi-ng/ccu-sun8i-v3s.c
+@@ -618,7 +618,7 @@ static struct clk_hw_onecell_data sun8i_v3s_hw_clks = {
+ 		[CLK_MBUS]		= &amp;mbus_clk.common.hw,
+ 		[CLK_MIPI_CSI]		= &amp;mipi_csi_clk.common.hw,
+ 	},
+-	.num	= CLK_NUMBER,
++	.num	= CLK_PLL_DDR1 + 1,
+ };
+ 
+ static struct clk_hw_onecell_data sun8i_v3_hw_clks = {
+@@ -700,7 +700,7 @@ static struct clk_hw_onecell_data sun8i_v3_hw_clks = {
+ 		[CLK_MBUS]		= &amp;mbus_clk.common.hw,
+ 		[CLK_MIPI_CSI]		= &amp;mipi_csi_clk.common.hw,
+ 	},
+-	.num	= CLK_NUMBER,
++	.num	= CLK_I2S0 + 1,
+ };
+ 
+ static struct ccu_reset_map sun8i_v3s_ccu_resets[] = {
+diff --git a/drivers/clk/sunxi-ng/ccu-sun8i-v3s.h b/drivers/clk/sunxi-ng/ccu-sun8i-v3s.h
+index b0160d305a67..108eeeedcbf7 100644
+--- a/drivers/clk/sunxi-ng/ccu-sun8i-v3s.h
++++ b/drivers/clk/sunxi-ng/ccu-sun8i-v3s.h
+@@ -51,6 +51,4 @@
+ 
+ #define CLK_PLL_DDR1		74
+ 
+-#define CLK_NUMBER		(CLK_I2S0 + 1)
+-
+ #endif /* _CCU_SUN8I_H3_H_ */</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

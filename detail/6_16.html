@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6_15.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><span>[16]</span><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_17.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 62b2caef400c1738b6d22f636c628d9f85cd4c4c
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sun Apr 17 19:16:26 2022 +0800
+
+    drivers: tty: serial: Fix deadlock in sa1100_set_termios()
+    
+    There is a deadlock in sa1100_set_termios(), which is shown
+    below:
+    
+       (Thread 1)              |      (Thread 2)
+                               | sa1100_enable_ms()
+    sa1100_set_termios()       |  mod_timer()
+     spin_lock_irqsave() //(1) |  (wait a time)
+     ...                       | sa1100_timeout()
+     del_timer_sync()          |  spin_lock_irqsave() //(2)
+     (wait timer to stop)      |  ...
+    
+    We hold sport-&gt;port.lock in position (1) of thread 1 and
+    use del_timer_sync() to wait timer to stop, but timer handler
+    also need sport-&gt;port.lock in position (2) of thread 2. As a result,
+    sa1100_set_termios() will block forever.
+    
+    This patch moves del_timer_sync() before spin_lock_irqsave()
+    in order to prevent the deadlock.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220417111626.7802-1-duoming@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/tty/serial/sa1100.c b/drivers/tty/serial/sa1100.c
+index 5fe6cccfc1ae..e64e42a19d1a 100644
+--- a/drivers/tty/serial/sa1100.c
++++ b/drivers/tty/serial/sa1100.c
+@@ -446,6 +446,8 @@ sa1100_set_termios(struct uart_port *port, struct ktermios *termios,
+ 	baud = uart_get_baud_rate(port, termios, old, 0, port-&gt;uartclk/16); 
+ 	quot = uart_get_divisor(port, baud);
+ 
++	del_timer_sync(&amp;sport-&gt;timer);
++
+ 	spin_lock_irqsave(&amp;sport-&gt;port.lock, flags);
+ 
+ 	sport-&gt;port.read_status_mask &amp;= UTSR0_TO_SM(UTSR0_TFS);
+@@ -476,8 +478,6 @@ sa1100_set_termios(struct uart_port *port, struct ktermios *termios,
+ 				UTSR1_TO_SM(UTSR1_ROR);
+ 	}
+ 
+-	del_timer_sync(&amp;sport-&gt;timer);
+-
+ 	/*
+ 	 * Update the per-port timeout.
+ 	 */</pre><hr><pre>commit b92ffb1eddd9a66a90defc556dcbf65a43c196c7
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Tue Apr 12 22:43:59 2022 +0800
+
+    USB: storage: karma: fix rio_karma_init return
+    
+    The function rio_karam_init() should return -ENOMEM instead of
+    value 0 (USB_STOR_TRANSPORT_GOOD) when allocation fails.
+    
+    Similarly, it should return -EIO when rio_karma_send_command() fails.
+    
+    Fixes: dfe0d3ba20e8 ("USB Storage: add rio karma eject support")
+    Acked-by: Alan Stern &lt;stern@rowland.harvard.edu&gt;
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220412144359.28447-1-linma@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/storage/karma.c b/drivers/usb/storage/karma.c
+index 05cec81dcd3f..38ddfedef629 100644
+--- a/drivers/usb/storage/karma.c
++++ b/drivers/usb/storage/karma.c
+@@ -174,24 +174,25 @@ static void rio_karma_destructor(void *extra)
+ 
+ static int rio_karma_init(struct us_data *us)
+ {
+-	int ret = 0;
+ 	struct karma_data *data = kzalloc(sizeof(struct karma_data), GFP_NOIO);
+ 
+ 	if (!data)
+-		goto out;
++		return -ENOMEM;
+ 
+ 	data-&gt;recv = kmalloc(RIO_RECV_LEN, GFP_NOIO);
+ 	if (!data-&gt;recv) {
+ 		kfree(data);
+-		goto out;
++		return -ENOMEM;
+ 	}
+ 
+ 	us-&gt;extra = data;
+ 	us-&gt;extra_destructor = rio_karma_destructor;
+-	ret = rio_karma_send_command(RIO_ENTER_STORAGE, us);
+-	data-&gt;in_storage = (ret == 0);
+-out:
+-	return ret;
++	if (rio_karma_send_command(RIO_ENTER_STORAGE, us))
++		return -EIO;
++
++	data-&gt;in_storage = 1;
++
++	return 0;
+ }
+ 
+ static struct scsi_host_template karma_host_template;</pre><hr><pre>commit ba6df3ea68196d54a1e8299cea1bf4565fc755c5
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Thu Apr 7 10:21:10 2022 +0800
+
+    usb-storage: isd200: fix initFunction error return
+    
+    The initFunction is called when probing a new device, its call relation
+    is like:
+    
+    USB core: probe() -&gt; usb_stor_probe2() -&gt; usb_stor_acquire_resources()
+    -&gt; isd200_init_info()
+    
+    That is, the error return of the initFunction should tell USB core what
+    happened instead of using custom error code like ISD200_ERROR.
+    
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220407022110.3757-1-linma@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/storage/isd200.c b/drivers/usb/storage/isd200.c
+index 05429f1f69f9..4e0eef1440b7 100644
+--- a/drivers/usb/storage/isd200.c
++++ b/drivers/usb/storage/isd200.c
+@@ -1449,7 +1449,7 @@ static void isd200_free_info_ptrs(void *info_)
+  * Allocates (if necessary) and initializes the driver structure.
+  *
+  * RETURNS:
+- *    ISD status code
++ *    error status code
+  */
+ static int isd200_init_info(struct us_data *us)
+ {
+@@ -1457,7 +1457,7 @@ static int isd200_init_info(struct us_data *us)
+ 
+ 	info = kzalloc(sizeof(struct isd200_info), GFP_KERNEL);
+ 	if (!info)
+-		return ISD200_ERROR;
++		return -ENOMEM;
+ 
+ 	info-&gt;id = kzalloc(ATA_ID_WORDS * 2, GFP_KERNEL);
+ 	info-&gt;RegsBuf = kmalloc(sizeof(info-&gt;ATARegs), GFP_KERNEL);
+@@ -1466,13 +1466,13 @@ static int isd200_init_info(struct us_data *us)
+ 	if (!info-&gt;id || !info-&gt;RegsBuf || !info-&gt;srb.sense_buffer) {
+ 		isd200_free_info_ptrs(info);
+ 		kfree(info);
+-		return ISD200_ERROR;
++		return -ENOMEM;
+ 	}
+ 
+ 	us-&gt;extra = info;
+ 	us-&gt;extra_destructor = isd200_free_info_ptrs;
+ 
+-	return ISD200_GOOD;
++	return 0;
+ }
+ 
+ /**************************************************************************</pre><hr><pre>commit 1abf67983a4fd74133b3d2b43722704c744621a6
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Thu Apr 7 10:21:15 2022 +0800
+
+    usb-storage: shuttle_usbat: fix initFunction error return
+    
+    The initFunction is called when probing a new device, its call relation
+    is like:
+    USB core: probe() -&gt; usb_stor_probe2() -&gt; usb_stor_acquire_resources()
+    -&gt; init_usbat_cd() or init_usbat_flash() -&gt; init_usbat()
+    
+    That is, the error return of the initFunction should tell USB core what
+    happened instead of using constant or error code like
+    USB_STOR_TRANSPORT_FAILED.
+    
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220407022115.3773-1-linma@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/storage/shuttle_usbat.c b/drivers/usb/storage/shuttle_usbat.c
+index 54aa1392c9ca..f0d0ca37163d 100644
+--- a/drivers/usb/storage/shuttle_usbat.c
++++ b/drivers/usb/storage/shuttle_usbat.c
+@@ -1456,7 +1456,7 @@ static int init_usbat(struct us_data *us, int devicetype)
+ 
+ 	us-&gt;extra = kzalloc(sizeof(struct usbat_info), GFP_NOIO);
+ 	if (!us-&gt;extra)
+-		return 1;
++		return -ENOMEM;
+ 
+ 	info = (struct usbat_info *) (us-&gt;extra);
+ 
+@@ -1465,7 +1465,7 @@ static int init_usbat(struct us_data *us, int devicetype)
+ 				 USBAT_UIO_OE1 | USBAT_UIO_OE0,
+ 				 USBAT_UIO_EPAD | USBAT_UIO_1);
+ 	if (rc != USB_STOR_XFER_GOOD)
+-		return USB_STOR_TRANSPORT_ERROR;
++		return -EIO;
+ 
+ 	usb_stor_dbg(us, "INIT 1\n");
+ 
+@@ -1473,42 +1473,42 @@ static int init_usbat(struct us_data *us, int devicetype)
+ 
+ 	rc = usbat_read_user_io(us, status);
+ 	if (rc != USB_STOR_TRANSPORT_GOOD)
+-		return rc;
++		return -EIO;
+ 
+ 	usb_stor_dbg(us, "INIT 2\n");
+ 
+ 	rc = usbat_read_user_io(us, status);
+ 	if (rc != USB_STOR_XFER_GOOD)
+-		return USB_STOR_TRANSPORT_ERROR;
++		return -EIO;
+ 
+ 	rc = usbat_read_user_io(us, status);
+ 	if (rc != USB_STOR_XFER_GOOD)
+-		return USB_STOR_TRANSPORT_ERROR;
++		return -EIO;
+ 
+ 	usb_stor_dbg(us, "INIT 3\n");
+ 
+ 	rc = usbat_select_and_test_registers(us);
+ 	if (rc != USB_STOR_TRANSPORT_GOOD)
+-		return rc;
++		return -EIO;
+ 
+ 	usb_stor_dbg(us, "INIT 4\n");
+ 
+ 	rc = usbat_read_user_io(us, status);
+ 	if (rc != USB_STOR_XFER_GOOD)
+-		return USB_STOR_TRANSPORT_ERROR;
++		return -EIO;
+ 
+ 	usb_stor_dbg(us, "INIT 5\n");
+ 
+ 	/* Enable peripheral control signals and card detect */
+ 	rc = usbat_device_enable_cdt(us);
+ 	if (rc != USB_STOR_TRANSPORT_GOOD)
+-		return rc;
++		return -EIO;
+ 
+ 	usb_stor_dbg(us, "INIT 6\n");
+ 
+ 	rc = usbat_read_user_io(us, status);
+ 	if (rc != USB_STOR_XFER_GOOD)
+-		return USB_STOR_TRANSPORT_ERROR;
++		return -EIO;
+ 
+ 	usb_stor_dbg(us, "INIT 7\n");
+ 
+@@ -1516,19 +1516,19 @@ static int init_usbat(struct us_data *us, int devicetype)
+ 
+ 	rc = usbat_read_user_io(us, status);
+ 	if (rc != USB_STOR_XFER_GOOD)
+-		return USB_STOR_TRANSPORT_ERROR;
++		return -EIO;
+ 
+ 	usb_stor_dbg(us, "INIT 8\n");
+ 
+ 	rc = usbat_select_and_test_registers(us);
+ 	if (rc != USB_STOR_TRANSPORT_GOOD)
+-		return rc;
++		return -EIO;
+ 
+ 	usb_stor_dbg(us, "INIT 9\n");
+ 
+ 	/* At this point, we need to detect which device we are using */
+ 	if (usbat_set_transport(us, info, devicetype))
+-		return USB_STOR_TRANSPORT_ERROR;
++		return -EIO;
+ 
+ 	usb_stor_dbg(us, "INIT 10\n");
+ 
+@@ -1539,11 +1539,11 @@ static int init_usbat(struct us_data *us, int devicetype)
+ 	rc = usbat_set_shuttle_features(us, (USBAT_FEAT_ETEN | USBAT_FEAT_ET2 | USBAT_FEAT_ET1),
+ 									0x00, 0x88, 0x08, subcountH, subcountL);
+ 	if (rc != USB_STOR_XFER_GOOD)
+-		return USB_STOR_TRANSPORT_ERROR;
++		return -EIO;
+ 
+ 	usb_stor_dbg(us, "INIT 11\n");
+ 
+-	return USB_STOR_TRANSPORT_GOOD;
++	return 0;
+ }
+ 
+ /*</pre><hr><pre>commit 17b2fb9c231ea418fa6c8643f2c786ec991b56f5
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Thu Apr 7 10:20:58 2022 +0800
+
+    usb-storage: alauda: fix initFunction error return
+    
+    The initFunction is called when probing a new device, its call relation
+    is like:
+    
+    USB core: probe() -&gt; usb_stor_probe2() -&gt; usb_stor_acquire_resources()
+    -&gt; init_alauda()
+    
+    That is, the error return of the initFunction should tell USB core what
+    happened instead of using error code like USB_STOR_TRANSPORT_ERROR.
+    
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220407022058.3741-1-linma@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/storage/alauda.c b/drivers/usb/storage/alauda.c
+index 20b857e97e60..747be69e5e69 100644
+--- a/drivers/usb/storage/alauda.c
++++ b/drivers/usb/storage/alauda.c
+@@ -1104,7 +1104,7 @@ static int init_alauda(struct us_data *us)
+ 
+ 	us-&gt;extra = kzalloc(sizeof(struct alauda_info), GFP_NOIO);
+ 	if (!us-&gt;extra)
+-		return USB_STOR_TRANSPORT_ERROR;
++		return -ENOMEM;
+ 
+ 	info = (struct alauda_info *) us-&gt;extra;
+ 	us-&gt;extra_destructor = alauda_info_destructor;
+@@ -1113,7 +1113,7 @@ static int init_alauda(struct us_data *us)
+ 		altsetting-&gt;endpoint[0].desc.bEndpointAddress
+ 		&amp; USB_ENDPOINT_NUMBER_MASK);
+ 
+-	return USB_STOR_TRANSPORT_GOOD;
++	return 0;
+ }
+ 
+ static int alauda_transport(struct scsi_cmnd *srb, struct us_data *us)</pre><hr><pre>commit bc6de2878429e85c1f1afaa566f7b5abb2243eef
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sun Apr 17 20:55:19 2022 +0800
+
+    drivers: net: hippi: Fix deadlock in rr_close()
+    
+    There is a deadlock in rr_close(), which is shown below:
+    
+       (Thread 1)                |      (Thread 2)
+                                 | rr_open()
+    rr_close()                   |  add_timer()
+     spin_lock_irqsave() //(1)   |  (wait a time)
+     ...                         | rr_timer()
+     del_timer_sync()            |  spin_lock_irqsave() //(2)
+     (wait timer to stop)        |  ...
+    
+    We hold rrpriv-&gt;lock in position (1) of thread 1 and
+    use del_timer_sync() to wait timer to stop, but timer handler
+    also need rrpriv-&gt;lock in position (2) of thread 2.
+    As a result, rr_close() will block forever.
+    
+    This patch extracts del_timer_sync() from the protection of
+    spin_lock_irqsave(), which could let timer handler to obtain
+    the needed lock.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220417125519.82618-1-duoming@zju.edu.cn
+    Signed-off-by: Paolo Abeni &lt;pabeni@redhat.com&gt;
+
+diff --git a/drivers/net/hippi/rrunner.c b/drivers/net/hippi/rrunner.c
+index 16105292b140..74e845fa2e07 100644
+--- a/drivers/net/hippi/rrunner.c
++++ b/drivers/net/hippi/rrunner.c
+@@ -1355,7 +1355,9 @@ static int rr_close(struct net_device *dev)
+ 
+ 	rrpriv-&gt;fw_running = 0;
+ 
++	spin_unlock_irqrestore(&amp;rrpriv-&gt;lock, flags);
+ 	del_timer_sync(&amp;rrpriv-&gt;timer);
++	spin_lock_irqsave(&amp;rrpriv-&gt;lock, flags);
+ 
+ 	writel(0, &amp;regs-&gt;TxPi);
+ 	writel(0, &amp;regs-&gt;IpRxPi);</pre><hr><pre>commit 9b6bdbd9337de3917945847bde262a34a87a6303
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sun Apr 17 22:16:41 2022 +0800
+
+    drivers: staging: rtl8192e: Fix deadlock in rtllib_beacons_stop()
+    
+    There is a deadlock in rtllib_beacons_stop(), which is shown
+    below:
+    
+       (Thread 1)              |      (Thread 2)
+                               | rtllib_send_beacon()
+    rtllib_beacons_stop()      |  mod_timer()
+     spin_lock_irqsave() //(1) |  (wait a time)
+     ...                       | rtllib_send_beacon_cb()
+     del_timer_sync()          |  spin_lock_irqsave() //(2)
+     (wait timer to stop)      |  ...
+    
+    We hold ieee-&gt;beacon_lock in position (1) of thread 1 and
+    use del_timer_sync() to wait timer to stop, but timer handler
+    also need ieee-&gt;beacon_lock in position (2) of thread 2.
+    As a result, rtllib_beacons_stop() will block forever.
+    
+    This patch extracts del_timer_sync() from the protection of
+    spin_lock_irqsave(), which could let timer handler to obtain
+    the needed lock.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220417141641.124388-1-duoming@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/rtl8192e/rtllib_softmac.c b/drivers/staging/rtl8192e/rtllib_softmac.c
+index 82bf05eb1cbf..ef35889cbb96 100644
+--- a/drivers/staging/rtl8192e/rtllib_softmac.c
++++ b/drivers/staging/rtl8192e/rtllib_softmac.c
+@@ -651,9 +651,9 @@ static void rtllib_beacons_stop(struct rtllib_device *ieee)
+ 	spin_lock_irqsave(&amp;ieee-&gt;beacon_lock, flags);
+ 
+ 	ieee-&gt;beacon_txing = 0;
+-	del_timer_sync(&amp;ieee-&gt;beacon_timer);
+ 
+ 	spin_unlock_irqrestore(&amp;ieee-&gt;beacon_lock, flags);
++	del_timer_sync(&amp;ieee-&gt;beacon_timer);
+ 
+ }
+ </pre><hr><pre>commit 806c7b53414934ba2a39449b31fd1a038e500273
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sun Apr 17 21:54:07 2022 +0800
+
+    drivers: staging: rtl8192u: Fix deadlock in ieee80211_beacons_stop()
+    
+    There is a deadlock in ieee80211_beacons_stop(), which is shown below:
+    
+       (Thread 1)              |      (Thread 2)
+                               | ieee80211_send_beacon()
+    ieee80211_beacons_stop()   |  mod_timer()
+     spin_lock_irqsave() //(1) |  (wait a time)
+     ...                       | ieee80211_send_beacon_cb()
+     del_timer_sync()          |  spin_lock_irqsave() //(2)
+     (wait timer to stop)      |  ...
+    
+    We hold ieee-&gt;beacon_lock in position (1) of thread 1 and use
+    del_timer_sync() to wait timer to stop, but timer handler
+    also need ieee-&gt;beacon_lock in position (2) of thread 2.
+    As a result, ieee80211_beacons_stop() will block forever.
+    
+    This patch extracts del_timer_sync() from the protection of
+    spin_lock_irqsave(), which could let timer handler to obtain
+    the needed lock.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220417135407.109536-1-duoming@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/rtl8192u/ieee80211/ieee80211_softmac.c b/drivers/staging/rtl8192u/ieee80211/ieee80211_softmac.c
+index 4e8fbd2410a1..f0ee018b8106 100644
+--- a/drivers/staging/rtl8192u/ieee80211/ieee80211_softmac.c
++++ b/drivers/staging/rtl8192u/ieee80211/ieee80211_softmac.c
+@@ -528,9 +528,9 @@ static void ieee80211_beacons_stop(struct ieee80211_device *ieee)
+ 	spin_lock_irqsave(&amp;ieee-&gt;beacon_lock, flags);
+ 
+ 	ieee-&gt;beacon_txing = 0;
+-	del_timer_sync(&amp;ieee-&gt;beacon_timer);
+ 
+ 	spin_unlock_irqrestore(&amp;ieee-&gt;beacon_lock, flags);
++	del_timer_sync(&amp;ieee-&gt;beacon_timer);
+ }
+ 
+ void ieee80211_stop_send_beacons(struct ieee80211_device *ieee)</pre><hr><pre>commit 679ab61bf5f5f519377d812afb4fb93634782c74
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Mon Apr 18 23:33:22 2022 +0800
+
+    RDMA/irdma: Fix deadlock in irdma_cleanup_cm_core()
+    
+    There is a deadlock in irdma_cleanup_cm_core(), which is shown below:
+    
+       (Thread 1)              |      (Thread 2)
+                               | irdma_schedule_cm_timer()
+    irdma_cleanup_cm_core()    |  add_timer()
+     spin_lock_irqsave() //(1) |  (wait a time)
+     ...                       | irdma_cm_timer_tick()
+     del_timer_sync()          |  spin_lock_irqsave() //(2)
+     (wait timer to stop)      |  ...
+    
+    We hold cm_core-&gt;ht_lock in position (1) of thread 1 and use
+    del_timer_sync() to wait timer to stop, but timer handler also need
+    cm_core-&gt;ht_lock in position (2) of thread 2.  As a result,
+    irdma_cleanup_cm_core() will block forever.
+    
+    This patch removes the check of timer_pending() in
+    irdma_cleanup_cm_core(), because the del_timer_sync() function will just
+    return directly if there isn't a pending timer. As a result, the lock is
+    redundant, because there is no resource it could protect.
+    
+    Link: https://lore.kernel.org/r/20220418153322.42524-1-duoming@zju.edu.cn
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Shiraz Saleem &lt;shiraz.saleem@intel.com&gt;
+    Signed-off-by: Jason Gunthorpe &lt;jgg@nvidia.com&gt;
+
+diff --git a/drivers/infiniband/hw/irdma/cm.c b/drivers/infiniband/hw/irdma/cm.c
+index dedb3b7edd8d..a98d962e5efb 100644
+--- a/drivers/infiniband/hw/irdma/cm.c
++++ b/drivers/infiniband/hw/irdma/cm.c
+@@ -3246,15 +3246,10 @@ int irdma_setup_cm_core(struct irdma_device *iwdev, u8 rdma_ver)
+  */
+ void irdma_cleanup_cm_core(struct irdma_cm_core *cm_core)
+ {
+-	unsigned long flags;
+-
+ 	if (!cm_core)
+ 		return;
+ 
+-	spin_lock_irqsave(&amp;cm_core-&gt;ht_lock, flags);
+-	if (timer_pending(&amp;cm_core-&gt;tcp_timer))
+-		del_timer_sync(&amp;cm_core-&gt;tcp_timer);
+-	spin_unlock_irqrestore(&amp;cm_core-&gt;ht_lock, flags);
++	del_timer_sync(&amp;cm_core-&gt;tcp_timer);
+ 
+ 	destroy_workqueue(cm_core-&gt;event_wq);
+ 	cm_core-&gt;dev-&gt;ws_reset(&amp;cm_core-&gt;iwdev-&gt;vsi);</pre><hr><pre>commit ef27324e2cb7bb24542d6cb2571740eefe6b00dc
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Wed Apr 13 00:04:30 2022 +0800
+
+    nfc: nci: add flush_workqueue to prevent uaf
+    
+    Our detector found a concurrent use-after-free bug when detaching an
+    NCI device. The main reason for this bug is the unexpected scheduling
+    between the used delayed mechanism (timer and workqueue).
+    
+    The race can be demonstrated below:
+    
+    Thread-1                           Thread-2
+                                     | nci_dev_up()
+                                     |   nci_open_device()
+                                     |     __nci_request(nci_reset_req)
+                                     |       nci_send_cmd
+                                     |         queue_work(cmd_work)
+    nci_unregister_device()          |
+      nci_close_device()             | ...
+        del_timer_sync(cmd_timer)[1] |
+    ...                              | Worker
+    nci_free_device()                | nci_cmd_work()
+      kfree(ndev)[3]                 |   mod_timer(cmd_timer)[2]
+    
+    In short, the cleanup routine thought that the cmd_timer has already
+    been detached by [1] but the mod_timer can re-attach the timer [2], even
+    it is already released [3], resulting in UAF.
+    
+    This UAF is easy to trigger, crash trace by POC is like below
+    
+    [   66.703713] ==================================================================
+    [   66.703974] BUG: KASAN: use-after-free in enqueue_timer+0x448/0x490
+    [   66.703974] Write of size 8 at addr ffff888009fb7058 by task kworker/u4:1/33
+    [   66.703974]
+    [   66.703974] CPU: 1 PID: 33 Comm: kworker/u4:1 Not tainted 5.18.0-rc2 #5
+    [   66.703974] Workqueue: nfc2_nci_cmd_wq nci_cmd_work
+    [   66.703974] Call Trace:
+    [   66.703974]  &lt;TASK&gt;
+    [   66.703974]  dump_stack_lvl+0x57/0x7d
+    [   66.703974]  print_report.cold+0x5e/0x5db
+    [   66.703974]  ? enqueue_timer+0x448/0x490
+    [   66.703974]  kasan_report+0xbe/0x1c0
+    [   66.703974]  ? enqueue_timer+0x448/0x490
+    [   66.703974]  enqueue_timer+0x448/0x490
+    [   66.703974]  __mod_timer+0x5e6/0xb80
+    [   66.703974]  ? mark_held_locks+0x9e/0xe0
+    [   66.703974]  ? try_to_del_timer_sync+0xf0/0xf0
+    [   66.703974]  ? lockdep_hardirqs_on_prepare+0x17b/0x410
+    [   66.703974]  ? queue_work_on+0x61/0x80
+    [   66.703974]  ? lockdep_hardirqs_on+0xbf/0x130
+    [   66.703974]  process_one_work+0x8bb/0x1510
+    [   66.703974]  ? lockdep_hardirqs_on_prepare+0x410/0x410
+    [   66.703974]  ? pwq_dec_nr_in_flight+0x230/0x230
+    [   66.703974]  ? rwlock_bug.part.0+0x90/0x90
+    [   66.703974]  ? _raw_spin_lock_irq+0x41/0x50
+    [   66.703974]  worker_thread+0x575/0x1190
+    [   66.703974]  ? process_one_work+0x1510/0x1510
+    [   66.703974]  kthread+0x2a0/0x340
+    [   66.703974]  ? kthread_complete_and_exit+0x20/0x20
+    [   66.703974]  ret_from_fork+0x22/0x30
+    [   66.703974]  &lt;/TASK&gt;
+    [   66.703974]
+    [   66.703974] Allocated by task 267:
+    [   66.703974]  kasan_save_stack+0x1e/0x40
+    [   66.703974]  __kasan_kmalloc+0x81/0xa0
+    [   66.703974]  nci_allocate_device+0xd3/0x390
+    [   66.703974]  nfcmrvl_nci_register_dev+0x183/0x2c0
+    [   66.703974]  nfcmrvl_nci_uart_open+0xf2/0x1dd
+    [   66.703974]  nci_uart_tty_ioctl+0x2c3/0x4a0
+    [   66.703974]  tty_ioctl+0x764/0x1310
+    [   66.703974]  __x64_sys_ioctl+0x122/0x190
+    [   66.703974]  do_syscall_64+0x3b/0x90
+    [   66.703974]  entry_SYSCALL_64_after_hwframe+0x44/0xae
+    [   66.703974]
+    [   66.703974] Freed by task 406:
+    [   66.703974]  kasan_save_stack+0x1e/0x40
+    [   66.703974]  kasan_set_track+0x21/0x30
+    [   66.703974]  kasan_set_free_info+0x20/0x30
+    [   66.703974]  __kasan_slab_free+0x108/0x170
+    [   66.703974]  kfree+0xb0/0x330
+    [   66.703974]  nfcmrvl_nci_unregister_dev+0x90/0xd0
+    [   66.703974]  nci_uart_tty_close+0xdf/0x180
+    [   66.703974]  tty_ldisc_kill+0x73/0x110
+    [   66.703974]  tty_ldisc_hangup+0x281/0x5b0
+    [   66.703974]  __tty_hangup.part.0+0x431/0x890
+    [   66.703974]  tty_release+0x3a8/0xc80
+    [   66.703974]  __fput+0x1f0/0x8c0
+    [   66.703974]  task_work_run+0xc9/0x170
+    [   66.703974]  exit_to_user_mode_prepare+0x194/0x1a0
+    [   66.703974]  syscall_exit_to_user_mode+0x19/0x50
+    [   66.703974]  do_syscall_64+0x48/0x90
+    [   66.703974]  entry_SYSCALL_64_after_hwframe+0x44/0xae
+    
+    To fix the UAF, this patch adds flush_workqueue() to ensure the
+    nci_cmd_work is finished before the following del_timer_sync.
+    This combination will promise the timer is actually detached.
+    
+    Fixes: 6a2968aaf50c ("NFC: basic NCI protocol implementation")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Krzysztof Kozlowski &lt;krzysztof.kozlowski@linaro.org&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/nfc/nci/core.c b/net/nfc/nci/core.c
+index d2537383a3e8..6a193cce2a75 100644
+--- a/net/nfc/nci/core.c
++++ b/net/nfc/nci/core.c
+@@ -560,6 +560,10 @@ static int nci_close_device(struct nci_dev *ndev)
+ 	mutex_lock(&amp;ndev-&gt;req_lock);
+ 
+ 	if (!test_and_clear_bit(NCI_UP, &amp;ndev-&gt;flags)) {
++		/* Need to flush the cmd wq in case
++		 * there is a queued/running cmd_work
++		 */
++		flush_workqueue(ndev-&gt;cmd_wq);
+ 		del_timer_sync(&amp;ndev-&gt;cmd_timer);
+ 		del_timer_sync(&amp;ndev-&gt;data_timer);
+ 		mutex_unlock(&amp;ndev-&gt;req_lock);</pre>
+    <div class="pagination">
+        <a href='6_15.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><span>[16]</span><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_17.html'>Next&gt;&gt;</a>
+    <div>
+</body>

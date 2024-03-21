@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Illinois, Urbana-Champaign</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Illinois, Urbana-Champaign</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='24_2.html'>2</a><a href='24_3.html'>3</a><a href='24_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 290eb13f1a657313177789159a6d1786187cf168
+Author: Jinghao Jia &lt;jinghao7@illinois.edu&gt;
+Date:   Thu Mar 7 00:26:01 2024 +0900
+
+    x86/kprobes: Boost more instructions from grp2/3/4/5
+    
+    With the instruction decoder, we are now able to decode and recognize
+    instructions with opcode extensions. There are more instructions in
+    these groups that can be boosted:
+    
+    Group 2: ROL, ROR, RCL, RCR, SHL/SAL, SHR, SAR
+    Group 3: TEST, NOT, NEG, MUL, IMUL, DIV, IDIV
+    Group 4: INC, DEC (byte operation)
+    Group 5: INC, DEC (word/doubleword/quadword operation)
+    
+    These instructions are not boosted previously because there are reserved
+    opcodes within the groups, e.g., group 2 with ModR/M.nnn == 110 is
+    unmapped. As a result, kprobes attached to them requires two int3 traps
+    as being non-boostable also prevents jump-optimization.
+    
+    Some simple tests on QEMU show that after boosting and jump-optimization
+    a single kprobe on these instructions with an empty pre-handler runs 10x
+    faster (~1000 cycles vs. ~100 cycles).
+    
+    Since these instructions are mostly ALU operations and do not touch
+    special registers like RIP, let's boost them so that we get the
+    performance benefit.
+    
+    Link: https://lore.kernel.org/all/20240204031300.830475-4-jinghao7@illinois.edu/
+    
+    Signed-off-by: Jinghao Jia &lt;jinghao7@illinois.edu&gt;
+    Signed-off-by: Masami Hiramatsu (Google) &lt;mhiramat@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/kprobes/core.c b/arch/x86/kernel/kprobes/core.c
+index c65ca556005a..091b3ab76a18 100644
+--- a/arch/x86/kernel/kprobes/core.c
++++ b/arch/x86/kernel/kprobes/core.c
+@@ -169,22 +169,33 @@ bool can_boost(struct insn *insn, void *addr)
+ 	case 0x62:		/* bound */
+ 	case 0x70 ... 0x7f:	/* Conditional jumps */
+ 	case 0x9a:		/* Call far */
+-	case 0xc0 ... 0xc1:	/* Grp2 */
+ 	case 0xcc ... 0xce:	/* software exceptions */
+-	case 0xd0 ... 0xd3:	/* Grp2 */
+ 	case 0xd6:		/* (UD) */
+ 	case 0xd8 ... 0xdf:	/* ESC */
+ 	case 0xe0 ... 0xe3:	/* LOOP*, JCXZ */
+ 	case 0xe8 ... 0xe9:	/* near Call, JMP */
+ 	case 0xeb:		/* Short JMP */
+ 	case 0xf0 ... 0xf4:	/* LOCK/REP, HLT */
+-	case 0xf6 ... 0xf7:	/* Grp3 */
+-	case 0xfe:		/* Grp4 */
+ 		/* ... are not boostable */
+ 		return false;
++	case 0xc0 ... 0xc1:	/* Grp2 */
++	case 0xd0 ... 0xd3:	/* Grp2 */
++		/*
++		 * AMD uses nnn == 110 as SHL/SAL, but Intel makes it reserved.
++		 */
++		return X86_MODRM_REG(insn-&gt;modrm.bytes[0]) != 0b110;
++	case 0xf6 ... 0xf7:	/* Grp3 */
++		/* AMD uses nnn == 001 as TEST, but Intel makes it reserved. */
++		return X86_MODRM_REG(insn-&gt;modrm.bytes[0]) != 0b001;
++	case 0xfe:		/* Grp4 */
++		/* Only INC and DEC are boostable */
++		return X86_MODRM_REG(insn-&gt;modrm.bytes[0]) == 0b000 ||
++		       X86_MODRM_REG(insn-&gt;modrm.bytes[0]) == 0b001;
+ 	case 0xff:		/* Grp5 */
+-		/* Only indirect jmp is boostable */
+-		return X86_MODRM_REG(insn-&gt;modrm.bytes[0]) == 4;
++		/* Only INC, DEC, and indirect JMP are boostable */
++		return X86_MODRM_REG(insn-&gt;modrm.bytes[0]) == 0b000 ||
++		       X86_MODRM_REG(insn-&gt;modrm.bytes[0]) == 0b001 ||
++		       X86_MODRM_REG(insn-&gt;modrm.bytes[0]) == 0b100;
+ 	default:
+ 		return true;
+ 	}</pre><hr><pre>commit e884edbb844fd6935e4368734edd9f3fa46ec5c2
+Author: Jinghao Jia &lt;jinghao7@illinois.edu&gt;
+Date:   Thu Mar 7 00:26:01 2024 +0900
+
+    x86/kprobes: Prohibit kprobing on INT and UD
+    
+    Both INT (INT n, INT1, INT3, INTO) and UD (UD0, UD1, UD2) serve special
+    purposes in the kernel, e.g., INT3 is used by KGDB and UD2 is involved
+    in LLVM-KCFI instrumentation. At the same time, attaching kprobes on
+    these instructions (particularly UD) will pollute the stack trace dumped
+    in the kernel ring buffer, since the exception is triggered in the copy
+    buffer rather than the original location.
+    
+    Check for INT and UD in can_probe and reject any kprobes trying to
+    attach to these instructions.
+    
+    Link: https://lore.kernel.org/all/20240204031300.830475-3-jinghao7@illinois.edu/
+    
+    Suggested-by: Masami Hiramatsu (Google) &lt;mhiramat@kernel.org&gt;
+    Signed-off-by: Jinghao Jia &lt;jinghao7@illinois.edu&gt;
+    Signed-off-by: Masami Hiramatsu (Google) &lt;mhiramat@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/kprobes/core.c b/arch/x86/kernel/kprobes/core.c
+index 70982e725fd7..c65ca556005a 100644
+--- a/arch/x86/kernel/kprobes/core.c
++++ b/arch/x86/kernel/kprobes/core.c
+@@ -252,7 +252,28 @@ unsigned long recover_probed_instruction(kprobe_opcode_t *buf, unsigned long add
+ 	return __recover_probed_insn(buf, addr);
+ }
+ 
+-/* Check if paddr is at an instruction boundary */
++/* Check if insn is INT or UD */
++static inline bool is_exception_insn(struct insn *insn)
++{
++	/* UD uses 0f escape */
++	if (insn-&gt;opcode.bytes[0] == 0x0f) {
++		/* UD0 / UD1 / UD2 */
++		return insn-&gt;opcode.bytes[1] == 0xff ||
++		       insn-&gt;opcode.bytes[1] == 0xb9 ||
++		       insn-&gt;opcode.bytes[1] == 0x0b;
++	}
++
++	/* INT3 / INT n / INTO / INT1 */
++	return insn-&gt;opcode.bytes[0] == 0xcc ||
++	       insn-&gt;opcode.bytes[0] == 0xcd ||
++	       insn-&gt;opcode.bytes[0] == 0xce ||
++	       insn-&gt;opcode.bytes[0] == 0xf1;
++}
++
++/*
++ * Check if paddr is at an instruction boundary and that instruction can
++ * be probed
++ */
+ static bool can_probe(unsigned long paddr)
+ {
+ 	unsigned long addr, __addr, offset = 0;
+@@ -291,6 +312,22 @@ static bool can_probe(unsigned long paddr)
+ #endif
+ 		addr += insn.length;
+ 	}
++
++	/* Check if paddr is at an instruction boundary */
++	if (addr != paddr)
++		return false;
++
++	__addr = recover_probed_instruction(buf, addr);
++	if (!__addr)
++		return false;
++
++	if (insn_decode_kernel(&amp;insn, (void *)__addr) &lt; 0)
++		return false;
++
++	/* INT and UD are special and should not be kprobed */
++	if (is_exception_insn(&amp;insn))
++		return false;
++
+ 	if (IS_ENABLED(CONFIG_CFI_CLANG)) {
+ 		/*
+ 		 * The compiler generates the following instruction sequence
+@@ -305,13 +342,6 @@ static bool can_probe(unsigned long paddr)
+ 		 * Also, these movl and addl are used for showing expected
+ 		 * type. So those must not be touched.
+ 		 */
+-		__addr = recover_probed_instruction(buf, addr);
+-		if (!__addr)
+-			return false;
+-
+-		if (insn_decode_kernel(&amp;insn, (void *)__addr) &lt; 0)
+-			return false;
+-
+ 		if (insn.opcode.value == 0xBA)
+ 			offset = 12;
+ 		else if (insn.opcode.value == 0x3)
+@@ -325,7 +355,7 @@ static bool can_probe(unsigned long paddr)
+ 	}
+ 
+ out:
+-	return (addr == paddr);
++	return true;
+ }
+ 
+ /* If x86 supports IBT (ENDBR) it must be skipped. */</pre><hr><pre>commit e4778a0ef322834718f8e42da3901eb99fef1208
+Author: Jinghao Jia &lt;jinghao7@illinois.edu&gt;
+Date:   Thu Mar 7 00:26:01 2024 +0900
+
+    x86/kprobes: Refactor can_{probe,boost} return type to bool
+    
+    Both can_probe and can_boost have int return type but are using int as
+    boolean in their context.
+    
+    Refactor both functions to make them actually return boolean.
+    
+    Link: https://lore.kernel.org/all/20240204031300.830475-2-jinghao7@illinois.edu/
+    
+    Signed-off-by: Jinghao Jia &lt;jinghao7@illinois.edu&gt;
+    Acked-by: Masami Hiramatsu (Google) &lt;mhiramat@kernel.org&gt;
+    Signed-off-by: Masami Hiramatsu (Google) &lt;mhiramat@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/kprobes/common.h b/arch/x86/kernel/kprobes/common.h
+index c993521d4933..e772276f5aa9 100644
+--- a/arch/x86/kernel/kprobes/common.h
++++ b/arch/x86/kernel/kprobes/common.h
+@@ -78,7 +78,7 @@
+ #endif
+ 
+ /* Ensure if the instruction can be boostable */
+-extern int can_boost(struct insn *insn, void *orig_addr);
++extern bool can_boost(struct insn *insn, void *orig_addr);
+ /* Recover instruction if given address is probed */
+ extern unsigned long recover_probed_instruction(kprobe_opcode_t *buf,
+ 					 unsigned long addr);
+diff --git a/arch/x86/kernel/kprobes/core.c b/arch/x86/kernel/kprobes/core.c
+index a0ce46c0a2d8..70982e725fd7 100644
+--- a/arch/x86/kernel/kprobes/core.c
++++ b/arch/x86/kernel/kprobes/core.c
+@@ -137,14 +137,14 @@ NOKPROBE_SYMBOL(synthesize_relcall);
+  * Returns non-zero if INSN is boostable.
+  * RIP relative instructions are adjusted at copying time in 64 bits mode
+  */
+-int can_boost(struct insn *insn, void *addr)
++bool can_boost(struct insn *insn, void *addr)
+ {
+ 	kprobe_opcode_t opcode;
+ 	insn_byte_t prefix;
+ 	int i;
+ 
+ 	if (search_exception_tables((unsigned long)addr))
+-		return 0;	/* Page fault may occur on this address. */
++		return false;	/* Page fault may occur on this address. */
+ 
+ 	/* 2nd-byte opcode */
+ 	if (insn-&gt;opcode.nbytes == 2)
+@@ -152,7 +152,7 @@ int can_boost(struct insn *insn, void *addr)
+ 				(unsigned long *)twobyte_is_boostable);
+ 
+ 	if (insn-&gt;opcode.nbytes != 1)
+-		return 0;
++		return false;
+ 
+ 	for_each_insn_prefix(insn, i, prefix) {
+ 		insn_attr_t attr;
+@@ -160,7 +160,7 @@ int can_boost(struct insn *insn, void *addr)
+ 		attr = inat_get_opcode_attribute(prefix);
+ 		/* Can't boost Address-size override prefix and CS override prefix */
+ 		if (prefix == 0x2e || inat_is_address_size_prefix(attr))
+-			return 0;
++			return false;
+ 	}
+ 
+ 	opcode = insn-&gt;opcode.bytes[0];
+@@ -181,12 +181,12 @@ int can_boost(struct insn *insn, void *addr)
+ 	case 0xf6 ... 0xf7:	/* Grp3 */
+ 	case 0xfe:		/* Grp4 */
+ 		/* ... are not boostable */
+-		return 0;
++		return false;
+ 	case 0xff:		/* Grp5 */
+ 		/* Only indirect jmp is boostable */
+ 		return X86_MODRM_REG(insn-&gt;modrm.bytes[0]) == 4;
+ 	default:
+-		return 1;
++		return true;
+ 	}
+ }
+ 
+@@ -253,20 +253,18 @@ unsigned long recover_probed_instruction(kprobe_opcode_t *buf, unsigned long add
+ }
+ 
+ /* Check if paddr is at an instruction boundary */
+-static int can_probe(unsigned long paddr)
++static bool can_probe(unsigned long paddr)
+ {
+ 	unsigned long addr, __addr, offset = 0;
+ 	struct insn insn;
+ 	kprobe_opcode_t buf[MAX_INSN_SIZE];
+ 
+ 	if (!kallsyms_lookup_size_offset(paddr, NULL, &amp;offset))
+-		return 0;
++		return false;
+ 
+ 	/* Decode instructions */
+ 	addr = paddr - offset;
+ 	while (addr &lt; paddr) {
+-		int ret;
+-
+ 		/*
+ 		 * Check if the instruction has been modified by another
+ 		 * kprobe, in which case we replace the breakpoint by the
+@@ -277,11 +275,10 @@ static int can_probe(unsigned long paddr)
+ 		 */
+ 		__addr = recover_probed_instruction(buf, addr);
+ 		if (!__addr)
+-			return 0;
++			return false;
+ 
+-		ret = insn_decode_kernel(&amp;insn, (void *)__addr);
+-		if (ret &lt; 0)
+-			return 0;
++		if (insn_decode_kernel(&amp;insn, (void *)__addr) &lt; 0)
++			return false;
+ 
+ #ifdef CONFIG_KGDB
+ 		/*
+@@ -290,7 +287,7 @@ static int can_probe(unsigned long paddr)
+ 		 */
+ 		if (insn.opcode.bytes[0] == INT3_INSN_OPCODE &amp;&amp;
+ 		    kgdb_has_hit_break(addr))
+-			return 0;
++			return false;
+ #endif
+ 		addr += insn.length;
+ 	}
+@@ -310,10 +307,10 @@ static int can_probe(unsigned long paddr)
+ 		 */
+ 		__addr = recover_probed_instruction(buf, addr);
+ 		if (!__addr)
+-			return 0;
++			return false;
+ 
+ 		if (insn_decode_kernel(&amp;insn, (void *)__addr) &lt; 0)
+-			return 0;
++			return false;
+ 
+ 		if (insn.opcode.value == 0xBA)
+ 			offset = 12;
+@@ -324,7 +321,7 @@ static int can_probe(unsigned long paddr)
+ 
+ 		/* This movl/addl is used for decoding CFI. */
+ 		if (is_cfi_trap(addr + offset))
+-			return 0;
++			return false;
+ 	}
+ 
+ out:</pre><hr><pre>commit f5d03da48d062966c94f0199d20be0b3a37a7982
+Author: Jinghao Jia &lt;jinghao7@illinois.edu&gt;
+Date:   Tue Jan 2 17:33:45 2024 -0600
+
+    x86/kprobes: fix incorrect return address calculation in kprobe_emulate_call_indirect
+    
+    kprobe_emulate_call_indirect currently uses int3_emulate_call to emulate
+    indirect calls. However, int3_emulate_call always assumes the size of
+    the call to be 5 bytes when calculating the return address. This is
+    incorrect for register-based indirect calls in x86, which can be either
+    2 or 3 bytes depending on whether REX prefix is used. At kprobe runtime,
+    the incorrect return address causes control flow to land onto the wrong
+    place after return -- possibly not a valid instruction boundary. This
+    can lead to a panic like the following:
+    
+    [    7.308204][    C1] BUG: unable to handle page fault for address: 000000000002b4d8
+    [    7.308883][    C1] #PF: supervisor read access in kernel mode
+    [    7.309168][    C1] #PF: error_code(0x0000) - not-present page
+    [    7.309461][    C1] PGD 0 P4D 0
+    [    7.309652][    C1] Oops: 0000 [#1] SMP
+    [    7.309929][    C1] CPU: 1 PID: 0 Comm: swapper/1 Not tainted 6.7.0-rc5-trace-for-next #6
+    [    7.310397][    C1] Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS 1.16.0-20220807_005459-localhost 04/01/2014
+    [    7.311068][    C1] RIP: 0010:__common_interrupt+0x52/0xc0
+    [    7.311349][    C1] Code: 01 00 4d 85 f6 74 39 49 81 fe 00 f0 ff ff 77 30 4c 89 f7 4d 8b 5e 68 41 ba 91 76 d8 42 45 03 53 fc 74 02 0f 0b cc ff d3 65 48 &lt;8b&gt; 05 30 c7 ff 7e 65 4c 89 3d 28 c7 ff 7e 5b 41 5c 41 5e 41 5f c3
+    [    7.312512][    C1] RSP: 0018:ffffc900000e0fd0 EFLAGS: 00010046
+    [    7.312899][    C1] RAX: 0000000000000001 RBX: 0000000000000023 RCX: 0000000000000001
+    [    7.313334][    C1] RDX: 00000000000003cd RSI: 0000000000000001 RDI: ffff888100d302a4
+    [    7.313702][    C1] RBP: 0000000000000001 R08: 0ef439818636191f R09: b1621ff338a3b482
+    [    7.314146][    C1] R10: ffffffff81e5127b R11: ffffffff81059810 R12: 0000000000000023
+    [    7.314509][    C1] R13: 0000000000000000 R14: ffff888100d30200 R15: 0000000000000000
+    [    7.314951][    C1] FS:  0000000000000000(0000) GS:ffff88813bc80000(0000) knlGS:0000000000000000
+    [    7.315396][    C1] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+    [    7.315691][    C1] CR2: 000000000002b4d8 CR3: 0000000003028003 CR4: 0000000000370ef0
+    [    7.316153][    C1] DR0: 0000000000000000 DR1: 0000000000000000 DR2: 0000000000000000
+    [    7.316508][    C1] DR3: 0000000000000000 DR6: 00000000fffe0ff0 DR7: 0000000000000400
+    [    7.316948][    C1] Call Trace:
+    [    7.317123][    C1]  &lt;IRQ&gt;
+    [    7.317279][    C1]  ? __die_body+0x64/0xb0
+    [    7.317482][    C1]  ? page_fault_oops+0x248/0x370
+    [    7.317712][    C1]  ? __wake_up+0x96/0xb0
+    [    7.317964][    C1]  ? exc_page_fault+0x62/0x130
+    [    7.318211][    C1]  ? asm_exc_page_fault+0x22/0x30
+    [    7.318444][    C1]  ? __cfi_native_send_call_func_single_ipi+0x10/0x10
+    [    7.318860][    C1]  ? default_idle+0xb/0x10
+    [    7.319063][    C1]  ? __common_interrupt+0x52/0xc0
+    [    7.319330][    C1]  common_interrupt+0x78/0x90
+    [    7.319546][    C1]  &lt;/IRQ&gt;
+    [    7.319679][    C1]  &lt;TASK&gt;
+    [    7.319854][    C1]  asm_common_interrupt+0x22/0x40
+    [    7.320082][    C1] RIP: 0010:default_idle+0xb/0x10
+    [    7.320309][    C1] Code: 4c 01 c7 4c 29 c2 e9 72 ff ff ff cc cc cc cc 90 90 90 90 90 90 90 90 90 90 90 b8 0c 67 40 a5 66 90 0f 00 2d 09 b9 3b 00 fb f4 &lt;fa&gt; c3 0f 1f 00 90 90 90 90 90 90 90 90 90 90 90 b8 0c 67 40 a5 e9
+    [    7.321449][    C1] RSP: 0018:ffffc9000009bee8 EFLAGS: 00000256
+    [    7.321808][    C1] RAX: ffff88813bca8b68 RBX: 0000000000000001 RCX: 000000000001ef0c
+    [    7.322227][    C1] RDX: 0000000000000000 RSI: 0000000000000001 RDI: 000000000001ef0c
+    [    7.322656][    C1] RBP: ffffc9000009bef8 R08: 8000000000000000 R09: 00000000000008c2
+    [    7.323083][    C1] R10: 0000000000000000 R11: ffffffff81058e70 R12: 0000000000000000
+    [    7.323530][    C1] R13: ffff8881002b30c0 R14: 0000000000000000 R15: 0000000000000000
+    [    7.323948][    C1]  ? __cfi_lapic_next_deadline+0x10/0x10
+    [    7.324239][    C1]  default_idle_call+0x31/0x50
+    [    7.324464][    C1]  do_idle+0xd3/0x240
+    [    7.324690][    C1]  cpu_startup_entry+0x25/0x30
+    [    7.324983][    C1]  start_secondary+0xb4/0xc0
+    [    7.325217][    C1]  secondary_startup_64_no_verify+0x179/0x17b
+    [    7.325498][    C1]  &lt;/TASK&gt;
+    [    7.325641][    C1] Modules linked in:
+    [    7.325906][    C1] CR2: 000000000002b4d8
+    [    7.326104][    C1] ---[ end trace 0000000000000000 ]---
+    [    7.326354][    C1] RIP: 0010:__common_interrupt+0x52/0xc0
+    [    7.326614][    C1] Code: 01 00 4d 85 f6 74 39 49 81 fe 00 f0 ff ff 77 30 4c 89 f7 4d 8b 5e 68 41 ba 91 76 d8 42 45 03 53 fc 74 02 0f 0b cc ff d3 65 48 &lt;8b&gt; 05 30 c7 ff 7e 65 4c 89 3d 28 c7 ff 7e 5b 41 5c 41 5e 41 5f c3
+    [    7.327570][    C1] RSP: 0018:ffffc900000e0fd0 EFLAGS: 00010046
+    [    7.327910][    C1] RAX: 0000000000000001 RBX: 0000000000000023 RCX: 0000000000000001
+    [    7.328273][    C1] RDX: 00000000000003cd RSI: 0000000000000001 RDI: ffff888100d302a4
+    [    7.328632][    C1] RBP: 0000000000000001 R08: 0ef439818636191f R09: b1621ff338a3b482
+    [    7.329223][    C1] R10: ffffffff81e5127b R11: ffffffff81059810 R12: 0000000000000023
+    [    7.329780][    C1] R13: 0000000000000000 R14: ffff888100d30200 R15: 0000000000000000
+    [    7.330193][    C1] FS:  0000000000000000(0000) GS:ffff88813bc80000(0000) knlGS:0000000000000000
+    [    7.330632][    C1] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+    [    7.331050][    C1] CR2: 000000000002b4d8 CR3: 0000000003028003 CR4: 0000000000370ef0
+    [    7.331454][    C1] DR0: 0000000000000000 DR1: 0000000000000000 DR2: 0000000000000000
+    [    7.331854][    C1] DR3: 0000000000000000 DR6: 00000000fffe0ff0 DR7: 0000000000000400
+    [    7.332236][    C1] Kernel panic - not syncing: Fatal exception in interrupt
+    [    7.332730][    C1] Kernel Offset: disabled
+    [    7.333044][    C1] ---[ end Kernel panic - not syncing: Fatal exception in interrupt ]---
+    
+    The relevant assembly code is (from objdump, faulting address
+    highlighted):
+    
+    ffffffff8102ed9d:       41 ff d3                  call   *%r11
+    ffffffff8102eda0:       65 48 &lt;8b&gt; 05 30 c7 ff    mov    %gs:0x7effc730(%rip),%rax
+    
+    The emulation incorrectly sets the return address to be ffffffff8102ed9d
+    + 0x5 = ffffffff8102eda2, which is the 8b byte in the middle of the next
+    mov. This in turn causes incorrect subsequent instruction decoding and
+    eventually triggers the page fault above.
+    
+    Instead of invoking int3_emulate_call, perform push and jmp emulation
+    directly in kprobe_emulate_call_indirect. At this point we can obtain
+    the instruction size from p-&gt;ainsn.size so that we can calculate the
+    correct return address.
+    
+    Link: https://lore.kernel.org/all/20240102233345.385475-1-jinghao7@illinois.edu/
+    
+    Fixes: 6256e668b7af ("x86/kprobes: Use int3 instead of debug trap for single-step")
+    Cc: stable@vger.kernel.org
+    Signed-off-by: Jinghao Jia &lt;jinghao7@illinois.edu&gt;
+    Signed-off-by: Masami Hiramatsu (Google) &lt;mhiramat@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/kprobes/core.c b/arch/x86/kernel/kprobes/core.c
+index e8babebad7b8..a0ce46c0a2d8 100644
+--- a/arch/x86/kernel/kprobes/core.c
++++ b/arch/x86/kernel/kprobes/core.c
+@@ -576,7 +576,8 @@ static void kprobe_emulate_call_indirect(struct kprobe *p, struct pt_regs *regs)
+ {
+ 	unsigned long offs = addrmode_regoffs[p-&gt;ainsn.indirect.reg];
+ 
+-	int3_emulate_call(regs, regs_get_register(regs, offs));
++	int3_emulate_push(regs, regs-&gt;ip - INT3_INSN_SIZE + p-&gt;ainsn.size);
++	int3_emulate_jmp(regs, regs_get_register(regs, offs));
+ }
+ NOKPROBE_SYMBOL(kprobe_emulate_call_indirect);
+ </pre><hr><pre>commit 9e09b75079e229b08f12a732712100fdb9af8cab
+Author: Ruowen Qin &lt;ruowenq2@illinois.edu&gt;
+Date:   Tue Sep 26 23:50:30 2023 -0500
+
+    samples/bpf: Add -fsanitize=bounds to userspace programs
+    
+    The sanitizer flag, which is supported by both clang and gcc, would make
+    it easier to debug array index out-of-bounds problems in these programs.
+    
+    Make the Makfile smarter to detect ubsan support from the compiler and
+    add the '-fsanitize=bounds' accordingly.
+    
+    Suggested-by: Mimi Zohar &lt;zohar@linux.ibm.com&gt;
+    Signed-off-by: Jinghao Jia &lt;jinghao@linux.ibm.com&gt;
+    Signed-off-by: Jinghao Jia &lt;jinghao7@illinois.edu&gt;
+    Signed-off-by: Ruowen Qin &lt;ruowenq2@illinois.edu&gt;
+    Signed-off-by: Andrii Nakryiko &lt;andrii@kernel.org&gt;
+    Tested-by: Jiri Olsa &lt;jolsa@kernel.org&gt;
+    Acked-by: Jiri Olsa &lt;jolsa@kernel.org&gt;
+    Link: https://lore.kernel.org/bpf/20230927045030.224548-2-ruowenq2@illinois.edu
+
+diff --git a/samples/bpf/Makefile b/samples/bpf/Makefile
+index 6c707ebcebb9..90af76fa9dd8 100644
+--- a/samples/bpf/Makefile
++++ b/samples/bpf/Makefile
+@@ -169,6 +169,9 @@ endif
+ TPROGS_CFLAGS += -Wall -O2
+ TPROGS_CFLAGS += -Wmissing-prototypes
+ TPROGS_CFLAGS += -Wstrict-prototypes
++TPROGS_CFLAGS += $(call try-run,\
++	printf "int main() { return 0; }" |\
++	$(CC) -Werror -fsanitize=bounds -x c - -o "$$TMP",-fsanitize=bounds,)
+ 
+ TPROGS_CFLAGS += -I$(objtree)/usr/include
+ TPROGS_CFLAGS += -I$(srctree)/tools/testing/selftests/bpf/</pre><hr><pre>commit 81a5603a0f50fd7cf17ff21d106052215eaf2028
+Author: Arnav Rawat &lt;arnavr3@illinois.edu&gt;
+Date:   Fri Nov 11 14:32:09 2022 +0000
+
+    platform/x86: ideapad-laptop: Fix interrupt storm on fn-lock toggle on some Yoga laptops
+    
+    Commit 3ae86d2d4704 ("platform/x86: ideapad-laptop: Fix Legion 5 Fn lock
+    LED") uses the WMI event-id for the fn-lock event on some Legion 5 laptops
+    to manually toggle the fn-lock LED because the EC does not do it itself.
+    However, the same WMI ID is also sent on some Yoga laptops. Here, setting
+    the fn-lock state is not valid behavior, and causes the EC to spam
+    interrupts until the laptop is rebooted.
+    
+    Add a set_fn_lock_led_list[] DMI-id list and only enable the workaround to
+    manually set the LED on models on this list.
+    
+    Link: https://bugzilla.kernel.org/show_bug.cgi?id=212671
+    Cc: Meng Dong &lt;whenov@gmail.com&gt;
+    Signed-off-by: Arnav Rawat &lt;arnavr3@illinois.edu&gt;
+    Link: https://lore.kernel.org/r/12093851.O9o76ZdvQC@fedora
+    [hdegoede@redhat.com: Check DMI-id list only once and store the result]
+    Signed-off-by: Hans de Goede &lt;hdegoede@redhat.com&gt;
+
+diff --git a/drivers/platform/x86/ideapad-laptop.c b/drivers/platform/x86/ideapad-laptop.c
+index 33b3dfdd1b08..6c460cdc05bb 100644
+--- a/drivers/platform/x86/ideapad-laptop.c
++++ b/drivers/platform/x86/ideapad-laptop.c
+@@ -136,6 +136,7 @@ struct ideapad_private {
+ 		bool dytc                 : 1;
+ 		bool fan_mode             : 1;
+ 		bool fn_lock              : 1;
++		bool set_fn_lock_led      : 1;
+ 		bool hw_rfkill_switch     : 1;
+ 		bool kbd_bl               : 1;
+ 		bool touchpad_ctrl_via_ec : 1;
+@@ -1501,6 +1502,9 @@ static void ideapad_wmi_notify(u32 value, void *context)
+ 		ideapad_input_report(priv, value);
+ 		break;
+ 	case 208:
++		if (!priv-&gt;features.set_fn_lock_led)
++			break;
++
+ 		if (!eval_hals(priv-&gt;adev-&gt;handle, &amp;result)) {
+ 			bool state = test_bit(HALS_FNLOCK_STATE_BIT, &amp;result);
+ 
+@@ -1514,6 +1518,18 @@ static void ideapad_wmi_notify(u32 value, void *context)
+ }
+ #endif
+ 
++/* On some models we need to call exec_sals(SALS_FNLOCK_ON/OFF) to set the LED */
++static const struct dmi_system_id set_fn_lock_led_list[] = {
++	{
++		/* https://bugzilla.kernel.org/show_bug.cgi?id=212671 */
++		.matches = {
++			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
++			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo Legion R7000P2020H"),
++		}
++	},
++	{}
++};
++
+ /*
+  * Some ideapads have a hardware rfkill switch, but most do not have one.
+  * Reading VPCCMD_R_RF always results in 0 on models without a hardware rfkill,
+@@ -1556,6 +1572,7 @@ static void ideapad_check_features(struct ideapad_private *priv)
+ 	acpi_handle handle = priv-&gt;adev-&gt;handle;
+ 	unsigned long val;
+ 
++	priv-&gt;features.set_fn_lock_led = dmi_check_system(set_fn_lock_led_list);
+ 	priv-&gt;features.hw_rfkill_switch = dmi_check_system(hw_rfkill_list);
+ 
+ 	/* Most ideapads with ELAN0634 touchpad don't use EC touchpad switch */</pre><hr><pre>commit 0d8315dddd2899f519fe1ca3d4d5cdaf44ea421e
+Author: YiFei Zhu &lt;yifeifz2@illinois.edu&gt;
+Date:   Wed Nov 11 07:33:54 2020 -0600
+
+    seccomp/cache: Report cache data through /proc/pid/seccomp_cache
+    
+    Currently the kernel does not provide an infrastructure to translate
+    architecture numbers to a human-readable name. Translating syscall
+    numbers to syscall names is possible through FTRACE_SYSCALL
+    infrastructure but it does not provide support for compat syscalls.
+    
+    This will create a file for each PID as /proc/pid/seccomp_cache.
+    The file will be empty when no seccomp filters are loaded, or be
+    in the format of:
+    &lt;arch name&gt; &lt;decimal syscall number&gt; &lt;ALLOW | FILTER&gt;
+    where ALLOW means the cache is guaranteed to allow the syscall,
+    and filter means the cache will pass the syscall to the BPF filter.
+    
+    For the docker default profile on x86_64 it looks like:
+    x86_64 0 ALLOW
+    x86_64 1 ALLOW
+    x86_64 2 ALLOW
+    x86_64 3 ALLOW
+    [...]
+    x86_64 132 ALLOW
+    x86_64 133 ALLOW
+    x86_64 134 FILTER
+    x86_64 135 FILTER
+    x86_64 136 FILTER
+    x86_64 137 ALLOW
+    x86_64 138 ALLOW
+    x86_64 139 FILTER
+    x86_64 140 ALLOW
+    x86_64 141 ALLOW
+    [...]
+    
+    This file is guarded by CONFIG_SECCOMP_CACHE_DEBUG with a default
+    of N because I think certain users of seccomp might not want the
+    application to know which syscalls are definitely usable. For
+    the same reason, it is also guarded by CAP_SYS_ADMIN.
+    
+    Suggested-by: Jann Horn &lt;jannh@google.com&gt;
+    Link: https://lore.kernel.org/lkml/CAG48ez3Ofqp4crXGksLmZY6=fGrF_tWyUCg7PBkAetvbbOPeOA@mail.gmail.com/
+    Signed-off-by: YiFei Zhu &lt;yifeifz2@illinois.edu&gt;
+    Signed-off-by: Kees Cook &lt;keescook@chromium.org&gt;
+    Link: https://lore.kernel.org/r/94e663fa53136f5a11f432c661794d1ee7060779.1605101222.git.yifeifz2@illinois.edu
+
+diff --git a/arch/Kconfig b/arch/Kconfig
+index 56b6ccc0e32d..35c9463b7d10 100644
+--- a/arch/Kconfig
++++ b/arch/Kconfig
+@@ -486,6 +486,9 @@ config HAVE_ARCH_SECCOMP_FILTER
+ 	  - secure_computing return value is checked and a return value of -1
+ 	    results in the system call being skipped immediately.
+ 	  - seccomp syscall wired up
++	  - if !HAVE_SPARSE_SYSCALL_NR, have SECCOMP_ARCH_NATIVE,
++	    SECCOMP_ARCH_NATIVE_NR, SECCOMP_ARCH_NATIVE_NAME defined. If
++	    COMPAT is supported, have the SECCOMP_ARCH_COMPAT* defines too.
+ 
+ config SECCOMP
+ 	prompt "Enable seccomp to safely execute untrusted bytecode"
+@@ -514,6 +517,20 @@ config SECCOMP_FILTER
+ 
+ 	  See Documentation/userspace-api/seccomp_filter.rst for details.
+ 
++config SECCOMP_CACHE_DEBUG
++	bool "Show seccomp filter cache status in /proc/pid/seccomp_cache"
++	depends on SECCOMP_FILTER &amp;&amp; !HAVE_SPARSE_SYSCALL_NR
++	depends on PROC_FS
++	help
++	  This enables the /proc/pid/seccomp_cache interface to monitor
++	  seccomp cache data. The file format is subject to change. Reading
++	  the file requires CAP_SYS_ADMIN.
++
++	  This option is for debugging only. Enabling presents the risk that
++	  an adversary may be able to infer the seccomp filter logic.
++
++	  If unsure, say N.
++
+ config HAVE_ARCH_STACKLEAK
+ 	bool
+ 	help
+diff --git a/fs/proc/base.c b/fs/proc/base.c
+index b362523a9829..8a7d682ba881 100644
+--- a/fs/proc/base.c
++++ b/fs/proc/base.c
+@@ -3263,6 +3263,9 @@ static const struct pid_entry tgid_base_stuff[] = {
+ #ifdef CONFIG_PROC_PID_ARCH_STATUS
+ 	ONE("arch_status", S_IRUGO, proc_pid_arch_status),
+ #endif
++#ifdef CONFIG_SECCOMP_CACHE_DEBUG
++	ONE("seccomp_cache", S_IRUSR, proc_pid_seccomp_cache),
++#endif
+ };
+ 
+ static int proc_tgid_base_readdir(struct file *file, struct dir_context *ctx)
+@@ -3592,6 +3595,9 @@ static const struct pid_entry tid_base_stuff[] = {
+ #ifdef CONFIG_PROC_PID_ARCH_STATUS
+ 	ONE("arch_status", S_IRUGO, proc_pid_arch_status),
+ #endif
++#ifdef CONFIG_SECCOMP_CACHE_DEBUG
++	ONE("seccomp_cache", S_IRUSR, proc_pid_seccomp_cache),
++#endif
+ };
+ 
+ static int proc_tid_base_readdir(struct file *file, struct dir_context *ctx)
+diff --git a/include/linux/seccomp.h b/include/linux/seccomp.h
+index 02aef2844c38..76963ec4641a 100644
+--- a/include/linux/seccomp.h
++++ b/include/linux/seccomp.h
+@@ -121,4 +121,11 @@ static inline long seccomp_get_metadata(struct task_struct *task,
+ 	return -EINVAL;
+ }
+ #endif /* CONFIG_SECCOMP_FILTER &amp;&amp; CONFIG_CHECKPOINT_RESTORE */
++
++#ifdef CONFIG_SECCOMP_CACHE_DEBUG
++struct seq_file;
++
++int proc_pid_seccomp_cache(struct seq_file *m, struct pid_namespace *ns,
++			   struct pid *pid, struct task_struct *task);
++#endif
+ #endif /* _LINUX_SECCOMP_H */
+diff --git a/kernel/seccomp.c b/kernel/seccomp.c
+index d8cf468dbe1e..76f524e320b1 100644
+--- a/kernel/seccomp.c
++++ b/kernel/seccomp.c
+@@ -553,6 +553,9 @@ void seccomp_filter_release(struct task_struct *tsk)
+ {
+ 	struct seccomp_filter *orig = tsk-&gt;seccomp.filter;
+ 
++	/* We are effectively holding the siglock by not having any sighand. */
++	WARN_ON(tsk-&gt;sighand != NULL);
++
+ 	/* Detach task from its filter tree. */
+ 	tsk-&gt;seccomp.filter = NULL;
+ 	__seccomp_filter_release(orig);
+@@ -2335,3 +2338,59 @@ static int __init seccomp_sysctl_init(void)
+ device_initcall(seccomp_sysctl_init)
+ 
+ #endif /* CONFIG_SYSCTL */
++
++#ifdef CONFIG_SECCOMP_CACHE_DEBUG
++/* Currently CONFIG_SECCOMP_CACHE_DEBUG implies SECCOMP_ARCH_NATIVE */
++static void proc_pid_seccomp_cache_arch(struct seq_file *m, const char *name,
++					const void *bitmap, size_t bitmap_size)
++{
++	int nr;
++
++	for (nr = 0; nr &lt; bitmap_size; nr++) {
++		bool cached = test_bit(nr, bitmap);
++		char *status = cached ? "ALLOW" : "FILTER";
++
++		seq_printf(m, "%s %d %s\n", name, nr, status);
++	}
++}
++
++int proc_pid_seccomp_cache(struct seq_file *m, struct pid_namespace *ns,
++			   struct pid *pid, struct task_struct *task)
++{
++	struct seccomp_filter *f;
++	unsigned long flags;
++
++	/*
++	 * We don't want some sandboxed process to know what their seccomp
++	 * filters consist of.
++	 */
++	if (!file_ns_capable(m-&gt;file, &amp;init_user_ns, CAP_SYS_ADMIN))
++		return -EACCES;
++
++	if (!lock_task_sighand(task, &amp;flags))
++		return -ESRCH;
++
++	f = READ_ONCE(task-&gt;seccomp.filter);
++	if (!f) {
++		unlock_task_sighand(task, &amp;flags);
++		return 0;
++	}
++
++	/* prevent filter from being freed while we are printing it */
++	__get_seccomp_filter(f);
++	unlock_task_sighand(task, &amp;flags);
++
++	proc_pid_seccomp_cache_arch(m, SECCOMP_ARCH_NATIVE_NAME,
++				    f-&gt;cache.allow_native,
++				    SECCOMP_ARCH_NATIVE_NR);
++
++#ifdef SECCOMP_ARCH_COMPAT
++	proc_pid_seccomp_cache_arch(m, SECCOMP_ARCH_COMPAT_NAME,
++				    f-&gt;cache.allow_compat,
++				    SECCOMP_ARCH_COMPAT_NR);
++#endif /* SECCOMP_ARCH_COMPAT */
++
++	__put_seccomp_filter(f);
++	return 0;
++}
++#endif /* CONFIG_SECCOMP_CACHE_DEBUG */</pre><hr><pre>commit 445247b02342a05b7d528bba6d85d2d418875b69
+Author: YiFei Zhu &lt;yifeifz2@illinois.edu&gt;
+Date:   Wed Nov 11 07:33:53 2020 -0600
+
+    xtensa: Enable seccomp architecture tracking
+    
+    To enable seccomp constant action bitmaps, we need to have a static
+    mapping to the audit architecture and system call table size. Add these
+    for xtensa.
+    
+    Signed-off-by: YiFei Zhu &lt;yifeifz2@illinois.edu&gt;
+    Signed-off-by: Kees Cook &lt;keescook@chromium.org&gt;
+    Link: https://lore.kernel.org/r/79669648ba167d668ea6ffb4884250abcd5ed254.1605101222.git.yifeifz2@illinois.edu
+
+diff --git a/arch/xtensa/include/asm/Kbuild b/arch/xtensa/include/asm/Kbuild
+index c59c42a1221a..9718e9593564 100644
+--- a/arch/xtensa/include/asm/Kbuild
++++ b/arch/xtensa/include/asm/Kbuild
+@@ -7,5 +7,4 @@ generic-y += mcs_spinlock.h
+ generic-y += param.h
+ generic-y += qrwlock.h
+ generic-y += qspinlock.h
+-generic-y += seccomp.h
+ generic-y += user.h
+diff --git a/arch/xtensa/include/asm/seccomp.h b/arch/xtensa/include/asm/seccomp.h
+new file mode 100644
+index 000000000000..f1cb6b0a9e1f
+--- /dev/null
++++ b/arch/xtensa/include/asm/seccomp.h
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _ASM_SECCOMP_H
++#define _ASM_SECCOMP_H
++
++#include &lt;asm-generic/seccomp.h&gt;
++
++#define SECCOMP_ARCH_NATIVE		AUDIT_ARCH_XTENSA
++#define SECCOMP_ARCH_NATIVE_NR		NR_syscalls
++#define SECCOMP_ARCH_NATIVE_NAME	"xtensa"
++
++#endif /* _ASM_SECCOMP_H */</pre><hr><pre>commit 4c18bc054bffe415bec9e0edaa9ff1a84c1a6973
+Author: YiFei Zhu &lt;yifeifz2@illinois.edu&gt;
+Date:   Wed Nov 11 07:33:52 2020 -0600
+
+    sh: Enable seccomp architecture tracking
+    
+    To enable seccomp constant action bitmaps, we need to have a static
+    mapping to the audit architecture and system call table size. Add these
+    for sh.
+    
+    Signed-off-by: YiFei Zhu &lt;yifeifz2@illinois.edu&gt;
+    Signed-off-by: Kees Cook &lt;keescook@chromium.org&gt;
+    Link: https://lore.kernel.org/r/61ae084cd4783b9b50860d9dedb4a348cf1b7b6f.1605101222.git.yifeifz2@illinois.edu
+
+diff --git a/arch/sh/include/asm/seccomp.h b/arch/sh/include/asm/seccomp.h
+index 54111e4d32b8..d4578395fd66 100644
+--- a/arch/sh/include/asm/seccomp.h
++++ b/arch/sh/include/asm/seccomp.h
+@@ -8,4 +8,14 @@
+ #define __NR_seccomp_exit __NR_exit
+ #define __NR_seccomp_sigreturn __NR_rt_sigreturn
+ 
++#ifdef CONFIG_CPU_LITTLE_ENDIAN
++#define __SECCOMP_ARCH_LE		__AUDIT_ARCH_LE
++#else
++#define __SECCOMP_ARCH_LE		0
++#endif
++
++#define SECCOMP_ARCH_NATIVE		(AUDIT_ARCH_SH | __SECCOMP_ARCH_LE)
++#define SECCOMP_ARCH_NATIVE_NR		NR_syscalls
++#define SECCOMP_ARCH_NATIVE_NAME	"sh"
++
+ #endif /* __ASM_SECCOMP_H */</pre><hr><pre>commit c09058eda2654c37fd7ac28c2004c3aae8b988e9
+Author: YiFei Zhu &lt;yifeifz2@illinois.edu&gt;
+Date:   Wed Nov 11 07:33:51 2020 -0600
+
+    s390: Enable seccomp architecture tracking
+    
+    To enable seccomp constant action bitmaps, we need to have a static
+    mapping to the audit architecture and system call table size. Add these
+    for s390.
+    
+    Signed-off-by: YiFei Zhu &lt;yifeifz2@illinois.edu&gt;
+    Acked-by: Heiko Carstens &lt;hca@linux.ibm.com&gt;
+    Signed-off-by: Kees Cook &lt;keescook@chromium.org&gt;
+    Link: https://lore.kernel.org/r/a381b10aa2c5b1e583642f3cd46ced842d9d4ce5.1605101222.git.yifeifz2@illinois.edu
+
+diff --git a/arch/s390/include/asm/seccomp.h b/arch/s390/include/asm/seccomp.h
+index 795bbe0d7ca6..71d46f0ba97b 100644
+--- a/arch/s390/include/asm/seccomp.h
++++ b/arch/s390/include/asm/seccomp.h
+@@ -16,4 +16,13 @@
+ 
+ #include &lt;asm-generic/seccomp.h&gt;
+ 
++#define SECCOMP_ARCH_NATIVE		AUDIT_ARCH_S390X
++#define SECCOMP_ARCH_NATIVE_NR		NR_syscalls
++#define SECCOMP_ARCH_NATIVE_NAME	"s390x"
++#ifdef CONFIG_COMPAT
++# define SECCOMP_ARCH_COMPAT		AUDIT_ARCH_S390
++# define SECCOMP_ARCH_COMPAT_NR		NR_syscalls
++# define SECCOMP_ARCH_COMPAT_NAME	"s390"
++#endif
++
+ #endif	/* _ASM_S390_SECCOMP_H */</pre>
+    <div class="pagination">
+        <span>[1]</span><a href='24_2.html'>2</a><a href='24_3.html'>3</a><a href='24_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Portland State University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Portland State University</h1>
+    <div class="pagination">
+        <a href='39.html'>&lt;&lt;Prev</a><a href='39.html'>1</a><span>[2]</span>
+    </div>
+    <hr>
+    <pre>commit b79eb4c113b539c23d5bac8d58b55690892e31e5
+Author: Bart Massey &lt;bart@cs.pdx.edu&gt;
+Date:   Mon Sep 21 11:32:36 2009 -0700
+
+    Staging: comedi: ni_labbc_cs: cleaned up debug define a bit
+    
+    Signed-off-by: Bart Massey &lt;bart@cs.pdx.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@suse.de&gt;
+
+diff --git a/drivers/staging/comedi/drivers/ni_labpc_cs.c b/drivers/staging/comedi/drivers/ni_labpc_cs.c
+index 7d514b3ee754..db6e05e2ebba 100644
+--- a/drivers/staging/comedi/drivers/ni_labpc_cs.c
++++ b/drivers/staging/comedi/drivers/ni_labpc_cs.c
+@@ -59,8 +59,7 @@ NI manuals:
+ 
+ */
+ 
+-#undef LABPC_DEBUG
+-			    /* #define LABPC_DEBUG *//*  enable debugging messages */
++#undef LABPC_DEBUG  /* debugging messages */
+ 
+ #include "../comedidev.h"
+ </pre><hr><pre>commit a82e49b8aeb9f8dafdf6cf2e617c8b95bf056257
+Author: Bart Massey &lt;bart@cs.pdx.edu&gt;
+Date:   Mon May 8 14:40:13 2006 -0700
+
+    [PATCH] USB HID/HIDBP, INPUT DRIVERS: fix various usb/input/hid-input.c bugs that make Apple Mighty Mouse work poorly
+    
+    Transposed lines of code in drivers/usb/input/hid-input.c causes the
+    capability bits for a new HID device to be set before quirks are applied
+    at configuration time.  When an HID event is then sent up to the input
+    layer, it may then be discarded as irrelevant because the wrong
+    capability bit is set.
+    
+    Further, the quirks for the Apple Mighty Mouse are not quite right: the
+    horizontal scrolling needs its axis reversed, and the left and center
+    buttons are transposed.  Also, the mouse is labeled in the kernel with
+    its earlier name (I think) of Apple PowerMouse.
+    
+    Steps to reproduce problem: Plug in an Apple Mighty Mouse.  Note that
+    horizontal scrolling doesn't work at all, and in fact doesn't generate
+    any input events on /dev/input/eventN.  Note also that pushing the
+    middle button performs the right button action, and vice versa.  Once
+    you have the horizontal scrolling working, note that it is backward WRT
+    both to vertical scrolling and to common sense.
+    
+    This patch maybe should be broken up, as it does address two problems.
+    The transposed code in hidinput_configure_usage() probably creates bugs
+    beyond just the Mighty Mouse.  The rest of the patch renames POWERMOUSE
+    to MIGHTYMOUSE everywhere (which I *believe* is correct), fixes the
+    MIGHTYMOUSE quirk to swap the center and right mouse buttons, and adds a
+    new quirk HID_QUIRK_INVERT_HWHEEL also assigned to the MIGHTYMOUSE with
+    code in hidinput_hid_event() to implement it.
+    
+    Signed-off-by: Bart Massey &lt;bart@cs.pdx.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@suse.de&gt;
+
+diff --git a/drivers/usb/input/hid-core.c b/drivers/usb/input/hid-core.c
+index 4f7e9214de0e..bb1f5211ff9d 100644
+--- a/drivers/usb/input/hid-core.c
++++ b/drivers/usb/input/hid-core.c
+@@ -1549,7 +1549,7 @@ void hid_init_reports(struct hid_device *hid)
+ #define USB_DEVICE_ID_LD_MACHINETEST	0x2040
+ 
+ #define USB_VENDOR_ID_APPLE		0x05ac
+-#define USB_DEVICE_ID_APPLE_POWERMOUSE	0x0304
++#define USB_DEVICE_ID_APPLE_MIGHTYMOUSE	0x0304
+ 
+ #define USB_VENDOR_ID_CHERRY		0x046a
+ #define USB_DEVICE_ID_CHERRY_CYMOTION	0x0023
+@@ -1692,7 +1692,7 @@ static const struct hid_blacklist {
+ 	{ USB_VENDOR_ID_WISEGROUP, USB_DEVICE_ID_DUAL_USB_JOYPAD, HID_QUIRK_NOGET | HID_QUIRK_MULTI_INPUT },
+ 	{ USB_VENDOR_ID_SILVERCREST, USB_DEVICE_ID_SILVERCREST_KB, HID_QUIRK_NOGET },
+ 
+-	{ USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_POWERMOUSE, HID_QUIRK_2WHEEL_POWERMOUSE },
++	{ USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_MIGHTYMOUSE, HID_QUIRK_MIGHTYMOUSE | HID_QUIRK_INVERT_HWHEEL },
+ 	{ USB_VENDOR_ID_A4TECH, USB_DEVICE_ID_A4TECH_WCP32PU, HID_QUIRK_2WHEEL_MOUSE_HACK_7 },
+ 	{ USB_VENDOR_ID_CYPRESS, USB_DEVICE_ID_CYPRESS_MOUSE, HID_QUIRK_2WHEEL_MOUSE_HACK_5 },
+ 
+diff --git a/drivers/usb/input/hid-input.c b/drivers/usb/input/hid-input.c
+index 25bc85f8ce39..2f665195f4ac 100644
+--- a/drivers/usb/input/hid-input.c
++++ b/drivers/usb/input/hid-input.c
+@@ -567,16 +567,14 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
+ 			break;
+ 	}
+ 
+-	set_bit(usage-&gt;type, input-&gt;evbit);
+-
+-	while (usage-&gt;code &lt;= max &amp;&amp; test_and_set_bit(usage-&gt;code, bit))
+-		usage-&gt;code = find_next_zero_bit(bit, max + 1, usage-&gt;code);
+-
+-	if (usage-&gt;code &gt; max)
+-		goto ignore;
+-
+-	if (((device-&gt;quirks &amp; (HID_QUIRK_2WHEEL_POWERMOUSE)) &amp;&amp; (usage-&gt;hid == 0x00010032)))
+-		map_rel(REL_HWHEEL);
++	if (device-&gt;quirks &amp; HID_QUIRK_MIGHTYMOUSE) {
++		if (usage-&gt;hid == HID_GD_Z)
++			map_rel(REL_HWHEEL);
++		else if (usage-&gt;code == BTN_1)
++			map_key(BTN_2);
++		else if (usage-&gt;code == BTN_2)
++			map_key(BTN_1);
++	}
+ 
+ 	if ((device-&gt;quirks &amp; (HID_QUIRK_2WHEEL_MOUSE_HACK_7 | HID_QUIRK_2WHEEL_MOUSE_HACK_5)) &amp;&amp;
+ 		 (usage-&gt;type == EV_REL) &amp;&amp; (usage-&gt;code == REL_WHEEL))
+@@ -586,6 +584,15 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
+ 		|| ((device-&gt;quirks &amp; HID_QUIRK_2WHEEL_MOUSE_HACK_7) &amp;&amp; (usage-&gt;hid == 0x00090007)))
+ 		goto ignore;
+ 
++	set_bit(usage-&gt;type, input-&gt;evbit);
++
++	while (usage-&gt;code &lt;= max &amp;&amp; test_and_set_bit(usage-&gt;code, bit))
++		usage-&gt;code = find_next_zero_bit(bit, max + 1, usage-&gt;code);
++
++	if (usage-&gt;code &gt; max)
++		goto ignore;
++
++
+ 	if (usage-&gt;type == EV_ABS) {
+ 
+ 		int a = field-&gt;logical_minimum;
+@@ -647,6 +654,11 @@ void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct
+ 		return;
+ 	}
+ 
++	if ((hid-&gt;quirks &amp; HID_QUIRK_INVERT_HWHEEL) &amp;&amp; (usage-&gt;code == REL_HWHEEL)) {
++		input_event(input, usage-&gt;type, usage-&gt;code, -value);
++		return;
++	}
++
+ 	if ((hid-&gt;quirks &amp; HID_QUIRK_2WHEEL_MOUSE_HACK_ON) &amp;&amp; (usage-&gt;code == REL_WHEEL)) {
+ 		input_event(input, usage-&gt;type, REL_HWHEEL, value);
+ 		return;
+diff --git a/drivers/usb/input/hid.h b/drivers/usb/input/hid.h
+index 9c62837b5b89..7efbfff8adde 100644
+--- a/drivers/usb/input/hid.h
++++ b/drivers/usb/input/hid.h
+@@ -247,10 +247,11 @@ struct hid_item {
+ #define HID_QUIRK_2WHEEL_MOUSE_HACK_7		0x00000080
+ #define HID_QUIRK_2WHEEL_MOUSE_HACK_5		0x00000100
+ #define HID_QUIRK_2WHEEL_MOUSE_HACK_ON		0x00000200
+-#define HID_QUIRK_2WHEEL_POWERMOUSE		0x00000400
++#define HID_QUIRK_MIGHTYMOUSE			0x00000400
+ #define HID_QUIRK_CYMOTION			0x00000800
+ #define HID_QUIRK_POWERBOOK_HAS_FN		0x00001000
+ #define HID_QUIRK_POWERBOOK_FN_ON		0x00002000
++#define HID_QUIRK_INVERT_HWHEEL			0x00004000
+ 
+ /*
+  * This is the global environment of the parser. This information is</pre><hr><pre>commit d6065f7bf8bec170c9c56524a250093ce73ca5d9
+Author: Suzanne Wood &lt;suzannew@cs.pdx.edu&gt;
+Date:   Tue Nov 8 21:39:27 2005 -0800
+
+    [PATCH] md: provide proper rcu_dereference / rcu_assign_pointer annotations in md
+    
+    Acked-by: &lt;paulmck@us.ibm.com&gt;
+    Signed-off-by: Suzanne Wood &lt;suzannew@cs.pdx.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/multipath.c b/drivers/md/multipath.c
+index c06f4474192b..ae2c5fd6105d 100644
+--- a/drivers/md/multipath.c
++++ b/drivers/md/multipath.c
+@@ -63,7 +63,7 @@ static int multipath_map (multipath_conf_t *conf)
+ 
+ 	rcu_read_lock();
+ 	for (i = 0; i &lt; disks; i++) {
+-		mdk_rdev_t *rdev = conf-&gt;multipaths[i].rdev;
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;multipaths[i].rdev);
+ 		if (rdev &amp;&amp; rdev-&gt;in_sync) {
+ 			atomic_inc(&amp;rdev-&gt;nr_pending);
+ 			rcu_read_unlock();
+@@ -139,7 +139,7 @@ static void unplug_slaves(mddev_t *mddev)
+ 
+ 	rcu_read_lock();
+ 	for (i=0; i&lt;mddev-&gt;raid_disks; i++) {
+-		mdk_rdev_t *rdev = conf-&gt;multipaths[i].rdev;
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;multipaths[i].rdev);
+ 		if (rdev &amp;&amp; !rdev-&gt;faulty &amp;&amp; atomic_read(&amp;rdev-&gt;nr_pending)) {
+ 			request_queue_t *r_queue = bdev_get_queue(rdev-&gt;bdev);
+ 
+@@ -224,7 +224,7 @@ static int multipath_issue_flush(request_queue_t *q, struct gendisk *disk,
+ 
+ 	rcu_read_lock();
+ 	for (i=0; i&lt;mddev-&gt;raid_disks &amp;&amp; ret == 0; i++) {
+-		mdk_rdev_t *rdev = conf-&gt;multipaths[i].rdev;
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;multipaths[i].rdev);
+ 		if (rdev &amp;&amp; !rdev-&gt;faulty) {
+ 			struct block_device *bdev = rdev-&gt;bdev;
+ 			request_queue_t *r_queue = bdev_get_queue(bdev);
+@@ -331,7 +331,7 @@ static int multipath_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
+ 			conf-&gt;working_disks++;
+ 			rdev-&gt;raid_disk = path;
+ 			rdev-&gt;in_sync = 1;
+-			p-&gt;rdev = rdev;
++			rcu_assign_pointer(p-&gt;rdev, rdev);
+ 			found = 1;
+ 		}
+ 
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index e16f473bcf46..f12fc288f25d 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -416,10 +416,10 @@ static int read_balance(conf_t *conf, r1bio_t *r1_bio)
+ 		/* Choose the first operation device, for consistancy */
+ 		new_disk = 0;
+ 
+-		for (rdev = conf-&gt;mirrors[new_disk].rdev;
++		for (rdev = rcu_dereference(conf-&gt;mirrors[new_disk].rdev);
+ 		     !rdev || !rdev-&gt;in_sync
+ 			     || test_bit(WriteMostly, &amp;rdev-&gt;flags);
+-		     rdev = conf-&gt;mirrors[++new_disk].rdev) {
++		     rdev = rcu_dereference(conf-&gt;mirrors[++new_disk].rdev)) {
+ 
+ 			if (rdev &amp;&amp; rdev-&gt;in_sync)
+ 				wonly_disk = new_disk;
+@@ -434,10 +434,10 @@ static int read_balance(conf_t *conf, r1bio_t *r1_bio)
+ 
+ 
+ 	/* make sure the disk is operational */
+-	for (rdev = conf-&gt;mirrors[new_disk].rdev;
++	for (rdev = rcu_dereference(conf-&gt;mirrors[new_disk].rdev);
+ 	     !rdev || !rdev-&gt;in_sync ||
+ 		     test_bit(WriteMostly, &amp;rdev-&gt;flags);
+-	     rdev = conf-&gt;mirrors[new_disk].rdev) {
++	     rdev = rcu_dereference(conf-&gt;mirrors[new_disk].rdev)) {
+ 
+ 		if (rdev &amp;&amp; rdev-&gt;in_sync)
+ 			wonly_disk = new_disk;
+@@ -474,7 +474,7 @@ static int read_balance(conf_t *conf, r1bio_t *r1_bio)
+ 			disk = conf-&gt;raid_disks;
+ 		disk--;
+ 
+-		rdev = conf-&gt;mirrors[disk].rdev;
++		rdev = rcu_dereference(conf-&gt;mirrors[disk].rdev);
+ 
+ 		if (!rdev ||
+ 		    !rdev-&gt;in_sync ||
+@@ -496,7 +496,7 @@ static int read_balance(conf_t *conf, r1bio_t *r1_bio)
+ 
+ 
+ 	if (new_disk &gt;= 0) {
+-		rdev = conf-&gt;mirrors[new_disk].rdev;
++		rdev = rcu_dereference(conf-&gt;mirrors[new_disk].rdev);
+ 		if (!rdev)
+ 			goto retry;
+ 		atomic_inc(&amp;rdev-&gt;nr_pending);
+@@ -522,7 +522,7 @@ static void unplug_slaves(mddev_t *mddev)
+ 
+ 	rcu_read_lock();
+ 	for (i=0; i&lt;mddev-&gt;raid_disks; i++) {
+-		mdk_rdev_t *rdev = conf-&gt;mirrors[i].rdev;
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;mirrors[i].rdev);
+ 		if (rdev &amp;&amp; !rdev-&gt;faulty &amp;&amp; atomic_read(&amp;rdev-&gt;nr_pending)) {
+ 			request_queue_t *r_queue = bdev_get_queue(rdev-&gt;bdev);
+ 
+@@ -556,7 +556,7 @@ static int raid1_issue_flush(request_queue_t *q, struct gendisk *disk,
+ 
+ 	rcu_read_lock();
+ 	for (i=0; i&lt;mddev-&gt;raid_disks &amp;&amp; ret == 0; i++) {
+-		mdk_rdev_t *rdev = conf-&gt;mirrors[i].rdev;
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;mirrors[i].rdev);
+ 		if (rdev &amp;&amp; !rdev-&gt;faulty) {
+ 			struct block_device *bdev = rdev-&gt;bdev;
+ 			request_queue_t *r_queue = bdev_get_queue(bdev);
+@@ -728,7 +728,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ #endif
+ 	rcu_read_lock();
+ 	for (i = 0;  i &lt; disks; i++) {
+-		if ((rdev=conf-&gt;mirrors[i].rdev) != NULL &amp;&amp;
++		if ((rdev=rcu_dereference(conf-&gt;mirrors[i].rdev)) != NULL &amp;&amp;
+ 		    !rdev-&gt;faulty) {
+ 			atomic_inc(&amp;rdev-&gt;nr_pending);
+ 			if (rdev-&gt;faulty) {
+@@ -954,7 +954,7 @@ static int raid1_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
+ 			found = 1;
+ 			if (rdev-&gt;saved_raid_disk != mirror)
+ 				conf-&gt;fullsync = 1;
+-			p-&gt;rdev = rdev;
++			rcu_assign_pointer(p-&gt;rdev, rdev);
+ 			break;
+ 		}
+ 
+diff --git a/drivers/md/raid10.c b/drivers/md/raid10.c
+index bbe40e9cf923..26114f40bde6 100644
+--- a/drivers/md/raid10.c
++++ b/drivers/md/raid10.c
+@@ -496,6 +496,7 @@ static int read_balance(conf_t *conf, r10bio_t *r10_bio)
+ 	int disk, slot, nslot;
+ 	const int sectors = r10_bio-&gt;sectors;
+ 	sector_t new_distance, current_distance;
++	mdk_rdev_t *rdev;
+ 
+ 	raid10_find_phys(conf, r10_bio);
+ 	rcu_read_lock();
+@@ -510,8 +511,8 @@ static int read_balance(conf_t *conf, r10bio_t *r10_bio)
+ 		slot = 0;
+ 		disk = r10_bio-&gt;devs[slot].devnum;
+ 
+-		while (!conf-&gt;mirrors[disk].rdev ||
+-		       !conf-&gt;mirrors[disk].rdev-&gt;in_sync) {
++		while ((rdev = rcu_dereference(conf-&gt;mirrors[disk].rdev)) == NULL ||
++		       !rdev-&gt;in_sync) {
+ 			slot++;
+ 			if (slot == conf-&gt;copies) {
+ 				slot = 0;
+@@ -527,8 +528,8 @@ static int read_balance(conf_t *conf, r10bio_t *r10_bio)
+ 	/* make sure the disk is operational */
+ 	slot = 0;
+ 	disk = r10_bio-&gt;devs[slot].devnum;
+-	while (!conf-&gt;mirrors[disk].rdev ||
+-	       !conf-&gt;mirrors[disk].rdev-&gt;in_sync) {
++	while ((rdev=rcu_dereference(conf-&gt;mirrors[disk].rdev)) == NULL ||
++	       !rdev-&gt;in_sync) {
+ 		slot ++;
+ 		if (slot == conf-&gt;copies) {
+ 			disk = -1;
+@@ -547,11 +548,11 @@ static int read_balance(conf_t *conf, r10bio_t *r10_bio)
+ 		int ndisk = r10_bio-&gt;devs[nslot].devnum;
+ 
+ 
+-		if (!conf-&gt;mirrors[ndisk].rdev ||
+-		    !conf-&gt;mirrors[ndisk].rdev-&gt;in_sync)
++		if ((rdev=rcu_dereference(conf-&gt;mirrors[ndisk].rdev)) == NULL ||
++		    !rdev-&gt;in_sync)
+ 			continue;
+ 
+-		if (!atomic_read(&amp;conf-&gt;mirrors[ndisk].rdev-&gt;nr_pending)) {
++		if (!atomic_read(&amp;rdev-&gt;nr_pending)) {
+ 			disk = ndisk;
+ 			slot = nslot;
+ 			break;
+@@ -569,7 +570,7 @@ static int read_balance(conf_t *conf, r10bio_t *r10_bio)
+ 	r10_bio-&gt;read_slot = slot;
+ /*	conf-&gt;next_seq_sect = this_sector + sectors;*/
+ 
+-	if (disk &gt;= 0 &amp;&amp; conf-&gt;mirrors[disk].rdev)
++	if (disk &gt;= 0 &amp;&amp; (rdev=rcu_dereference(conf-&gt;mirrors[disk].rdev))!= NULL)
+ 		atomic_inc(&amp;conf-&gt;mirrors[disk].rdev-&gt;nr_pending);
+ 	rcu_read_unlock();
+ 
+@@ -583,7 +584,7 @@ static void unplug_slaves(mddev_t *mddev)
+ 
+ 	rcu_read_lock();
+ 	for (i=0; i&lt;mddev-&gt;raid_disks; i++) {
+-		mdk_rdev_t *rdev = conf-&gt;mirrors[i].rdev;
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;mirrors[i].rdev);
+ 		if (rdev &amp;&amp; !rdev-&gt;faulty &amp;&amp; atomic_read(&amp;rdev-&gt;nr_pending)) {
+ 			request_queue_t *r_queue = bdev_get_queue(rdev-&gt;bdev);
+ 
+@@ -614,7 +615,7 @@ static int raid10_issue_flush(request_queue_t *q, struct gendisk *disk,
+ 
+ 	rcu_read_lock();
+ 	for (i=0; i&lt;mddev-&gt;raid_disks &amp;&amp; ret == 0; i++) {
+-		mdk_rdev_t *rdev = conf-&gt;mirrors[i].rdev;
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;mirrors[i].rdev);
+ 		if (rdev &amp;&amp; !rdev-&gt;faulty) {
+ 			struct block_device *bdev = rdev-&gt;bdev;
+ 			request_queue_t *r_queue = bdev_get_queue(bdev);
+@@ -768,9 +769,10 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	rcu_read_lock();
+ 	for (i = 0;  i &lt; conf-&gt;copies; i++) {
+ 		int d = r10_bio-&gt;devs[i].devnum;
+-		if (conf-&gt;mirrors[d].rdev &amp;&amp;
+-		    !conf-&gt;mirrors[d].rdev-&gt;faulty) {
+-			atomic_inc(&amp;conf-&gt;mirrors[d].rdev-&gt;nr_pending);
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;mirrors[d].rdev);
++		if (rdev &amp;&amp;
++		    !rdev-&gt;faulty) {
++			atomic_inc(&amp;rdev-&gt;nr_pending);
+ 			r10_bio-&gt;devs[i].bio = bio;
+ 		} else
+ 			r10_bio-&gt;devs[i].bio = NULL;
+@@ -980,7 +982,7 @@ static int raid10_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
+ 			p-&gt;head_position = 0;
+ 			rdev-&gt;raid_disk = mirror;
+ 			found = 1;
+-			p-&gt;rdev = rdev;
++			rcu_assign_pointer(p-&gt;rdev, rdev);
+ 			break;
+ 		}
+ 
+diff --git a/drivers/md/raid5.c b/drivers/md/raid5.c
+index ce154553aca5..061d265ed94e 100644
+--- a/drivers/md/raid5.c
++++ b/drivers/md/raid5.c
+@@ -1374,7 +1374,7 @@ static void handle_stripe(struct stripe_head *sh)
+ 			bi-&gt;bi_end_io = raid5_end_read_request;
+  
+ 		rcu_read_lock();
+-		rdev = conf-&gt;disks[i].rdev;
++		rdev = rcu_dereference(conf-&gt;disks[i].rdev);
+ 		if (rdev &amp;&amp; rdev-&gt;faulty)
+ 			rdev = NULL;
+ 		if (rdev)
+@@ -1448,7 +1448,7 @@ static void unplug_slaves(mddev_t *mddev)
+ 
+ 	rcu_read_lock();
+ 	for (i=0; i&lt;mddev-&gt;raid_disks; i++) {
+-		mdk_rdev_t *rdev = conf-&gt;disks[i].rdev;
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;disks[i].rdev);
+ 		if (rdev &amp;&amp; !rdev-&gt;faulty &amp;&amp; atomic_read(&amp;rdev-&gt;nr_pending)) {
+ 			request_queue_t *r_queue = bdev_get_queue(rdev-&gt;bdev);
+ 
+@@ -1493,7 +1493,7 @@ static int raid5_issue_flush(request_queue_t *q, struct gendisk *disk,
+ 
+ 	rcu_read_lock();
+ 	for (i=0; i&lt;mddev-&gt;raid_disks &amp;&amp; ret == 0; i++) {
+-		mdk_rdev_t *rdev = conf-&gt;disks[i].rdev;
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;disks[i].rdev);
+ 		if (rdev &amp;&amp; !rdev-&gt;faulty) {
+ 			struct block_device *bdev = rdev-&gt;bdev;
+ 			request_queue_t *r_queue = bdev_get_queue(bdev);
+@@ -2165,7 +2165,7 @@ static int raid5_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
+ 			found = 1;
+ 			if (rdev-&gt;saved_raid_disk != disk)
+ 				conf-&gt;fullsync = 1;
+-			p-&gt;rdev = rdev;
++			rcu_assign_pointer(p-&gt;rdev, rdev);
+ 			break;
+ 		}
+ 	print_raid5_conf(conf);
+diff --git a/drivers/md/raid6main.c b/drivers/md/raid6main.c
+index 775786947701..84f3ee01e4c8 100644
+--- a/drivers/md/raid6main.c
++++ b/drivers/md/raid6main.c
+@@ -1464,7 +1464,7 @@ static void handle_stripe(struct stripe_head *sh)
+ 			bi-&gt;bi_end_io = raid6_end_read_request;
+ 
+ 		rcu_read_lock();
+-		rdev = conf-&gt;disks[i].rdev;
++		rdev = rcu_dereference(conf-&gt;disks[i].rdev);
+ 		if (rdev &amp;&amp; rdev-&gt;faulty)
+ 			rdev = NULL;
+ 		if (rdev)
+@@ -1538,7 +1538,7 @@ static void unplug_slaves(mddev_t *mddev)
+ 
+ 	rcu_read_lock();
+ 	for (i=0; i&lt;mddev-&gt;raid_disks; i++) {
+-		mdk_rdev_t *rdev = conf-&gt;disks[i].rdev;
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;disks[i].rdev);
+ 		if (rdev &amp;&amp; !rdev-&gt;faulty &amp;&amp; atomic_read(&amp;rdev-&gt;nr_pending)) {
+ 			request_queue_t *r_queue = bdev_get_queue(rdev-&gt;bdev);
+ 
+@@ -1583,7 +1583,7 @@ static int raid6_issue_flush(request_queue_t *q, struct gendisk *disk,
+ 
+ 	rcu_read_lock();
+ 	for (i=0; i&lt;mddev-&gt;raid_disks &amp;&amp; ret == 0; i++) {
+-		mdk_rdev_t *rdev = conf-&gt;disks[i].rdev;
++		mdk_rdev_t *rdev = rcu_dereference(conf-&gt;disks[i].rdev);
+ 		if (rdev &amp;&amp; !rdev-&gt;faulty) {
+ 			struct block_device *bdev = rdev-&gt;bdev;
+ 			request_queue_t *r_queue = bdev_get_queue(bdev);
+@@ -2154,7 +2154,7 @@ static int raid6_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
+ 			found = 1;
+ 			if (rdev-&gt;saved_raid_disk != disk)
+ 				conf-&gt;fullsync = 1;
+-			p-&gt;rdev = rdev;
++			rcu_assign_pointer(p-&gt;rdev, rdev);
+ 			break;
+ 		}
+ 	print_raid6_conf(conf);</pre><hr><pre>commit 8d224d32c28c165f7100a670d61d64dd15d49a1e
+Author: Jesse Millan &lt;jessem@cs.pdx.edu&gt;
+Date:   Thu Jul 28 21:15:51 2005 -0700
+
+    [PATCH] x86_64: Fix gcc 4 warning in sched_find_first_bit
+    
+    This patch eliminates the GCC4 warning on the x86_64 platform:
+    
+    kernel/sched.c:1824: warning: control may reach end of non-void function
+    'sched_find_first_bit' being inlined.
+    
+    The change follows the lead of others, i.e.  it is guaranteed that at least
+    one of b[0], b[1], or b[2] will have a bit set and evaluate to true.  That
+    being said, GCC4.0.0 notices that the code flow does not return anything if
+    b[0], b[1] and b[2] are not true.  Since we know better, if it's not b[0] or
+    b[1], it has to be b[2].
+    
+    Signed-off-by: Jesse Millan &lt;jessem@cs.pdx.edu&gt;
+    Signed-off-by: Domen Puncer &lt;domen@coderock.org&gt;
+    Signed-off-by: Andi Kleen &lt;ak@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/include/asm-x86_64/bitops.h b/include/asm-x86_64/bitops.h
+index a31bb99be53f..05a0d374404b 100644
+--- a/include/asm-x86_64/bitops.h
++++ b/include/asm-x86_64/bitops.h
+@@ -348,8 +348,7 @@ static inline int sched_find_first_bit(const unsigned long *b)
+ 		return __ffs(b[0]);
+ 	if (b[1])
+ 		return __ffs(b[1]) + 64;
+-	if (b[2])
+-		return __ffs(b[2]) + 128;
++	return __ffs(b[2]) + 128;
+ }
+ 
+ /**</pre><hr><pre>commit 214a627cb401284f87cca7e1510a0f4284f1a17c
+Author: Jesse Millan &lt;jessem@cs.pdx.edu&gt;
+Date:   Thu Jul 7 17:57:01 2005 -0700
+
+    [PATCH] put_compat_shminfo() warning fix
+    
+    GCC 4 complains because the function put_compat_shminfo() can't get to its
+    return statement if there is no error...  If the function does not return
+    -EFAULT, it doesn't return anything at all.  Looks like a typo.
+    
+    Signed-off-by: Jesse Millan &lt;jessem@cs.pdx.edu&gt;
+    Signed-off-by: Domen Puncer &lt;domen@coderock.org&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/ipc/compat.c b/ipc/compat.c
+index 70e4e4e10fd1..3881d564c668 100644
+--- a/ipc/compat.c
++++ b/ipc/compat.c
+@@ -572,6 +572,7 @@ static inline int put_compat_shminfo(struct shminfo64 *smi,
+ 	err |= __put_user(smi-&gt;shmmni, &amp;up-&gt;shmmni);
+ 	err |= __put_user(smi-&gt;shmseg, &amp;up-&gt;shmseg);
+ 	err |= __put_user(smi-&gt;shmall, &amp;up-&gt;shmall);
++	return err;
+ }
+ 
+ static inline int put_compat_shm_info(struct shm_info __user *ip,</pre>
+    <div class="pagination">
+        <a href='39.html'>&lt;&lt;Prev</a><a href='39.html'>1</a><span>[2]</span>
+    <div>
+</body>

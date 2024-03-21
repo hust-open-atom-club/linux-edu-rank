@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Carnegie Mellon University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Carnegie Mellon University</h1>
+    <div class="pagination">
+        <a href='14_5.html'>&lt;&lt;Prev</a><a href='14.html'>1</a><a href='14_2.html'>2</a><a href='14_3.html'>3</a><a href='14_4.html'>4</a><a href='14_5.html'>5</a><span>[6]</span><a href='14_7.html'>7</a><a href='14_8.html'>8</a><a href='14_7.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 0e0cdd37709ba7ac9f0bff5de1b22f1b7987b04c
+Author: Eric Cooper &lt;ecc@cmu.edu&gt;
+Date:   Wed Feb 2 17:16:10 2011 -0500
+
+    [ARM] Kirkwood: enable PCIe before reading device ID register
+    
+    PCIe may have been disabled (by kirkwood_clock_gate)
+    if this kernel was started by kexec.  Make sure PCIe
+    is enabled before attempting to access the device ID
+    register, otherwise the system will hang.
+    
+    Signed-off-by: Eric Cooper &lt;ecc@cmu.edu&gt;
+    Signed-off-by: Nicolas Pitre &lt;nico@fluxnic.net&gt;
+
+diff --git a/arch/arm/mach-kirkwood/common.h b/arch/arm/mach-kirkwood/common.h
+index 95bb0a73adfb..a35b86235772 100644
+--- a/arch/arm/mach-kirkwood/common.h
++++ b/arch/arm/mach-kirkwood/common.h
+@@ -32,6 +32,7 @@ void kirkwood_init_irq(void);
+ extern struct mbus_dram_target_info kirkwood_mbus_dram_info;
+ void kirkwood_setup_cpu_mbus(void);
+ 
++void kirkwood_enable_pcie(void);
+ void kirkwood_pcie_id(u32 *dev, u32 *rev);
+ 
+ void kirkwood_ehci_init(void);
+diff --git a/arch/arm/mach-kirkwood/pcie.c b/arch/arm/mach-kirkwood/pcie.c
+index 513ad3102d7c..ca294ff6d5be 100644
+--- a/arch/arm/mach-kirkwood/pcie.c
++++ b/arch/arm/mach-kirkwood/pcie.c
+@@ -18,8 +18,16 @@
+ #include &lt;mach/bridge-regs.h&gt;
+ #include "common.h"
+ 
++void kirkwood_enable_pcie(void)
++{
++	u32 curr = readl(CLOCK_GATING_CTRL);
++	if (!(curr &amp; CGC_PEX0))
++		writel(curr | CGC_PEX0, CLOCK_GATING_CTRL);
++}
++
+ void __init kirkwood_pcie_id(u32 *dev, u32 *rev)
+ {
++	kirkwood_enable_pcie();
+ 	*dev = orion_pcie_dev_id((void __iomem *)PCIE_VIRT_BASE);
+ 	*rev = orion_pcie_rev((void __iomem *)PCIE_VIRT_BASE);
+ }</pre><hr><pre>commit 868d172b8ac23070418ec6265195e88e8d5dbe92
+Author: Eric Cooper &lt;ecc@cmu.edu&gt;
+Date:   Wed Feb 2 17:16:09 2011 -0500
+
+    [ARM] add machine-specific hook to machine_kexec
+    
+    Provide the option to call a machine-specific function
+    before kexec'ing a new kernel.
+    
+    Signed-off-by: Eric Cooper &lt;ecc@cmu.edu&gt;
+    Signed-off-by: Nicolas Pitre &lt;nico@fluxnic.net&gt;
+
+diff --git a/arch/arm/include/asm/kexec.h b/arch/arm/include/asm/kexec.h
+index c0094d8edae4..c2b9b4bdec00 100644
+--- a/arch/arm/include/asm/kexec.h
++++ b/arch/arm/include/asm/kexec.h
+@@ -50,6 +50,9 @@ static inline void crash_setup_regs(struct pt_regs *newregs,
+ 	}
+ }
+ 
++/* Function pointer to optional machine-specific reinitialization */
++extern void (*kexec_reinit)(void);
++
+ #endif /* __ASSEMBLY__ */
+ 
+ #endif /* CONFIG_KEXEC */
+diff --git a/arch/arm/kernel/machine_kexec.c b/arch/arm/kernel/machine_kexec.c
+index 30ead135ff5f..e59bbd496c39 100644
+--- a/arch/arm/kernel/machine_kexec.c
++++ b/arch/arm/kernel/machine_kexec.c
+@@ -75,6 +75,11 @@ void machine_crash_shutdown(struct pt_regs *regs)
+ 	printk(KERN_INFO "Loading crashdump kernel...\n");
+ }
+ 
++/*
++ * Function pointer to optional machine-specific reinitialization
++ */
++void (*kexec_reinit)(void);
++
+ void machine_kexec(struct kimage *image)
+ {
+ 	unsigned long page_list;
+@@ -104,6 +109,8 @@ void machine_kexec(struct kimage *image)
+ 			   (unsigned long) reboot_code_buffer + KEXEC_CONTROL_PAGE_SIZE);
+ 	printk(KERN_INFO "Bye!\n");
+ 
++	if (kexec_reinit)
++		kexec_reinit();
+ 	local_irq_disable();
+ 	local_fiq_disable();
+ 	setup_mm_for_reboot(0); /* mode is not used, so just pass 0*/</pre><hr><pre>commit 709406494c0ed7da843bad624f6b16f9a2df4a6c
+Author: Eric Cooper &lt;ecc@cmu.edu&gt;
+Date:   Wed Sep 15 10:49:41 2010 -0400
+
+    [ARM] Kirkwood: support for Seagate DockStar
+    
+    This patch adds support for the Seagate FreeAgent DockStar,
+    a Marvell SheevaPlug variant.
+    
+    Signed-off-by: Eric Cooper &lt;ecc@cmu.edu&gt;
+    Signed-off-by: Nicolas Pitre &lt;nico@fluxnic.net&gt;
+
+diff --git a/arch/arm/configs/kirkwood_defconfig b/arch/arm/configs/kirkwood_defconfig
+index ccc9c9959b82..2f7042813765 100644
+--- a/arch/arm/configs/kirkwood_defconfig
++++ b/arch/arm/configs/kirkwood_defconfig
+@@ -15,6 +15,7 @@ CONFIG_MACH_MV88F6281GTW_GE=y
+ CONFIG_MACH_SHEEVAPLUG=y
+ CONFIG_MACH_ESATA_SHEEVAPLUG=y
+ CONFIG_MACH_GURUPLUG=y
++CONFIG_MACH_DOCKSTAR=y
+ CONFIG_MACH_TS219=y
+ CONFIG_MACH_TS41X=y
+ CONFIG_MACH_OPENRD_BASE=y
+diff --git a/arch/arm/mach-kirkwood/Kconfig b/arch/arm/mach-kirkwood/Kconfig
+index cc25501b57fa..3d5d66e7aaa0 100644
+--- a/arch/arm/mach-kirkwood/Kconfig
++++ b/arch/arm/mach-kirkwood/Kconfig
+@@ -58,6 +58,12 @@ config MACH_TS41X
+ 	  QNAP TS-410, TS-410U, TS-419P and TS-419U Turbo NAS
+ 	  devices.
+ 
++config MACH_DOCKSTAR
++	bool "Seagate FreeAgent DockStar"
++	help
++	  Say 'Y' here if you want your kernel to support the
++	  Seagate FreeAgent DockStar.
++
+ config MACH_OPENRD
+         bool
+ 
+diff --git a/arch/arm/mach-kirkwood/Makefile b/arch/arm/mach-kirkwood/Makefile
+index 295d7baa6ae1..9e43e953226e 100644
+--- a/arch/arm/mach-kirkwood/Makefile
++++ b/arch/arm/mach-kirkwood/Makefile
+@@ -7,6 +7,7 @@ obj-$(CONFIG_MACH_MV88F6281GTW_GE)	+= mv88f6281gtw_ge-setup.o
+ obj-$(CONFIG_MACH_SHEEVAPLUG)		+= sheevaplug-setup.o
+ obj-$(CONFIG_MACH_ESATA_SHEEVAPLUG)	+= sheevaplug-setup.o
+ obj-$(CONFIG_MACH_GURUPLUG)		+= guruplug-setup.o
++obj-$(CONFIG_MACH_DOCKSTAR)		+= dockstar-setup.o
+ obj-$(CONFIG_MACH_TS219)		+= ts219-setup.o tsx1x-common.o
+ obj-$(CONFIG_MACH_TS41X)		+= ts41x-setup.o tsx1x-common.o
+ obj-$(CONFIG_MACH_OPENRD)		+= openrd-setup.o
+diff --git a/arch/arm/mach-kirkwood/dockstar-setup.c b/arch/arm/mach-kirkwood/dockstar-setup.c
+new file mode 100644
+index 000000000000..a90475d5059c
+--- /dev/null
++++ b/arch/arm/mach-kirkwood/dockstar-setup.c
+@@ -0,0 +1,112 @@
++/*
++ * arch/arm/mach-kirkwood/dockstar-setup.c
++ *
++ * Seagate FreeAgent DockStar Setup
++ *
++ * This file is licensed under the terms of the GNU General Public
++ * License version 2.  This program is licensed "as is" without any
++ * warranty of any kind, whether express or implied.
++ */
++
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/platform_device.h&gt;
++#include &lt;linux/ata_platform.h&gt;
++#include &lt;linux/mtd/partitions.h&gt;
++#include &lt;linux/mv643xx_eth.h&gt;
++#include &lt;linux/gpio.h&gt;
++#include &lt;linux/leds.h&gt;
++#include &lt;asm/mach-types.h&gt;
++#include &lt;asm/mach/arch.h&gt;
++#include &lt;mach/kirkwood.h&gt;
++#include &lt;plat/mvsdio.h&gt;
++#include "common.h"
++#include "mpp.h"
++
++static struct mtd_partition dockstar_nand_parts[] = {
++	{
++		.name = "u-boot",
++		.offset = 0,
++		.size = SZ_1M
++	}, {
++		.name = "uImage",
++		.offset = MTDPART_OFS_NXTBLK,
++		.size = SZ_4M
++	}, {
++		.name = "root",
++		.offset = MTDPART_OFS_NXTBLK,
++		.size = MTDPART_SIZ_FULL
++	},
++};
++
++static struct mv643xx_eth_platform_data dockstar_ge00_data = {
++	.phy_addr	= MV643XX_ETH_PHY_ADDR(0),
++};
++
++static struct gpio_led dockstar_led_pins[] = {
++	{
++		.name			= "dockstar:green:health",
++		.default_trigger	= "default-on",
++		.gpio			= 46,
++		.active_low		= 1,
++	},
++	{
++		.name			= "dockstar:orange:misc",
++		.default_trigger	= "none",
++		.gpio			= 47,
++		.active_low		= 1,
++	},
++};
++
++static struct gpio_led_platform_data dockstar_led_data = {
++	.leds		= dockstar_led_pins,
++	.num_leds	= ARRAY_SIZE(dockstar_led_pins),
++};
++
++static struct platform_device dockstar_leds = {
++	.name	= "leds-gpio",
++	.id	= -1,
++	.dev	= {
++		.platform_data	= &amp;dockstar_led_data,
++	}
++};
++
++static unsigned int dockstar_mpp_config[] __initdata = {
++	MPP29_GPIO,	/* USB Power Enable */
++	MPP46_GPIO,	/* LED green */
++	MPP47_GPIO,	/* LED orange */
++	0
++};
++
++static void __init dockstar_init(void)
++{
++	/*
++	 * Basic setup. Needs to be called early.
++	 */
++	kirkwood_init();
++
++	/* setup gpio pin select */
++	kirkwood_mpp_conf(dockstar_mpp_config);
++
++	kirkwood_uart0_init();
++	kirkwood_nand_init(ARRAY_AND_SIZE(dockstar_nand_parts), 25);
++
++	if (gpio_request(29, "USB Power Enable") != 0 ||
++	    gpio_direction_output(29, 1) != 0)
++		printk(KERN_ERR "can't set up GPIO 29 (USB Power Enable)\n");
++	kirkwood_ehci_init();
++
++	kirkwood_ge00_init(&amp;dockstar_ge00_data);
++
++	platform_device_register(&amp;dockstar_leds);
++}
++
++MACHINE_START(DOCKSTAR, "Seagate FreeAgent DockStar")
++	.phys_io	= KIRKWOOD_REGS_PHYS_BASE,
++	.io_pg_offst	= ((KIRKWOOD_REGS_VIRT_BASE) &gt;&gt; 18) &amp; 0xfffc,
++	.boot_params	= 0x00000100,
++	.init_machine	= dockstar_init,
++	.map_io		= kirkwood_map_io,
++	.init_irq	= kirkwood_init_irq,
++	.timer		= &amp;kirkwood_timer,
++MACHINE_END</pre><hr><pre>commit 096486eece7ef38cf1ee46b704482c75c4010fb1
+Author: Nik A. Melchior &lt;melchior+kernel@cmu.edu&gt;
+Date:   Mon Jun 21 12:47:05 2010 +0800
+
+    ACPI video: fix string mismatch for Sony SR290 laptop
+    
+    Fix string mismatch for Sony SR290 laptop.
+    https://bugzilla.kernel.org/show_bug.cgi?id=12904#c45
+    
+    Signed-off-by: Nik A. Melchior &lt;melchior+kernel@cmu.edu&gt;
+    Signed-off-by: Len Brown &lt;len.brown@intel.com&gt;
+
+diff --git a/drivers/acpi/blacklist.c b/drivers/acpi/blacklist.c
+index 01381be05e96..2bb28b9d91c4 100644
+--- a/drivers/acpi/blacklist.c
++++ b/drivers/acpi/blacklist.c
+@@ -214,7 +214,7 @@ static struct dmi_system_id acpi_osi_dmi_table[] __initdata = {
+ 	.ident = "Sony VGN-SR290J",
+ 	.matches = {
+ 		     DMI_MATCH(DMI_SYS_VENDOR, "Sony Corporation"),
+-		     DMI_MATCH(DMI_PRODUCT_NAME, "Sony VGN-SR290J"),
++		     DMI_MATCH(DMI_PRODUCT_NAME, "VGN-SR290J"),
+ 		},
+ 	},
+ 	{</pre><hr><pre>commit e59f87966adef2cb03d419530e3ade5159487d6d
+Author: Eric Cooper &lt;ecc@cmu.edu&gt;
+Date:   Thu Mar 13 12:55:46 2008 +0100
+
+    eeepc-laptop: add base driver
+    
+    This patch is based on Eric Cooper's work to clean the original asus_acpi
+    given by Asus.  It's a platform driver (/sys/devices/platform/eeepc/)
+    wich support:
+         - hotkeys - wlan on/off - camera on/off - cardr on/off
+    
+    Signed-off-by: Corentin Chary &lt;corentincj@iksaif.net&gt;
+    Signed-off-by: Len Brown &lt;len.brown@intel.com&gt;
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index c1dd1ae7b133..37debda36661 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -1531,6 +1531,13 @@ L:	bluesmoke-devel@lists.sourceforge.net
+ W:	bluesmoke.sourceforge.net
+ S:	Maintained
+ 
++EEEPC LAPTOP EXTRAS DRIVER
++P:	Corentin Chary
++M:	corentincj@iksaif.net
++L:	acpi4asus-user@lists.sourceforge.net
++W:	http://sourceforge.net/projects/acpi4asus
++S:	Maintained
++
+ EEPRO100 NETWORK DRIVER
+ P:	Andrey V. Savochkin
+ M:	saw@saw.sw.com.sg
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index 297a48f85446..2264127afac7 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -351,6 +351,17 @@ config INTEL_MENLOW
+ 
+ 	  If unsure, say N.
+ 
++config EEEPC_LAPTOP
++	tristate "Eee PC Hotkey Driver (EXPERIMENTAL)"
++	depends on X86
++	depends on ACPI
++	depends on EXPERIMENTAL
++	---help---
++	  This driver supports the Fn-Fx keys on Eee PC laptops.
++	  It also adds the ability to switch camera/wlan on/off.
++
++	  If you have an Eee PC laptop, say Y or M here.
++
+ config ENCLOSURE_SERVICES
+ 	tristate "Enclosure Services"
+ 	default n
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index 5914da434854..1952875a272e 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -7,7 +7,8 @@ obj-$(CONFIG_IBM_ASM)		+= ibmasm/
+ obj-$(CONFIG_HDPU_FEATURES)	+= hdpuftrs/
+ obj-$(CONFIG_MSI_LAPTOP)     += msi-laptop.o
+ obj-$(CONFIG_ACER_WMI)     += acer-wmi.o
+-obj-$(CONFIG_ASUS_LAPTOP)     += asus-laptop.o
++obj-$(CONFIG_ASUS_LAPTOP)	+= asus-laptop.o
++obj-$(CONFIG_EEEPC_LAPTOP)	+= eeepc-laptop.o
+ obj-$(CONFIG_ATMEL_PWM)		+= atmel_pwm.o
+ obj-$(CONFIG_ATMEL_SSC)		+= atmel-ssc.o
+ obj-$(CONFIG_ATMEL_TCLIB)	+= atmel_tclib.o
+diff --git a/drivers/misc/eeepc-laptop.c b/drivers/misc/eeepc-laptop.c
+new file mode 100644
+index 000000000000..e34ff97530cd
+--- /dev/null
++++ b/drivers/misc/eeepc-laptop.c
+@@ -0,0 +1,442 @@
++/*
++ *  eepc-laptop.c - Asus Eee PC extras
++ *
++ *  Based on asus_acpi.c as patched for the Eee PC by Asus:
++ *  ftp://ftp.asus.com/pub/ASUS/EeePC/701/ASUS_ACPI_071126.rar
++ *  Based on eee.c from eeepc-linux
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation; either version 2 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ */
++
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/module.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/types.h&gt;
++#include &lt;linux/platform_device.h&gt;
++#include &lt;acpi/acpi_drivers.h&gt;
++#include &lt;acpi/acpi_bus.h&gt;
++#include &lt;linux/uaccess.h&gt;
++
++#define EEEPC_LAPTOP_VERSION	"0.1"
++
++#define EEEPC_HOTK_NAME		"Eee PC Hotkey Driver"
++#define EEEPC_HOTK_FILE		"eeepc"
++#define EEEPC_HOTK_CLASS	"hotkey"
++#define EEEPC_HOTK_DEVICE_NAME	"Hotkey"
++#define EEEPC_HOTK_HID		"ASUS010"
++
++#define EEEPC_LOG	EEEPC_HOTK_FILE ": "
++#define EEEPC_ERR	KERN_ERR	EEEPC_LOG
++#define EEEPC_WARNING	KERN_WARNING	EEEPC_LOG
++#define EEEPC_NOTICE	KERN_NOTICE	EEEPC_LOG
++#define EEEPC_INFO	KERN_INFO	EEEPC_LOG
++
++/*
++ * Definitions for Asus EeePC
++ */
++#define	NOTIFY_WLAN_ON	0x10
++
++enum {
++	DISABLE_ASL_WLAN = 0x0001,
++	DISABLE_ASL_BLUETOOTH = 0x0002,
++	DISABLE_ASL_IRDA = 0x0004,
++	DISABLE_ASL_CAMERA = 0x0008,
++	DISABLE_ASL_TV = 0x0010,
++	DISABLE_ASL_GPS = 0x0020,
++	DISABLE_ASL_DISPLAYSWITCH = 0x0040,
++	DISABLE_ASL_MODEM = 0x0080,
++	DISABLE_ASL_CARDREADER = 0x0100
++};
++
++enum {
++	CM_ASL_WLAN = 0,
++	CM_ASL_BLUETOOTH,
++	CM_ASL_IRDA,
++	CM_ASL_1394,
++	CM_ASL_CAMERA,
++	CM_ASL_TV,
++	CM_ASL_GPS,
++	CM_ASL_DVDROM,
++	CM_ASL_DISPLAYSWITCH,
++	CM_ASL_PANELBRIGHT,
++	CM_ASL_BIOSFLASH,
++	CM_ASL_ACPIFLASH,
++	CM_ASL_CPUFV,
++	CM_ASL_CPUTEMPERATURE,
++	CM_ASL_FANCPU,
++	CM_ASL_FANCHASSIS,
++	CM_ASL_USBPORT1,
++	CM_ASL_USBPORT2,
++	CM_ASL_USBPORT3,
++	CM_ASL_MODEM,
++	CM_ASL_CARDREADER,
++	CM_ASL_LID
++};
++
++const char *cm_getv[] = {
++	"WLDG", NULL, NULL, NULL,
++	"CAMG", NULL, NULL, NULL,
++	NULL, "PBLG", NULL, NULL,
++	"CFVG", NULL, NULL, NULL,
++	"USBG", NULL, NULL, "MODG",
++	"CRDG", "LIDG"
++};
++
++const char *cm_setv[] = {
++	"WLDS", NULL, NULL, NULL,
++	"CAMS", NULL, NULL, NULL,
++	"SDSP", "PBLS", "HDPS", NULL,
++	"CFVS", NULL, NULL, NULL,
++	"USBG", NULL, NULL, "MODS",
++	"CRDS", NULL
++};
++
++/*
++ * This is the main structure, we can use it to store useful information
++ * about the hotk device
++ */
++struct eeepc_hotk {
++	struct acpi_device *device;	/* the device we are in */
++	acpi_handle handle;		/* the handle of the hotk device */
++	u32 cm_supported;		/* the control methods supported
++					   by this BIOS */
++	uint init_flag;			/* Init flags */
++	u16 event_count[128];		/* count for each event */
++};
++
++/* The actual device the driver binds to */
++static struct eeepc_hotk *ehotk;
++
++/* Platform device/driver */
++static struct platform_driver platform_driver = {
++	.driver = {
++		.name = EEEPC_HOTK_FILE,
++		.owner = THIS_MODULE,
++	}
++};
++
++static struct platform_device *platform_device;
++
++/*
++ * The hotkey driver declaration
++ */
++static int eeepc_hotk_add(struct acpi_device *device);
++static int eeepc_hotk_remove(struct acpi_device *device, int type);
++
++static const struct acpi_device_id eeepc_device_ids[] = {
++	{EEEPC_HOTK_HID, 0},
++	{"", 0},
++};
++MODULE_DEVICE_TABLE(acpi, eeepc_device_ids);
++
++static struct acpi_driver eeepc_hotk_driver = {
++	.name = EEEPC_HOTK_NAME,
++	.class = EEEPC_HOTK_CLASS,
++	.ids = eeepc_device_ids,
++	.ops = {
++		.add = eeepc_hotk_add,
++		.remove = eeepc_hotk_remove,
++	},
++};
++
++MODULE_AUTHOR("Corentin Chary, Eric Cooper");
++MODULE_DESCRIPTION(EEEPC_HOTK_NAME);
++MODULE_LICENSE("GPL");
++
++/*
++ * ACPI Helpers
++ */
++static int write_acpi_int(acpi_handle handle, const char *method, int val,
++			  struct acpi_buffer *output)
++{
++	struct acpi_object_list params;
++	union acpi_object in_obj;
++	acpi_status status;
++
++	params.count = 1;
++	params.pointer = &amp;in_obj;
++	in_obj.type = ACPI_TYPE_INTEGER;
++	in_obj.integer.value = val;
++
++	status = acpi_evaluate_object(handle, (char *)method, &amp;params, output);
++	return (status == AE_OK ? 0 : -1);
++}
++
++static int read_acpi_int(acpi_handle handle, const char *method, int *val)
++{
++	acpi_status status;
++	ulong result;
++
++	status = acpi_evaluate_integer(handle, (char *)method, NULL, &amp;result);
++	if (ACPI_FAILURE(status)) {
++		*val = -1;
++		return -1;
++	} else {
++		*val = result;
++		return 0;
++	}
++}
++
++static int set_acpi(int cm, int value)
++{
++	if (ehotk-&gt;cm_supported &amp; (0x1 &lt;&lt; cm)) {
++		const char *method = cm_setv[cm];
++		if (method == NULL)
++			return -ENODEV;
++		if (write_acpi_int(ehotk-&gt;handle, method, value, NULL))
++			printk(EEEPC_WARNING "Error writing %s\n", method);
++	}
++	return 0;
++}
++
++static int get_acpi(int cm)
++{
++	int value = -1;
++	if ((ehotk-&gt;cm_supported &amp; (0x1 &lt;&lt; cm))) {
++		const char *method = cm_getv[cm];
++		if (method == NULL)
++			return -ENODEV;
++		if (read_acpi_int(ehotk-&gt;handle, method, &amp;value))
++			printk(EEEPC_WARNING "Error reading %s\n", method);
++	}
++	return value;
++}
++
++/*
++ * Sys helpers
++ */
++static int parse_arg(const char *buf, unsigned long count, int *val)
++{
++	if (!count)
++		return 0;
++	if (sscanf(buf, "%i", val) != 1)
++		return -EINVAL;
++	return count;
++}
++
++static ssize_t store_sys_acpi(int cm, const char *buf, size_t count)
++{
++	int rv, value;
++
++	rv = parse_arg(buf, count, &amp;value);
++	if (rv &gt; 0)
++		set_acpi(cm, value);
++	return rv;
++}
++
++static ssize_t show_sys_acpi(int cm, char *buf)
++{
++	return sprintf(buf, "%d\n", get_acpi(cm));
++}
++
++#define EEEPC_CREATE_DEVICE_ATTR(_name, _cm)				\
++	static ssize_t show_##_name(struct device *dev,			\
++				    struct device_attribute *attr,	\
++				    char *buf)				\
++	{								\
++		return show_sys_acpi(_cm, buf);				\
++	}								\
++	static ssize_t store_##_name(struct device *dev,		\
++				     struct device_attribute *attr,	\
++				     const char *buf, size_t count)	\
++	{								\
++		return store_sys_acpi(_cm, buf, count);			\
++	}								\
++	static struct device_attribute dev_attr_##_name = {		\
++		.attr = {						\
++			.name = __stringify(_name),			\
++			.mode = 0644 },					\
++		.show   = show_##_name,					\
++		.store  = store_##_name,				\
++	}
++
++EEEPC_CREATE_DEVICE_ATTR(camera, CM_ASL_CAMERA);
++EEEPC_CREATE_DEVICE_ATTR(cardr, CM_ASL_CARDREADER);
++EEEPC_CREATE_DEVICE_ATTR(disp, CM_ASL_DISPLAYSWITCH);
++EEEPC_CREATE_DEVICE_ATTR(wlan, CM_ASL_WLAN);
++
++static struct attribute *platform_attributes[] = {
++	&amp;dev_attr_camera.attr,
++	&amp;dev_attr_cardr.attr,
++	&amp;dev_attr_disp.attr,
++	&amp;dev_attr_wlan.attr,
++	NULL
++};
++
++static struct attribute_group platform_attribute_group = {
++	.attrs = platform_attributes
++};
++
++/*
++ * Hotkey functions
++ */
++static int eeepc_hotk_check(void)
++{
++	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
++	int result;
++
++	result = acpi_bus_get_status(ehotk-&gt;device);
++	if (result)
++		return result;
++	if (ehotk-&gt;device-&gt;status.present) {
++		if (write_acpi_int(ehotk-&gt;handle, "INIT", ehotk-&gt;init_flag,
++				    &amp;buffer)) {
++			printk(EEEPC_ERR "Hotkey initialization failed\n");
++			return -ENODEV;
++		} else {
++			printk(EEEPC_NOTICE "Hotkey init flags 0x%x\n",
++			       ehotk-&gt;init_flag);
++		}
++		/* get control methods supported */
++		if (read_acpi_int(ehotk-&gt;handle, "CMSG"
++				   , &amp;ehotk-&gt;cm_supported)) {
++			printk(EEEPC_ERR
++			       "Get control methods supported failed\n");
++			return -ENODEV;
++		} else {
++			printk(EEEPC_INFO
++			       "Get control methods supported: 0x%x\n",
++			       ehotk-&gt;cm_supported);
++		}
++	} else {
++		printk(EEEPC_ERR "Hotkey device not present, aborting\n");
++		return -EINVAL;
++	}
++	return 0;
++}
++
++static void notify_wlan(u32 *event)
++{
++	/* if DISABLE_ASL_WLAN is set, the notify code for fn+f2
++	   will always be 0x10 */
++	if (ehotk-&gt;cm_supported &amp; (0x1 &lt;&lt; CM_ASL_WLAN)) {
++		const char *method = cm_getv[CM_ASL_WLAN];
++		int value;
++		if (read_acpi_int(ehotk-&gt;handle, method, &amp;value))
++			printk(EEEPC_WARNING "Error reading %s\n",
++			       method);
++		else if (value == 1)
++			*event = 0x11;
++	}
++}
++
++static void eeepc_hotk_notify(acpi_handle handle, u32 event, void *data)
++{
++	if (!ehotk)
++		return;
++	if (event == NOTIFY_WLAN_ON &amp;&amp; (DISABLE_ASL_WLAN &amp; ehotk-&gt;init_flag))
++		notify_wlan(&amp;event);
++	acpi_bus_generate_proc_event(ehotk-&gt;device, event,
++				     ehotk-&gt;event_count[event % 128]++);
++}
++
++static int eeepc_hotk_add(struct acpi_device *device)
++{
++	acpi_status status = AE_OK;
++	int result;
++
++	if (!device)
++		 return -EINVAL;
++	printk(EEEPC_NOTICE EEEPC_HOTK_NAME "\n");
++	ehotk = kzalloc(sizeof(struct eeepc_hotk), GFP_KERNEL);
++	if (!ehotk)
++		return -ENOMEM;
++	ehotk-&gt;init_flag = DISABLE_ASL_WLAN | DISABLE_ASL_DISPLAYSWITCH;
++	ehotk-&gt;handle = device-&gt;handle;
++	strcpy(acpi_device_name(device), EEEPC_HOTK_DEVICE_NAME);
++	strcpy(acpi_device_class(device), EEEPC_HOTK_CLASS);
++	acpi_driver_data(device) = ehotk;
++	ehotk-&gt;device = device;
++	result = eeepc_hotk_check();
++	if (result)
++		goto end;
++	status = acpi_install_notify_handler(ehotk-&gt;handle, ACPI_SYSTEM_NOTIFY,
++					     eeepc_hotk_notify, ehotk);
++	if (ACPI_FAILURE(status))
++		printk(EEEPC_ERR "Error installing notify handler\n");
++ end:
++	if (result) {
++		kfree(ehotk);
++		ehotk = NULL;
++	}
++	return result;
++}
++
++static int eeepc_hotk_remove(struct acpi_device *device, int type)
++{
++	acpi_status status = 0;
++
++	if (!device || !acpi_driver_data(device))
++		 return -EINVAL;
++	status = acpi_remove_notify_handler(ehotk-&gt;handle, ACPI_SYSTEM_NOTIFY,
++					    eeepc_hotk_notify);
++	if (ACPI_FAILURE(status))
++		printk(EEEPC_ERR "Error removing notify handler\n");
++	kfree(ehotk);
++	return 0;
++}
++
++/*
++ * exit/init
++ */
++static void __exit eeepc_laptop_exit(void)
++{
++	acpi_bus_unregister_driver(&amp;eeepc_hotk_driver);
++	sysfs_remove_group(&amp;platform_device-&gt;dev.kobj,
++			   &amp;platform_attribute_group);
++	platform_device_unregister(platform_device);
++	platform_driver_unregister(&amp;platform_driver);
++}
++
++static int __init eeepc_laptop_init(void)
++{
++	struct device *dev;
++	int result;
++
++	if (acpi_disabled)
++		return -ENODEV;
++	result = acpi_bus_register_driver(&amp;eeepc_hotk_driver);
++	if (result &lt; 0)
++		return result;
++	if (!ehotk) {
++		acpi_bus_unregister_driver(&amp;eeepc_hotk_driver);
++		return -ENODEV;
++	}
++	dev = acpi_get_physical_device(ehotk-&gt;device-&gt;handle);
++	/* Register platform stuff */
++	result = platform_driver_register(&amp;platform_driver);
++	if (result)
++		goto fail_platform_driver;
++	platform_device = platform_device_alloc(EEEPC_HOTK_FILE, -1);
++	if (!platform_device) {
++		result = -ENOMEM;
++		goto fail_platform_device1;
++	}
++	result = platform_device_add(platform_device);
++	if (result)
++		goto fail_platform_device2;
++	result = sysfs_create_group(&amp;platform_device-&gt;dev.kobj,
++				    &amp;platform_attribute_group);
++	if (result)
++		goto fail_sysfs;
++	return 0;
++fail_sysfs:
++	platform_device_del(platform_device);
++fail_platform_device2:
++	platform_device_put(platform_device);
++fail_platform_device1:
++	platform_driver_unregister(&amp;platform_driver);
++fail_platform_driver:
++	return result;
++}
++
++module_init(eeepc_laptop_init);
++module_exit(eeepc_laptop_exit);</pre><hr><pre>commit bbc60c18ed17df75270da504bbd8f7bc4a52d43d
+Author: Michael Abd-El-Malek &lt;mabdelmalek@cmu.edu&gt;
+Date:   Fri Apr 4 02:33:48 2008 -0700
+
+    xen: fix grant table bug
+    
+    fix memory corruption and crash due to mis-sized grant table.
+    
+    A PV OS has two grant table data structures: the grant table itself
+    and a free list.  The free list is composed of an array of pages,
+    which grow dynamically as the guest OS requires more grants.  While
+    the grant table contains 8-byte entries, the free list contains 4-byte
+    entries.  So we have half as many pages in the free list than in the
+    grant table.
+    
+    There was a bug in the free list allocation code. The free list was
+    indexed as if it was the same size as the grant table.  But it's only
+    half as large.  So memory got corrupted, and I was seeing crashes in
+    the slab allocator later on.
+    
+    Taken from:
+    
+      http://xenbits.xensource.com/linux-2.6.18-xen.hg?rev/4018c0da3360
+    
+    Signed-off-by: Michael Abd-El-Malek &lt;mabdelmalek@cmu.edu&gt;
+    Signed-off-by: Mark McLoughlin &lt;markmc@redhat.com&gt;
+    Signed-off-by: Jeremy Fitzhardinge &lt;jeremy.fitzhardinge@citrix.com&gt;
+    Signed-off-by: Ingo Molnar &lt;mingo@elte.hu&gt;
+
+diff --git a/drivers/xen/grant-table.c b/drivers/xen/grant-table.c
+index ea94dbabf9a9..d85dc6d41c2a 100644
+--- a/drivers/xen/grant-table.c
++++ b/drivers/xen/grant-table.c
+@@ -381,11 +381,15 @@ EXPORT_SYMBOL_GPL(gnttab_cancel_free_callback);
+ static int grow_gnttab_list(unsigned int more_frames)
+ {
+ 	unsigned int new_nr_grant_frames, extra_entries, i;
++	unsigned int nr_glist_frames, new_nr_glist_frames;
+ 
+ 	new_nr_grant_frames = nr_grant_frames + more_frames;
+ 	extra_entries       = more_frames * GREFS_PER_GRANT_FRAME;
+ 
+-	for (i = nr_grant_frames; i &lt; new_nr_grant_frames; i++) {
++	nr_glist_frames = (nr_grant_frames * GREFS_PER_GRANT_FRAME + RPP - 1) / RPP;
++	new_nr_glist_frames =
++		(new_nr_grant_frames * GREFS_PER_GRANT_FRAME + RPP - 1) / RPP;
++	for (i = nr_glist_frames; i &lt; new_nr_glist_frames; i++) {
+ 		gnttab_list[i] = (grant_ref_t *)__get_free_page(GFP_ATOMIC);
+ 		if (!gnttab_list[i])
+ 			goto grow_nomem;
+@@ -407,7 +411,7 @@ static int grow_gnttab_list(unsigned int more_frames)
+ 	return 0;
+ 
+ grow_nomem:
+-	for ( ; i &gt;= nr_grant_frames; i--)
++	for ( ; i &gt;= nr_glist_frames; i--)
+ 		free_page((unsigned long) gnttab_list[i]);
+ 	return -ENOMEM;
+ }
+@@ -530,7 +534,7 @@ static int gnttab_expand(unsigned int req_entries)
+ static int __devinit gnttab_init(void)
+ {
+ 	int i;
+-	unsigned int max_nr_glist_frames;
++	unsigned int max_nr_glist_frames, nr_glist_frames;
+ 	unsigned int nr_init_grefs;
+ 
+ 	if (!is_running_on_xen())
+@@ -543,15 +547,15 @@ static int __devinit gnttab_init(void)
+ 	 * grant reference free list on the current hypervisor.
+ 	 */
+ 	max_nr_glist_frames = (boot_max_nr_grant_frames *
+-			       GREFS_PER_GRANT_FRAME /
+-			       (PAGE_SIZE / sizeof(grant_ref_t)));
++			       GREFS_PER_GRANT_FRAME / RPP);
+ 
+ 	gnttab_list = kmalloc(max_nr_glist_frames * sizeof(grant_ref_t *),
+ 			      GFP_KERNEL);
+ 	if (gnttab_list == NULL)
+ 		return -ENOMEM;
+ 
+-	for (i = 0; i &lt; nr_grant_frames; i++) {
++	nr_glist_frames = (nr_grant_frames * GREFS_PER_GRANT_FRAME + RPP - 1) / RPP;
++	for (i = 0; i &lt; nr_glist_frames; i++) {
+ 		gnttab_list[i] = (grant_ref_t *)__get_free_page(GFP_KERNEL);
+ 		if (gnttab_list[i] == NULL)
+ 			goto ini_nomem;</pre><hr><pre>commit 439d9eadf648a9d62ab74c64b0e7432b3a15ec3b
+Author: Spencer Baugh &lt;sbaugh@andrew.cmu.edu&gt;
+Date:   Sat Dec 20 15:48:13 2014 -0500
+
+    lustre: ptlrpc: add "ptlrpc_internal.h" to sec_gc.c
+    
+    ptlrpc_internal.h contains the prototypes for sptlrpc_gc_init() and
+    sptlrpc_gc_fini(), which are defined in sec_gc.c.
+    
+    This removes the following sparse warnings:
+    
+    drivers/staging/lustre/lustre/ptlrpc/sec_gc.c:217:5: warning: symbol 'sptlrpc_gc_init' was not declared. Should it be static?
+    drivers/staging/lustre/lustre/ptlrpc/sec_gc.c:241:6: warning: symbol 'sptlrpc_gc_fini' was not declared. Should it be static?
+    
+    Signed-off-by: Spencer Baugh &lt;sbaugh@andrew.cmu.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/lustre/lustre/ptlrpc/sec_gc.c b/drivers/staging/lustre/lustre/ptlrpc/sec_gc.c
+index c500aff66193..81de68edb04e 100644
+--- a/drivers/staging/lustre/lustre/ptlrpc/sec_gc.c
++++ b/drivers/staging/lustre/lustre/ptlrpc/sec_gc.c
+@@ -47,6 +47,8 @@
+ #include "../include/lustre_net.h"
+ #include "../include/lustre_sec.h"
+ 
++#include "ptlrpc_internal.h"
++
+ #define SEC_GC_INTERVAL (30 * 60)
+ 
+ </pre><hr><pre>commit 727543d639efe4abb4be8ce56a1065c32dbac918
+Author: Spencer Baugh &lt;sbaugh@andrew.cmu.edu&gt;
+Date:   Sun Sep 14 11:21:11 2014 -0400
+
+    staging: lustre: fix pointer whitespace style
+    
+    Fix errors reported by checkpatch of this kind:
+    ERROR: "foo * bar" should be "foo *bar"
+    
+    Signed-off-by: Spencer Baugh &lt;sbaugh@andrew.cmu.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/lustre/lustre/include/lustre_import.h b/drivers/staging/lustre/lustre/include/lustre_import.h
+index 7bf82e03ed63..51f3e98f94e2 100644
+--- a/drivers/staging/lustre/lustre/include/lustre_import.h
++++ b/drivers/staging/lustre/lustre/include/lustre_import.h
+@@ -103,9 +103,9 @@ enum lustre_imp_state {
+ };
+ 
+ /** Returns test string representation of numeric import state \a state */
+-static inline char * ptlrpc_import_state_name(enum lustre_imp_state state)
++static inline char *ptlrpc_import_state_name(enum lustre_imp_state state)
+ {
+-	static char* import_state_names[] = {
++	static char *import_state_names[] = {
+ 		"&lt;UNKNOWN&gt;", "CLOSED",  "NEW", "DISCONN",
+ 		"CONNECTING", "REPLAY", "REPLAY_LOCKS", "REPLAY_WAIT",
+ 		"RECOVER", "FULL", "EVICTED",</pre><hr><pre>commit db7b4b391e2f301d6d18ded41628ce458cbd4129
+Author: Spencer Baugh &lt;sbaugh@andrew.cmu.edu&gt;
+Date:   Sun Sep 14 11:21:10 2014 -0400
+
+    staging: lustre: fix function definition style
+    
+    Fix errors reported by checkpatch of this kind:
+    ERROR: open brace '{' following function declarations go on the next line
+    
+    Signed-off-by: Spencer Baugh &lt;sbaugh@andrew.cmu.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/lustre/lustre/include/lustre_import.h b/drivers/staging/lustre/lustre/include/lustre_import.h
+index 8304a55b92f9..7bf82e03ed63 100644
+--- a/drivers/staging/lustre/lustre/include/lustre_import.h
++++ b/drivers/staging/lustre/lustre/include/lustre_import.h
+@@ -346,21 +346,24 @@ static inline unsigned int at_timeout2est(unsigned int val)
+ 	return (max((val &lt;&lt; 2) / 5, 5U) - 4);
+ }
+ 
+-static inline void at_reset(struct adaptive_timeout *at, int val) {
++static inline void at_reset(struct adaptive_timeout *at, int val)
++{
+ 	spin_lock(&amp;at-&gt;at_lock);
+ 	at-&gt;at_current = val;
+ 	at-&gt;at_worst_ever = val;
+ 	at-&gt;at_worst_time = get_seconds();
+ 	spin_unlock(&amp;at-&gt;at_lock);
+ }
+-static inline void at_init(struct adaptive_timeout *at, int val, int flags) {
++static inline void at_init(struct adaptive_timeout *at, int val, int flags)
++{
+ 	memset(at, 0, sizeof(*at));
+ 	spin_lock_init(&amp;at-&gt;at_lock);
+ 	at-&gt;at_flags = flags;
+ 	at_reset(at, val);
+ }
+ extern unsigned int at_min;
+-static inline int at_get(struct adaptive_timeout *at) {
++static inline int at_get(struct adaptive_timeout *at)
++{
+ 	return (at-&gt;at_current &gt; at_min) ? at-&gt;at_current : at_min;
+ }
+ int at_measured(struct adaptive_timeout *at, unsigned int val);</pre><hr><pre>commit 77ceab8ea590d7dc6c8f055ce43dfebd74428107
+Author: Ben Blum &lt;bblum@andrew.cmu.edu&gt;
+Date:   Wed Nov 2 13:38:07 2011 -0700
+
+    cgroups: don't attach task to subsystem if migration failed
+    
+    If a task has exited to the point it has called cgroup_exit() already,
+    then we can't migrate it to another cgroup anymore.
+    
+    This can happen when we are attaching a task to a new cgroup between the
+    call to -&gt;can_attach_task() on subsystems and the migration that is
+    eventually tried in cgroup_task_migrate().
+    
+    In this case cgroup_task_migrate() returns -ESRCH and we don't want to
+    attach the task to the subsystems because the attachment to the new cgroup
+    itself failed.
+    
+    Fix this by only calling -&gt;attach_task() on the subsystems if the cgroup
+    migration succeeded.
+    
+    Reported-by: Oleg Nesterov &lt;oleg@redhat.com&gt;
+    Signed-off-by: Ben Blum &lt;bblum@andrew.cmu.edu&gt;
+    Acked-by: Paul Menage &lt;paul@paulmenage.org&gt;
+    Cc: Li Zefan &lt;lizf@cn.fujitsu.com&gt;
+    Cc: Tejun Heo &lt;tj@kernel.org&gt;
+    Signed-off-by: Frederic Weisbecker &lt;fweisbec@gmail.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/kernel/cgroup.c b/kernel/cgroup.c
+index 64b0e73402df..8386b21224ef 100644
+--- a/kernel/cgroup.c
++++ b/kernel/cgroup.c
+@@ -2135,14 +2135,17 @@ int cgroup_attach_proc(struct cgroup *cgrp, struct task_struct *leader)
+ 		oldcgrp = task_cgroup_from_root(tsk, root);
+ 		if (cgrp == oldcgrp)
+ 			continue;
+-		/* attach each task to each subsystem */
+-		for_each_subsys(root, ss) {
+-			if (ss-&gt;attach_task)
+-				ss-&gt;attach_task(cgrp, tsk);
+-		}
+ 		/* if the thread is PF_EXITING, it can just get skipped. */
+ 		retval = cgroup_task_migrate(cgrp, oldcgrp, tsk, true);
+-		BUG_ON(retval != 0 &amp;&amp; retval != -ESRCH);
++		if (retval == 0) {
++			/* attach each task to each subsystem */
++			for_each_subsys(root, ss) {
++				if (ss-&gt;attach_task)
++					ss-&gt;attach_task(cgrp, tsk);
++			}
++		} else {
++			BUG_ON(retval != -ESRCH);
++		}
+ 	}
+ 	/* nothing is sensitive to fork() after this point. */
+ </pre>
+    <div class="pagination">
+        <a href='14_5.html'>&lt;&lt;Prev</a><a href='14.html'>1</a><a href='14_2.html'>2</a><a href='14_3.html'>3</a><a href='14_4.html'>4</a><a href='14_5.html'>5</a><span>[6]</span><a href='14_7.html'>7</a><a href='14_8.html'>8</a><a href='14_7.html'>Next&gt;&gt;</a>
+    <div>
+</body>

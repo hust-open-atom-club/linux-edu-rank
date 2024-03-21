@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Auburn University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Auburn University</h1>
+    <div class="pagination">
+        <a href='29_2.html'>&lt;&lt;Prev</a><a href='29.html'>1</a><a href='29_2.html'>2</a><span>[3]</span>
+    </div>
+    <hr>
+    <pre>commit 14a19c0a2254ba58ed7559e072456ab94c9a2d3c
+Author: Theodore Kilgore &lt;kilgota@auburn.edu&gt;
+Date:   Wed Mar 25 07:13:13 2009 -0300
+
+    V4L/DVB (11213): gspca - sq905c: New subdriver.
+    
+    The code in the new sq905c.c is based upon the structure of the code in
+    gspca/sq905.c, and upon the code in libgphoto2/camlibs/digigr8, which supports
+    the same set of cameras in stillcam mode. I am a co-author of gspca/sq905.c and
+    I am the sole author of libgphoto2/camlibs/digigr8, which is licensed under the
+    LGPL. I hereby give myself permission to use my own code from libgphoto2 in
+    gspca/sq905c.c.
+    
+    Signed-off-by: Theodore Kilgore &lt;kilgota@auburn.edu&gt;
+    Signed-off-by: Jean-Francois Moine &lt;moinejf@free.fr&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@redhat.com&gt;
+
+diff --git a/drivers/media/video/gspca/Kconfig b/drivers/media/video/gspca/Kconfig
+index a0f05ef5ca70..578dc4ffc965 100644
+--- a/drivers/media/video/gspca/Kconfig
++++ b/drivers/media/video/gspca/Kconfig
+@@ -185,6 +185,15 @@ config USB_GSPCA_SQ905
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called gspca_sq905.
+ 
++config USB_GSPCA_SQ905C
++	tristate "SQ Technologies SQ905C based USB Camera Driver"
++	depends on VIDEO_V4L2 &amp;&amp; USB_GSPCA
++	help
++	  Say Y here if you want support for cameras based on the SQ905C chip.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called gspca_sq905c.
++
+ config USB_GSPCA_STK014
+ 	tristate "Syntek DV4000 (STK014) USB Camera Driver"
+ 	depends on VIDEO_V4L2 &amp;&amp; USB_GSPCA
+diff --git a/drivers/media/video/gspca/Makefile b/drivers/media/video/gspca/Makefile
+index b6ec61185736..8a6643e8eb96 100644
+--- a/drivers/media/video/gspca/Makefile
++++ b/drivers/media/video/gspca/Makefile
+@@ -17,6 +17,7 @@ obj-$(CONFIG_USB_GSPCA_SPCA506)  += gspca_spca506.o
+ obj-$(CONFIG_USB_GSPCA_SPCA508)  += gspca_spca508.o
+ obj-$(CONFIG_USB_GSPCA_SPCA561)  += gspca_spca561.o
+ obj-$(CONFIG_USB_GSPCA_SQ905)    += gspca_sq905.o
++obj-$(CONFIG_USB_GSPCA_SQ905C)   += gspca_sq905c.o
+ obj-$(CONFIG_USB_GSPCA_SUNPLUS)  += gspca_sunplus.o
+ obj-$(CONFIG_USB_GSPCA_STK014)   += gspca_stk014.o
+ obj-$(CONFIG_USB_GSPCA_T613)     += gspca_t613.o
+@@ -43,6 +44,7 @@ gspca_spca506-objs  := spca506.o
+ gspca_spca508-objs  := spca508.o
+ gspca_spca561-objs  := spca561.o
+ gspca_sq905-objs    := sq905.o
++gspca_sq905c-objs   := sq905c.o
+ gspca_stk014-objs   := stk014.o
+ gspca_sunplus-objs  := sunplus.o
+ gspca_t613-objs     := t613.o
+diff --git a/drivers/media/video/gspca/sq905c.c b/drivers/media/video/gspca/sq905c.c
+new file mode 100644
+index 000000000000..0bcb74a1b143
+--- /dev/null
++++ b/drivers/media/video/gspca/sq905c.c
+@@ -0,0 +1,328 @@
++/*
++ * SQ905C subdriver
++ *
++ * Copyright (C) 2009 Theodore Kilgore
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++/*
++ *
++ * This driver uses work done in
++ * libgphoto2/camlibs/digigr8, Copyright (C) Theodore Kilgore.
++ *
++ * This driver has also used as a base the sq905c driver
++ * and may contain code fragments from it.
++ */
++
++#define MODULE_NAME "sq905c"
++
++#include &lt;linux/workqueue.h&gt;
++#include "gspca.h"
++
++MODULE_AUTHOR("Theodore Kilgore &lt;kilgota@auburn.edu&gt;");
++MODULE_DESCRIPTION("GSPCA/SQ905C USB Camera Driver");
++MODULE_LICENSE("GPL");
++
++/* Default timeouts, in ms */
++#define SQ905C_CMD_TIMEOUT 500
++#define SQ905C_DATA_TIMEOUT 1000
++
++/* Maximum transfer size to use. */
++#define SQ905C_MAX_TRANSFER 0x8000
++
++#define FRAME_HEADER_LEN 0x50
++
++/* Commands. These go in the "value" slot. */
++#define SQ905C_CLEAR   0xa0		/* clear everything */
++#define SQ905C_CAPTURE_LOW 0xa040	/* Starts capture at 160x120 */
++#define SQ905C_CAPTURE_MED 0x1440	/* Starts capture at 320x240 */
++#define SQ905C_CAPTURE_HI 0x2840	/* Starts capture at 320x240 */
++
++/* For capture, this must go in the "index" slot. */
++#define SQ905C_CAPTURE_INDEX 0x110f
++
++/* Structure to hold all of our device specific stuff */
++struct sd {
++	struct gspca_dev gspca_dev;	/* !! must be the first item */
++	const struct v4l2_pix_format *cap_mode;
++	/* Driver stuff */
++	struct work_struct work_struct;
++	struct workqueue_struct *work_thread;
++};
++
++/*
++ * Most of these cameras will do 640x480 and 320x240. 160x120 works
++ * in theory but gives very poor output. Therefore, not supported.
++ * The 0x2770:0x9050 cameras have max resolution of 320x240.
++ */
++static struct v4l2_pix_format sq905c_mode[] = {
++	{ 320, 240, V4L2_PIX_FMT_SQ905C, V4L2_FIELD_NONE,
++		.bytesperline = 320,
++		.sizeimage = 320 * 240,
++		.colorspace = V4L2_COLORSPACE_SRGB,
++		.priv = 0},
++	{ 640, 480, V4L2_PIX_FMT_SQ905C, V4L2_FIELD_NONE,
++		.bytesperline = 640,
++		.sizeimage = 640 * 480,
++		.colorspace = V4L2_COLORSPACE_SRGB,
++		.priv = 0}
++};
++
++/* Send a command to the camera. */
++static int sq905c_command(struct gspca_dev *gspca_dev, u16 command, u16 index)
++{
++	int ret;
++
++	ret = usb_control_msg(gspca_dev-&gt;dev,
++			      usb_sndctrlpipe(gspca_dev-&gt;dev, 0),
++			      USB_REQ_SYNCH_FRAME,                /* request */
++			      USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
++			      command, index, NULL, 0,
++			      SQ905C_CMD_TIMEOUT);
++	if (ret &lt; 0) {
++		PDEBUG(D_ERR, "%s: usb_control_msg failed (%d)",
++			__func__, ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++/* This function is called as a workqueue function and runs whenever the camera
++ * is streaming data. Because it is a workqueue function it is allowed to sleep
++ * so we can use synchronous USB calls. To avoid possible collisions with other
++ * threads attempting to use the camera's USB interface the gspca usb_lock is
++ * used when performing the one USB control operation inside the workqueue,
++ * which tells the camera to close the stream. In practice the only thing
++ * which needs to be protected against is the usb_set_interface call that
++ * gspca makes during stream_off. Otherwise the camera doesn't provide any
++ * controls that the user could try to change.
++ */
++static void sq905c_dostream(struct work_struct *work)
++{
++	struct sd *dev = container_of(work, struct sd, work_struct);
++	struct gspca_dev *gspca_dev = &amp;dev-&gt;gspca_dev;
++	struct gspca_frame *frame;
++	int bytes_left; /* bytes remaining in current frame. */
++	int data_len;   /* size to use for the next read. */
++	int act_len;
++	int discarding = 0; /* true if we failed to get space for frame. */
++	int packet_type;
++	int ret;
++	u8 *buffer;
++
++	buffer = kmalloc(SQ905C_MAX_TRANSFER, GFP_KERNEL | GFP_DMA);
++	if (!buffer) {
++		PDEBUG(D_ERR, "Couldn't allocate USB buffer");
++		goto quit_stream;
++	}
++
++	while (gspca_dev-&gt;present &amp;&amp; gspca_dev-&gt;streaming) {
++		if (!gspca_dev-&gt;present)
++			goto quit_stream;
++		/* Request the header, which tells the size to download */
++		ret = usb_bulk_msg(gspca_dev-&gt;dev,
++				usb_rcvbulkpipe(gspca_dev-&gt;dev, 0x81),
++				buffer, FRAME_HEADER_LEN, &amp;act_len,
++				SQ905C_DATA_TIMEOUT);
++		PDEBUG(D_STREAM,
++			"Got %d bytes out of %d for header",
++			act_len, FRAME_HEADER_LEN);
++		if (ret &lt; 0 || act_len &lt; FRAME_HEADER_LEN)
++			goto quit_stream;
++		/* size is read from 4 bytes starting 0x40, little endian */
++		bytes_left = buffer[0x40]|(buffer[0x41]&lt;&lt;8)|(buffer[0x42]&lt;&lt;16)
++					|(buffer[0x43]&lt;&lt;24);
++		PDEBUG(D_STREAM, "bytes_left = 0x%x", bytes_left);
++		/* We keep the header. It has other information, too. */
++		packet_type = FIRST_PACKET;
++		frame = gspca_get_i_frame(gspca_dev);
++		if (frame &amp;&amp; !discarding) {
++			gspca_frame_add(gspca_dev, packet_type,
++				frame, buffer, FRAME_HEADER_LEN);
++			} else
++				discarding = 1;
++		while (bytes_left &gt; 0) {
++			data_len = bytes_left &gt; SQ905C_MAX_TRANSFER ?
++				SQ905C_MAX_TRANSFER : bytes_left;
++			if (!gspca_dev-&gt;present)
++				goto quit_stream;
++			ret = usb_bulk_msg(gspca_dev-&gt;dev,
++				usb_rcvbulkpipe(gspca_dev-&gt;dev, 0x81),
++				buffer, data_len, &amp;act_len,
++				SQ905C_DATA_TIMEOUT);
++			if (ret &lt; 0 || act_len &lt; data_len)
++				goto quit_stream;
++			PDEBUG(D_STREAM,
++				"Got %d bytes out of %d for frame",
++				data_len, bytes_left);
++			bytes_left -= data_len;
++			if (bytes_left == 0)
++				packet_type = LAST_PACKET;
++			else
++				packet_type = INTER_PACKET;
++			frame = gspca_get_i_frame(gspca_dev);
++			if (frame &amp;&amp; !discarding)
++				gspca_frame_add(gspca_dev, packet_type,
++						frame, buffer, data_len);
++			else
++				discarding = 1;
++		}
++	}
++quit_stream:
++	mutex_lock(&amp;gspca_dev-&gt;usb_lock);
++	if (gspca_dev-&gt;present)
++		sq905c_command(gspca_dev, SQ905C_CLEAR, 0);
++	mutex_unlock(&amp;gspca_dev-&gt;usb_lock);
++	kfree(buffer);
++}
++
++/* This function is called at probe time just before sd_init */
++static int sd_config(struct gspca_dev *gspca_dev,
++		const struct usb_device_id *id)
++{
++	struct cam *cam = &amp;gspca_dev-&gt;cam;
++	struct sd *dev = (struct sd *) gspca_dev;
++
++	PDEBUG(D_PROBE,
++		"SQ9050 camera detected"
++		" (vid/pid 0x%04X:0x%04X)", id-&gt;idVendor, id-&gt;idProduct);
++	cam-&gt;cam_mode = sq905c_mode;
++	cam-&gt;nmodes = 2;
++	if (id-&gt;idProduct == 0x9050)
++		cam-&gt;nmodes = 1;
++	/* We don't use the buffer gspca allocates so make it small. */
++	cam-&gt;bulk_size = 32;
++	INIT_WORK(&amp;dev-&gt;work_struct, sq905c_dostream);
++	return 0;
++}
++
++/* called on streamoff with alt==0 and on disconnect */
++/* the usb_lock is held at entry - restore on exit */
++static void sd_stop0(struct gspca_dev *gspca_dev)
++{
++	struct sd *dev = (struct sd *) gspca_dev;
++
++	/* wait for the work queue to terminate */
++	mutex_unlock(&amp;gspca_dev-&gt;usb_lock);
++	/* This waits for sq905c_dostream to finish */
++	destroy_workqueue(dev-&gt;work_thread);
++	dev-&gt;work_thread = NULL;
++	mutex_lock(&amp;gspca_dev-&gt;usb_lock);
++}
++
++/* this function is called at probe and resume time */
++static int sd_init(struct gspca_dev *gspca_dev)
++{
++	int ret;
++
++	/* connect to the camera and reset it. */
++	ret = sq905c_command(gspca_dev, SQ905C_CLEAR, 0);
++	return ret;
++}
++
++/* Set up for getting frames. */
++static int sd_start(struct gspca_dev *gspca_dev)
++{
++	struct sd *dev = (struct sd *) gspca_dev;
++	int ret;
++
++	dev-&gt;cap_mode = gspca_dev-&gt;cam.cam_mode;
++	/* "Open the shutter" and set size, to start capture */
++	switch (gspca_dev-&gt;width) {
++	case 640:
++		PDEBUG(D_STREAM, "Start streaming at high resolution");
++		dev-&gt;cap_mode++;
++		ret = sq905c_command(gspca_dev, SQ905C_CAPTURE_HI,
++						SQ905C_CAPTURE_INDEX);
++		break;
++	default: /* 320 */
++	PDEBUG(D_STREAM, "Start streaming at medium resolution");
++		ret = sq905c_command(gspca_dev, SQ905C_CAPTURE_MED,
++						SQ905C_CAPTURE_INDEX);
++	}
++
++	if (ret &lt; 0) {
++		PDEBUG(D_ERR, "Start streaming command failed");
++		return ret;
++	}
++	/* Start the workqueue function to do the streaming */
++	dev-&gt;work_thread = create_singlethread_workqueue(MODULE_NAME);
++	queue_work(dev-&gt;work_thread, &amp;dev-&gt;work_struct);
++
++	return 0;
++}
++
++/* Table of supported USB devices */
++static const __devinitdata struct usb_device_id device_table[] = {
++	{USB_DEVICE(0x2770, 0x905c)},
++	{USB_DEVICE(0x2770, 0x9050)},
++	{USB_DEVICE(0x2770, 0x913d)},
++	{}
++};
++
++MODULE_DEVICE_TABLE(usb, device_table);
++
++/* sub-driver description */
++static const struct sd_desc sd_desc = {
++	.name   = MODULE_NAME,
++	.config = sd_config,
++	.init   = sd_init,
++	.start  = sd_start,
++	.stop0  = sd_stop0,
++};
++
++/* -- device connect -- */
++static int sd_probe(struct usb_interface *intf,
++		const struct usb_device_id *id)
++{
++	return gspca_dev_probe(intf, id,
++			&amp;sd_desc,
++			sizeof(struct sd),
++			THIS_MODULE);
++}
++
++static struct usb_driver sd_driver = {
++	.name       = MODULE_NAME,
++	.id_table   = device_table,
++	.probe      = sd_probe,
++	.disconnect = gspca_disconnect,
++#ifdef CONFIG_PM
++	.suspend = gspca_suspend,
++	.resume  = gspca_resume,
++#endif
++};
++
++/* -- module insert / remove -- */
++static int __init sd_mod_init(void)
++{
++	int ret;
++
++	ret = usb_register(&amp;sd_driver);
++	if (ret &lt; 0)
++		return ret;
++	PDEBUG(D_PROBE, "registered");
++	return 0;
++}
++
++static void __exit sd_mod_exit(void)
++{
++	usb_deregister(&amp;sd_driver);
++	PDEBUG(D_PROBE, "deregistered");
++}
++
++module_init(sd_mod_init);
++module_exit(sd_mod_exit);
+diff --git a/include/linux/videodev2.h b/include/linux/videodev2.h
+index 61f1a4921afd..139d234923cd 100644
+--- a/include/linux/videodev2.h
++++ b/include/linux/videodev2.h
+@@ -345,6 +345,7 @@ struct v4l2_pix_format {
+ #define V4L2_PIX_FMT_SPCA561  v4l2_fourcc('S', '5', '6', '1') /* compressed GBRG bayer */
+ #define V4L2_PIX_FMT_PAC207   v4l2_fourcc('P', '2', '0', '7') /* compressed BGGR bayer */
+ #define V4L2_PIX_FMT_MR97310A v4l2_fourcc('M', '3', '1', '0') /* compressed BGGR bayer */
++#define V4L2_PIX_FMT_SQ905C   v4l2_fourcc('9', '0', '5', 'C') /* compressed RGGB bayer */
+ #define V4L2_PIX_FMT_PJPG     v4l2_fourcc('P', 'J', 'P', 'G') /* Pixart 73xx JPEG */
+ #define V4L2_PIX_FMT_YVYU    v4l2_fourcc('Y', 'V', 'Y', 'U') /* 16  YVU 4:2:2     */
+ </pre><hr><pre>commit 9832d765f82769799ba15ac9d2e8edf8f7de6898
+Author: Theodore Kilgore &lt;kilgota@auburn.edu&gt;
+Date:   Fri Mar 13 13:04:31 2009 -0300
+
+    V4L/DVB (10986): mr97310a: don't discard frame headers on stream output
+    
+    Fix a bug where all frame headers were being discarded, instead of being part of the
+    stream output, on MR97310A cameras.
+    
+    The frame headers contain information which may be useful in processing
+    the video output and therefore should be kept and not discarded.
+    
+    A corresponding patch to the decompression algorithm in
+    libv4lconvert/mr97310a.c corrects the change in frame offset.
+    
+    Signed-off-by: Theodore Kilgore &lt;kilgota@auburn.edu&gt;
+    Signed-off-by: Hans de Goede &lt;hdegoede@redhat.com&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@redhat.com&gt;
+
+diff --git a/drivers/media/video/gspca/mr97310a.c b/drivers/media/video/gspca/mr97310a.c
+index 5ec5ce6e3ed9..2a901a4a6f00 100644
+--- a/drivers/media/video/gspca/mr97310a.c
++++ b/drivers/media/video/gspca/mr97310a.c
+@@ -29,9 +29,7 @@ MODULE_LICENSE("GPL");
+ /* specific webcam descriptor */
+ struct sd {
+ 	struct gspca_dev gspca_dev;  /* !! must be the first item */
+-
+ 	u8 sof_read;
+-	u8 header_read;
+ };
+ 
+ /* V4L2 controls supported by the driver */
+@@ -285,7 +283,6 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
+ 			__u8 *data,                   /* isoc packet */
+ 			int len)                      /* iso packet length */
+ {
+-	struct sd *sd = (struct sd *) gspca_dev;
+ 	unsigned char *sof;
+ 
+ 	sof = pac_find_sof(gspca_dev, data, len);
+@@ -300,25 +297,12 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
+ 			n = 0;
+ 		frame = gspca_frame_add(gspca_dev, LAST_PACKET, frame,
+ 					data, n);
+-		sd-&gt;header_read = 0;
+-		gspca_frame_add(gspca_dev, FIRST_PACKET, frame, NULL, 0);
++		/* Start next frame. */
++		gspca_frame_add(gspca_dev, FIRST_PACKET, frame,
++			pac_sof_marker, sizeof pac_sof_marker);
+ 		len -= sof - data;
+ 		data = sof;
+ 	}
+-	if (sd-&gt;header_read &lt; 7) {
+-		int needed;
+-
+-		/* skip the rest of the header */
+-		needed = 7 - sd-&gt;header_read;
+-		if (len &lt;= needed) {
+-			sd-&gt;header_read += len;
+-			return;
+-		}
+-		data += needed;
+-		len -= needed;
+-		sd-&gt;header_read = 7;
+-	}
+-
+ 	gspca_frame_add(gspca_dev, INTER_PACKET, frame, data, len);
+ }
+ </pre>
+    <div class="pagination">
+        <a href='29_2.html'>&lt;&lt;Prev</a><a href='29.html'>1</a><a href='29_2.html'>2</a><span>[3]</span>
+    <div>
+</body>

@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_40.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><span>[41]</span><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_42.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit b5c7a12dc29ae0990d9e867749bdd717a3160325
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu Apr 6 21:13:33 2006 -0500
+
+    [SCSI] iscsi: rm kernel iscsi handles usage for session and connection
+    
+    from hare@suse.de and michaelc@cs.wisc.edu
+    
+    hw iscsi like qla4xxx does not allocate a host per session and
+    for userspace it is difficult to restart iscsid using the
+    "iscsi handles" for the session and connection, so this
+    patch just has the class or userspace allocate the id for
+    the session and connection.
+    
+    Note: this breaks userspace and requires users to upgrade to the newest
+    open-iscsi tools. Sorry about his but open-iscsi is still too new to
+    say we have a stable user-kernel api and we were not good nough
+    designers to know that other hw iscsi drivers and iscsid itself would
+    need such changes. Actually we sorta did but at the time we did not
+    have the HW available to us so we could only guess.
+    
+    Luckily, the only tools hooking into the class are the open-iscsi ones
+    or other tools like iscsitart hook into the open-iscsi engine from
+    userspace or prgroams like anaconda call our tools so they are not affected.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 2068b66822b7..6ecb4baa37e2 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -3254,7 +3254,7 @@ static struct iscsi_transport iscsi_tcp_transport;
+ 
+ static struct iscsi_cls_session *
+ iscsi_session_create(struct scsi_transport_template *scsit,
+-		     uint32_t initial_cmdsn, uint32_t *sid)
++		     uint32_t initial_cmdsn, uint32_t *hostno)
+ {
+ 	struct Scsi_Host *shost;
+ 	struct iscsi_session *session;
+@@ -3274,7 +3274,8 @@ iscsi_session_create(struct scsi_transport_template *scsit,
+ 	session-&gt;exp_cmdsn = initial_cmdsn + 1;
+ 	session-&gt;max_cmdsn = initial_cmdsn + 1;
+ 	session-&gt;max_r2t = 1;
+-	*sid = shost-&gt;host_no;
++
++	*hostno = shost-&gt;host_no;
+ 
+ 	/* initialize SCSI PDU commands pool */
+ 	if (iscsi_pool_init(&amp;session-&gt;cmdpool, session-&gt;cmds_max,
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 2730d507e585..10ff0f0210ba 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -56,6 +56,8 @@ struct iscsi_internal {
+ 	struct class_device_attribute *session_attrs[ISCSI_SESSION_ATTRS + 1];
+ };
+ 
++static int iscsi_session_nr;	/* sysfs session id for next new session */
++
+ /*
+  * list of registered transports and lock that must
+  * be held while accessing list. The iscsi_transport_lock must
+@@ -165,14 +167,23 @@ static DEFINE_SPINLOCK(sesslock);
+ static LIST_HEAD(connlist);
+ static DEFINE_SPINLOCK(connlock);
+ 
+-static struct iscsi_cls_session *iscsi_session_lookup(uint64_t handle)
++static uint32_t iscsi_conn_get_sid(struct iscsi_cls_conn *conn)
++{
++	struct iscsi_cls_session *sess = iscsi_dev_to_session(conn-&gt;dev.parent);
++	return sess-&gt;sid;
++}
++
++/*
++ * Returns the matching session to a given sid
++ */
++static struct iscsi_cls_session *iscsi_session_lookup(uint32_t sid)
+ {
+ 	unsigned long flags;
+ 	struct iscsi_cls_session *sess;
+ 
+ 	spin_lock_irqsave(&amp;sesslock, flags);
+ 	list_for_each_entry(sess, &amp;sesslist, sess_list) {
+-		if (sess == iscsi_ptr(handle)) {
++		if (sess-&gt;sid == sid) {
+ 			spin_unlock_irqrestore(&amp;sesslock, flags);
+ 			return sess;
+ 		}
+@@ -181,14 +192,17 @@ static struct iscsi_cls_session *iscsi_session_lookup(uint64_t handle)
+ 	return NULL;
+ }
+ 
+-static struct iscsi_cls_conn *iscsi_conn_lookup(uint64_t handle)
++/*
++ * Returns the matching connection to a given sid / cid tuple
++ */
++static struct iscsi_cls_conn *iscsi_conn_lookup(uint32_t sid, uint32_t cid)
+ {
+ 	unsigned long flags;
+ 	struct iscsi_cls_conn *conn;
+ 
+ 	spin_lock_irqsave(&amp;connlock, flags);
+ 	list_for_each_entry(conn, &amp;connlist, conn_list) {
+-		if (conn == iscsi_ptr(handle)) {
++		if ((conn-&gt;cid == cid) &amp;&amp; (iscsi_conn_get_sid(conn) == sid)) {
+ 			spin_unlock_irqrestore(&amp;connlock, flags);
+ 			return conn;
+ 		}
+@@ -223,7 +237,7 @@ static int iscsi_is_session_dev(const struct device *dev)
+  * @shost: scsi host
+  * @transport: iscsi transport
+  *
+- * This can be called from a LLD or iscsi_transport
++ * This can be called from a LLD or iscsi_transport.
+  **/
+ struct iscsi_cls_session *
+ iscsi_create_session(struct Scsi_Host *shost, struct iscsi_transport *transport)
+@@ -234,14 +248,20 @@ iscsi_create_session(struct Scsi_Host *shost, struct iscsi_transport *transport)
+ 	if (!try_module_get(transport-&gt;owner))
+ 		return NULL;
+ 
+-	session = kzalloc(sizeof(*session), GFP_KERNEL);
++	session = kzalloc(sizeof(*session) + transport-&gt;sessiondata_size,
++			  GFP_KERNEL);
+ 	if (!session)
+ 		goto module_put;
+ 	session-&gt;transport = transport;
+ 
++	if (transport-&gt;sessiondata_size)
++		session-&gt;dd_data = &amp;session[1];
++
+ 	/* this is released in the dev's release function */
+ 	scsi_host_get(shost);
+-	snprintf(session-&gt;dev.bus_id, BUS_ID_SIZE, "session%u", shost-&gt;host_no);
++	session-&gt;sid = iscsi_session_nr++;
++	snprintf(session-&gt;dev.bus_id, BUS_ID_SIZE, "session%u",
++		 session-&gt;sid);
+ 	session-&gt;dev.parent = &amp;shost-&gt;shost_gendev;
+ 	session-&gt;dev.release = iscsi_session_release;
+ 	err = device_register(&amp;session-&gt;dev);
+@@ -301,12 +321,16 @@ static int iscsi_is_conn_dev(const struct device *dev)
+  * This can be called from a LLD or iscsi_transport. The connection
+  * is child of the session so cid must be unique for all connections
+  * on the session.
++ *
++ * Since we do not support MCS, cid will normally be zero. In some cases
++ * for software iscsi we could be trying to preallocate a connection struct
++ * in which case there could be two connection structs and cid would be
++ * non-zero.
+  **/
+ struct iscsi_cls_conn *
+ iscsi_create_conn(struct iscsi_cls_session *session, uint32_t cid)
+ {
+ 	struct iscsi_transport *transport = session-&gt;transport;
+-	struct Scsi_Host *shost = iscsi_session_to_shost(session);
+ 	struct iscsi_cls_conn *conn;
+ 	int err;
+ 
+@@ -319,12 +343,14 @@ iscsi_create_conn(struct iscsi_cls_session *session, uint32_t cid)
+ 
+ 	INIT_LIST_HEAD(&amp;conn-&gt;conn_list);
+ 	conn-&gt;transport = transport;
++	conn-&gt;cid = cid;
+ 
+ 	/* this is released in the dev's release function */
+ 	if (!get_device(&amp;session-&gt;dev))
+ 		goto free_conn;
++
+ 	snprintf(conn-&gt;dev.bus_id, BUS_ID_SIZE, "connection%d:%u",
+-		 shost-&gt;host_no, cid);
++		 session-&gt;sid, cid);
+ 	conn-&gt;dev.parent = &amp;session-&gt;dev;
+ 	conn-&gt;dev.release = iscsi_conn_release;
+ 	err = device_register(&amp;conn-&gt;dev);
+@@ -607,7 +633,8 @@ int iscsi_recv_pdu(struct iscsi_cls_conn *conn, struct iscsi_hdr *hdr,
+ 	ev-&gt;type = ISCSI_KEVENT_RECV_PDU;
+ 	if (atomic_read(&amp;conn-&gt;z_pdu-&gt;allocated) &gt;= conn-&gt;z_pdu-&gt;hiwat)
+ 		ev-&gt;iferror = -ENOMEM;
+-	ev-&gt;r.recv_req.conn_handle = iscsi_handle(conn);
++	ev-&gt;r.recv_req.cid = conn-&gt;cid;
++	ev-&gt;r.recv_req.sid = iscsi_conn_get_sid(conn);
+ 	pdu = (char*)ev + sizeof(*ev);
+ 	memcpy(pdu, hdr, sizeof(struct iscsi_hdr));
+ 	memcpy(pdu + sizeof(struct iscsi_hdr), data, data_size);
+@@ -639,7 +666,8 @@ void iscsi_conn_error(struct iscsi_cls_conn *conn, enum iscsi_err error)
+ 	if (atomic_read(&amp;conn-&gt;z_error-&gt;allocated) &gt;= conn-&gt;z_error-&gt;hiwat)
+ 		ev-&gt;iferror = -ENOMEM;
+ 	ev-&gt;r.connerror.error = error;
+-	ev-&gt;r.connerror.conn_handle = iscsi_handle(conn);
++	ev-&gt;r.connerror.cid = conn-&gt;cid;
++	ev-&gt;r.connerror.sid = iscsi_conn_get_sid(conn);
+ 
+ 	iscsi_unicast_skb(conn-&gt;z_error, skb);
+ 
+@@ -689,7 +717,7 @@ iscsi_if_get_stats(struct iscsi_transport *transport, struct nlmsghdr *nlh)
+ 			      ISCSI_STATS_CUSTOM_MAX);
+ 	int err = 0;
+ 
+-	conn = iscsi_conn_lookup(ev-&gt;u.get_stats.conn_handle);
++	conn = iscsi_conn_lookup(ev-&gt;u.get_stats.sid, ev-&gt;u.get_stats.cid);
+ 	if (!conn)
+ 		return -EEXIST;
+ 
+@@ -713,8 +741,10 @@ iscsi_if_get_stats(struct iscsi_transport *transport, struct nlmsghdr *nlh)
+ 		evstat-&gt;type = nlh-&gt;nlmsg_type;
+ 		if (atomic_read(&amp;conn-&gt;z_pdu-&gt;allocated) &gt;= conn-&gt;z_pdu-&gt;hiwat)
+ 			evstat-&gt;iferror = -ENOMEM;
+-		evstat-&gt;u.get_stats.conn_handle =
+-			ev-&gt;u.get_stats.conn_handle;
++		evstat-&gt;u.get_stats.cid =
++			ev-&gt;u.get_stats.cid;
++		evstat-&gt;u.get_stats.sid =
++			ev-&gt;u.get_stats.sid;
+ 		stats = (struct iscsi_stats *)
+ 			((char*)evstat + sizeof(*evstat));
+ 		memset(stats, 0, sizeof(*stats));
+@@ -740,16 +770,16 @@ iscsi_if_create_session(struct iscsi_internal *priv, struct iscsi_uevent *ev)
+ {
+ 	struct iscsi_transport *transport = priv-&gt;iscsi_transport;
+ 	struct iscsi_cls_session *session;
+-	uint32_t sid;
++	uint32_t hostno;
+ 
+ 	session = transport-&gt;create_session(&amp;priv-&gt;t,
+ 					    ev-&gt;u.c_session.initial_cmdsn,
+-					    &amp;sid);
++					    &amp;hostno);
+ 	if (!session)
+ 		return -ENOMEM;
+ 
+-	ev-&gt;r.c_session_ret.session_handle = iscsi_handle(session);
+-	ev-&gt;r.c_session_ret.sid = sid;
++	ev-&gt;r.c_session_ret.host_no = hostno;
++	ev-&gt;r.c_session_ret.sid = session-&gt;sid;
+ 	return 0;
+ }
+ 
+@@ -760,13 +790,20 @@ iscsi_if_create_conn(struct iscsi_transport *transport, struct iscsi_uevent *ev)
+ 	struct iscsi_cls_session *session;
+ 	unsigned long flags;
+ 
+-	session = iscsi_session_lookup(ev-&gt;u.c_conn.session_handle);
+-	if (!session)
++	session = iscsi_session_lookup(ev-&gt;u.c_conn.sid);
++	if (!session) {
++		printk(KERN_ERR "iscsi: invalid session %d\n",
++		       ev-&gt;u.c_conn.sid);
+ 		return -EINVAL;
++	}
+ 
+ 	conn = transport-&gt;create_conn(session, ev-&gt;u.c_conn.cid);
+-	if (!conn)
++	if (!conn) {
++		printk(KERN_ERR "iscsi: couldn't create a new "
++			   "connection for session %d\n",
++			   session-&gt;sid);
+ 		return -ENOMEM;
++	}
+ 
+ 	conn-&gt;z_pdu = mempool_zone_init(Z_MAX_PDU,
+ 			NLMSG_SPACE(sizeof(struct iscsi_uevent) +
+@@ -788,7 +825,8 @@ iscsi_if_create_conn(struct iscsi_transport *transport, struct iscsi_uevent *ev)
+ 		goto free_pdu_pool;
+ 	}
+ 
+-	ev-&gt;r.handle = iscsi_handle(conn);
++	ev-&gt;r.c_conn_ret.sid = session-&gt;sid;
++	ev-&gt;r.c_conn_ret.cid = conn-&gt;cid;
+ 
+ 	spin_lock_irqsave(&amp;connlock, flags);
+ 	list_add(&amp;conn-&gt;conn_list, &amp;connlist);
+@@ -812,7 +850,7 @@ iscsi_if_destroy_conn(struct iscsi_transport *transport, struct iscsi_uevent *ev
+ 	struct iscsi_cls_conn *conn;
+ 	struct mempool_zone *z_error, *z_pdu;
+ 
+-	conn = iscsi_conn_lookup(ev-&gt;u.d_conn.conn_handle);
++	conn = iscsi_conn_lookup(ev-&gt;u.d_conn.sid, ev-&gt;u.d_conn.cid);
+ 	if (!conn)
+ 		return -EINVAL;
+ 	spin_lock_irqsave(&amp;connlock, flags);
+@@ -855,7 +893,7 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 		err = iscsi_if_create_session(priv, ev);
+ 		break;
+ 	case ISCSI_UEVENT_DESTROY_SESSION:
+-		session = iscsi_session_lookup(ev-&gt;u.d_session.session_handle);
++		session = iscsi_session_lookup(ev-&gt;u.d_session.sid);
+ 		if (session)
+ 			transport-&gt;destroy_session(session);
+ 		else
+@@ -868,8 +906,8 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 		err = iscsi_if_destroy_conn(transport, ev);
+ 		break;
+ 	case ISCSI_UEVENT_BIND_CONN:
+-		session = iscsi_session_lookup(ev-&gt;u.b_conn.session_handle);
+-		conn = iscsi_conn_lookup(ev-&gt;u.b_conn.conn_handle);
++		session = iscsi_session_lookup(ev-&gt;u.b_conn.sid);
++		conn = iscsi_conn_lookup(ev-&gt;u.b_conn.sid, ev-&gt;u.b_conn.cid);
+ 
+ 		if (session &amp;&amp; conn)
+ 			ev-&gt;r.retcode =	transport-&gt;bind_conn(session, conn,
+@@ -879,7 +917,7 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 			err = -EINVAL;
+ 		break;
+ 	case ISCSI_UEVENT_SET_PARAM:
+-		conn = iscsi_conn_lookup(ev-&gt;u.set_param.conn_handle);
++		conn = iscsi_conn_lookup(ev-&gt;u.set_param.sid, ev-&gt;u.set_param.cid);
+ 		if (conn)
+ 			ev-&gt;r.retcode =	transport-&gt;set_param(conn,
+ 				ev-&gt;u.set_param.param, ev-&gt;u.set_param.value);
+@@ -887,7 +925,7 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 			err = -EINVAL;
+ 		break;
+ 	case ISCSI_UEVENT_START_CONN:
+-		conn = iscsi_conn_lookup(ev-&gt;u.start_conn.conn_handle);
++		conn = iscsi_conn_lookup(ev-&gt;u.start_conn.sid, ev-&gt;u.start_conn.cid);
+ 		if (conn)
+ 			ev-&gt;r.retcode = transport-&gt;start_conn(conn);
+ 		else
+@@ -895,14 +933,14 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 
+ 		break;
+ 	case ISCSI_UEVENT_STOP_CONN:
+-		conn = iscsi_conn_lookup(ev-&gt;u.stop_conn.conn_handle);
++		conn = iscsi_conn_lookup(ev-&gt;u.stop_conn.sid, ev-&gt;u.stop_conn.cid);
+ 		if (conn)
+ 			transport-&gt;stop_conn(conn, ev-&gt;u.stop_conn.flag);
+ 		else
+ 			err = -EINVAL;
+ 		break;
+ 	case ISCSI_UEVENT_SEND_PDU:
+-		conn = iscsi_conn_lookup(ev-&gt;u.send_pdu.conn_handle);
++		conn = iscsi_conn_lookup(ev-&gt;u.send_pdu.sid, ev-&gt;u.send_pdu.cid);
+ 		if (conn)
+ 			ev-&gt;r.retcode =	transport-&gt;send_pdu(conn,
+ 				(struct iscsi_hdr*)((char*)ev + sizeof(*ev)),
+@@ -923,9 +961,11 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 	return err;
+ }
+ 
+-/* Get message from skb (based on rtnetlink_rcv_skb).  Each message is
+- * processed by iscsi_if_recv_msg.  Malformed skbs with wrong length are
+- * or invalid creds discarded silently.  */
++/*
++ * Get message from skb (based on rtnetlink_rcv_skb).  Each message is
++ * processed by iscsi_if_recv_msg.  Malformed skbs with wrong lengths or
++ * invalid creds are discarded silently.
++ */
+ static void
+ iscsi_if_rx(struct sock *sk, int len)
+ {
+diff --git a/include/scsi/iscsi_if.h b/include/scsi/iscsi_if.h
+index e5618b90996e..933a91b1474e 100644
+--- a/include/scsi/iscsi_if.h
++++ b/include/scsi/iscsi_if.h
+@@ -60,59 +60,68 @@ struct iscsi_uevent {
+ 			uint32_t	initial_cmdsn;
+ 		} c_session;
+ 		struct msg_destroy_session {
+-			uint64_t	session_handle;
+ 			uint32_t	sid;
+ 		} d_session;
+ 		struct msg_create_conn {
+-			uint64_t	session_handle;
+-			uint32_t	cid;
+ 			uint32_t	sid;
++			uint32_t	cid;
+ 		} c_conn;
+ 		struct msg_bind_conn {
+-			uint64_t	session_handle;
+-			uint64_t	conn_handle;
++			uint32_t	sid;
++			uint32_t	cid;
+ 			uint32_t	transport_fd;
+ 			uint32_t	is_leading;
+ 		} b_conn;
+ 		struct msg_destroy_conn {
+-			uint64_t	conn_handle;
++			uint32_t	sid;
+ 			uint32_t	cid;
+ 		} d_conn;
+ 		struct msg_send_pdu {
++			uint32_t	sid;
++			uint32_t	cid;
+ 			uint32_t	hdr_size;
+ 			uint32_t	data_size;
+-			uint64_t	conn_handle;
+ 		} send_pdu;
+ 		struct msg_set_param {
+-			uint64_t	conn_handle;
++			uint32_t	sid;
++			uint32_t	cid;
+ 			uint32_t	param; /* enum iscsi_param */
+ 			uint32_t	value;
+ 		} set_param;
+ 		struct msg_start_conn {
+-			uint64_t	conn_handle;
++			uint32_t	sid;
++			uint32_t	cid;
+ 		} start_conn;
+ 		struct msg_stop_conn {
++			uint32_t	sid;
++			uint32_t	cid;
+ 			uint64_t	conn_handle;
+ 			uint32_t	flag;
+ 		} stop_conn;
+ 		struct msg_get_stats {
+-			uint64_t	conn_handle;
++			uint32_t	sid;
++			uint32_t	cid;
+ 		} get_stats;
+ 	} u;
+ 	union {
+ 		/* messages k -&gt; u */
+-		uint64_t		handle;
+ 		int			retcode;
+ 		struct msg_create_session_ret {
+-			uint64_t	session_handle;
+ 			uint32_t	sid;
++			uint32_t	host_no;
+ 		} c_session_ret;
++		struct msg_create_conn_ret {
++			uint32_t	sid;
++			uint32_t	cid;
++		} c_conn_ret;
+ 		struct msg_recv_req {
++			uint32_t	sid;
++			uint32_t	cid;
+ 			uint64_t	recv_handle;
+-			uint64_t	conn_handle;
+ 		} recv_req;
+ 		struct msg_conn_error {
+-			uint64_t	conn_handle;
++			uint32_t	sid;
++			uint32_t	cid;
+ 			uint32_t	error; /* enum iscsi_err */
+ 		} connerror;
+ 	} r;
+diff --git a/include/scsi/scsi_transport_iscsi.h b/include/scsi/scsi_transport_iscsi.h
+index b41cf077e54b..631463cd4892 100644
+--- a/include/scsi/scsi_transport_iscsi.h
++++ b/include/scsi/scsi_transport_iscsi.h
+@@ -60,11 +60,13 @@ struct iscsi_transport {
+ 	int ihostdata_size;
+ 	/* LLD connection data size */
+ 	int conndata_size;
++	/* LLD session data size */
++	int sessiondata_size;
+ 	int max_lun;
+ 	unsigned int max_conn;
+ 	unsigned int max_cmd_len;
+ 	struct iscsi_cls_session *(*create_session)
+-		(struct scsi_transport_template *t, uint32_t sn, uint32_t *sid);
++		(struct scsi_transport_template *t, uint32_t sn, uint32_t *hn);
+ 	void (*destroy_session) (struct iscsi_cls_session *session);
+ 	struct iscsi_cls_conn *(*create_conn) (struct iscsi_cls_session *sess,
+ 				uint32_t cid);
+@@ -104,6 +106,7 @@ struct iscsi_cls_conn {
+ 	struct list_head conn_list;	/* item in connlist */
+ 	void *dd_data;			/* LLD private data */
+ 	struct iscsi_transport *transport;
++	uint32_t cid;			/* connection id */
+ 	int active;			/* must be accessed with the connlock */
+ 	struct device dev;		/* sysfs transport/container device */
+ 	struct mempool_zone *z_error;
+@@ -117,6 +120,8 @@ struct iscsi_cls_conn {
+ struct iscsi_cls_session {
+ 	struct list_head sess_list;		/* item in session_list */
+ 	struct iscsi_transport *transport;
++	int sid;				/* session id */
++	void *dd_data;				/* LLD private data */
+ 	struct device dev;	/* sysfs transport/container device */
+ };
+ </pre><hr><pre>commit 18c49b8cd69c360735df2cc6eeeb2593c01a81e8
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Mar 22 16:04:38 2006 -0600
+
+    [SCSI] fix sg leak when scsi_execute_async fails
+    
+    Doug found a bug where if scsi_execute_async fails, we are leaking
+    sg resources. scsi_do_req never failed so we did not have to handle
+    that case before.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/sg.c b/drivers/scsi/sg.c
+index fcf9243dfa7d..bfa86b378fb9 100644
+--- a/drivers/scsi/sg.c
++++ b/drivers/scsi/sg.c
+@@ -748,6 +748,7 @@ sg_common_write(Sg_fd * sfp, Sg_request * srp,
+ 		/*
+ 		 * most likely out of mem, but could also be a bad map
+ 		 */
++		sg_finish_rem_req(srp);
+ 		return -ENOMEM;
+ 	} else
+ 		return 0;</pre><hr><pre>commit 28832e83379afd0b0e83b78ac317290c79ebd496
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Mar 8 11:19:51 2006 +0100
+
+    [PATCH] update max_sectors documentation
+    
+    The max_sectors has been split into max_hw_sectors and max_sectors for some
+    time. A patch to have blk_queue_max_sectors enforce this was sent by
+    me and it broke IDE. This patch updates the documentation.
+    
+    Signed-off-by: Jens Axboe &lt;axboe@suse.de&gt;
+
+diff --git a/Documentation/block/biodoc.txt b/Documentation/block/biodoc.txt
+index 8e63831971d5..f989a9e839b4 100644
+--- a/Documentation/block/biodoc.txt
++++ b/Documentation/block/biodoc.txt
+@@ -132,8 +132,18 @@ Some new queue property settings:
+ 		limit. No highmem default.
+ 
+ 	blk_queue_max_sectors(q, max_sectors)
+-		Maximum size request you can handle in units of 512 byte
+-		sectors. 255 default.
++		Sets two variables that limit the size of the request.
++
++		- The request queue's max_sectors, which is a soft size in
++		in units of 512 byte sectors, and could be dynamically varied
++		by the core kernel.
++
++		- The request queue's max_hw_sectors, which is a hard limit
++		and reflects the maximum size request a driver can handle
++		in units of 512 byte sectors.
++
++		The default for both max_sectors and max_hw_sectors is
++		255. The upper limit of max_sectors is 1024.
+ 
+ 	blk_queue_max_phys_segments(q, max_segments)
+ 		Maximum physical segments you can handle in a request. 128</pre><hr><pre>commit ba3af0aff042caa1f41b5f7164cab37c717b8811
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Feb 22 02:11:59 2006 -0600
+
+    [SCSI] don't call ips_eh_reset in ips_queue to avoid deadlock
+    
+    When the locking was changed in the eh code ips_eh_reset was changed
+    so that it was a wraper around __ips_eh_reset and all ips_eh_reset
+    does is grab the host lock and then calls __ips_eh_reset.
+    
+    In the queuecommand, ips_queue is called with the host_lock held so if
+    it calls ips_eh_reset we will have a problem. This patch just has
+    ips_queue call __ips_eh_reset.
+    
+    Patch is only compile tested. I do not have the HW.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: Hammer, Jack &lt;Jack_Hammer@adaptec.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/ips.c b/drivers/scsi/ips.c
+index 86c546164da9..481708d527ae 100644
+--- a/drivers/scsi/ips.c
++++ b/drivers/scsi/ips.c
+@@ -1146,7 +1146,7 @@ ips_queue(Scsi_Cmnd * SC, void (*done) (Scsi_Cmnd *))
+ 				return (0);
+ 			}
+ 			ha-&gt;ioctl_reset = 1;	/* This reset request is from an IOCTL */
+-			ips_eh_reset(SC);
++			__ips_eh_reset(SC);
+ 			SC-&gt;result = DID_OK &lt;&lt; 16;
+ 			SC-&gt;scsi_done(SC);
+ 			return (0);</pre><hr><pre>commit b5b81016538cf84a10c80438b7aa750dd375ba93
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Feb 1 21:07:14 2006 -0600
+
+    [SCSI] iscsi update: rm unused sessions list
+    
+    rm unused sessions list.
+    
+    This patch is last becuase I was not sure if this patchset was
+    going to be applied over the kmalloc2kzalloc one by JesS. If it
+    is then this patch will not apply and can be dropped for now. I will
+    resend later when things setttle down.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 55860d26f999..71e54a64adca 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -38,10 +38,6 @@ struct iscsi_internal {
+ 	struct scsi_transport_template t;
+ 	struct iscsi_transport *iscsi_transport;
+ 	struct list_head list;
+-	/*
+-	 * List of sessions for this transport
+-	 */
+-	struct list_head sessions;
+ 	/*
+ 	 * based on transport capabilities, at register time we set these
+ 	 * bits to tell the transport class it wants attributes displayed
+@@ -1126,7 +1122,6 @@ iscsi_register_transport(struct iscsi_transport *tt)
+ 		return NULL;
+ 	memset(priv, 0, sizeof(*priv));
+ 	INIT_LIST_HEAD(&amp;priv-&gt;list);
+-	INIT_LIST_HEAD(&amp;priv-&gt;sessions);
+ 	priv-&gt;iscsi_transport = tt;
+ 
+ 	priv-&gt;cdev.class = &amp;iscsi_transport_class;</pre><hr><pre>commit 28e5554df63085be3b8bd2aee6ddbc479f0d136e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Feb 1 21:07:11 2006 -0600
+
+    [SCSI] iscsi update: use gfp_t
+    
+    Use gfp_t. I accidentally removed this in our last update.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 7fb69183c72d..55860d26f999 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -489,7 +489,7 @@ static inline struct list_head *skb_to_lh(struct sk_buff *skb)
+ }
+ 
+ static void*
+-mempool_zone_alloc_skb(unsigned int gfp_mask, void *pool_data)
++mempool_zone_alloc_skb(gfp_t gfp_mask, void *pool_data)
+ {
+ 	struct mempool_zone *zone = pool_data;
+ </pre><hr><pre>commit b36ae07cb7757bd3eabd13c79844083dccac2f77
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Feb 1 21:07:09 2006 -0600
+
+    [SCSI] iscsi update: fix mgmt pool err path release
+    
+    &gt;From ogerlitz@voltaire.com:
+    
+    mgmtpool shoild be frees in immdata_alloc_fail label.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 579eecfd186e..ff79e68b347c 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -3316,8 +3316,8 @@ iscsi_session_create(struct scsi_transport_template *scsit,
+ r2tpool_alloc_fail:
+ 	for (cmd_i = 0; cmd_i &lt; session-&gt;mgmtpool_max; cmd_i++)
+ 		kfree(session-&gt;mgmt_cmds[cmd_i]-&gt;data);
+-	iscsi_pool_free(&amp;session-&gt;mgmtpool, (void**)session-&gt;mgmt_cmds);
+ immdata_alloc_fail:
++	iscsi_pool_free(&amp;session-&gt;mgmtpool, (void**)session-&gt;mgmt_cmds);
+ mgmtpool_alloc_fail:
+ 	iscsi_pool_free(&amp;session-&gt;cmdpool, (void**)session-&gt;cmds);
+ cmdpool_alloc_fail:</pre><hr><pre>commit 351f739e68e97a0316136a5bda145b952d99a989
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Feb 1 21:07:06 2006 -0600
+
+    [SCSI] iscsi update: set correct state at creation time
+    
+    &gt;From erezz@voltaire.com:
+    
+    We are still in ISCSI_STATE_FREE state at create time. The addition
+    of the first connection puts us in ISCSI_STATE_LOGGED_IN.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 0cd78b1d1aaa..579eecfd186e 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -3267,7 +3267,7 @@ iscsi_session_create(struct scsi_transport_template *scsit,
+ 	session = iscsi_hostdata(shost-&gt;hostdata);
+ 	memset(session, 0, sizeof(struct iscsi_session));
+ 	session-&gt;host = shost;
+-	session-&gt;state = ISCSI_STATE_LOGGED_IN;
++	session-&gt;state = ISCSI_STATE_FREE;
+ 	session-&gt;mgmtpool_max = ISCSI_MGMT_CMDS_MAX;
+ 	session-&gt;cmds_max = ISCSI_XMIT_CMDS_MAX;
+ 	session-&gt;cmdsn = initial_cmdsn;</pre><hr><pre>commit 1fd459e367657f595ddf192b9a46298e18d4fc13
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Feb 1 21:07:03 2006 -0600
+
+    [SCSI] iscsi update: rm conn lock
+    
+    &gt;From erezz@voltaire.com:
+    
+    rm conn-&gt;lock since it is not used anymore. The dataqueue is protected
+    by the session lock and xmitmutex.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index d07d309ac026..0cd78b1d1aaa 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -244,12 +244,10 @@ iscsi_ctask_cleanup(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
+ 	if (sc-&gt;sc_data_direction == DMA_TO_DEVICE) {
+ 		struct iscsi_data_task *dtask, *n;
+ 		/* WRITE: cleanup Data-Out's if any */
+-		spin_lock(&amp;conn-&gt;lock);
+ 		list_for_each_entry_safe(dtask, n, &amp;ctask-&gt;dataqueue, item) {
+ 			list_del(&amp;dtask-&gt;item);
+ 			mempool_free(dtask, ctask-&gt;datapool);
+ 		}
+-		spin_unlock(&amp;conn-&gt;lock);
+ 	}
+ 	ctask-&gt;xmstate = XMSTATE_IDLE;
+ 	ctask-&gt;r2t = NULL;
+@@ -2453,8 +2451,6 @@ iscsi_conn_create(struct iscsi_cls_session *cls_session, uint32_t conn_idx)
+ 	conn-&gt;data_size = DEFAULT_MAX_RECV_DATA_SEGMENT_LENGTH;
+ 	conn-&gt;max_recv_dlength = DEFAULT_MAX_RECV_DATA_SEGMENT_LENGTH;
+ 
+-	spin_lock_init(&amp;conn-&gt;lock);
+-
+ 	/* initialize general xmit PDU commands queue */
+ 	conn-&gt;xmitqueue = kfifo_alloc(session-&gt;cmds_max * sizeof(void*),
+ 					GFP_KERNEL, NULL);
+diff --git a/drivers/scsi/iscsi_tcp.h b/drivers/scsi/iscsi_tcp.h
+index 6766b817db2d..ba26741ac154 100644
+--- a/drivers/scsi/iscsi_tcp.h
++++ b/drivers/scsi/iscsi_tcp.h
+@@ -146,7 +146,6 @@ struct iscsi_conn {
+ 	struct iscsi_mgmt_task	*login_mtask;	/* mtask used for login/text */
+ 	struct iscsi_mgmt_task	*mtask;		/* xmit mtask in progress */
+ 	struct iscsi_cmd_task	*ctask;		/* xmit ctask in progress */
+-	spinlock_t		lock;		/* FIXME: to be removed */
+ 
+ 	/* old values for socket callbacks */
+ 	void			(*old_data_ready)(struct sock *, int);</pre><hr><pre>commit ee7f8e405342722e42c15fe8e841a679f8951eea
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Feb 1 21:07:01 2006 -0600
+
+    [SCSI] iscsi update: set deamon pid earlier
+    
+    &gt;From michaelc@cs.wisc.edu:
+    
+    If the transport lookup fails we set the daemon pid too late.
+    This can cause us deadlock since the netlink code will think we
+    meant to call back into our iscsi_if_rx function.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 448fd78777f9..7fb69183c72d 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -846,9 +846,6 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 	struct iscsi_cls_session *session;
+ 	struct iscsi_cls_conn *conn;
+ 
+-	if (NETLINK_CREDS(skb)-&gt;uid)
+-		return -EPERM;
+-
+ 	priv = iscsi_if_transport_lookup(iscsi_ptr(ev-&gt;transport_handle));
+ 	if (!priv)
+ 		return -EINVAL;
+@@ -857,8 +854,6 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 	if (!try_module_get(transport-&gt;owner))
+ 		return -EINVAL;
+ 
+-	daemon_pid = NETLINK_CREDS(skb)-&gt;pid;
+-
+ 	switch (nlh-&gt;nlmsg_type) {
+ 	case ISCSI_UEVENT_CREATE_SESSION:
+ 		err = iscsi_if_create_session(priv, ev);
+@@ -934,7 +929,7 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 
+ /* Get message from skb (based on rtnetlink_rcv_skb).  Each message is
+  * processed by iscsi_if_recv_msg.  Malformed skbs with wrong length are
+- * discarded silently.  */
++ * or invalid creds discarded silently.  */
+ static void
+ iscsi_if_rx(struct sock *sk, int len)
+ {
+@@ -942,6 +937,12 @@ iscsi_if_rx(struct sock *sk, int len)
+ 
+ 	mutex_lock(&amp;rx_queue_mutex);
+ 	while ((skb = skb_dequeue(&amp;sk-&gt;sk_receive_queue)) != NULL) {
++		if (NETLINK_CREDS(skb)-&gt;uid) {
++			skb_pull(skb, skb-&gt;len);
++			goto free_skb;
++		}
++		daemon_pid = NETLINK_CREDS(skb)-&gt;pid;
++
+ 		while (skb-&gt;len &gt;= NLMSG_SPACE(0)) {
+ 			int err;
+ 			uint32_t rlen;
+@@ -953,10 +954,12 @@ iscsi_if_rx(struct sock *sk, int len)
+ 			    skb-&gt;len &lt; nlh-&gt;nlmsg_len) {
+ 				break;
+ 			}
++
+ 			ev = NLMSG_DATA(nlh);
+ 			rlen = NLMSG_ALIGN(nlh-&gt;nlmsg_len);
+ 			if (rlen &gt; skb-&gt;len)
+ 				rlen = skb-&gt;len;
++
+ 			err = iscsi_if_recv_msg(skb, nlh);
+ 			if (err) {
+ 				ev-&gt;type = ISCSI_KEVENT_IF_ERROR;
+@@ -980,6 +983,7 @@ iscsi_if_rx(struct sock *sk, int len)
+ 			} while (err &lt; 0 &amp;&amp; err != -ECONNREFUSED);
+ 			skb_pull(skb, rlen);
+ 		}
++free_skb:
+ 		kfree_skb(skb);
+ 	}
+ 	mutex_unlock(&amp;rx_queue_mutex);</pre>
+    <div class="pagination">
+        <a href='5_40.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><span>[41]</span><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_42.html'>Next&gt;&gt;</a>
+    <div>
+</body>

@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Renmin University of China</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Renmin University of China</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit a5133fe87ed827ce94084eecb7830a6d451ef55c
+Author: Xiaohui Zhang &lt;xiaohuizhang@ruc.edu.cn&gt;
+Date:   Tue Jun 7 23:30:20 2022 +0800
+
+    Bluetooth: use memset avoid memory leaks
+    
+    Similar to the handling of l2cap_ecred_connect in commit d3715b2333e9
+    ("Bluetooth: use memset avoid memory leaks"), we thought a patch
+    might be needed here as well.
+    
+    Use memset to initialize structs to prevent memory leaks
+    in l2cap_le_connect
+    
+    Signed-off-by: Xiaohui Zhang &lt;xiaohuizhang@ruc.edu.cn&gt;
+    Signed-off-by: Marcel Holtmann &lt;marcel@holtmann.org&gt;
+
+diff --git a/net/bluetooth/l2cap_core.c b/net/bluetooth/l2cap_core.c
+index ae78490ecd3d..09ecaf556de5 100644
+--- a/net/bluetooth/l2cap_core.c
++++ b/net/bluetooth/l2cap_core.c
+@@ -1369,6 +1369,7 @@ static void l2cap_le_connect(struct l2cap_chan *chan)
+ 
+ 	l2cap_le_flowctl_init(chan, 0);
+ 
++	memset(&amp;req, 0, sizeof(req));
+ 	req.psm     = chan-&gt;psm;
+ 	req.scid    = cpu_to_le16(chan-&gt;scid);
+ 	req.mtu     = cpu_to_le16(chan-&gt;imtu);</pre><hr><pre>commit 23c46bab922b856b585a5f49413f74a9a7b2400d
+Author: Xiaohui Zhang &lt;xiaohuizhang@ruc.edu.cn&gt;
+Date:   Tue Jun 7 23:03:44 2022 +0800
+
+    power: supply: cros_peripheral: Use struct_size() helper in kzalloc()
+    
+    Similar to the handling of cros_usbpd_charger_ec_command in commit 441d38c60fbe
+    ("power: supply: cros_usbpd: Use struct_size() helper in kzalloc()"),
+    we thought a patch might be needed here as well.
+    
+    Make use of the struct_size() helper instead of an open-coded version,
+    in order to avoid any potential type mistakes or integer overflows that,
+    in the worst scenario, could lead to heap overflows.
+    
+    Signed-off-by: Xiaohui Zhang &lt;xiaohuizhang@ruc.edu.cn&gt;
+    Signed-off-by: Sebastian Reichel &lt;sebastian.reichel@collabora.com&gt;
+
+diff --git a/drivers/power/supply/cros_peripheral_charger.c b/drivers/power/supply/cros_peripheral_charger.c
+index 9fe6d826148d..1379afd9698d 100644
+--- a/drivers/power/supply/cros_peripheral_charger.c
++++ b/drivers/power/supply/cros_peripheral_charger.c
+@@ -63,7 +63,7 @@ static int cros_pchg_ec_command(const struct charger_data *charger,
+ 	struct cros_ec_command *msg;
+ 	int ret;
+ 
+-	msg = kzalloc(sizeof(*msg) + max(outsize, insize), GFP_KERNEL);
++	msg = kzalloc(struct_size(msg, data, max(outsize, insize)), GFP_KERNEL);
+ 	if (!msg)
+ 		return -ENOMEM;
+ </pre><hr><pre>commit 8a4d480702b71184fabcf379b80bf7539716752e
+Author: Xiaohui Zhang &lt;xiaohuizhang@ruc.edu.cn&gt;
+Date:   Tue Jun 7 16:32:30 2022 +0800
+
+    nfc: nfcmrvl: Fix memory leak in nfcmrvl_play_deferred
+    
+    Similar to the handling of play_deferred in commit 19cfe912c37b
+    ("Bluetooth: btusb: Fix memory leak in play_deferred"), we thought
+    a patch might be needed here as well.
+    
+    Currently usb_submit_urb is called directly to submit deferred tx
+    urbs after unanchor them.
+    
+    So the usb_giveback_urb_bh would failed to unref it in usb_unanchor_urb
+    and cause memory leak.
+    
+    Put those urbs in tx_anchor to avoid the leak, and also fix the error
+    handling.
+    
+    Signed-off-by: Xiaohui Zhang &lt;xiaohuizhang@ruc.edu.cn&gt;
+    Acked-by: Krzysztof Kozlowski &lt;krzysztof.kozlowski@linaro.org&gt;
+    Link: https://lore.kernel.org/r/20220607083230.6182-1-xiaohuizhang@ruc.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/drivers/nfc/nfcmrvl/usb.c b/drivers/nfc/nfcmrvl/usb.c
+index a99aedff795d..ea7309453096 100644
+--- a/drivers/nfc/nfcmrvl/usb.c
++++ b/drivers/nfc/nfcmrvl/usb.c
+@@ -388,13 +388,25 @@ static void nfcmrvl_play_deferred(struct nfcmrvl_usb_drv_data *drv_data)
+ 	int err;
+ 
+ 	while ((urb = usb_get_from_anchor(&amp;drv_data-&gt;deferred))) {
++		usb_anchor_urb(urb, &amp;drv_data-&gt;tx_anchor);
++
+ 		err = usb_submit_urb(urb, GFP_ATOMIC);
+-		if (err)
++		if (err) {
++			kfree(urb-&gt;setup_packet);
++			usb_unanchor_urb(urb);
++			usb_free_urb(urb);
+ 			break;
++		}
+ 
+ 		drv_data-&gt;tx_in_flight++;
++		usb_free_urb(urb);
++	}
++
++	/* Cleanup the rest deferred urbs. */
++	while ((urb = usb_get_from_anchor(&amp;drv_data-&gt;deferred))) {
++		kfree(urb-&gt;setup_packet);
++		usb_free_urb(urb);
+ 	}
+-	usb_scuttle_anchored_urbs(&amp;drv_data-&gt;deferred);
+ }
+ 
+ static int nfcmrvl_resume(struct usb_interface *intf)</pre><hr><pre>commit 0381ac3ca2e727d4dfb7264d9416a8ba6bb6c18b
+Author: Xiaohui Zhang &lt;xiaohuizhang@ruc.edu.cn&gt;
+Date:   Tue Jun 7 23:19:33 2022 +0800
+
+    drm/radeon: Initialize fences array entries in radeon_sa_bo_next_hole
+    
+    Similar to the handling of amdgpu_sa_bo_next_hole in commit 6a15f3ff19a8
+    ("drm/amdgpu: Initialize fences array entries in amdgpu_sa_bo_next_hole"),
+    we thought a patch might be needed here as well.
+    
+    The entries were only initialized once in radeon_sa_bo_new. If a fence
+    wasn't signalled yet in the first radeon_sa_bo_next_hole call, but then
+    got signalled before a later radeon_sa_bo_next_hole call, it could
+    destroy the fence but leave its pointer in the array, resulting in
+    use-after-free in radeon_sa_bo_new.
+    
+    Signed-off-by: Xiaohui Zhang &lt;xiaohuizhang@ruc.edu.cn&gt;
+    Signed-off-by: Alex Deucher &lt;alexander.deucher@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/radeon/radeon_sa.c b/drivers/gpu/drm/radeon/radeon_sa.c
+index 310c322c7112..0981948bd9ed 100644
+--- a/drivers/gpu/drm/radeon/radeon_sa.c
++++ b/drivers/gpu/drm/radeon/radeon_sa.c
+@@ -267,6 +267,8 @@ static bool radeon_sa_bo_next_hole(struct radeon_sa_manager *sa_manager,
+ 	for (i = 0; i &lt; RADEON_NUM_RINGS; ++i) {
+ 		struct radeon_sa_bo *sa_bo;
+ 
++		fences[i] = NULL;
++
+ 		if (list_empty(&amp;sa_manager-&gt;flist[i])) {
+ 			continue;
+ 		}
+@@ -332,10 +334,8 @@ int radeon_sa_bo_new(struct radeon_device *rdev,
+ 
+ 	spin_lock(&amp;sa_manager-&gt;wq.lock);
+ 	do {
+-		for (i = 0; i &lt; RADEON_NUM_RINGS; ++i) {
+-			fences[i] = NULL;
++		for (i = 0; i &lt; RADEON_NUM_RINGS; ++i)
+ 			tries[i] = 0;
+-		}
+ 
+ 		do {
+ 			radeon_sa_bo_try_free(sa_manager);</pre><hr><pre>commit feb54650bae25f2a2adfc493e3e254e7c27a3fba
+Author: Xiaohui Zhang &lt;xiaohuizhang@ruc.edu.cn&gt;
+Date:   Tue Jun 7 23:36:31 2022 +0800
+
+    drm/radeon: integer overflow in radeon_mode_dumb_create()
+    
+    Similar to the handling of amdgpu_mode_dumb_create in commit 54ef0b5461c0
+    ("drm/amdgpu: integer overflow in amdgpu_mode_dumb_create()"),
+    we thought a patch might be needed here as well.
+    
+    args-&gt;size is a u64.  arg-&gt;pitch and args-&gt;height are u32.  The
+    multiplication will overflow instead of using the high 32 bits as
+    intended.
+    
+    Signed-off-by: Xiaohui Zhang &lt;xiaohuizhang@ruc.edu.cn&gt;
+    Signed-off-by: Alex Deucher &lt;alexander.deucher@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/radeon/radeon_gem.c b/drivers/gpu/drm/radeon/radeon_gem.c
+index 8c01a7f0e027..84843b3b3aef 100644
+--- a/drivers/gpu/drm/radeon/radeon_gem.c
++++ b/drivers/gpu/drm/radeon/radeon_gem.c
+@@ -833,7 +833,7 @@ int radeon_mode_dumb_create(struct drm_file *file_priv,
+ 
+ 	args-&gt;pitch = radeon_align_pitch(rdev, args-&gt;width,
+ 					 DIV_ROUND_UP(args-&gt;bpp, 8), 0);
+-	args-&gt;size = args-&gt;pitch * args-&gt;height;
++	args-&gt;size = (u64)args-&gt;pitch * args-&gt;height;
+ 	args-&gt;size = ALIGN(args-&gt;size, PAGE_SIZE);
+ 
+ 	r = radeon_gem_object_create(rdev, args-&gt;size, 0,</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

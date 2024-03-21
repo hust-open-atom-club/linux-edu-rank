@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_29.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><span>[30]</span><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_31.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit c8ab5f2a13fb41a878863c61a1e27d78f1844b5e
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Mar 18 19:00:19 2008 -0400
+
+    lockd: don't depend on lockd main loop to end grace
+    
+    End lockd's grace period using schedule_delayed_work() instead of a
+    check on every pass through the main loop.
+    
+    After a later patch, we'll depend on lockd to end its grace period even
+    if it's not currently handling requests; so it shouldn't depend on being
+    woken up from the main loop to do so.
+    
+    Also, Nakano Hiroaki (who independently produced a similar patch)
+    noticed that the current behavior is buggy in the face of jiffies
+    wraparound:
+    
+            "lockd uses time_before() to determine whether the grace period
+            has expired. This would seem to be enough to avoid timer
+            wrap-around issues, but, unfortunately, that is not the case.
+            The time_* family of comparison functions can be safely used to
+            compare jiffies relatively close in time, but they stop working
+            after approximately LONG_MAX/2 ticks. nfsd can suffer this
+            problem because the time_before() comparison in lockd() is not
+            performed until the first request comes in, which means that if
+            there is no lockd traffic for more than LONG_MAX/2 ticks we are
+            screwed.
+    
+            "The implication of this is that once time_before() starts
+            misbehaving any attempt from a NFS client to execute fcntl()
+            will be received with a NLM_LCK_DENIED_GRACE_PERIOD message for
+            25 days (assuming HZ=1000). In other words, the 50 seconds grace
+            period could turn into a grace period of 50 days or more.
+    
+            "Note: This bug was analyzed independently by Oda-san
+            &lt;oda@valinux.co.jp&gt; and myself."
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Nakano Hiroaki &lt;nakano.hiroaki@oss.ntt.co.jp&gt;
+    Cc: Itsuro Oda &lt;oda@valinux.co.jp&gt;
+
+diff --git a/fs/lockd/svc.c b/fs/lockd/svc.c
+index bdc607bb25e9..f345ef7fb8ae 100644
+--- a/fs/lockd/svc.c
++++ b/fs/lockd/svc.c
+@@ -97,15 +97,20 @@ unsigned long get_nfs_grace_period(void)
+ }
+ EXPORT_SYMBOL(get_nfs_grace_period);
+ 
+-static unsigned long set_grace_period(void)
++static void grace_ender(struct work_struct *not_used)
+ {
+-	nlmsvc_grace_period = 1;
+-	return get_nfs_grace_period() + jiffies;
++	nlmsvc_grace_period = 0;
+ }
+ 
+-static inline void clear_grace_period(void)
++static DECLARE_DELAYED_WORK(grace_period_end, grace_ender);
++
++static void set_grace_period(void)
+ {
+-	nlmsvc_grace_period = 0;
++	unsigned long grace_period = get_nfs_grace_period() + jiffies;
++
++	nlmsvc_grace_period = 1;
++	cancel_delayed_work_sync(&amp;grace_period_end);
++	schedule_delayed_work(&amp;grace_period_end, grace_period);
+ }
+ 
+ /*
+@@ -116,7 +121,6 @@ lockd(void *vrqstp)
+ {
+ 	int		err = 0, preverr = 0;
+ 	struct svc_rqst *rqstp = vrqstp;
+-	unsigned long grace_period_expire;
+ 
+ 	/* try_to_freeze() is called from svc_recv() */
+ 	set_freezable();
+@@ -139,7 +143,7 @@ lockd(void *vrqstp)
+ 		nlm_timeout = LOCKD_DFLT_TIMEO;
+ 	nlmsvc_timeout = nlm_timeout * HZ;
+ 
+-	grace_period_expire = set_grace_period();
++	set_grace_period();
+ 
+ 	/*
+ 	 * The main request loop. We don't terminate until the last
+@@ -153,16 +157,13 @@ lockd(void *vrqstp)
+ 			flush_signals(current);
+ 			if (nlmsvc_ops) {
+ 				nlmsvc_invalidate_all();
+-				grace_period_expire = set_grace_period();
++				set_grace_period();
+ 			}
+ 			continue;
+ 		}
+ 
+ 		timeout = nlmsvc_retry_blocked();
+ 
+-		if (time_before(grace_period_expire, jiffies))
+-			clear_grace_period();
+-
+ 		/*
+ 		 * Find a socket with data available and call its
+ 		 * recvfrom routine.
+@@ -189,6 +190,7 @@ lockd(void *vrqstp)
+ 		svc_process(rqstp);
+ 	}
+ 	flush_signals(current);
++	cancel_delayed_work_sync(&amp;grace_period_end);
+ 	if (nlmsvc_ops)
+ 		nlmsvc_invalidate_all();
+ 	nlm_shutdown_hosts();</pre><hr><pre>commit 8fafa90082ab18859d97627fc454edf12f7efbff
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Jan 24 11:11:34 2008 -0500
+
+    locks: allow lockd to process blocked locks during grace period
+    
+    The check here is currently harmless but unnecessary, since, as the
+    comment notes, there aren't any blocked-lock callbacks to process
+    during the grace period anyway.
+    
+    And eventually we want to allow multiple grace periods that come and go
+    for different filesystems over the course of the lifetime of lockd, at
+    which point this check is just going to get in the way.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/lockd/svc.c b/fs/lockd/svc.c
+index 1553fecc567d..bdc607bb25e9 100644
+--- a/fs/lockd/svc.c
++++ b/fs/lockd/svc.c
+@@ -158,15 +158,9 @@ lockd(void *vrqstp)
+ 			continue;
+ 		}
+ 
+-		/*
+-		 * Retry any blocked locks that have been notified by
+-		 * the VFS. Don't do this during grace period.
+-		 * (Theoretically, there shouldn't even be blocked locks
+-		 * during grace period).
+-		 */
+-		if (!nlmsvc_grace_period) {
+-			timeout = nlmsvc_retry_blocked();
+-		} else if (time_before(grace_period_expire, jiffies))
++		timeout = nlmsvc_retry_blocked();
++
++		if (time_before(grace_period_expire, jiffies))
+ 			clear_grace_period();
+ 
+ 		/*</pre><hr><pre>commit 04716e6621ff4abb422d64ba7b48718f52716a3e
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Aug 7 13:00:20 2008 -0400
+
+    nfsd: permit unauthenticated stat of export root
+    
+    RFC 2623 section 2.3.2 permits the server to bypass gss authentication
+    checks for certain operations that a client may perform when mounting.
+    In the case of a client that doesn't have some form of credentials
+    available to it on boot, this allows it to perform the mount unattended.
+    (Presumably real file access won't be needed until a user with
+    credentials logs in.)
+    
+    Being slightly more lenient allows lots of old clients to access
+    krb5-only exports, with the only loss being a small amount of
+    information leaked about the root directory of the export.
+    
+    This affects only v2 and v3; v4 still requires authentication for all
+    access.
+    
+    Thanks to Peter Staubach testing against a Solaris client, which
+    suggesting addition of v3 getattr, to the list, and to Trond for noting
+    that doing so exposes no additional information.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Peter Staubach &lt;staubach@redhat.com&gt;
+    Cc: Trond Myklebust &lt;trond.myklebust@fys.uio.no&gt;
+
+diff --git a/fs/nfsd/nfs3proc.c b/fs/nfsd/nfs3proc.c
+index 4d617ea28cfc..9dbd2eb91281 100644
+--- a/fs/nfsd/nfs3proc.c
++++ b/fs/nfsd/nfs3proc.c
+@@ -63,7 +63,8 @@ nfsd3_proc_getattr(struct svc_rqst *rqstp, struct nfsd_fhandle  *argp,
+ 		SVCFH_fmt(&amp;argp-&gt;fh));
+ 
+ 	fh_copy(&amp;resp-&gt;fh, &amp;argp-&gt;fh);
+-	nfserr = fh_verify(rqstp, &amp;resp-&gt;fh, 0, NFSD_MAY_NOP);
++	nfserr = fh_verify(rqstp, &amp;resp-&gt;fh, 0,
++			NFSD_MAY_NOP | NFSD_MAY_BYPASS_GSS_ON_ROOT);
+ 	if (nfserr)
+ 		RETURN_STATUS(nfserr);
+ 
+@@ -530,7 +531,7 @@ nfsd3_proc_fsstat(struct svc_rqst * rqstp, struct nfsd_fhandle    *argp,
+ 	dprintk("nfsd: FSSTAT(3)   %s\n",
+ 				SVCFH_fmt(&amp;argp-&gt;fh));
+ 
+-	nfserr = nfsd_statfs(rqstp, &amp;argp-&gt;fh, &amp;resp-&gt;stats);
++	nfserr = nfsd_statfs(rqstp, &amp;argp-&gt;fh, &amp;resp-&gt;stats, 0);
+ 	fh_put(&amp;argp-&gt;fh);
+ 	RETURN_STATUS(nfserr);
+ }
+@@ -558,7 +559,8 @@ nfsd3_proc_fsinfo(struct svc_rqst * rqstp, struct nfsd_fhandle    *argp,
+ 	resp-&gt;f_maxfilesize = ~(u32) 0;
+ 	resp-&gt;f_properties = NFS3_FSF_DEFAULT;
+ 
+-	nfserr = fh_verify(rqstp, &amp;argp-&gt;fh, 0, NFSD_MAY_NOP);
++	nfserr = fh_verify(rqstp, &amp;argp-&gt;fh, 0,
++			NFSD_MAY_NOP | NFSD_MAY_BYPASS_GSS_ON_ROOT);
+ 
+ 	/* Check special features of the file system. May request
+ 	 * different read/write sizes for file systems known to have
+diff --git a/fs/nfsd/nfsfh.c b/fs/nfsd/nfsfh.c
+index ea37c96f0445..cd25d91895a1 100644
+--- a/fs/nfsd/nfsfh.c
++++ b/fs/nfsd/nfsfh.c
+@@ -302,17 +302,27 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 	if (error)
+ 		goto out;
+ 
+-	if (!(access &amp; NFSD_MAY_LOCK)) {
+-		/*
+-		 * pseudoflavor restrictions are not enforced on NLM,
+-		 * which clients virtually always use auth_sys for,
+-		 * even while using RPCSEC_GSS for NFS.
+-		 */
+-		error = check_nfsd_access(exp, rqstp);
+-		if (error)
+-			goto out;
+-	}
++	/*
++	 * pseudoflavor restrictions are not enforced on NLM,
++	 * which clients virtually always use auth_sys for,
++	 * even while using RPCSEC_GSS for NFS.
++	 */
++	if (access &amp; NFSD_MAY_LOCK)
++		goto skip_pseudoflavor_check;
++	/*
++	 * Clients may expect to be able to use auth_sys during mount,
++	 * even if they use gss for everything else; see section 2.3.2
++	 * of rfc 2623.
++	 */
++	if (access &amp; NFSD_MAY_BYPASS_GSS_ON_ROOT
++			&amp;&amp; exp-&gt;ex_path.dentry == dentry)
++		goto skip_pseudoflavor_check;
++
++	error = check_nfsd_access(exp, rqstp);
++	if (error)
++		goto out;
+ 
++skip_pseudoflavor_check:
+ 	/* Finally, check access permissions. */
+ 	error = nfsd_permission(rqstp, exp, dentry, access);
+ 
+diff --git a/fs/nfsd/nfsproc.c b/fs/nfsd/nfsproc.c
+index 0766f95d236a..5cffeca7acef 100644
+--- a/fs/nfsd/nfsproc.c
++++ b/fs/nfsd/nfsproc.c
+@@ -65,7 +65,8 @@ nfsd_proc_getattr(struct svc_rqst *rqstp, struct nfsd_fhandle  *argp,
+ 	dprintk("nfsd: GETATTR  %s\n", SVCFH_fmt(&amp;argp-&gt;fh));
+ 
+ 	fh_copy(&amp;resp-&gt;fh, &amp;argp-&gt;fh);
+-	nfserr = fh_verify(rqstp, &amp;resp-&gt;fh, 0, NFSD_MAY_NOP);
++	nfserr = fh_verify(rqstp, &amp;resp-&gt;fh, 0,
++			NFSD_MAY_NOP | NFSD_MAY_BYPASS_GSS_ON_ROOT);
+ 	return nfsd_return_attrs(nfserr, resp);
+ }
+ 
+@@ -521,7 +522,8 @@ nfsd_proc_statfs(struct svc_rqst * rqstp, struct nfsd_fhandle   *argp,
+ 
+ 	dprintk("nfsd: STATFS   %s\n", SVCFH_fmt(&amp;argp-&gt;fh));
+ 
+-	nfserr = nfsd_statfs(rqstp, &amp;argp-&gt;fh, &amp;resp-&gt;stats);
++	nfserr = nfsd_statfs(rqstp, &amp;argp-&gt;fh, &amp;resp-&gt;stats,
++			NFSD_MAY_BYPASS_GSS_ON_ROOT);
+ 	fh_put(&amp;argp-&gt;fh);
+ 	return nfserr;
+ }
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 18060bed5267..1319e8027d55 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -1866,9 +1866,9 @@ nfsd_readdir(struct svc_rqst *rqstp, struct svc_fh *fhp, loff_t *offsetp,
+  * N.B. After this call fhp needs an fh_put
+  */
+ __be32
+-nfsd_statfs(struct svc_rqst *rqstp, struct svc_fh *fhp, struct kstatfs *stat)
++nfsd_statfs(struct svc_rqst *rqstp, struct svc_fh *fhp, struct kstatfs *stat, int access)
+ {
+-	__be32 err = fh_verify(rqstp, fhp, 0, NFSD_MAY_NOP);
++	__be32 err = fh_verify(rqstp, fhp, 0, NFSD_MAY_NOP | access);
+ 	if (!err &amp;&amp; vfs_statfs(fhp-&gt;fh_dentry,stat))
+ 		err = nfserr_io;
+ 	return err;
+diff --git a/include/linux/nfsd/nfsd.h b/include/linux/nfsd/nfsd.h
+index 108f47e5fd95..21269405ffe2 100644
+--- a/include/linux/nfsd/nfsd.h
++++ b/include/linux/nfsd/nfsd.h
+@@ -38,6 +38,7 @@
+ #define NFSD_MAY_LOCK		32
+ #define NFSD_MAY_OWNER_OVERRIDE	64
+ #define NFSD_MAY_LOCAL_ACCESS	128 /* IRIX doing local access check on device special file*/
++#define NFSD_MAY_BYPASS_GSS_ON_ROOT 256
+ 
+ #define NFSD_MAY_CREATE		(NFSD_MAY_EXEC|NFSD_MAY_WRITE)
+ #define NFSD_MAY_REMOVE		(NFSD_MAY_EXEC|NFSD_MAY_WRITE|NFSD_MAY_TRUNC)
+@@ -125,7 +126,7 @@ int		nfsd_truncate(struct svc_rqst *, struct svc_fh *,
+ __be32		nfsd_readdir(struct svc_rqst *, struct svc_fh *,
+ 			     loff_t *, struct readdir_cd *, filldir_t);
+ __be32		nfsd_statfs(struct svc_rqst *, struct svc_fh *,
+-				struct kstatfs *);
++				struct kstatfs *, int access);
+ 
+ int		nfsd_notify_change(struct inode *, struct iattr *);
+ __be32		nfsd_permission(struct svc_rqst *, struct svc_export *,</pre><hr><pre>commit 91b80969ba466ba4b915a4a1d03add8c297add3f
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri Aug 29 19:18:45 2008 -0400
+
+    nfsd: fix buffer overrun decoding NFSv4 acl
+    
+    The array we kmalloc() here is not large enough.
+    
+    Thanks to Johann Dahm and David Richter for bug report and testing.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: David Richter &lt;richterd@citi.umich.edu&gt;
+    Tested-by: Johann Dahm &lt;jdahm@umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4acl.c b/fs/nfsd/nfs4acl.c
+index b6ed38380ab8..54b8b4140c8f 100644
+--- a/fs/nfsd/nfs4acl.c
++++ b/fs/nfsd/nfs4acl.c
+@@ -443,7 +443,7 @@ init_state(struct posix_acl_state *state, int cnt)
+ 	 * enough space for either:
+ 	 */
+ 	alloc = sizeof(struct posix_ace_state_array)
+-		+ cnt*sizeof(struct posix_ace_state);
++		+ cnt*sizeof(struct posix_user_ace_state);
+ 	state-&gt;users = kzalloc(alloc, GFP_KERNEL);
+ 	if (!state-&gt;users)
+ 		return -ENOMEM;</pre><hr><pre>commit e8b43555a2a8c71e8501924e260f62b9545c598b
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Jul 23 08:49:50 2008 -0400
+
+    MAINTAINERS: mention lockd and sunrpc in nfs entries
+    
+    The actual division of labor is a little vague in some of the common
+    code, but if the patches get to one of us then we can sort it out.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 0652ab384d51..c382ad39bb9b 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -2418,7 +2418,7 @@ L:	kernel-janitors@vger.kernel.org
+ W:	http://www.kerneljanitors.org/
+ S:	Maintained
+ 
+-KERNEL NFSD
++KERNEL NFSD, SUNRPC, AND LOCKD SERVERS
+ P:	J. Bruce Fields
+ M:	bfields@fieldses.org
+ P:	Neil Brown
+@@ -3036,7 +3036,7 @@ M:	ja@ssi.bg
+ L:	netdev@vger.kernel.org
+ S:	Maintained
+ 
+-NFS CLIENT
++NFS, SUNRPC, AND LOCKD CLIENTS
+ P:	Trond Myklebust
+ M:	Trond.Myklebust@netapp.com
+ L:	linux-nfs@vger.kernel.org</pre><hr><pre>commit ad1060c89cfe451de849373d98e42fad58dd25ae
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri Jul 18 15:04:16 2008 -0400
+
+    nfsd: Use C99 initializers in fs/nfsd/nfs4xdr.c
+    
+    Thanks to problem report and original patch from Harvey Harrison.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Harvey Harrison &lt;harvey.harrison@gmail.com&gt;
+    Cc: Benny Halevy &lt;bhalevy@panasas.com&gt;
+
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index 9b6a9bafc6b4..d4b9d09a6683 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -1000,43 +1000,43 @@ nfsd4_decode_notsupp(struct nfsd4_compoundargs *argp, void *p)
+ typedef __be32(*nfsd4_dec)(struct nfsd4_compoundargs *argp, void *);
+ 
+ static nfsd4_dec nfsd4_dec_ops[] = {
+-	[OP_ACCESS]		(nfsd4_dec)nfsd4_decode_access,
+-	[OP_CLOSE]		(nfsd4_dec)nfsd4_decode_close,
+-	[OP_COMMIT]		(nfsd4_dec)nfsd4_decode_commit,
+-	[OP_CREATE]		(nfsd4_dec)nfsd4_decode_create,
+-	[OP_DELEGPURGE]		(nfsd4_dec)nfsd4_decode_notsupp,
+-	[OP_DELEGRETURN]	(nfsd4_dec)nfsd4_decode_delegreturn,
+-	[OP_GETATTR]		(nfsd4_dec)nfsd4_decode_getattr,
+-	[OP_GETFH]		(nfsd4_dec)nfsd4_decode_noop,
+-	[OP_LINK]		(nfsd4_dec)nfsd4_decode_link,
+-	[OP_LOCK]		(nfsd4_dec)nfsd4_decode_lock,
+-	[OP_LOCKT]		(nfsd4_dec)nfsd4_decode_lockt,
+-	[OP_LOCKU]		(nfsd4_dec)nfsd4_decode_locku,
+-	[OP_LOOKUP]		(nfsd4_dec)nfsd4_decode_lookup,
+-	[OP_LOOKUPP]		(nfsd4_dec)nfsd4_decode_noop,
+-	[OP_NVERIFY]		(nfsd4_dec)nfsd4_decode_verify,
+-	[OP_OPEN]		(nfsd4_dec)nfsd4_decode_open,
+-	[OP_OPENATTR]		(nfsd4_dec)nfsd4_decode_notsupp,
+-	[OP_OPEN_CONFIRM]	(nfsd4_dec)nfsd4_decode_open_confirm,
+-	[OP_OPEN_DOWNGRADE]	(nfsd4_dec)nfsd4_decode_open_downgrade,
+-	[OP_PUTFH]		(nfsd4_dec)nfsd4_decode_putfh,
+-	[OP_PUTPUBFH]		(nfsd4_dec)nfsd4_decode_notsupp,
+-	[OP_PUTROOTFH]		(nfsd4_dec)nfsd4_decode_noop,
+-	[OP_READ]		(nfsd4_dec)nfsd4_decode_read,
+-	[OP_READDIR]		(nfsd4_dec)nfsd4_decode_readdir,
+-	[OP_READLINK]		(nfsd4_dec)nfsd4_decode_noop,
+-	[OP_REMOVE]		(nfsd4_dec)nfsd4_decode_remove,
+-	[OP_RENAME]		(nfsd4_dec)nfsd4_decode_rename,
+-	[OP_RENEW]		(nfsd4_dec)nfsd4_decode_renew,
+-	[OP_RESTOREFH]		(nfsd4_dec)nfsd4_decode_noop,
+-	[OP_SAVEFH]		(nfsd4_dec)nfsd4_decode_noop,
+-	[OP_SECINFO]		(nfsd4_dec)nfsd4_decode_secinfo,
+-	[OP_SETATTR]		(nfsd4_dec)nfsd4_decode_setattr,
+-	[OP_SETCLIENTID]	(nfsd4_dec)nfsd4_decode_setclientid,
+-	[OP_SETCLIENTID_CONFIRM](nfsd4_dec)nfsd4_decode_setclientid_confirm,
+-	[OP_VERIFY]		(nfsd4_dec)nfsd4_decode_verify,
+-	[OP_WRITE]		(nfsd4_dec)nfsd4_decode_write,
+-	[OP_RELEASE_LOCKOWNER]	(nfsd4_dec)nfsd4_decode_release_lockowner,
++	[OP_ACCESS]		= (nfsd4_dec)nfsd4_decode_access,
++	[OP_CLOSE]		= (nfsd4_dec)nfsd4_decode_close,
++	[OP_COMMIT]		= (nfsd4_dec)nfsd4_decode_commit,
++	[OP_CREATE]		= (nfsd4_dec)nfsd4_decode_create,
++	[OP_DELEGPURGE]		= (nfsd4_dec)nfsd4_decode_notsupp,
++	[OP_DELEGRETURN]	= (nfsd4_dec)nfsd4_decode_delegreturn,
++	[OP_GETATTR]		= (nfsd4_dec)nfsd4_decode_getattr,
++	[OP_GETFH]		= (nfsd4_dec)nfsd4_decode_noop,
++	[OP_LINK]		= (nfsd4_dec)nfsd4_decode_link,
++	[OP_LOCK]		= (nfsd4_dec)nfsd4_decode_lock,
++	[OP_LOCKT]		= (nfsd4_dec)nfsd4_decode_lockt,
++	[OP_LOCKU]		= (nfsd4_dec)nfsd4_decode_locku,
++	[OP_LOOKUP]		= (nfsd4_dec)nfsd4_decode_lookup,
++	[OP_LOOKUPP]		= (nfsd4_dec)nfsd4_decode_noop,
++	[OP_NVERIFY]		= (nfsd4_dec)nfsd4_decode_verify,
++	[OP_OPEN]		= (nfsd4_dec)nfsd4_decode_open,
++	[OP_OPENATTR]		= (nfsd4_dec)nfsd4_decode_notsupp,
++	[OP_OPEN_CONFIRM]	= (nfsd4_dec)nfsd4_decode_open_confirm,
++	[OP_OPEN_DOWNGRADE]	= (nfsd4_dec)nfsd4_decode_open_downgrade,
++	[OP_PUTFH]		= (nfsd4_dec)nfsd4_decode_putfh,
++	[OP_PUTPUBFH]		= (nfsd4_dec)nfsd4_decode_notsupp,
++	[OP_PUTROOTFH]		= (nfsd4_dec)nfsd4_decode_noop,
++	[OP_READ]		= (nfsd4_dec)nfsd4_decode_read,
++	[OP_READDIR]		= (nfsd4_dec)nfsd4_decode_readdir,
++	[OP_READLINK]		= (nfsd4_dec)nfsd4_decode_noop,
++	[OP_REMOVE]		= (nfsd4_dec)nfsd4_decode_remove,
++	[OP_RENAME]		= (nfsd4_dec)nfsd4_decode_rename,
++	[OP_RENEW]		= (nfsd4_dec)nfsd4_decode_renew,
++	[OP_RESTOREFH]		= (nfsd4_dec)nfsd4_decode_noop,
++	[OP_SAVEFH]		= (nfsd4_dec)nfsd4_decode_noop,
++	[OP_SECINFO]		= (nfsd4_dec)nfsd4_decode_secinfo,
++	[OP_SETATTR]		= (nfsd4_dec)nfsd4_decode_setattr,
++	[OP_SETCLIENTID]	= (nfsd4_dec)nfsd4_decode_setclientid,
++	[OP_SETCLIENTID_CONFIRM] = (nfsd4_dec)nfsd4_decode_setclientid_confirm,
++	[OP_VERIFY]		= (nfsd4_dec)nfsd4_decode_verify,
++	[OP_WRITE]		= (nfsd4_dec)nfsd4_decode_write,
++	[OP_RELEASE_LOCKOWNER]	= (nfsd4_dec)nfsd4_decode_release_lockowner,
+ };
+ 
+ struct nfsd4_minorversion_ops {
+@@ -1045,7 +1045,7 @@ struct nfsd4_minorversion_ops {
+ };
+ 
+ static struct nfsd4_minorversion_ops nfsd4_minorversion[] = {
+-	[0] { nfsd4_dec_ops, ARRAY_SIZE(nfsd4_dec_ops) },
++	[0] = { nfsd4_dec_ops, ARRAY_SIZE(nfsd4_dec_ops) },
+ };
+ 
+ static __be32
+@@ -2577,42 +2577,42 @@ nfsd4_encode_noop(struct nfsd4_compoundres *resp, __be32 nfserr, void *p)
+ typedef __be32(* nfsd4_enc)(struct nfsd4_compoundres *, __be32, void *);
+ 
+ static nfsd4_enc nfsd4_enc_ops[] = {
+-	[OP_ACCESS]		(nfsd4_enc)nfsd4_encode_access,
+-	[OP_CLOSE]		(nfsd4_enc)nfsd4_encode_close,
+-	[OP_COMMIT]		(nfsd4_enc)nfsd4_encode_commit,
+-	[OP_CREATE]		(nfsd4_enc)nfsd4_encode_create,
+-	[OP_DELEGPURGE]		(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_DELEGRETURN]	(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_GETATTR]		(nfsd4_enc)nfsd4_encode_getattr,
+-	[OP_GETFH]		(nfsd4_enc)nfsd4_encode_getfh,
+-	[OP_LINK]		(nfsd4_enc)nfsd4_encode_link,
+-	[OP_LOCK]		(nfsd4_enc)nfsd4_encode_lock,
+-	[OP_LOCKT]		(nfsd4_enc)nfsd4_encode_lockt,
+-	[OP_LOCKU]		(nfsd4_enc)nfsd4_encode_locku,
+-	[OP_LOOKUP]		(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_LOOKUPP]		(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_NVERIFY]		(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_OPEN]		(nfsd4_enc)nfsd4_encode_open,
+-	[OP_OPEN_CONFIRM]	(nfsd4_enc)nfsd4_encode_open_confirm,
+-	[OP_OPEN_DOWNGRADE]	(nfsd4_enc)nfsd4_encode_open_downgrade,
+-	[OP_PUTFH]		(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_PUTPUBFH]		(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_PUTROOTFH]		(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_READ]		(nfsd4_enc)nfsd4_encode_read,
+-	[OP_READDIR]		(nfsd4_enc)nfsd4_encode_readdir,
+-	[OP_READLINK]		(nfsd4_enc)nfsd4_encode_readlink,
+-	[OP_REMOVE]		(nfsd4_enc)nfsd4_encode_remove,
+-	[OP_RENAME]		(nfsd4_enc)nfsd4_encode_rename,
+-	[OP_RENEW]		(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_RESTOREFH]		(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_SAVEFH]		(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_SECINFO]		(nfsd4_enc)nfsd4_encode_secinfo,
+-	[OP_SETATTR]		(nfsd4_enc)nfsd4_encode_setattr,
+-	[OP_SETCLIENTID]	(nfsd4_enc)nfsd4_encode_setclientid,
+-	[OP_SETCLIENTID_CONFIRM](nfsd4_enc)nfsd4_encode_noop,
+-	[OP_VERIFY]		(nfsd4_enc)nfsd4_encode_noop,
+-	[OP_WRITE]		(nfsd4_enc)nfsd4_encode_write,
+-	[OP_RELEASE_LOCKOWNER]	(nfsd4_enc)nfsd4_encode_noop,
++	[OP_ACCESS]		= (nfsd4_enc)nfsd4_encode_access,
++	[OP_CLOSE]		= (nfsd4_enc)nfsd4_encode_close,
++	[OP_COMMIT]		= (nfsd4_enc)nfsd4_encode_commit,
++	[OP_CREATE]		= (nfsd4_enc)nfsd4_encode_create,
++	[OP_DELEGPURGE]		= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_DELEGRETURN]	= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_GETATTR]		= (nfsd4_enc)nfsd4_encode_getattr,
++	[OP_GETFH]		= (nfsd4_enc)nfsd4_encode_getfh,
++	[OP_LINK]		= (nfsd4_enc)nfsd4_encode_link,
++	[OP_LOCK]		= (nfsd4_enc)nfsd4_encode_lock,
++	[OP_LOCKT]		= (nfsd4_enc)nfsd4_encode_lockt,
++	[OP_LOCKU]		= (nfsd4_enc)nfsd4_encode_locku,
++	[OP_LOOKUP]		= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_LOOKUPP]		= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_NVERIFY]		= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_OPEN]		= (nfsd4_enc)nfsd4_encode_open,
++	[OP_OPEN_CONFIRM]	= (nfsd4_enc)nfsd4_encode_open_confirm,
++	[OP_OPEN_DOWNGRADE]	= (nfsd4_enc)nfsd4_encode_open_downgrade,
++	[OP_PUTFH]		= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_PUTPUBFH]		= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_PUTROOTFH]		= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_READ]		= (nfsd4_enc)nfsd4_encode_read,
++	[OP_READDIR]		= (nfsd4_enc)nfsd4_encode_readdir,
++	[OP_READLINK]		= (nfsd4_enc)nfsd4_encode_readlink,
++	[OP_REMOVE]		= (nfsd4_enc)nfsd4_encode_remove,
++	[OP_RENAME]		= (nfsd4_enc)nfsd4_encode_rename,
++	[OP_RENEW]		= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_RESTOREFH]		= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_SAVEFH]		= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_SECINFO]		= (nfsd4_enc)nfsd4_encode_secinfo,
++	[OP_SETATTR]		= (nfsd4_enc)nfsd4_encode_setattr,
++	[OP_SETCLIENTID]	= (nfsd4_enc)nfsd4_encode_setclientid,
++	[OP_SETCLIENTID_CONFIRM] = (nfsd4_enc)nfsd4_encode_noop,
++	[OP_VERIFY]		= (nfsd4_enc)nfsd4_encode_noop,
++	[OP_WRITE]		= (nfsd4_enc)nfsd4_encode_write,
++	[OP_RELEASE_LOCKOWNER]	= (nfsd4_enc)nfsd4_encode_noop,
+ };
+ 
+ void</pre><hr><pre>commit 560de0e65904db392e1c443c4bf5ee750573336b
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jul 15 15:05:45 2008 -0400
+
+    lockd: get host reference in nlmsvc_create_block() instead of callers
+    
+    It may not be obvious (till you look at the definition of
+    nlm_alloc_call()) that a function like nlmsvc_create_block() should
+    consume a reference on success or failure, so I find it clearer if it
+    takes the reference it needs itself.
+    
+    And both callers already do this immediately before the call anyway.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/lockd/svclock.c b/fs/lockd/svclock.c
+index 51a0dea0ae8a..b8f86b73a85d 100644
+--- a/fs/lockd/svclock.c
++++ b/fs/lockd/svclock.c
+@@ -180,6 +180,7 @@ nlmsvc_create_block(struct svc_rqst *rqstp, struct nlm_host *host,
+ 	struct nlm_block	*block;
+ 	struct nlm_rqst		*call = NULL;
+ 
++	nlm_get_host(host);
+ 	call = nlm_alloc_call(host);
+ 	if (call == NULL)
+ 		return NULL;
+@@ -380,8 +381,7 @@ nlmsvc_lock(struct svc_rqst *rqstp, struct nlm_file *file,
+ 	 */
+ 	block = nlmsvc_lookup_block(file, lock);
+ 	if (block == NULL) {
+-		block = nlmsvc_create_block(rqstp, nlm_get_host(host), file,
+-					    lock, cookie);
++		block = nlmsvc_create_block(rqstp, host, file, lock, cookie);
+ 		ret = nlm_lck_denied_nolocks;
+ 		if (block == NULL)
+ 			goto out;
+@@ -476,7 +476,6 @@ nlmsvc_testlock(struct svc_rqst *rqstp, struct nlm_file *file,
+ 
+ 		if (conf == NULL)
+ 			return nlm_granted;
+-		nlm_get_host(host);
+ 		block = nlmsvc_create_block(rqstp, host, file, lock, cookie);
+ 		if (block == NULL) {
+ 			kfree(conf);</pre><hr><pre>commit 6d7bbbbacc5202eaabbc232681cc325b22a73eeb
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jul 15 14:38:32 2008 -0400
+
+    lockd: minor svclock.c style fixes
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/lockd/svclock.c b/fs/lockd/svclock.c
+index bcf73f6e8226..51a0dea0ae8a 100644
+--- a/fs/lockd/svclock.c
++++ b/fs/lockd/svclock.c
+@@ -129,9 +129,9 @@ nlmsvc_lookup_block(struct nlm_file *file, struct nlm_lock *lock)
+ 
+ static inline int nlm_cookie_match(struct nlm_cookie *a, struct nlm_cookie *b)
+ {
+-	if(a-&gt;len != b-&gt;len)
++	if (a-&gt;len != b-&gt;len)
+ 		return 0;
+-	if(memcmp(a-&gt;data,b-&gt;data,a-&gt;len))
++	if (memcmp(a-&gt;data, b-&gt;data, a-&gt;len))
+ 		return 0;
+ 	return 1;
+ }
+@@ -381,7 +381,7 @@ nlmsvc_lock(struct svc_rqst *rqstp, struct nlm_file *file,
+ 	block = nlmsvc_lookup_block(file, lock);
+ 	if (block == NULL) {
+ 		block = nlmsvc_create_block(rqstp, nlm_get_host(host), file,
+-				lock, cookie);
++					    lock, cookie);
+ 		ret = nlm_lck_denied_nolocks;
+ 		if (block == NULL)
+ 			goto out;
+@@ -412,7 +412,7 @@ nlmsvc_lock(struct svc_rqst *rqstp, struct nlm_file *file,
+ 	lock-&gt;fl.fl_flags &amp;= ~FL_SLEEP;
+ 
+ 	dprintk("lockd: vfs_lock_file returned %d\n", error);
+-	switch(error) {
++	switch (error) {
+ 		case 0:
+ 			ret = nlm_granted;
+ 			goto out;
+@@ -880,7 +880,7 @@ nlmsvc_retry_blocked(void)
+ 
+ 		if (block-&gt;b_when == NLM_NEVER)
+ 			break;
+-	        if (time_after(block-&gt;b_when,jiffies)) {
++		if (time_after(block-&gt;b_when, jiffies)) {
+ 			timeout = block-&gt;b_when - jiffies;
+ 			break;
+ 		}</pre><hr><pre>commit 53025f5efd5a1c14fca75c479b11d97d9dd958a5
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Jul 10 16:47:41 2008 -0700
+
+    Documentation: clarify tcp_{r,w}mem sysctl docs
+    
+    Fix some of the defaults and attempt to clarify some language.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/Documentation/networking/ip-sysctl.txt b/Documentation/networking/ip-sysctl.txt
+index 277437951e4d..dc04fdd6af34 100644
+--- a/Documentation/networking/ip-sysctl.txt
++++ b/Documentation/networking/ip-sysctl.txt
+@@ -336,7 +336,7 @@ tcp_rmem - vector of 3 INTEGERs: min, default, max
+ 	pressure.
+ 	Default: 8K
+ 
+-	default: default size of receive buffer used by TCP sockets.
++	default: initial size of receive buffer used by TCP sockets.
+ 	This value overrides net.core.rmem_default used by other protocols.
+ 	Default: 87380 bytes. This value results in window of 65535 with
+ 	default setting of tcp_adv_win_scale and tcp_app_win:0 and a bit
+@@ -344,8 +344,10 @@ tcp_rmem - vector of 3 INTEGERs: min, default, max
+ 
+ 	max: maximal size of receive buffer allowed for automatically
+ 	selected receiver buffers for TCP socket. This value does not override
+-	net.core.rmem_max, "static" selection via SO_RCVBUF does not use this.
+-	Default: 87380*2 bytes.
++	net.core.rmem_max.  Calling setsockopt() with SO_RCVBUF disables
++	automatic tuning of that socket's receive buffer size, in which
++	case this value is ignored.
++	Default: between 87380B and 4MB, depending on RAM size.
+ 
+ tcp_sack - BOOLEAN
+ 	Enable select acknowledgments (SACKS).
+@@ -419,19 +421,21 @@ tcp_window_scaling - BOOLEAN
+ 	Enable window scaling as defined in RFC1323.
+ 
+ tcp_wmem - vector of 3 INTEGERs: min, default, max
+-	min: Amount of memory reserved for send buffers for TCP socket.
++	min: Amount of memory reserved for send buffers for TCP sockets.
+ 	Each TCP socket has rights to use it due to fact of its birth.
+ 	Default: 4K
+ 
+-	default: Amount of memory allowed for send buffers for TCP socket
+-	by default. This value overrides net.core.wmem_default used
+-	by other protocols, it is usually lower than net.core.wmem_default.
++	default: initial size of send buffer used by TCP sockets.  This
++	value overrides net.core.wmem_default used by other protocols.
++	It is usually lower than net.core.wmem_default.
+ 	Default: 16K
+ 
+-	max: Maximal amount of memory allowed for automatically selected
+-	send buffers for TCP socket. This value does not override
+-	net.core.wmem_max, "static" selection via SO_SNDBUF does not use this.
+-	Default: 128K
++	max: Maximal amount of memory allowed for automatically tuned
++	send buffers for TCP sockets. This value does not override
++	net.core.wmem_max.  Calling setsockopt() with SO_SNDBUF disables
++	automatic tuning of that socket's send buffer size, in which case
++	this value is ignored.
++	Default: between 64K and 4MB, depending on RAM size.
+ 
+ tcp_workaround_signed_windows - BOOLEAN
+ 	If set, assume no receipt of a window scaling option means the</pre><hr><pre>commit a486aeda9b2b0d944aecce7871b3186379b898de
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Jun 9 16:51:35 2008 -0400
+
+    rpc: minor cleanup of scheduler callback code
+    
+    Try to make the comment here a little more clear and concise.
+    
+    Also, this macro definition seems unnecessary.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/include/linux/sunrpc/sched.h b/include/linux/sunrpc/sched.h
+index d1a5c8c1a0f1..64981a2f1cae 100644
+--- a/include/linux/sunrpc/sched.h
++++ b/include/linux/sunrpc/sched.h
+@@ -135,7 +135,6 @@ struct rpc_task_setup {
+ #define RPC_IS_SWAPPER(t)	((t)-&gt;tk_flags &amp; RPC_TASK_SWAPPER)
+ #define RPC_DO_ROOTOVERRIDE(t)	((t)-&gt;tk_flags &amp; RPC_TASK_ROOTCREDS)
+ #define RPC_ASSASSINATED(t)	((t)-&gt;tk_flags &amp; RPC_TASK_KILLED)
+-#define RPC_DO_CALLBACK(t)	((t)-&gt;tk_callback != NULL)
+ #define RPC_IS_SOFT(t)		((t)-&gt;tk_flags &amp; RPC_TASK_SOFT)
+ 
+ #define RPC_TASK_RUNNING	0
+diff --git a/net/sunrpc/sched.c b/net/sunrpc/sched.c
+index 6eab9bf94baf..6288af05c20f 100644
+--- a/net/sunrpc/sched.c
++++ b/net/sunrpc/sched.c
+@@ -626,19 +626,15 @@ static void __rpc_execute(struct rpc_task *task)
+ 		/*
+ 		 * Execute any pending callback.
+ 		 */
+-		if (RPC_DO_CALLBACK(task)) {
+-			/* Define a callback save pointer */
++		if (task-&gt;tk_callback) {
+ 			void (*save_callback)(struct rpc_task *);
+ 
+ 			/*
+-			 * If a callback exists, save it, reset it,
+-			 * call it.
+-			 * The save is needed to stop from resetting
+-			 * another callback set within the callback handler
+-			 * - Dave
++			 * We set tk_callback to NULL before calling it,
++			 * in case it sets the tk_callback field itself:
+ 			 */
+-			save_callback=task-&gt;tk_callback;
+-			task-&gt;tk_callback=NULL;
++			save_callback = task-&gt;tk_callback;
++			task-&gt;tk_callback = NULL;
+ 			save_callback(task);
+ 		}
+ </pre>
+    <div class="pagination">
+        <a href='4_29.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><span>[30]</span><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_31.html'>Next&gt;&gt;</a>
+    <div>
+</body>

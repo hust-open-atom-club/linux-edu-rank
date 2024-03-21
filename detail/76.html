@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Concordia College - St. Paul</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Concordia College - St. Paul</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit c036899136355758dcd88878145036ab4d9c1f26
+Author: Coleman Dietsch &lt;dietschc@csp.edu&gt;
+Date:   Mon Aug 8 14:06:07 2022 -0500
+
+    KVM: x86/xen: Stop Xen timer before changing IRQ
+    
+    Stop Xen timer (if it's running) prior to changing the IRQ vector and
+    potentially (re)starting the timer. Changing the IRQ vector while the
+    timer is still running can result in KVM injecting a garbage event, e.g.
+    vm_xen_inject_timer_irqs() could see a non-zero xen.timer_pending from
+    a previous timer but inject the new xen.timer_virq.
+    
+    Fixes: 536395260582 ("KVM: x86/xen: handle PV timers oneshot mode")
+    Cc: stable@vger.kernel.org
+    Link: https://syzkaller.appspot.com/bug?id=8234a9dfd3aafbf092cc5a7cd9842e3ebc45fc42
+    Reported-by: syzbot+e54f930ed78eb0f85281@syzkaller.appspotmail.com
+    Signed-off-by: Coleman Dietsch &lt;dietschc@csp.edu&gt;
+    Reviewed-by: Sean Christopherson &lt;seanjc@google.com&gt;
+    Acked-by: David Woodhouse &lt;dwmw@amazon.co.uk&gt;
+    Message-Id: &lt;20220808190607.323899-3-dietschc@csp.edu&gt;
+    Signed-off-by: Paolo Bonzini &lt;pbonzini@redhat.com&gt;
+
+diff --git a/arch/x86/kvm/xen.c b/arch/x86/kvm/xen.c
+index 6e554041e862..280cb5dc7341 100644
+--- a/arch/x86/kvm/xen.c
++++ b/arch/x86/kvm/xen.c
+@@ -707,26 +707,25 @@ int kvm_xen_vcpu_set_attr(struct kvm_vcpu *vcpu, struct kvm_xen_vcpu_attr *data)
+ 		break;
+ 
+ 	case KVM_XEN_VCPU_ATTR_TYPE_TIMER:
+-		if (data-&gt;u.timer.port) {
+-			if (data-&gt;u.timer.priority != KVM_IRQ_ROUTING_XEN_EVTCHN_PRIO_2LEVEL) {
+-				r = -EINVAL;
+-				break;
+-			}
+-			vcpu-&gt;arch.xen.timer_virq = data-&gt;u.timer.port;
+-
+-			if (!vcpu-&gt;arch.xen.timer.function)
+-				kvm_xen_init_timer(vcpu);
+-
+-			/* Restart the timer if it's set */
+-			if (data-&gt;u.timer.expires_ns)
+-				kvm_xen_start_timer(vcpu, data-&gt;u.timer.expires_ns,
+-						    data-&gt;u.timer.expires_ns -
+-						    get_kvmclock_ns(vcpu-&gt;kvm));
+-		} else if (kvm_xen_timer_enabled(vcpu)) {
+-			kvm_xen_stop_timer(vcpu);
+-			vcpu-&gt;arch.xen.timer_virq = 0;
++		if (data-&gt;u.timer.port &amp;&amp;
++		    data-&gt;u.timer.priority != KVM_IRQ_ROUTING_XEN_EVTCHN_PRIO_2LEVEL) {
++			r = -EINVAL;
++			break;
+ 		}
+ 
++		if (!vcpu-&gt;arch.xen.timer.function)
++			kvm_xen_init_timer(vcpu);
++
++		/* Stop the timer (if it's running) before changing the vector */
++		kvm_xen_stop_timer(vcpu);
++		vcpu-&gt;arch.xen.timer_virq = data-&gt;u.timer.port;
++
++		/* Start the timer if the new value has a valid vector+expiry. */
++		if (data-&gt;u.timer.port &amp;&amp; data-&gt;u.timer.expires_ns)
++			kvm_xen_start_timer(vcpu, data-&gt;u.timer.expires_ns,
++					    data-&gt;u.timer.expires_ns -
++					    get_kvmclock_ns(vcpu-&gt;kvm));
++
+ 		r = 0;
+ 		break;
+ </pre><hr><pre>commit af735db31285fa699384c649be72a9f32ecbb665
+Author: Coleman Dietsch &lt;dietschc@csp.edu&gt;
+Date:   Mon Aug 8 14:06:06 2022 -0500
+
+    KVM: x86/xen: Initialize Xen timer only once
+    
+    Add a check for existing xen timers before initializing a new one.
+    
+    Currently kvm_xen_init_timer() is called on every
+    KVM_XEN_VCPU_ATTR_TYPE_TIMER, which is causing the following ODEBUG
+    crash when vcpu-&gt;arch.xen.timer is already set.
+    
+    ODEBUG: init active (active state 0)
+    object type: hrtimer hint: xen_timer_callbac0
+    RIP: 0010:debug_print_object+0x16e/0x250 lib/debugobjects.c:502
+    Call Trace:
+    __debug_object_init
+    debug_hrtimer_init
+    debug_init
+    hrtimer_init
+    kvm_xen_init_timer
+    kvm_xen_vcpu_set_attr
+    kvm_arch_vcpu_ioctl
+    kvm_vcpu_ioctl
+    vfs_ioctl
+    
+    Fixes: 536395260582 ("KVM: x86/xen: handle PV timers oneshot mode")
+    Cc: stable@vger.kernel.org
+    Link: https://syzkaller.appspot.com/bug?id=8234a9dfd3aafbf092cc5a7cd9842e3ebc45fc42
+    Reported-by: syzbot+e54f930ed78eb0f85281@syzkaller.appspotmail.com
+    Signed-off-by: Coleman Dietsch &lt;dietschc@csp.edu&gt;
+    Reviewed-by: Sean Christopherson &lt;seanjc@google.com&gt;
+    Message-Id: &lt;20220808190607.323899-2-dietschc@csp.edu&gt;
+    Signed-off-by: Paolo Bonzini &lt;pbonzini@redhat.com&gt;
+
+diff --git a/arch/x86/kvm/xen.c b/arch/x86/kvm/xen.c
+index a0c05ccbf4b1..6e554041e862 100644
+--- a/arch/x86/kvm/xen.c
++++ b/arch/x86/kvm/xen.c
+@@ -713,7 +713,9 @@ int kvm_xen_vcpu_set_attr(struct kvm_vcpu *vcpu, struct kvm_xen_vcpu_attr *data)
+ 				break;
+ 			}
+ 			vcpu-&gt;arch.xen.timer_virq = data-&gt;u.timer.port;
+-			kvm_xen_init_timer(vcpu);
++
++			if (!vcpu-&gt;arch.xen.timer.function)
++				kvm_xen_init_timer(vcpu);
+ 
+ 			/* Restart the timer if it's set */
+ 			if (data-&gt;u.timer.expires_ns)</pre><hr><pre>commit 7b92aa9e613508cbaa29dd35bf27db4c35628b10
+Author: Coleman Dietsch &lt;dietschc@csp.edu&gt;
+Date:   Tue Jun 28 12:47:44 2022 -0500
+
+    selftests net: fix kselftest net fatal error
+    
+    The incorrect path is causing the following error when trying to run net
+    kselftests:
+    
+    In file included from bpf/nat6to4.c:43:
+    ../../../lib/bpf/bpf_helpers.h:11:10: fatal error: 'bpf_helper_defs.h' file not found
+             ^~~~~~~~~~~~~~~~~~~
+    1 error generated.
+    
+    Fixes: cf67838c4422 ("selftests net: fix bpf build error")
+    Signed-off-by: Coleman Dietsch &lt;dietschc@csp.edu&gt;
+    Link: https://lore.kernel.org/r/20220628174744.7908-1-dietschc@csp.edu
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/tools/testing/selftests/net/bpf/Makefile b/tools/testing/selftests/net/bpf/Makefile
+index 8a69c91fcca0..8ccaf8732eb2 100644
+--- a/tools/testing/selftests/net/bpf/Makefile
++++ b/tools/testing/selftests/net/bpf/Makefile
+@@ -2,7 +2,7 @@
+ 
+ CLANG ?= clang
+ CCINCLUDE += -I../../bpf
+-CCINCLUDE += -I../../../lib
++CCINCLUDE += -I../../../../lib
+ CCINCLUDE += -I../../../../../usr/include/
+ 
+ TEST_CUSTOM_PROGS = $(OUTPUT)/bpf/nat6to4.o</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Georgia</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Georgia</h1>
+    <div class="pagination">
+        <a href='19_2.html'>&lt;&lt;Prev</a><a href='19.html'>1</a><a href='19_2.html'>2</a><span>[3]</span><a href='19_4.html'>4</a><a href='19_5.html'>5</a><a href='19_6.html'>6</a><a href='19_4.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 86aa04f4c2215912fcca6728f2dcf174f7e31fc4
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Aug 18 21:46:04 2019 -0500
+
+    mtd: rawnand: Fix a memory leak bug
+    
+    In nand_scan_bbt(), a temporary buffer 'buf' is allocated through
+    vmalloc(). However, if check_create() fails, 'buf' is not deallocated,
+    leading to a memory leak bug. To fix this issue, free 'buf' before
+    returning the error.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Miquel Raynal &lt;miquel.raynal@bootlin.com&gt;
+
+diff --git a/drivers/mtd/nand/raw/nand_bbt.c b/drivers/mtd/nand/raw/nand_bbt.c
+index 2ef15ef94525..96045d60471e 100644
+--- a/drivers/mtd/nand/raw/nand_bbt.c
++++ b/drivers/mtd/nand/raw/nand_bbt.c
+@@ -1232,7 +1232,7 @@ static int nand_scan_bbt(struct nand_chip *this, struct nand_bbt_descr *bd)
+ 	if (!td) {
+ 		if ((res = nand_memory_bbt(this, bd))) {
+ 			pr_err("nand_bbt: can't scan flash and build the RAM-based BBT\n");
+-			goto err;
++			goto err_free_bbt;
+ 		}
+ 		return 0;
+ 	}
+@@ -1245,7 +1245,7 @@ static int nand_scan_bbt(struct nand_chip *this, struct nand_bbt_descr *bd)
+ 	buf = vmalloc(len);
+ 	if (!buf) {
+ 		res = -ENOMEM;
+-		goto err;
++		goto err_free_bbt;
+ 	}
+ 
+ 	/* Is the bbt at a given page? */
+@@ -1258,7 +1258,7 @@ static int nand_scan_bbt(struct nand_chip *this, struct nand_bbt_descr *bd)
+ 
+ 	res = check_create(this, buf, bd);
+ 	if (res)
+-		goto err;
++		goto err_free_buf;
+ 
+ 	/* Prevent the bbt regions from erasing / writing */
+ 	mark_bbt_region(this, td);
+@@ -1268,7 +1268,9 @@ static int nand_scan_bbt(struct nand_chip *this, struct nand_bbt_descr *bd)
+ 	vfree(buf);
+ 	return 0;
+ 
+-err:
++err_free_buf:
++	vfree(buf);
++err_free_bbt:
+ 	kfree(this-&gt;bbt);
+ 	this-&gt;bbt = NULL;
+ 	return res;</pre><hr><pre>commit d83aef09aaa50bdafbb32981859128299abf32eb
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Aug 18 10:52:49 2019 -0500
+
+    mtd: onenand_base: Fix a memory leak bug
+    
+    In onenand_scan(), if CONFIG_MTD_ONENAND_VERIFY_WRITE is defined,
+    'this-&gt;verify_buf' is allocated through kzalloc(). However, it is not
+    deallocated in the following execution, if the allocation for
+    'this-&gt;oob_buf' fails, leading to a memory leak bug. To fix this issue,
+    free 'this-&gt;verify_buf' before returning the error.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Miquel Raynal &lt;miquel.raynal@bootlin.com&gt;
+
+diff --git a/drivers/mtd/nand/onenand/onenand_base.c b/drivers/mtd/nand/onenand/onenand_base.c
+index a1f8fe1abb10..dd9fced3a283 100644
+--- a/drivers/mtd/nand/onenand/onenand_base.c
++++ b/drivers/mtd/nand/onenand/onenand_base.c
+@@ -3879,6 +3879,9 @@ int onenand_scan(struct mtd_info *mtd, int maxchips)
+ 		if (!this-&gt;oob_buf) {
+ 			if (this-&gt;options &amp; ONENAND_PAGEBUF_ALLOC) {
+ 				this-&gt;options &amp;= ~ONENAND_PAGEBUF_ALLOC;
++#ifdef CONFIG_MTD_ONENAND_VERIFY_WRITE
++				kfree(this-&gt;verify_buf);
++#endif
+ 				kfree(this-&gt;page_buf);
+ 			}
+ 			return -ENOMEM;</pre><hr><pre>commit de0e4fd2f07ce3bbdb69dfb8d9426b7227451b69
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Tue Aug 20 23:46:36 2019 -0500
+
+    qed: Add cleanup in qed_slowpath_start()
+    
+    If qed_mcp_send_drv_version() fails, no cleanup is executed, leading to
+    memory leaks. To fix this issue, introduce the label 'err4' to perform the
+    cleanup work before returning the error.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Acked-by: Sudarsana Reddy Kalluru &lt;skalluru@marvell.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/qlogic/qed/qed_main.c b/drivers/net/ethernet/qlogic/qed/qed_main.c
+index 829dd60ab937..1efff7f68ef6 100644
+--- a/drivers/net/ethernet/qlogic/qed/qed_main.c
++++ b/drivers/net/ethernet/qlogic/qed/qed_main.c
+@@ -1325,7 +1325,7 @@ static int qed_slowpath_start(struct qed_dev *cdev,
+ 					      &amp;drv_version);
+ 		if (rc) {
+ 			DP_NOTICE(cdev, "Failed sending drv version command\n");
+-			return rc;
++			goto err4;
+ 		}
+ 	}
+ 
+@@ -1333,6 +1333,8 @@ static int qed_slowpath_start(struct qed_dev *cdev,
+ 
+ 	return 0;
+ 
++err4:
++	qed_ll2_dealloc_if(cdev);
+ err3:
+ 	qed_hw_stop(cdev);
+ err2:</pre><hr><pre>commit fcd5ce4b3936242e6679875a4d3c3acfc8743e15
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Aug 18 00:45:40 2019 -0300
+
+    media: dvb-core: fix a memory leak bug
+    
+    In dvb_create_media_entity(), 'dvbdev-&gt;entity' is allocated through
+    kzalloc(). Then, 'dvbdev-&gt;pads' is allocated through kcalloc(). However, if
+    kcalloc() fails, the allocated 'dvbdev-&gt;entity' is not deallocated, leading
+    to a memory leak bug. To fix this issue, free 'dvbdev-&gt;entity' before
+    returning -ENOMEM.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Sean Young &lt;sean@mess.org&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/dvb-core/dvbdev.c b/drivers/media/dvb-core/dvbdev.c
+index d7532f5a352a..917fe034af37 100644
+--- a/drivers/media/dvb-core/dvbdev.c
++++ b/drivers/media/dvb-core/dvbdev.c
+@@ -339,8 +339,10 @@ static int dvb_create_media_entity(struct dvb_device *dvbdev,
+ 	if (npads) {
+ 		dvbdev-&gt;pads = kcalloc(npads, sizeof(*dvbdev-&gt;pads),
+ 				       GFP_KERNEL);
+-		if (!dvbdev-&gt;pads)
++		if (!dvbdev-&gt;pads) {
++			kfree(dvbdev-&gt;entity);
+ 			return -ENOMEM;
++		}
+ 	}
+ 
+ 	switch (type) {</pre><hr><pre>commit 2f6451ed8b5223a28eab81116dd2f901c0dc9f4a
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sat Aug 17 04:04:04 2019 -0300
+
+    media: dvb-frontends: fix a memory leak bug
+    
+    In cx24117_load_firmware(), 'buf' is allocated through kmalloc() to hold
+    the firmware. However, if i2c_transfer() fails, it is not deallocated,
+    leading to a memory leak bug.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Sean Young &lt;sean@mess.org&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/dvb-frontends/cx24117.c b/drivers/media/dvb-frontends/cx24117.c
+index 42697a5999f7..9fccc906d85a 100644
+--- a/drivers/media/dvb-frontends/cx24117.c
++++ b/drivers/media/dvb-frontends/cx24117.c
+@@ -619,8 +619,10 @@ static int cx24117_load_firmware(struct dvb_frontend *fe,
+ 
+ 	/* send fw */
+ 	ret = i2c_transfer(state-&gt;priv-&gt;i2c, &amp;msg, 1);
+-	if (ret &lt; 0)
++	if (ret &lt; 0) {
++		kfree(buf);
+ 		return ret;
++	}
+ 
+ 	kfree(buf);
+ </pre><hr><pre>commit 8c3d3cdbd5dde9bc87d556d2daa9d771ac5254dc
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sat Aug 17 03:42:24 2019 -0300
+
+    media: dvb-frontends: fix memory leaks
+    
+    In dib7000pc_detection(), 'tx' and 'rx' are allocated through kzalloc()
+    respectively. However, if DiB7000PC is detected, they are not deallocated,
+    leading to memory leaks. To fix this issue, create a label to free 'tx' and
+    'rx' before returning from the function.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Sean Young &lt;sean@mess.org&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/dvb-frontends/dib7000p.c b/drivers/media/dvb-frontends/dib7000p.c
+index 52f5e697c5dc..0d22c700016d 100644
+--- a/drivers/media/dvb-frontends/dib7000p.c
++++ b/drivers/media/dvb-frontends/dib7000p.c
+@@ -2036,7 +2036,8 @@ static int dib7000pc_detection(struct i2c_adapter *i2c_adap)
+ 	if (i2c_transfer(i2c_adap, msg, 2) == 2)
+ 		if (rx[0] == 0x01 &amp;&amp; rx[1] == 0xb3) {
+ 			dprintk("-D-  DiB7000PC detected\n");
+-			return 1;
++			ret = 1;
++			goto out;
+ 		}
+ 
+ 	msg[0].addr = msg[1].addr = 0x40;
+@@ -2044,11 +2045,13 @@ static int dib7000pc_detection(struct i2c_adapter *i2c_adap)
+ 	if (i2c_transfer(i2c_adap, msg, 2) == 2)
+ 		if (rx[0] == 0x01 &amp;&amp; rx[1] == 0xb3) {
+ 			dprintk("-D-  DiB7000PC detected\n");
+-			return 1;
++			ret = 1;
++			goto out;
+ 		}
+ 
+ 	dprintk("-D-  DiB7000PC not detected\n");
+ 
++out:
+ 	kfree(rx);
+ rx_memory_error:
+ 	kfree(tx);</pre><hr><pre>commit 1e672e3644940d83bd94e7cb46bac6bb3627de02
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Tue Aug 20 22:21:21 2019 -0500
+
+    NFSv4: Fix a memory leak bug
+    
+    In nfs4_try_migration(), if nfs4_begin_drain_session() fails, the
+    previously allocated 'page' and 'locations' are not deallocated, leading to
+    memory leaks. To fix this issue, go to the 'out' label to free 'page' and
+    'locations' before returning the error.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Anna Schumaker &lt;Anna.Schumaker@Netapp.com&gt;
+
+diff --git a/fs/nfs/nfs4state.c b/fs/nfs/nfs4state.c
+index cad4e064b328..e916aba7a799 100644
+--- a/fs/nfs/nfs4state.c
++++ b/fs/nfs/nfs4state.c
+@@ -2095,8 +2095,10 @@ static int nfs4_try_migration(struct nfs_server *server, const struct cred *cred
+ 	}
+ 
+ 	status = nfs4_begin_drain_session(clp);
+-	if (status != 0)
+-		return status;
++	if (status != 0) {
++		result = status;
++		goto out;
++	}
+ 
+ 	status = nfs4_replace_transport(server, locations);
+ 	if (status != 0) {</pre><hr><pre>commit dc1a3e8e0cc6b2293b48c044710e63395aeb4fb4
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Aug 18 19:18:34 2019 -0500
+
+    dm raid: add missing cleanup in raid_ctr()
+    
+    If rs_prepare_reshape() fails, no cleanup is executed, leading to
+    leak of the raid_set structure allocated at the beginning of
+    raid_ctr(). To fix this issue, go to the label 'bad' if the error
+    occurs.
+    
+    Fixes: 11e4723206683 ("dm raid: stop keeping raid set frozen altogether")
+    Cc: stable@vger.kernel.org
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Mike Snitzer &lt;snitzer@redhat.com&gt;
+
+diff --git a/drivers/md/dm-raid.c b/drivers/md/dm-raid.c
+index 8a60a4a070ac..1f933dd197cd 100644
+--- a/drivers/md/dm-raid.c
++++ b/drivers/md/dm-raid.c
+@@ -3194,7 +3194,7 @@ static int raid_ctr(struct dm_target *ti, unsigned int argc, char **argv)
+ 			  */
+ 			r = rs_prepare_reshape(rs);
+ 			if (r)
+-				return r;
++				goto bad;
+ 
+ 			/* Reshaping ain't recovery, so disable recovery */
+ 			rs_setup_recovery(rs, MaxSector);</pre><hr><pre>commit 313aca5a9c781a19537e6cc882511c13eff3bdba
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Mon Aug 19 12:16:00 2019 -0500
+
+    mtd: spi-nor: fix a memory leak bug
+    
+    In spi_nor_parse_4bait(), 'dwords' is allocated through kmalloc(). However,
+    it is not deallocated in the following execution if spi_nor_read_sfdp()
+    fails, leading to a memory leak. To fix this issue, free 'dwords' before
+    returning the error.
+    
+    Fixes: 816873eaeec6 ("mtd: spi-nor: parse SFDP 4-byte Address Instruction Table")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Tudor Ambarus &lt;tudor.ambarus@microchip.com&gt;
+
+diff --git a/drivers/mtd/spi-nor/spi-nor.c b/drivers/mtd/spi-nor/spi-nor.c
+index ba99d903eda0..fdf776cac3c7 100644
+--- a/drivers/mtd/spi-nor/spi-nor.c
++++ b/drivers/mtd/spi-nor/spi-nor.c
+@@ -3957,7 +3957,7 @@ static int spi_nor_parse_4bait(struct spi_nor *nor,
+ 	addr = SFDP_PARAM_HEADER_PTP(param_header);
+ 	ret = spi_nor_read_sfdp(nor, addr, len, dwords);
+ 	if (ret)
+-		return ret;
++		goto out;
+ 
+ 	/* Fix endianness of the 4BAIT DWORDs. */
+ 	for (i = 0; i &lt; SFDP_4BAIT_DWORD_MAX; i++)</pre><hr><pre>commit 60e2dde1e91ae0addb21ac380cc36ebee7534e49
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Mon Aug 19 15:41:42 2019 -0500
+
+    led: triggers: Fix a memory leak bug
+    
+    In led_trigger_set(), 'event' is allocated in kasprintf(). However, it is
+    not deallocated in the following execution if the label 'err_activate' or
+    'err_add_groups' is entered, leading to memory leaks. To fix this issue,
+    free 'event' before returning the error.
+    
+    Fixes: 52c47742f79d ("leds: triggers: send uevent when changing triggers")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Acked-by: Pavel Machek &lt;pavel@ucw.cz&gt;
+    Signed-off-by: Jacek Anaszewski &lt;jacek.anaszewski@gmail.com&gt;
+
+diff --git a/drivers/leds/led-triggers.c b/drivers/leds/led-triggers.c
+index 8d11a5e23227..eff1bda8b520 100644
+--- a/drivers/leds/led-triggers.c
++++ b/drivers/leds/led-triggers.c
+@@ -173,6 +173,7 @@ int led_trigger_set(struct led_classdev *led_cdev, struct led_trigger *trig)
+ 	list_del(&amp;led_cdev-&gt;trig_list);
+ 	write_unlock_irqrestore(&amp;led_cdev-&gt;trigger-&gt;leddev_list_lock, flags);
+ 	led_set_brightness(led_cdev, LED_OFF);
++	kfree(event);
+ 
+ 	return ret;
+ }</pre>
+    <div class="pagination">
+        <a href='19_2.html'>&lt;&lt;Prev</a><a href='19.html'>1</a><a href='19_2.html'>2</a><span>[3]</span><a href='19_4.html'>4</a><a href='19_5.html'>5</a><a href='19_6.html'>6</a><a href='19_4.html'>Next&gt;&gt;</a>
+    <div>
+</body>

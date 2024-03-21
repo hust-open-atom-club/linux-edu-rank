@@ -1,0 +1,1342 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Queensland</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Queensland</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='18_2.html'>2</a><a href='18_3.html'>3</a><a href='18_4.html'>4</a><a href='18_5.html'>5</a><a href='18_6.html'>6</a><a href='18_7.html'>7</a><a href='18_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit e30b9d6c641dbd9687a5605b2151a2a83d2e8770
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Sat Nov 24 04:34:42 2007 -0300
+
+    V4L/DVB (12821): tm6000: update USB request names and clean up i2c routine
+    
+    Update the descriptions of the USB request types so that they match what
+    we now know they do.
+    
+    Rework the i2c_xfer function so that it is more explicit what sort of I2C
+    transfers it is that the tm6000 can't perform.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@redhat.com&gt;
+
+diff --git a/drivers/staging/tm6000/tm6000-i2c.c b/drivers/staging/tm6000/tm6000-i2c.c
+index 8569cfca8f82..12e2c98e5433 100644
+--- a/drivers/staging/tm6000/tm6000-i2c.c
++++ b/drivers/staging/tm6000/tm6000-i2c.c
+@@ -73,7 +73,7 @@ static int tm6000_i2c_scan(struct i2c_adapter *i2c_adap, int addr)
+ 	/* This sends addr + 1 byte with 0 */
+ 	rc = tm6000_read_write_usb (dev,
+ 		USB_DIR_IN | USB_TYPE_VENDOR,
+-		REQ_16_SET_GET_I2CSEQ,
++		REQ_16_SET_GET_I2C_WR1_RDN,
+ 		addr, 0,
+ 		buf, 0);
+ 	msleep(10);
+@@ -94,82 +94,61 @@ static int tm6000_i2c_xfer(struct i2c_adapter *i2c_adap,
+ {
+ 	struct tm6000_core *dev = i2c_adap-&gt;algo_data;
+ 	int addr, rc, i, byte;
+-	int prev_reg = -1;
+ 
+ 	if (num &lt;= 0)
+ 		return 0;
+ 	for (i = 0; i &lt; num; i++) {
+-		addr = (msgs[i].addr &lt;&lt; 1) &amp;0xff;
++		addr = (msgs[i].addr &lt;&lt; 1) &amp; 0xff;
+ 		i2c_dprintk(2,"%s %s addr=0x%x len=%d:",
+ 			 (msgs[i].flags &amp; I2C_M_RD) ? "read" : "write",
+ 			 i == num - 1 ? "stop" : "nonstop", addr, msgs[i].len);
+ 		if (!msgs[i].len) {
+ 			/* Do I2C scan */
+-			rc=tm6000_i2c_scan(i2c_adap, addr);
++			rc = tm6000_i2c_scan(i2c_adap, addr);
+ 		} else if (msgs[i].flags &amp; I2C_M_RD) {
+-			/* Read bytes */
+-	/* I2C is assumed to have always a subaddr at the first byte of the
+-	   message bus. Also, the first i2c value of the answer is returned
+-	   out of message data.
+-	 */
+-			/* SMBus Read Byte command */
+-			if (prev_reg &lt; 0)
+-				printk("XXX read from unknown prev_reg\n");
+-			rc = tm6000_read_write_usb (dev,
+-				USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+-				REQ_16_SET_GET_I2CSEQ,
+-				addr | (prev_reg &lt;&lt; 8), 0,
+-				msgs[i].buf, msgs[i].len);
+-			if (prev_reg &gt;= 0)
+-				prev_reg += msgs[i].len;
+-			if (i2c_debug&gt;=2) {
+-				for (byte = 0; byte &lt; msgs[i].len; byte++) {
++			/* read request without preceding register selection */
++			/*
++			 * The TM6000 only supports a read transaction
++			 * immediately after a 1 or 2 byte write to select
++			 * a register.  We cannot fulfil this request.
++			 */
++			i2c_dprintk(2, " read without preceding write not"
++				       " supported");
++			rc = -EOPNOTSUPP;
++			goto err;
++		} else if (i + 1 &lt; num &amp;&amp; msgs[i].len &lt;= 2 &amp;&amp;
++			   (msgs[i + 1].flags &amp; I2C_M_RD) &amp;&amp;
++			   msgs[i].addr == msgs[i + 1].addr) {
++			/* 1 or 2 byte write followed by a read */
++			if (i2c_debug &gt;= 2)
++				for (byte = 0; byte &lt; msgs[i].len; byte++)
+ 					printk(" %02x", msgs[i].buf[byte]);
+-				}
+-			}
+-		} else if (i+1 &lt; num &amp;&amp; msgs[i].len == 2 &amp;&amp;
+-			   (msgs[i+1].flags &amp; I2C_M_RD) &amp;&amp;
+-			   msgs[i].addr == msgs[i+1].addr) {
+-			i2c_dprintk(2, "msg %d: write 2, read %d", i,
+-				    msgs[i+1].len);
+-			/* Write 2 Read N command */
++			i2c_dprintk(2, "; joined to read %s len=%d:",
++				    i == num - 2 ? "stop" : "nonstop",
++				    msgs[i + 1].len);
+ 			rc = tm6000_read_write_usb (dev,
+ 				USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+-				REQ_14_SET_GET_EEPROM_PAGE, /* XXX wrong name */
+-				addr | msgs[i].buf[0] &lt;&lt; 8, msgs[i].buf[1],
+-				msgs[i+1].buf, msgs[i+1].len);
++				msgs[i].len == 1 ? REQ_16_SET_GET_I2C_WR1_RDN
++						 : REQ_14_SET_GET_I2C_WR2_RDN,
++				addr | msgs[i].buf[0] &lt;&lt; 8,
++				msgs[i].len == 1 ? 0 : msgs[i].buf[1],
++				msgs[i + 1].buf, msgs[i + 1].len);
+ 			i++;
+-			if (i2c_debug&gt;=2) {
+-				for (byte = 0; byte &lt; msgs[i].len; byte++) {
++			if (i2c_debug &gt;= 2)
++				for (byte = 0; byte &lt; msgs[i].len; byte++)
+ 					printk(" %02x", msgs[i].buf[byte]);
+-				}
+-			}
+-			prev_reg = -1;
+ 		} else {
+ 			/* write bytes */
+-			if (i2c_debug&gt;=2) {
++			if (i2c_debug &gt;= 2)
+ 				for (byte = 0; byte &lt; msgs[i].len; byte++)
+ 					printk(" %02x", msgs[i].buf[byte]);
+-			}
+-
+-			/* SMBus Write Byte command followed by a read command */
+-			if(msgs[i].len == 1 &amp;&amp; i+1 &lt; num &amp;&amp; msgs[i+1].flags &amp; I2C_M_RD
+-					    &amp;&amp; msgs[i+1].addr == msgs[i].addr) {
+-				prev_reg = msgs[i].buf[0];
+-				if (i2c_debug &gt;= 2)
+-					printk("\n");
+-				continue;
+-			}
+-
+-			rc = tm6000_read_write_usb (dev,
++			rc = tm6000_read_write_usb(dev,
+ 				USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+-				REQ_16_SET_GET_I2CSEQ,
+-				addr|(*msgs[i].buf)&lt;&lt;8, 0,
+-				msgs[i].buf+1, msgs[i].len-1);
+-
+-			prev_reg = -1;
++				REQ_16_SET_GET_I2C_WR1_RDN,
++				addr | msgs[i].buf[0] &lt;&lt; 8, 0,
++				msgs[i].buf + 1, msgs[i].len - 1);
+ 		}
+-		if (i2c_debug&gt;=2)
++		if (i2c_debug &gt;= 2)
+ 			printk("\n");
+ 		if (rc &lt; 0)
+ 			goto err;
+@@ -181,7 +160,6 @@ static int tm6000_i2c_xfer(struct i2c_adapter *i2c_adap,
+ 	return rc;
+ }
+ 
+-
+ static int tm6000_i2c_eeprom(struct tm6000_core *dev,
+ 			     unsigned char *eedata, int len)
+ {
+@@ -196,7 +174,7 @@ static int tm6000_i2c_eeprom(struct tm6000_core *dev,
+ 	*p = i;
+ 	rc = tm6000_read_write_usb (dev,
+ 		USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+-		REQ_16_SET_GET_I2CSEQ, 0xa0 | i&lt;&lt;8, 0, p, 1);
++		REQ_16_SET_GET_I2C_WR1_RDN, 0xa0 | i&lt;&lt;8, 0, p, 1);
+ 		if (rc &lt; 1) {
+ 			if (p == eedata)
+ 				goto noeeprom;
+@@ -273,7 +251,7 @@ static void dec_use(struct i2c_adapter *adap)
+ #define mass_write(addr, reg, data...)					\
+ 	{ const static u8 _val[] = data;				\
+ 	rc=tm6000_read_write_usb(dev,USB_DIR_OUT | USB_TYPE_VENDOR,	\
+-	REQ_16_SET_GET_I2CSEQ,(reg&lt;&lt;8)+addr, 0x00, (u8 *) _val,		\
++	REQ_16_SET_GET_I2C_WR1_RDN,(reg&lt;&lt;8)+addr, 0x00, (u8 *) _val,	\
+ 	ARRAY_SIZE(_val));						\
+ 	if (rc&lt;0) {							\
+ 		printk(KERN_ERR "Error on line %d: %d\n",__LINE__,rc);	\
+diff --git a/drivers/staging/tm6000/tm6000-regs.h b/drivers/staging/tm6000/tm6000-regs.h
+index 414852e69fce..9b6456e18426 100644
+--- a/drivers/staging/tm6000/tm6000-regs.h
++++ b/drivers/staging/tm6000/tm6000-regs.h
+@@ -38,11 +38,11 @@
+ #define REQ_11_SET_EEPROM_ADDR		11
+ #define REQ_12_SET_GET_EEPROMBYTE	12
+ #define REQ_13_GET_EEPROM_SEQREAD	13
+-#define REQ_14_SET_GET_EEPROM_PAGE	14
++#define REQ_14_SET_GET_I2C_WR2_RDN	14
+ #define REQ_15_SET_GET_I2CBYTE		15
+ 	/* Write: Subaddr, Slave Addr, value, 0 */
+ 	/* Read : Subaddr, Slave Addr, value, 1 */
+-#define REQ_16_SET_GET_I2CSEQ		16
++#define REQ_16_SET_GET_I2C_WR1_RDN	16
+ 	/* Subaddr, Slave Addr, 0, length */
+ #define REQ_17_SET_GET_I2CFP		17
+ 	/* Write: Slave Addr, register, value */</pre><hr><pre>commit cf9e1509c278c3d5005f222539813933e4dc345c
+Author: Christopher Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Fri Nov 23 13:18:56 2007 -0300
+
+    V4L/DVB (12820): tm6000: fix i2c readings
+    
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@redhat.com&gt;
+
+diff --git a/drivers/staging/tm6000/tm6000-i2c.c b/drivers/staging/tm6000/tm6000-i2c.c
+index c0327d724eb2..8569cfca8f82 100644
+--- a/drivers/staging/tm6000/tm6000-i2c.c
++++ b/drivers/staging/tm6000/tm6000-i2c.c
+@@ -94,7 +94,7 @@ static int tm6000_i2c_xfer(struct i2c_adapter *i2c_adap,
+ {
+ 	struct tm6000_core *dev = i2c_adap-&gt;algo_data;
+ 	int addr, rc, i, byte;
+-	u8 prev_reg = 0;
++	int prev_reg = -1;
+ 
+ 	if (num &lt;= 0)
+ 		return 0;
+@@ -113,16 +113,38 @@ static int tm6000_i2c_xfer(struct i2c_adapter *i2c_adap,
+ 	   out of message data.
+ 	 */
+ 			/* SMBus Read Byte command */
++			if (prev_reg &lt; 0)
++				printk("XXX read from unknown prev_reg\n");
+ 			rc = tm6000_read_write_usb (dev,
+ 				USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+ 				REQ_16_SET_GET_I2CSEQ,
+ 				addr | (prev_reg &lt;&lt; 8), 0,
+ 				msgs[i].buf, msgs[i].len);
++			if (prev_reg &gt;= 0)
++				prev_reg += msgs[i].len;
+ 			if (i2c_debug&gt;=2) {
+ 				for (byte = 0; byte &lt; msgs[i].len; byte++) {
+ 					printk(" %02x", msgs[i].buf[byte]);
+ 				}
+ 			}
++		} else if (i+1 &lt; num &amp;&amp; msgs[i].len == 2 &amp;&amp;
++			   (msgs[i+1].flags &amp; I2C_M_RD) &amp;&amp;
++			   msgs[i].addr == msgs[i+1].addr) {
++			i2c_dprintk(2, "msg %d: write 2, read %d", i,
++				    msgs[i+1].len);
++			/* Write 2 Read N command */
++			rc = tm6000_read_write_usb (dev,
++				USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
++				REQ_14_SET_GET_EEPROM_PAGE, /* XXX wrong name */
++				addr | msgs[i].buf[0] &lt;&lt; 8, msgs[i].buf[1],
++				msgs[i+1].buf, msgs[i+1].len);
++			i++;
++			if (i2c_debug&gt;=2) {
++				for (byte = 0; byte &lt; msgs[i].len; byte++) {
++					printk(" %02x", msgs[i].buf[byte]);
++				}
++			}
++			prev_reg = -1;
+ 		} else {
+ 			/* write bytes */
+ 			if (i2c_debug&gt;=2) {
+@@ -134,6 +156,8 @@ static int tm6000_i2c_xfer(struct i2c_adapter *i2c_adap,
+ 			if(msgs[i].len == 1 &amp;&amp; i+1 &lt; num &amp;&amp; msgs[i+1].flags &amp; I2C_M_RD
+ 					    &amp;&amp; msgs[i+1].addr == msgs[i].addr) {
+ 				prev_reg = msgs[i].buf[0];
++				if (i2c_debug &gt;= 2)
++					printk("\n");
+ 				continue;
+ 			}
+ 
+@@ -143,12 +167,7 @@ static int tm6000_i2c_xfer(struct i2c_adapter *i2c_adap,
+ 				addr|(*msgs[i].buf)&lt;&lt;8, 0,
+ 				msgs[i].buf+1, msgs[i].len-1);
+ 
+-			if(msgs[i].len &gt;= 1) {
+-				prev_reg = msgs[i].buf[0];
+-			}
+-			else {
+-				prev_reg = 0;
+-			}
++			prev_reg = -1;
+ 		}
+ 		if (i2c_debug&gt;=2)
+ 			printk("\n");</pre><hr><pre>commit d4dc673da9a94716ca2410306c1b36b5faf6c4cc
+Author: Christopher Pascoe &lt;linuxdvb@itee.uq.edu.au&gt;
+Date:   Mon Apr 27 11:27:04 2009 -0300
+
+    V4L/DVB (11626): cx23885: Two fixes for DViCO FusionHDTV DVB-T Dual Express
+    
+    Two fixes for DViCO FusionHDTV DVB-T Dual Express:
+    
+     * Reset correct tuner when reinitializing xc3028.
+     * Disable the I2C gate control to avoid locking up the I2C bus.
+    
+    Tested-by: John Knops &lt;jknops@australiaonline.net.au&gt;
+    Reviewed-by: Steven Toth &lt;stoth@linuxtv.org&gt;
+    Signed-off-by: Christopher Pascoe &lt;linuxdvb@itee.uq.edu.au&gt;
+    Signed-off-by: Devin Heitmueller &lt;dheitmueller@linuxtv.org&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@redhat.com&gt;
+
+diff --git a/drivers/media/video/cx23885/cx23885-cards.c b/drivers/media/video/cx23885/cx23885-cards.c
+index a3c0565be1a9..6d6293f7d428 100644
+--- a/drivers/media/video/cx23885/cx23885-cards.c
++++ b/drivers/media/video/cx23885/cx23885-cards.c
+@@ -441,9 +441,9 @@ int cx23885_tuner_callback(void *priv, int component, int command, int arg)
+ 	case CX23885_BOARD_DVICO_FUSIONHDTV_DVB_T_DUAL_EXP:
+ 		/* Two identical tuners on two different i2c buses,
+ 		 * we need to reset the correct gpio. */
+-		if (port-&gt;nr == 0)
++		if (port-&gt;nr == 1)
+ 			bitmask = 0x01;
+-		else if (port-&gt;nr == 1)
++		else if (port-&gt;nr == 2)
+ 			bitmask = 0x04;
+ 		break;
+ 	}
+diff --git a/drivers/media/video/cx23885/cx23885-dvb.c b/drivers/media/video/cx23885/cx23885-dvb.c
+index f48454ab3900..0c49a98213c4 100644
+--- a/drivers/media/video/cx23885/cx23885-dvb.c
++++ b/drivers/media/video/cx23885/cx23885-dvb.c
+@@ -314,6 +314,7 @@ static struct zl10353_config dvico_fusionhdtv_xc3028 = {
+ 	.demod_address = 0x0f,
+ 	.if2           = 45600,
+ 	.no_tuner      = 1,
++	.disable_i2c_gate_ctrl = 1,
+ };
+ 
+ static struct stv0900_config netup_stv0900_config = {</pre><hr><pre>commit ade0815c16734e8c25dbac9faf5b5d63bcccd533
+Author: Douglas Kosovic &lt;douglask@itee.uq.edu.au&gt;
+Date:   Thu Jan 22 23:07:26 2009 -0300
+
+    V4L/DVB (10299): bttv: Add support for IVCE-8784 support for V4L2 bttv driver
+    
+    It's a quad Bt878 PCI-e x1 capture board that's basically the same as the
+    IVC-200 (quad Bt878 PCI) capture board that's currently supported in
+    the V4L2 bttv driver.
+    
+    Manufacturer's web page for IVCE-8784 with photo and info:
+      http://www.iei.com.tw/en/product_IPC.asp?model=IVCE-8784
+    
+    Signed-off-by: Douglas Kosovic &lt;douglask@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@redhat.com&gt;
+
+diff --git a/Documentation/video4linux/CARDLIST.bttv b/Documentation/video4linux/CARDLIST.bttv
+index 0d93fa1ac25e..4dfe62641374 100644
+--- a/Documentation/video4linux/CARDLIST.bttv
++++ b/Documentation/video4linux/CARDLIST.bttv
+@@ -154,3 +154,4 @@
+ 153 -&gt; PHYTEC VD-012 (bt878)
+ 154 -&gt; PHYTEC VD-012-X1 (bt878)
+ 155 -&gt; PHYTEC VD-012-X2 (bt878)
++156 -&gt; IVCE-8784                                           [0000:f050,0001:f050,0002:f050,0003:f050]
+diff --git a/drivers/media/video/bt8xx/bttv-cards.c b/drivers/media/video/bt8xx/bttv-cards.c
+index d24dcc025e37..9dfd8c70e4fb 100644
+--- a/drivers/media/video/bt8xx/bttv-cards.c
++++ b/drivers/media/video/bt8xx/bttv-cards.c
+@@ -246,6 +246,10 @@ static struct CARD {
+ 	{ 0xa182ff0d, BTTV_BOARD_IVC120,        "IVC-120G" },
+ 	{ 0xa182ff0e, BTTV_BOARD_IVC120,        "IVC-120G" },
+ 	{ 0xa182ff0f, BTTV_BOARD_IVC120,        "IVC-120G" },
++	{ 0xf0500000, BTTV_BOARD_IVCE8784,      "IVCE-8784" },
++	{ 0xf0500001, BTTV_BOARD_IVCE8784,      "IVCE-8784" },
++	{ 0xf0500002, BTTV_BOARD_IVCE8784,      "IVCE-8784" },
++	{ 0xf0500003, BTTV_BOARD_IVCE8784,      "IVCE-8784" },
+ 
+ 	{ 0x41424344, BTTV_BOARD_GRANDTEC,      "GrandTec Multi Capture" },
+ 	{ 0x01020304, BTTV_BOARD_XGUARD,        "Grandtec Grand X-Guard" },
+@@ -2162,6 +2166,19 @@ struct tvcard bttv_tvcards[] = {
+ 		.muxsel         = { 2 },
+ 		.pll            = PLL_28,
+ 	},
++	[BTTV_BOARD_IVCE8784] = {
++		.name           = "IVCE-8784",
++		.video_inputs   = 1,
++		.audio_inputs   = 0,
++		.tuner          = UNSET,
++		.tuner_type     = UNSET,
++		.tuner_addr     = ADDR_UNSET,
++		.radio_addr     = ADDR_UNSET,
++		.svhs           = UNSET,
++		.gpiomask       = 0xdf,
++		.muxsel         = { 2 },
++		.pll            = PLL_28,
++	},
+ 	[BTTV_BOARD_XGUARD] = {
+ 		.name           = "Grand X-Guard / Trust 814PCI",
+ 		.video_inputs   = 16,
+diff --git a/drivers/media/video/bt8xx/bttv.h b/drivers/media/video/bt8xx/bttv.h
+index 529bf6cf634d..a7bcad171823 100644
+--- a/drivers/media/video/bt8xx/bttv.h
++++ b/drivers/media/video/bt8xx/bttv.h
+@@ -180,6 +180,7 @@
+ #define BTTV_BOARD_VD012		   0x99
+ #define BTTV_BOARD_VD012_X1		   0x9a
+ #define BTTV_BOARD_VD012_X2		   0x9b
++#define BTTV_BOARD_IVCE8784		   0x9c
+ 
+ 
+ /* more card-specific defines */</pre><hr><pre>commit 8765561fc88131bbc9a6246010c15b63595ec35e
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Tue Apr 22 14:45:15 2008 -0300
+
+    V4L/DVB (7259): FusionHDTV DVB-T Pro tuning problem fixes
+    
+    It seems that on this board, the demodulator provides the pullup on the I2C
+    bus, which means that calling i2c_gate_ctrl crashes the bus.  Turn this off
+    and the xc3028 can talk OK.  Also fix some GPIO related settings that
+    became more clear through working on this.
+    
+    Some changes made by Mauro Chehab to allow merging it with some
+    other xc3028 patches.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/video/cx88/cx88-cards.c b/drivers/media/video/cx88/cx88-cards.c
+index 1dc70f27f7f9..1fe6b9da9815 100644
+--- a/drivers/media/video/cx88/cx88-cards.c
++++ b/drivers/media/video/cx88/cx88-cards.c
+@@ -2038,11 +2038,9 @@ static int cx88_dvico_xc2028_callback(void *ptr, int command, int arg)
+ 
+ 	switch (command) {
+ 	case XC2028_TUNER_RESET:
+-		cx_set(MO_GP0_IO, 0x0200);
+-		cx_clear(MO_GP0_IO, 0x02);
+-		mdelay(100);
+-		cx_set(MO_GP0_IO, 0x02);
+-		mdelay(100);
++		cx_write(MO_GP0_IO, 0x101000);
++		mdelay(5);
++		cx_set(MO_GP0_IO, 0x101010);
+ 		break;
+ 	default:
+ 		return -EINVAL;
+@@ -2302,6 +2300,13 @@ static void cx88_card_setup(struct cx88_core *core)
+ 		cx_write(MO_GP0_IO, 0x000007f8);
+ 		cx_write(MO_GP1_IO, 0x00000001);
+ 		break;
++	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PRO:
++		/* GPIO0:0 is hooked to demod reset */
++		/* GPIO0:4 is hooked to xc3028 reset */
++		cx_write(MO_GP0_IO, 0x00111100);
++		msleep(1);
++		cx_write(MO_GP0_IO, 0x00111111);
++		break;
+ 	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_DUAL:
+ 		/* GPIO0:6 is hooked to FX2 reset pin */
+ 		cx_set(MO_GP0_IO, 0x00004040);
+@@ -2312,7 +2317,6 @@ static void cx88_card_setup(struct cx88_core *core)
+ 	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T1:
+ 	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PLUS:
+ 	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_HYBRID:
+-	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PRO:
+ 		/* GPIO0:0 is hooked to mt352 reset pin */
+ 		cx_set(MO_GP0_IO, 0x00000101);
+ 		cx_clear(MO_GP0_IO, 0x00000001);
+diff --git a/drivers/media/video/cx88/cx88-dvb.c b/drivers/media/video/cx88/cx88-dvb.c
+index 591037d8d14f..ae2a0f5f0806 100644
+--- a/drivers/media/video/cx88/cx88-dvb.c
++++ b/drivers/media/video/cx88/cx88-dvb.c
+@@ -588,6 +588,14 @@ static int dvb_register(struct cx8802_dev *dev)
+ 			dev-&gt;dvb.frontend = dvb_attach(mt352_attach,
+ 						&amp;dvico_fusionhdtv_mt352_xc3028,
+ 						&amp;dev-&gt;core-&gt;i2c_adap);
++		/*
++		 * On this board, the demod provides the I2C bus pullup.
++		 * We must not permit gate_ctrl to be performed, or
++		 * the xc3028 cannot communicate on the bus.
++		 */
++		if (dev-&gt;dvb.frontend)
++			dev-&gt;dvb.frontend-&gt;ops.i2c_gate_ctrl = NULL;
++
+ 		attach_xc3028 = 1;
+ 		break;
+ 	case CX88_BOARD_PCHDTV_HD3000:</pre><hr><pre>commit b3fb91d20ca111316854a166ff88b0c8c0f2388b
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Tue Apr 22 14:45:15 2008 -0300
+
+    V4L/DVB (7258): Support DVB-T tuning on the DViCO FusionHDTV DVB-T Pro
+    
+    Add support for tuning DVB-T channels on DViCO's FusionHDTV DVB-T Pro board.
+    
+    The IR remote and analog tuner are not supported at this time.
+    
+    Some changes made by Mauro Chehab to allow merging it with some other xc3028
+    patches.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/Documentation/video4linux/CARDLIST.cx88 b/Documentation/video4linux/CARDLIST.cx88
+index c92795b6e697..423da1543815 100644
+--- a/Documentation/video4linux/CARDLIST.cx88
++++ b/Documentation/video4linux/CARDLIST.cx88
+@@ -62,3 +62,4 @@
+  61 -&gt; Winfast TV2000 XP Global                            [107d:6f18]
+  62 -&gt; PowerColor Real Angel 330                           [14f1:ea3d]
+  63 -&gt; Geniatech X8000-MT DVBT                             [14f1:8852]
++ 64 -&gt; DViCO FusionHDTV DVB-T PRO                          [18ac:db30]
+diff --git a/drivers/media/video/cx88/cx88-cards.c b/drivers/media/video/cx88/cx88-cards.c
+index d07286fa21f5..1dc70f27f7f9 100644
+--- a/drivers/media/video/cx88/cx88-cards.c
++++ b/drivers/media/video/cx88/cx88-cards.c
+@@ -1543,7 +1543,24 @@ static const struct cx88_board cx88_boards[] = {
+ 		       .gpio3  = 0x00000000,
+ 	       },
+ 	       .mpeg           = CX88_MPEG_DVB,
+-       }
++       },
++       [CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PRO] = {
++	       .name           = "DViCO FusionHDTV DVB-T PRO",
++	       .tuner_type     = TUNER_ABSENT, /* XXX: Has XC3028 */
++	       .radio_type     = UNSET,
++	       .tuner_addr     = ADDR_UNSET,
++	       .radio_addr     = ADDR_UNSET,
++	       .input          = { {
++		       .type   = CX88_VMUX_COMPOSITE1,
++		       .vmux   = 1,
++		       .gpio0  = 0x000067df,
++		}, {
++		       .type   = CX88_VMUX_SVIDEO,
++		       .vmux   = 2,
++		       .gpio0  = 0x000067df,
++	       } },
++	       .mpeg           = CX88_MPEG_DVB,
++       },
+ };
+ 
+ /* ------------------------------------------------------------------ */
+@@ -1748,7 +1765,11 @@ static const struct cx88_subid cx88_subids[] = {
+ 		.subdevice = 0xdb11,
+ 		.card      = CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PLUS,
+ 		/* Re-branded DViCO: UltraView DVB-T Plus */
+-	},{
++	}, {
++		.subvendor = 0x18ac,
++		.subdevice = 0xdb30,
++		.card      = CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PRO,
++	}, {
+ 		.subvendor = 0x17de,
+ 		.subdevice = 0x0840,
+ 		.card      = CX88_BOARD_KWORLD_HARDWARE_MPEG_TV_XPERT,
+@@ -2009,6 +2030,28 @@ static void gdi_eeprom(struct cx88_core *core, u8 *eeprom_data)
+ 		CX88_RADIO : 0;
+ }
+ 
++/* ------------------------------------------------------------------- */
++/* some Divco specific stuff                                           */
++static int cx88_dvico_xc2028_callback(void *ptr, int command, int arg)
++{
++	struct cx88_core *core = ptr;
++
++	switch (command) {
++	case XC2028_TUNER_RESET:
++		cx_set(MO_GP0_IO, 0x0200);
++		cx_clear(MO_GP0_IO, 0x02);
++		mdelay(100);
++		cx_set(MO_GP0_IO, 0x02);
++		mdelay(100);
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++
+ /* ----------------------------------------------------------------------- */
+ /* some Geniatech specific stuff                                           */
+ 
+@@ -2098,6 +2141,8 @@ static int cx88_xc2028_tuner_callback(void *priv, int command, int arg)
+ 	case CX88_BOARD_POWERCOLOR_REAL_ANGEL:
+ 	case CX88_BOARD_GENIATECH_X8000_MT:
+ 		return cx88_xc3028_geniatech_tuner_callback(priv, command, arg);
++	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PRO:
++		return cx88_dvico_xc2028_callback(priv, command, arg);
+ 	}
+ 
+ 	switch (command) {
+@@ -2267,6 +2312,7 @@ static void cx88_card_setup(struct cx88_core *core)
+ 	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T1:
+ 	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PLUS:
+ 	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_HYBRID:
++	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PRO:
+ 		/* GPIO0:0 is hooked to mt352 reset pin */
+ 		cx_set(MO_GP0_IO, 0x00000101);
+ 		cx_clear(MO_GP0_IO, 0x00000001);
+@@ -2338,9 +2384,18 @@ static void cx88_card_setup(struct cx88_core *core)
+ 
+ 		ctl.fname   = XC2028_DEFAULT_FIRMWARE;
+ 		ctl.max_len = 64;
+-		/* FIXME: Those should be device-dependent */
+-		ctl.demod = XC3028_FE_OREN538;
+-		ctl.mts = 1;
++
++		switch (core-&gt;boardnr) {
++		case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PRO:
++			ctl.scode_table = XC3028_FE_ZARLINK456;
++			break;
++		case CX88_BOARD_DVICO_FUSIONHDTV_5_PCI_NANO:
++			ctl.demod = XC3028_FE_OREN538;
++			break;
++		default:
++			ctl.demod = XC3028_FE_OREN538;
++			ctl.mts = 1;
++		}
+ 
+ 		xc2028_cfg.tuner = TUNER_XC2028;
+ 		xc2028_cfg.priv  = &amp;ctl;
+diff --git a/drivers/media/video/cx88/cx88-dvb.c b/drivers/media/video/cx88/cx88-dvb.c
+index c786d951a04b..591037d8d14f 100644
+--- a/drivers/media/video/cx88/cx88-dvb.c
++++ b/drivers/media/video/cx88/cx88-dvb.c
+@@ -237,6 +237,19 @@ static struct zl10353_config dvico_fusionhdtv_hybrid = {
+ 	.no_tuner      = 1,
+ };
+ 
++static struct zl10353_config dvico_fusionhdtv_xc3028 = {
++	.demod_address = 0x0f,
++	.if2           = 45600,
++	.no_tuner      = 1,
++};
++
++static struct mt352_config dvico_fusionhdtv_mt352_xc3028 = {
++	.demod_address = 0x0f,
++	.if2 = 4560,
++	.no_tuner = 1,
++	.demod_init = dvico_fusionhdtv_demod_init,
++};
++
+ static struct zl10353_config dvico_fusionhdtv_plus_v1_1 = {
+ 	.demod_address = 0x0f,
+ };
+@@ -567,6 +580,16 @@ static int dvb_register(struct cx8802_dev *dev)
+ 				   DVB_PLL_THOMSON_FE6600);
+ 		}
+ 		break;
++	case CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PRO:
++		dev-&gt;dvb.frontend = dvb_attach(zl10353_attach,
++					       &amp;dvico_fusionhdtv_xc3028,
++					       &amp;dev-&gt;core-&gt;i2c_adap);
++		if (dev-&gt;dvb.frontend == NULL)
++			dev-&gt;dvb.frontend = dvb_attach(mt352_attach,
++						&amp;dvico_fusionhdtv_mt352_xc3028,
++						&amp;dev-&gt;core-&gt;i2c_adap);
++		attach_xc3028 = 1;
++		break;
+ 	case CX88_BOARD_PCHDTV_HD3000:
+ 		dev-&gt;dvb.frontend = dvb_attach(or51132_attach, &amp;pchdtv_hd3000,
+ 					       &amp;dev-&gt;core-&gt;i2c_adap);
+diff --git a/drivers/media/video/cx88/cx88.h b/drivers/media/video/cx88/cx88.h
+index 5145bf2f5557..9df3f198a4df 100644
+--- a/drivers/media/video/cx88/cx88.h
++++ b/drivers/media/video/cx88/cx88.h
+@@ -216,6 +216,7 @@ extern struct sram_channel cx88_sram_channels[];
+ #define CX88_BOARD_WINFAST_TV2000_XP_GLOBAL 61
+ #define CX88_BOARD_POWERCOLOR_REAL_ANGEL   62
+ #define CX88_BOARD_GENIATECH_X8000_MT      63
++#define CX88_BOARD_DVICO_FUSIONHDTV_DVB_T_PRO 64
+ 
+ enum cx88_itype {
+ 	CX88_VMUX_COMPOSITE1 = 1,</pre><hr><pre>commit 0aaa22e554c0934625faf79deea42bfecbdbc23d
+Author: Douglas Kosovic &lt;douglask@itee.uq.edu.au&gt;
+Date:   Tue Jan 29 15:02:50 2008 +0100
+
+    [ALSA] hda-codec - Add Dell T3400 support
+    
+    Added the support for Dell T3400 with AD1984 codec chip.
+    ALSA bug#3699:
+            https://bugtrack.alsa-project.org/alsa-bug/view.php?id=3699
+    
+    Signed-off-by: Douglas Kosovic &lt;douglask@itee.uq.edu.au&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+    Signed-off-by: Jaroslav Kysela &lt;perex@perex.cz&gt;
+
+diff --git a/Documentation/sound/alsa/ALSA-Configuration.txt b/Documentation/sound/alsa/ALSA-Configuration.txt
+index 73f5012326ba..e985cf5e0410 100644
+--- a/Documentation/sound/alsa/ALSA-Configuration.txt
++++ b/Documentation/sound/alsa/ALSA-Configuration.txt
+@@ -926,6 +926,7 @@ Prior to version 0.9.0rc4 options had a 'snd_' prefix. This was removed.
+ 	AD1984
+ 	  basic		default configuration
+ 	  thinkpad	Lenovo Thinkpad T61/X61
++	  dell		Dell T3400
+ 
+ 	AD1986A
+ 	  6stack	6-jack, separate surrounds (default)
+diff --git a/sound/pci/hda/patch_analog.c b/sound/pci/hda/patch_analog.c
+index 845e949a7f63..19f08846d6fc 100644
+--- a/sound/pci/hda/patch_analog.c
++++ b/sound/pci/hda/patch_analog.c
+@@ -3141,6 +3141,20 @@ static struct hda_input_mux ad1984_thinkpad_capture_source = {
+ 	},
+ };
+ 
++
++/*
++ * Dell Precision T3400
++ */
++static struct hda_input_mux ad1984_dell_desktop_capture_source = {
++	.num_items = 3,
++	.items = {
++		{ "Front Mic", 0x0 },
++		{ "Line-In", 0x1 },
++		{ "Mix", 0x3 },
++	},
++};
++
++
+ static struct snd_kcontrol_new ad1984_thinkpad_mixers[] = {
+ 	HDA_CODEC_VOLUME("PCM Playback Volume", 0x04, 0x0, HDA_OUTPUT),
+ 	/* HDA_CODEC_VOLUME_IDX("PCM Playback Volume", 1, 0x03, 0x0, HDA_OUTPUT), */
+@@ -3200,6 +3214,44 @@ static struct hda_verb ad1984_thinkpad_init_verbs[] = {
+ 	{ } /* end */
+ };
+ 
++/*
++ * Dell Precision T3400
++ */
++static struct snd_kcontrol_new ad1984_dell_desktop_mixers[] = {
++	HDA_CODEC_VOLUME("PCM Playback Volume", 0x04, 0x0, HDA_OUTPUT),
++	HDA_CODEC_MUTE("Headphone Playback Switch", 0x11, 0x0, HDA_OUTPUT),
++	HDA_CODEC_MUTE("Speaker Playback Switch", 0x12, 0x0, HDA_OUTPUT),
++	HDA_CODEC_VOLUME_MONO("Mono Playback Volume", 0x13, 1, 0x0, HDA_OUTPUT),
++	HDA_CODEC_MUTE_MONO("Mono Playback Switch", 0x13, 1, 0x0, HDA_OUTPUT),
++	HDA_CODEC_VOLUME("Front Mic Playback Volume", 0x20, 0x00, HDA_INPUT),
++	HDA_CODEC_MUTE("Front Mic Playback Switch", 0x20, 0x00, HDA_INPUT),
++	HDA_CODEC_VOLUME("Line-In Playback Volume", 0x20, 0x01, HDA_INPUT),
++	HDA_CODEC_MUTE("Line-In Playback Switch", 0x20, 0x01, HDA_INPUT),
++	/*
++	HDA_CODEC_VOLUME("PC Speaker Playback Volume", 0x20, 0x03, HDA_INPUT),
++	HDA_CODEC_MUTE("PC Speaker Playback Switch", 0x20, 0x03, HDA_INPUT),
++	*/
++	HDA_CODEC_VOLUME("Line-In Boost", 0x15, 0x0, HDA_INPUT),
++	HDA_CODEC_VOLUME("Front Mic Boost", 0x14, 0x0, HDA_INPUT),
++	HDA_CODEC_VOLUME("Capture Volume", 0x0c, 0x0, HDA_OUTPUT),
++	HDA_CODEC_MUTE("Capture Switch", 0x0c, 0x0, HDA_OUTPUT),
++	HDA_CODEC_VOLUME_IDX("Capture Volume", 1, 0x0d, 0x0, HDA_OUTPUT),
++	HDA_CODEC_MUTE_IDX("Capture Switch", 1, 0x0d, 0x0, HDA_OUTPUT),
++	{
++		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
++		/* The multiple "Capture Source" controls confuse alsamixer
++		 * So call somewhat different..
++		 */
++		/* .name = "Capture Source", */
++		.name = "Input Source",
++		.count = 2,
++		.info = ad198x_mux_enum_info,
++		.get = ad198x_mux_enum_get,
++		.put = ad198x_mux_enum_put,
++	},
++	{ } /* end */
++};
++
+ /* Digial MIC ADC NID 0x05 + 0x06 */
+ static int ad1984_pcm_dmic_prepare(struct hda_pcm_stream *hinfo,
+ 				   struct hda_codec *codec,
+@@ -3253,17 +3305,20 @@ static int ad1984_build_pcms(struct hda_codec *codec)
+ enum {
+ 	AD1984_BASIC,
+ 	AD1984_THINKPAD,
++	AD1984_DELL_DESKTOP,
+ 	AD1984_MODELS
+ };
+ 
+ static const char *ad1984_models[AD1984_MODELS] = {
+ 	[AD1984_BASIC]		= "basic",
+ 	[AD1984_THINKPAD]	= "thinkpad",
++	[AD1984_DELL_DESKTOP]	= "dell_desktop",
+ };
+ 
+ static struct snd_pci_quirk ad1984_cfg_tbl[] = {
+ 	/* Lenovo Thinkpad T61/X61 */
+ 	SND_PCI_QUIRK(0x17aa, 0, "Lenovo Thinkpad", AD1984_THINKPAD),
++	SND_PCI_QUIRK(0x1028, 0x0214, "Dell T3400", AD1984_DELL_DESKTOP),
+ 	{}
+ };
+ 
+@@ -3290,6 +3345,11 @@ static int patch_ad1984(struct hda_codec *codec)
+ 		spec-&gt;mixers[0] = ad1984_thinkpad_mixers;
+ 		spec-&gt;init_verbs[spec-&gt;num_init_verbs++] = ad1984_thinkpad_init_verbs;
+ 		break;
++	case AD1984_DELL_DESKTOP:
++		spec-&gt;multiout.dig_out_nid = 0;
++		spec-&gt;input_mux = &amp;ad1984_dell_desktop_capture_source;
++		spec-&gt;mixers[0] = ad1984_dell_desktop_mixers;
++		break;
+ 	}
+ 	return 0;
+ }</pre><hr><pre>commit ef207feddf826f099562b239543c447e68991b84
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Sun Dec 2 09:30:55 2007 -0300
+
+    V4L/DVB (6897): xc2028: ignore HAS_IF during specific S-Code type searches
+    
+    If we are selecting the S-Code firmware to load by name, then we must mask
+    off the HAS_IF bit during the search.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/video/tuner-xc2028.c b/drivers/media/video/tuner-xc2028.c
+index ddd94f1d6a6f..1817bf67dad1 100644
+--- a/drivers/media/video/tuner-xc2028.c
++++ b/drivers/media/video/tuner-xc2028.c
+@@ -395,6 +395,7 @@ static int seek_firmware(struct dvb_frontend *fe, unsigned int type,
+ {
+ 	struct xc2028_data *priv = fe-&gt;tuner_priv;
+ 	int                 i, best_i = -1, best_nr_matches = 0;
++	unsigned int        ign_firm_type_mask = 0;
+ 
+ 	tuner_dbg("%s called, want type=", __FUNCTION__);
+ 	if (debug) {
+@@ -412,16 +413,18 @@ static int seek_firmware(struct dvb_frontend *fe, unsigned int type,
+ 
+ 	if (type &amp; BASE)
+ 		type &amp;= BASE_TYPES;
+-	else if (type &amp; SCODE)
++	else if (type &amp; SCODE) {
+ 		type &amp;= SCODE_TYPES;
+-	else if (type &amp; DTV_TYPES)
++		ign_firm_type_mask = HAS_IF;
++	} else if (type &amp; DTV_TYPES)
+ 		type &amp;= DTV_TYPES;
+ 	else if (type &amp; STD_SPECIFIC_TYPES)
+ 		type &amp;= STD_SPECIFIC_TYPES;
+ 
+ 	/* Seek for exact match */
+ 	for (i = 0; i &lt; priv-&gt;firm_size; i++) {
+-		if ((type == priv-&gt;firm[i].type) &amp;&amp; (*id == priv-&gt;firm[i].id))
++		if ((type == (priv-&gt;firm[i].type &amp; ~ign_firm_type_mask)) &amp;&amp;
++		    (*id == priv-&gt;firm[i].id))
+ 			goto found;
+ 	}
+ 
+@@ -430,7 +433,7 @@ static int seek_firmware(struct dvb_frontend *fe, unsigned int type,
+ 		v4l2_std_id match_mask;
+ 		int nr_matches;
+ 
+-		if (type != priv-&gt;firm[i].type)
++		if (type != (priv-&gt;firm[i].type &amp; ~ign_firm_type_mask))
+ 			continue;
+ 
+ 		match_mask = *id &amp; priv-&gt;firm[i].id;</pre><hr><pre>commit 5e3c5967da48b54e5d4ee528b51b565e2f7a3178
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Sat Dec 15 03:31:09 2007 -0300
+
+    V4L/DVB (6857): cx23885: correctly join I2C writes and reads from same address
+    
+    When an I2C message specifies a write then a read from the same I2C address,
+    we need to tell the chip to not release the bus between the message parts.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/video/cx23885/cx23885-i2c.c b/drivers/media/video/cx23885/cx23885-i2c.c
+index 08e92df33168..20f3fb450f88 100644
+--- a/drivers/media/video/cx23885/cx23885-i2c.c
++++ b/drivers/media/video/cx23885/cx23885-i2c.c
+@@ -37,8 +37,10 @@ static unsigned int i2c_scan = 0;
+ module_param(i2c_scan, int, 0444);
+ MODULE_PARM_DESC(i2c_scan, "scan i2c bus at insmod time");
+ 
+-#define dprintk(level,fmt, arg...)	if (i2c_debug &gt;= level) \
+-	printk(KERN_DEBUG "%s: " fmt, dev-&gt;name , ## arg)
++#define dprintk(level, fmt, arg...)	do { \
++	if (i2c_debug &gt;= level) \
++		printk(KERN_DEBUG "%s: " fmt, dev-&gt;name , ## arg); \
++	} while (0)
+ 
+ #define I2C_WAIT_DELAY 32
+ #define I2C_WAIT_RETRY 64
+@@ -77,14 +79,18 @@ static int i2c_wait_done(struct i2c_adapter *i2c_adap)
+ }
+ 
+ static int i2c_sendbytes(struct i2c_adapter *i2c_adap,
+-			 const struct i2c_msg *msg, int last)
++			 const struct i2c_msg *msg, int joined_rlen)
+ {
+ 	struct cx23885_i2c *bus = i2c_adap-&gt;algo_data;
+ 	struct cx23885_dev *dev = bus-&gt;dev;
+ 	u32 wdata, addr, ctrl;
+ 	int retval, cnt;
+ 
+-	dprintk(1, "%s(msg-&gt;len=%d, last=%d)\n", __FUNCTION__, msg-&gt;len, last);
++	if (joined_rlen)
++		dprintk(1, "%s(msg-&gt;wlen=%d, nextmsg-&gt;rlen=%d)\n", __FUNCTION__,
++			msg-&gt;len, joined_rlen);
++	else
++		dprintk(1, "%s(msg-&gt;len=%d)\n", __FUNCTION__, msg-&gt;len);
+ 
+ 	/* Deal with i2c probe functions with zero payload */
+ 	if (msg-&gt;len == 0) {
+@@ -107,6 +113,8 @@ static int i2c_sendbytes(struct i2c_adapter *i2c_adap,
+ 
+ 	if (msg-&gt;len &gt; 1)
+ 		ctrl |= I2C_NOSTOP | I2C_EXTEND;
++	else if (joined_rlen)
++		ctrl |= I2C_NOSTOP;
+ 
+ 	cx_write(bus-&gt;reg_addr, addr);
+ 	cx_write(bus-&gt;reg_wdata, wdata);
+@@ -130,6 +138,8 @@ static int i2c_sendbytes(struct i2c_adapter *i2c_adap,
+ 
+ 		if (cnt &lt; msg-&gt;len - 1)
+ 			ctrl |= I2C_NOSTOP | I2C_EXTEND;
++		else if (joined_rlen)
++			ctrl |= I2C_NOSTOP;
+ 
+ 		cx_write(bus-&gt;reg_addr, addr);
+ 		cx_write(bus-&gt;reg_wdata, wdata);
+@@ -151,19 +161,22 @@ static int i2c_sendbytes(struct i2c_adapter *i2c_adap,
+  eio:
+ 	retval = -EIO;
+  err:
+-	printk(" ERR: %d\n", retval);
++	if (i2c_debug)
++		printk(" ERR: %d\n", retval);
+ 	return retval;
+ }
+ 
+ static int i2c_readbytes(struct i2c_adapter *i2c_adap,
+-			 const struct i2c_msg *msg, int last)
++			 const struct i2c_msg *msg, int joined)
+ {
+ 	struct cx23885_i2c *bus = i2c_adap-&gt;algo_data;
+ 	struct cx23885_dev *dev = bus-&gt;dev;
+ 	u32 ctrl, cnt;
+ 	int retval;
+ 
+-	dprintk(1, "%s(msg-&gt;len=%d, last=%d)\n", __FUNCTION__, msg-&gt;len, last);
++
++	if (i2c_debug &amp;&amp; !joined)
++		dprintk(1, "%s(msg-&gt;len=%d)\n", __FUNCTION__, msg-&gt;len);
+ 
+ 	/* Deal with i2c probe functions with zero payload */
+ 	if (msg-&gt;len == 0) {
+@@ -179,8 +192,12 @@ static int i2c_readbytes(struct i2c_adapter *i2c_adap,
+ 		return 0;
+ 	}
+ 
+-	if (i2c_debug)
+-		printk(" &lt;R %02x", (msg-&gt;addr &lt;&lt; 1) + 1);
++	if (i2c_debug) {
++		if (joined)
++			printk(" R");
++		else
++			printk(" &lt;R %02x", (msg-&gt;addr &lt;&lt; 1) + 1);
++	}
+ 
+ 	for(cnt = 0; cnt &lt; msg-&gt;len; cnt++) {
+ 
+@@ -209,7 +226,8 @@ static int i2c_readbytes(struct i2c_adapter *i2c_adap,
+  eio:
+ 	retval = -EIO;
+  err:
+-	printk(" ERR: %d\n", retval);
++	if (i2c_debug)
++		printk(" ERR: %d\n", retval);
+ 	return retval;
+ }
+ 
+@@ -227,15 +245,22 @@ static int i2c_xfer(struct i2c_adapter *i2c_adap,
+ 			__FUNCTION__, num, msgs[i].addr, msgs[i].len);
+ 		if (msgs[i].flags &amp; I2C_M_RD) {
+ 			/* read */
+-			retval = i2c_readbytes(i2c_adap, &amp;msgs[i], i+1 == num);
++			retval = i2c_readbytes(i2c_adap, &amp;msgs[i], 0);
++		} else if (i + 1 &lt; num &amp;&amp; (msgs[i + 1].flags &amp; I2C_M_RD) &amp;&amp;
++			   msgs[i].addr == msgs[i + 1].addr) {
++			/* write then read from same address */
++			retval = i2c_sendbytes(i2c_adap, &amp;msgs[i],
++					       msgs[i + 1].len);
+ 			if (retval &lt; 0)
+ 				goto err;
++			i++;
++			retval = i2c_readbytes(i2c_adap, &amp;msgs[i], 1);
+ 		} else {
+ 			/* write */
+-			retval = i2c_sendbytes(i2c_adap, &amp;msgs[i], i+1 == num);
+-			if (retval &lt; 0)
+-				goto err;
++			retval = i2c_sendbytes(i2c_adap, &amp;msgs[i], 0);
+ 		}
++		if (retval &lt; 0)
++			goto err;
+ 	}
+ 	return num;
+ </pre><hr><pre>commit bc514710889ebb975be9e84ca9c04f698225b656
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Sat Dec 15 03:24:00 2007 -0300
+
+    V4L/DVB (6856): zl10353: improve tuning parameters and update register map
+    
+    Some more I2C traces and a experimentation with register values on
+    both the ZL10353 and MT352 mean that I can now guess at what more
+    of the ZL10353 registers do.
+    
+    Guess at the registers' names (based on the equivalent names in MT352)
+    and update set_parameters/get_parameters with the new knowledge.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/frontends/zl10353.c b/drivers/media/dvb/frontends/zl10353.c
+index e874ec8df60c..276e3b631dc2 100644
+--- a/drivers/media/dvb/frontends/zl10353.c
++++ b/drivers/media/dvb/frontends/zl10353.c
+@@ -36,6 +36,8 @@ struct zl10353_state {
+ 	struct dvb_frontend frontend;
+ 
+ 	struct zl10353_config config;
++
++	enum fe_bandwidth bandwidth;
+ };
+ 
+ static int debug;
+@@ -195,27 +197,156 @@ static int zl10353_set_parameters(struct dvb_frontend *fe,
+ {
+ 	struct zl10353_state *state = fe-&gt;demodulator_priv;
+ 	u16 nominal_rate, input_freq;
+-	u8 pllbuf[6] = { 0x67 };
++	u8 pllbuf[6] = { 0x67 }, acq_ctl = 0;
++	u16 tps = 0;
++	struct dvb_ofdm_parameters *op = &amp;param-&gt;u.ofdm;
+ 
+-	/* These settings set "auto-everything" and start the FSM. */
+-	zl10353_single_write(fe, 0x55, 0x80);
++	zl10353_single_write(fe, RESET, 0x80);
+ 	udelay(200);
+ 	zl10353_single_write(fe, 0xEA, 0x01);
+ 	udelay(200);
+ 	zl10353_single_write(fe, 0xEA, 0x00);
+ 
+-	zl10353_single_write(fe, 0x56, 0x28);
+-	zl10353_single_write(fe, 0x89, 0x20);
+-	zl10353_single_write(fe, 0x5E, 0x00);
++	zl10353_single_write(fe, AGC_TARGET, 0x28);
++
++	if (op-&gt;transmission_mode != TRANSMISSION_MODE_AUTO)
++		acq_ctl |= (1 &lt;&lt; 0);
++	if (op-&gt;guard_interval != GUARD_INTERVAL_AUTO)
++		acq_ctl |= (1 &lt;&lt; 1);
++	zl10353_single_write(fe, ACQ_CTL, acq_ctl);
+ 
+-	zl10353_calc_nominal_rate(fe, param-&gt;u.ofdm.bandwidth, &amp;nominal_rate);
++	switch (op-&gt;bandwidth) {
++	case BANDWIDTH_6_MHZ:
++		/* These are extrapolated from the 7 and 8MHz values */
++		zl10353_single_write(fe, MCLK_RATIO, 0x97);
++		zl10353_single_write(fe, 0x64, 0x34);
++		break;
++	case BANDWIDTH_7_MHZ:
++		zl10353_single_write(fe, MCLK_RATIO, 0x86);
++		zl10353_single_write(fe, 0x64, 0x35);
++		break;
++	case BANDWIDTH_8_MHZ:
++	default:
++		zl10353_single_write(fe, MCLK_RATIO, 0x75);
++		zl10353_single_write(fe, 0x64, 0x36);
++	}
++
++	zl10353_calc_nominal_rate(fe, op-&gt;bandwidth, &amp;nominal_rate);
+ 	zl10353_single_write(fe, TRL_NOMINAL_RATE_1, msb(nominal_rate));
+ 	zl10353_single_write(fe, TRL_NOMINAL_RATE_0, lsb(nominal_rate));
++	state-&gt;bandwidth = op-&gt;bandwidth;
+ 
+ 	zl10353_calc_input_freq(fe, &amp;input_freq);
+ 	zl10353_single_write(fe, INPUT_FREQ_1, msb(input_freq));
+ 	zl10353_single_write(fe, INPUT_FREQ_0, lsb(input_freq));
+ 
++	/* Hint at TPS settings */
++	switch (op-&gt;code_rate_HP) {
++	case FEC_2_3:
++		tps |= (1 &lt;&lt; 7);
++		break;
++	case FEC_3_4:
++		tps |= (2 &lt;&lt; 7);
++		break;
++	case FEC_5_6:
++		tps |= (3 &lt;&lt; 7);
++		break;
++	case FEC_7_8:
++		tps |= (4 &lt;&lt; 7);
++		break;
++	case FEC_1_2:
++	case FEC_AUTO:
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	switch (op-&gt;code_rate_LP) {
++	case FEC_2_3:
++		tps |= (1 &lt;&lt; 4);
++		break;
++	case FEC_3_4:
++		tps |= (2 &lt;&lt; 4);
++		break;
++	case FEC_5_6:
++		tps |= (3 &lt;&lt; 4);
++		break;
++	case FEC_7_8:
++		tps |= (4 &lt;&lt; 4);
++		break;
++	case FEC_1_2:
++	case FEC_AUTO:
++		break;
++	case FEC_NONE:
++		if (op-&gt;hierarchy_information == HIERARCHY_AUTO ||
++		    op-&gt;hierarchy_information == HIERARCHY_NONE)
++			break;
++	default:
++		return -EINVAL;
++	}
++
++	switch (op-&gt;constellation) {
++	case QPSK:
++		break;
++	case QAM_AUTO:
++	case QAM_16:
++		tps |= (1 &lt;&lt; 13);
++		break;
++	case QAM_64:
++		tps |= (2 &lt;&lt; 13);
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	switch (op-&gt;transmission_mode) {
++	case TRANSMISSION_MODE_2K:
++	case TRANSMISSION_MODE_AUTO:
++		break;
++	case TRANSMISSION_MODE_8K:
++		tps |= (1 &lt;&lt; 0);
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	switch (op-&gt;guard_interval) {
++	case GUARD_INTERVAL_1_32:
++	case GUARD_INTERVAL_AUTO:
++		break;
++	case GUARD_INTERVAL_1_16:
++		tps |= (1 &lt;&lt; 2);
++		break;
++	case GUARD_INTERVAL_1_8:
++		tps |= (2 &lt;&lt; 2);
++		break;
++	case GUARD_INTERVAL_1_4:
++		tps |= (3 &lt;&lt; 2);
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	switch (op-&gt;hierarchy_information) {
++	case HIERARCHY_AUTO:
++	case HIERARCHY_NONE:
++		break;
++	case HIERARCHY_1:
++		tps |= (1 &lt;&lt; 10);
++		break;
++	case HIERARCHY_2:
++		tps |= (2 &lt;&lt; 10);
++		break;
++	case HIERARCHY_4:
++		tps |= (3 &lt;&lt; 10);
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	zl10353_single_write(fe, TPS_GIVEN_1, msb(tps));
++	zl10353_single_write(fe, TPS_GIVEN_0, lsb(tps));
++
+ 	if (fe-&gt;ops.i2c_gate_ctrl)
+ 		fe-&gt;ops.i2c_gate_ctrl(fe, 0);
+ 
+@@ -244,12 +375,97 @@ static int zl10353_set_parameters(struct dvb_frontend *fe,
+ 	else
+ 		zl10353_single_write(fe, TUNER_GO, 0x01);
+ 
+-	udelay(250);
+-	zl10353_single_write(fe, 0xE4, 0x00);
+-	zl10353_single_write(fe, 0xE5, 0x2A);
+-	zl10353_single_write(fe, 0xE9, 0x02);
+-	zl10353_single_write(fe, 0xE7, 0x40);
+-	zl10353_single_write(fe, 0xE8, 0x10);
++	return 0;
++}
++
++static int zl10353_get_parameters(struct dvb_frontend *fe,
++				  struct dvb_frontend_parameters *param)
++{
++	struct zl10353_state *state = fe-&gt;demodulator_priv;
++	struct dvb_ofdm_parameters *op = &amp;param-&gt;u.ofdm;
++	int s6, s9;
++	u16 tps;
++	static const u8 tps_fec_to_api[8] = {
++		FEC_1_2,
++		FEC_2_3,
++		FEC_3_4,
++		FEC_5_6,
++		FEC_7_8,
++		FEC_AUTO,
++		FEC_AUTO,
++		FEC_AUTO
++	};
++
++	s6 = zl10353_read_register(state, STATUS_6);
++	s9 = zl10353_read_register(state, STATUS_9);
++	if (s6 &lt; 0 || s9 &lt; 0)
++		return -EREMOTEIO;
++	if ((s6 &amp; (1 &lt;&lt; 5)) == 0 || (s9 &amp; (1 &lt;&lt; 4)) == 0)
++		return -EINVAL;	/* no FE or TPS lock */
++
++	tps = zl10353_read_register(state, TPS_RECEIVED_1) &lt;&lt; 8 |
++	      zl10353_read_register(state, TPS_RECEIVED_0);
++
++	op-&gt;code_rate_HP = tps_fec_to_api[(tps &gt;&gt; 7) &amp; 7];
++	op-&gt;code_rate_LP = tps_fec_to_api[(tps &gt;&gt; 4) &amp; 7];
++
++	switch ((tps &gt;&gt; 13) &amp; 3) {
++	case 0:
++		op-&gt;constellation = QPSK;
++		break;
++	case 1:
++		op-&gt;constellation = QAM_16;
++		break;
++	case 2:
++		op-&gt;constellation = QAM_64;
++		break;
++	default:
++		op-&gt;constellation = QAM_AUTO;
++		break;
++	}
++
++	op-&gt;transmission_mode = (tps &amp; 0x01) ? TRANSMISSION_MODE_8K :
++					       TRANSMISSION_MODE_2K;
++
++	switch ((tps &gt;&gt; 2) &amp; 3) {
++	case 0:
++		op-&gt;guard_interval = GUARD_INTERVAL_1_32;
++		break;
++	case 1:
++		op-&gt;guard_interval = GUARD_INTERVAL_1_16;
++		break;
++	case 2:
++		op-&gt;guard_interval = GUARD_INTERVAL_1_8;
++		break;
++	case 3:
++		op-&gt;guard_interval = GUARD_INTERVAL_1_4;
++		break;
++	default:
++		op-&gt;guard_interval = GUARD_INTERVAL_AUTO;
++		break;
++	}
++
++	switch ((tps &gt;&gt; 10) &amp; 7) {
++	case 0:
++		op-&gt;hierarchy_information = HIERARCHY_NONE;
++		break;
++	case 1:
++		op-&gt;hierarchy_information = HIERARCHY_1;
++		break;
++	case 2:
++		op-&gt;hierarchy_information = HIERARCHY_2;
++		break;
++	case 3:
++		op-&gt;hierarchy_information = HIERARCHY_4;
++		break;
++	default:
++		op-&gt;hierarchy_information = HIERARCHY_AUTO;
++		break;
++	}
++
++	param-&gt;frequency = 0;
++	op-&gt;bandwidth = state-&gt;bandwidth;
++	param-&gt;inversion = INVERSION_AUTO;
+ 
+ 	return 0;
+ }
+@@ -438,6 +654,7 @@ static struct dvb_frontend_ops zl10353_ops = {
+ 	.write = zl10353_write,
+ 
+ 	.set_frontend = zl10353_set_parameters,
++	.get_frontend = zl10353_get_parameters,
+ 	.get_tune_settings = zl10353_get_tune_settings,
+ 
+ 	.read_status = zl10353_read_status,
+diff --git a/drivers/media/dvb/frontends/zl10353_priv.h b/drivers/media/dvb/frontends/zl10353_priv.h
+index fcad9221945e..055ff1f7e349 100644
+--- a/drivers/media/dvb/frontends/zl10353_priv.h
++++ b/drivers/media/dvb/frontends/zl10353_priv.h
+@@ -46,13 +46,28 @@ enum zl10353_reg_addr {
+ 	RS_ERR_CNT_0       = 0x13,
+ 	RS_UBC_1           = 0x14,
+ 	RS_UBC_0           = 0x15,
++	TPS_RECEIVED_1     = 0x1D,
++	TPS_RECEIVED_0     = 0x1E,
++	TPS_CURRENT_1      = 0x1F,
++	TPS_CURRENT_0      = 0x20,
++	RESET              = 0x55,
++	AGC_TARGET         = 0x56,
++	MCLK_RATIO         = 0x5C,
++	ACQ_CTL            = 0x5E,
+ 	TRL_NOMINAL_RATE_1 = 0x65,
+ 	TRL_NOMINAL_RATE_0 = 0x66,
+ 	INPUT_FREQ_1       = 0x6C,
+ 	INPUT_FREQ_0       = 0x6D,
++	TPS_GIVEN_1        = 0x6E,
++	TPS_GIVEN_0        = 0x6F,
+ 	TUNER_GO           = 0x70,
+ 	FSM_GO             = 0x71,
+ 	CHIP_ID            = 0x7F,
++	CHAN_STEP_1        = 0xE4,
++	CHAN_STEP_0        = 0xE5,
++	OFDM_LOCK_TIME     = 0xE7,
++	FEC_LOCK_TIME      = 0xE8,
++	ACQ_DELAY          = 0xE9,
+ };
+ 
+ #endif                          /* _ZL10353_PRIV_ */</pre>
+    <div class="pagination">
+        <span>[1]</span><a href='18_2.html'>2</a><a href='18_3.html'>3</a><a href='18_4.html'>4</a><a href='18_5.html'>5</a><a href='18_6.html'>6</a><a href='18_7.html'>7</a><a href='18_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

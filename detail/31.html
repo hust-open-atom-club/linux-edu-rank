@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of California, Berkeley</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of California, Berkeley</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='31_2.html'>2</a><a href='31_3.html'>3</a><a href='31_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 922b0375fc93fb1a20c5617e37c389c26bbccb70
+Author: Albert Ou &lt;aou@eecs.berkeley.edu&gt;
+Date:   Fri Sep 27 16:14:18 2019 -0700
+
+    riscv: Fix memblock reservation for device tree blob
+    
+    This fixes an error with how the FDT blob is reserved in memblock.
+    An incorrect physical address calculation exposed the FDT header to
+    unintended corruption, which typically manifested with of_fdt_raw_init()
+    faulting during late boot after fdt_totalsize() returned a wrong value.
+    Systems with smaller physical memory sizes more frequently trigger this
+    issue, as the kernel is more likely to allocate from the DMA32 zone
+    where bbl places the DTB after the kernel image.
+    
+    Commit 671f9a3e2e24 ("RISC-V: Setup initial page tables in two stages")
+    changed the mapping of the DTB to reside in the fixmap area.
+    Consequently, early_init_fdt_reserve_self() cannot be used anymore in
+    setup_bootmem() since it relies on __pa() to derive a physical address,
+    which does not work with dtb_early_va that is no longer a valid kernel
+    logical address.
+    
+    The reserved[0x1] region shows the effect of the pointer underflow
+    resulting from the __pa(initial_boot_params) offset subtraction:
+    
+    [    0.000000] MEMBLOCK configuration:
+    [    0.000000]  memory size = 0x000000001fe00000 reserved size = 0x0000000000a2e514
+    [    0.000000]  memory.cnt  = 0x1
+    [    0.000000]  memory[0x0]     [0x0000000080200000-0x000000009fffffff], 0x000000001fe00000 bytes flags: 0x0
+    [    0.000000]  reserved.cnt  = 0x2
+    [    0.000000]  reserved[0x0]   [0x0000000080200000-0x0000000080c2dfeb], 0x0000000000a2dfec bytes flags: 0x0
+    [    0.000000]  reserved[0x1]   [0xfffffff080100000-0xfffffff080100527], 0x0000000000000528 bytes flags: 0x0
+    
+    With the fix applied:
+    
+    [    0.000000] MEMBLOCK configuration:
+    [    0.000000]  memory size = 0x000000001fe00000 reserved size = 0x0000000000a2e514
+    [    0.000000]  memory.cnt  = 0x1
+    [    0.000000]  memory[0x0]     [0x0000000080200000-0x000000009fffffff], 0x000000001fe00000 bytes flags: 0x0
+    [    0.000000]  reserved.cnt  = 0x2
+    [    0.000000]  reserved[0x0]   [0x0000000080200000-0x0000000080c2dfeb], 0x0000000000a2dfec bytes flags: 0x0
+    [    0.000000]  reserved[0x1]   [0x0000000080e00000-0x0000000080e00527], 0x0000000000000528 bytes flags: 0x0
+    
+    Fixes: 671f9a3e2e24 ("RISC-V: Setup initial page tables in two stages")
+    Signed-off-by: Albert Ou &lt;aou@eecs.berkeley.edu&gt;
+    Tested-by: Bin Meng &lt;bmeng.cn@gmail.com&gt;
+    Reviewed-by: Anup Patel &lt;anup@brainfault.org&gt;
+    Signed-off-by: Paul Walmsley &lt;paul.walmsley@sifive.com&gt;
+
+diff --git a/arch/riscv/mm/init.c b/arch/riscv/mm/init.c
+index f0ba71304b6e..83f7d12042fb 100644
+--- a/arch/riscv/mm/init.c
++++ b/arch/riscv/mm/init.c
+@@ -11,6 +11,7 @@
+ #include &lt;linux/swap.h&gt;
+ #include &lt;linux/sizes.h&gt;
+ #include &lt;linux/of_fdt.h&gt;
++#include &lt;linux/libfdt.h&gt;
+ 
+ #include &lt;asm/fixmap.h&gt;
+ #include &lt;asm/tlbflush.h&gt;
+@@ -82,6 +83,8 @@ static void __init setup_initrd(void)
+ }
+ #endif /* CONFIG_BLK_DEV_INITRD */
+ 
++static phys_addr_t dtb_early_pa __initdata;
++
+ void __init setup_bootmem(void)
+ {
+ 	struct memblock_region *reg;
+@@ -117,7 +120,12 @@ void __init setup_bootmem(void)
+ 	setup_initrd();
+ #endif /* CONFIG_BLK_DEV_INITRD */
+ 
+-	early_init_fdt_reserve_self();
++	/*
++	 * Avoid using early_init_fdt_reserve_self() since __pa() does
++	 * not work for DTB pointers that are fixmap addresses
++	 */
++	memblock_reserve(dtb_early_pa, fdt_totalsize(dtb_early_va));
++
+ 	early_init_fdt_scan_reserved_mem();
+ 	memblock_allow_resize();
+ 	memblock_dump_all();
+@@ -393,6 +401,8 @@ asmlinkage void __init setup_vm(uintptr_t dtb_pa)
+ 
+ 	/* Save pointer to DTB for early FDT parsing */
+ 	dtb_early_va = (void *)fix_to_virt(FIX_FDT) + (dtb_pa &amp; ~PAGE_MASK);
++	/* Save physical address for memblock reservation */
++	dtb_early_pa = dtb_pa;
+ }
+ 
+ static void __init setup_vm_final(void)</pre><hr><pre>commit 28e84ab3abafb0f9c9573993626abe6ca3fa8eb1
+Author: Robert T. Johnson &lt;rtjohnso@eecs.berkeley.edu&gt;
+Date:   Mon Jun 16 17:20:52 2008 -0700
+
+    atm: [he] limit queries to the device's register space
+    
+    From: "Robert T. Johnson" &lt;rtjohnso@eecs.berkeley.edu&gt;
+    Signed-off-by: Chas Williams &lt;chas@cmf.nrl.navy.mil&gt;
+
+diff --git a/drivers/atm/he.c b/drivers/atm/he.c
+index 320320e3dfb3..fc636a3429cf 100644
+--- a/drivers/atm/he.c
++++ b/drivers/atm/he.c
+@@ -2845,10 +2845,15 @@ he_ioctl(struct atm_dev *atm_dev, unsigned int cmd, void __user *arg)
+ 			if (copy_from_user(&amp;reg, arg,
+ 					   sizeof(struct he_ioctl_reg)))
+ 				return -EFAULT;
+-			
++
+ 			spin_lock_irqsave(&amp;he_dev-&gt;global_lock, flags);
+ 			switch (reg.type) {
+ 				case HE_REGTYPE_PCI:
++					if (reg.addr &lt; 0 || reg.addr &gt;= HE_REGMAP_SIZE) {
++						err = -EINVAL;
++						break;
++					}
++
+ 					reg.val = he_readl(he_dev, reg.addr);
+ 					break;
+ 				case HE_REGTYPE_RCM:</pre><hr><pre>commit 369693dc93533097c0ca7243affb4f3244c336e8
+Author: Paul Vojta &lt;vojta@math.berkeley.edu&gt;
+Date:   Wed Jul 8 23:57:46 2009 -0700
+
+    ALSA: hda - fix beep tone calculation for IDT/STAC codecs
+    
+    In the beep tone calculation for IDT/STAC codecs, lower numbers correspond
+    to higher frequencies and vice versa.  The current code has this backwards,
+    resulting in beep frequencies which are way too high (and sound bad on
+    tinny laptop speakers, resulting in complaints).
+    
+    [Also added hz &lt;= 0 check by tiwai]
+    
+    Signed-off-by: Paul Vojta &lt;vojta@math.berkeley.edu&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/hda_beep.c b/sound/pci/hda/hda_beep.c
+index 29272f2e95a0..b0275a050870 100644
+--- a/sound/pci/hda/hda_beep.c
++++ b/sound/pci/hda/hda_beep.c
+@@ -50,19 +50,22 @@ static void snd_hda_generate_beep(struct work_struct *work)
+  * The tone frequency of beep generator on IDT/STAC codecs is
+  * defined from the 8bit tone parameter, in Hz,
+  *    freq = 48000 * (257 - tone) / 1024
+- * that is from 12kHz to 93.75kHz in step of 46.875 hz
++ * that is from 12kHz to 93.75Hz in steps of 46.875 Hz
+  */
+ static int beep_linear_tone(struct hda_beep *beep, int hz)
+ {
++	if (hz &lt;= 0)
++		return 0;
+ 	hz *= 1000; /* fixed point */
+-	hz = hz - DIGBEEP_HZ_MIN;
++	hz = hz - DIGBEEP_HZ_MIN
++		+ DIGBEEP_HZ_STEP / 2; /* round to nearest step */
+ 	if (hz &lt; 0)
+ 		hz = 0; /* turn off PC beep*/
+ 	else if (hz &gt;= (DIGBEEP_HZ_MAX - DIGBEEP_HZ_MIN))
+-		hz = 0xff;
++		hz = 1; /* max frequency */
+ 	else {
+ 		hz /= DIGBEEP_HZ_STEP;
+-		hz++;
++		hz = 255 - hz;
+ 	}
+ 	return hz;
+ }</pre><hr><pre>commit e2340465ec9587362a057524d3e2163377366771
+Author: Paul Vojta &lt;vojta@math.berkeley.edu&gt;
+Date:   Fri Jul 27 12:20:38 2007 +0200
+
+    [ALSA] Fix bugs in mode change/recalibration for opl3sa2 driver
+    
+    The mode change / recalibration doesn't work always with opl3sa2 devices,
+    e.g. the first time it's played back.  The patch fixes the problem.
+    
+    Signed-off-by: Paul Vojta &lt;vojta@math.berkeley.edu&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+    Signed-off-by: Jaroslav Kysela &lt;perex@suse.cz&gt;
+
+diff --git a/include/sound/cs4231.h b/include/sound/cs4231.h
+index ab51ce1ba9a5..b195a73c5685 100644
+--- a/include/sound/cs4231.h
++++ b/include/sound/cs4231.h
+@@ -210,7 +210,7 @@
+ #define CS4231_HW_CS4239	0x0404	/* CS4239 - Crystal Clear (tm) stereo enhancement */
+ /* compatible, but clones */
+ #define CS4231_HW_INTERWAVE     0x1000	/* InterWave chip */
+-#define CS4231_HW_OPL3SA2       0x1001	/* OPL3-SA2 chip */
++#define CS4231_HW_OPL3SA2       0x1101	/* OPL3-SA2 chip, similar to cs4231 */
+ 
+ /* defines for codec.hwshare */
+ #define CS4231_HWSHARE_IRQ	(1&lt;&lt;0)
+diff --git a/sound/isa/cs423x/cs4231_lib.c b/sound/isa/cs423x/cs4231_lib.c
+index 914d77b61b0c..642bdaa703be 100644
+--- a/sound/isa/cs423x/cs4231_lib.c
++++ b/sound/isa/cs423x/cs4231_lib.c
+@@ -555,6 +555,8 @@ static void snd_cs4231_playback_format(struct snd_cs4231 *chip,
+ 			snd_cs4231_out(chip, CS4231_PLAYBK_FORMAT, chip-&gt;image[CS4231_PLAYBK_FORMAT] = pdfr);
+ 		}
+ 		spin_unlock_irqrestore(&amp;chip-&gt;reg_lock, flags);
++		if (chip-&gt;hardware == CS4231_HW_OPL3SA2)
++			udelay(100);	/* this seems to help */
+ 		snd_cs4231_mce_down(chip);
+ 	}
+ 	snd_cs4231_calibrate_mute(chip, 0);
+diff --git a/sound/isa/opl3sa2.c b/sound/isa/opl3sa2.c
+index e70db32991d9..244a00296750 100644
+--- a/sound/isa/opl3sa2.c
++++ b/sound/isa/opl3sa2.c
+@@ -253,6 +253,7 @@ static int __devinit snd_opl3sa2_detect(struct snd_opl3sa2 *chip)
+ 		/* 0x03 - YM715B */
+ 		/* 0x04 - YM719 - OPL-SA4? */
+ 		/* 0x05 - OPL3-SA3 - Libretto 100 */
++		/* 0x07 - unknown - Neomagic MagicWave 3D */
+ 		break;
+ 	}
+ 	str[0] = chip-&gt;version + '0';</pre><hr><pre>commit 4210861964145617cf27b2b9c45860bff3e8290c
+Author: Paul Vojta &lt;vojta@math.berkeley.edu&gt;
+Date:   Wed Jul 4 10:35:29 2007 +0200
+
+    [ALSA] nm256 - Add mention of opl3sa2 to a diagnostic message
+    
+    Adds mention of opl3sa2 driver to a diagnostic message for NeoMagic
+    nm256 driver.
+    
+    Signed-off-by: Paul Vojta &lt;vojta@math.berkeley.edu&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+    Signed-off-by: Jaroslav Kysela &lt;perex@suse.cz&gt;
+
+diff --git a/sound/pci/nm256/nm256.c b/sound/pci/nm256/nm256.c
+index 03b3a4792f73..c7621bd770a6 100644
+--- a/sound/pci/nm256/nm256.c
++++ b/sound/pci/nm256/nm256.c
+@@ -1533,7 +1533,8 @@ snd_nm256_create(struct snd_card *card, struct pci_dev *pci,
+ 				printk(KERN_ERR "  force the driver to load by "
+ 				       "passing in the module parameter\n");
+ 				printk(KERN_ERR "    force_ac97=1\n");
+-				printk(KERN_ERR "  or try sb16 or cs423x drivers instead.\n");
++				printk(KERN_ERR "  or try sb16, opl3sa2, or "
++				       "cs423x drivers instead.\n");
+ 				err = -ENXIO;
+ 				goto __error;
+ 			}</pre><hr><pre>commit 4700418cfc045296ee453342dc2fb142dc752aed
+Author: Paul Vojta &lt;vojta@math.berkeley.edu&gt;
+Date:   Wed Jul 4 10:34:22 2007 +0200
+
+    [ALSA] opl3sa2 - Add Neomagic MagicWave 3D ISA PnP ID
+    
+    Add Neomagic MagicWave 3D to list of supported devices for opl3sa2
+    driver.
+    
+    Signed-off-by: Paul Vojta &lt;vojta@math.berkeley.edu&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+    Signed-off-by: Jaroslav Kysela &lt;perex@suse.cz&gt;
+
+diff --git a/sound/isa/opl3sa2.c b/sound/isa/opl3sa2.c
+index 4f6800b43b0e..e70db32991d9 100644
+--- a/sound/isa/opl3sa2.c
++++ b/sound/isa/opl3sa2.c
+@@ -164,6 +164,8 @@ static struct pnp_card_device_id snd_opl3sa2_pnpids[] = {
+ 	{ .id = "YMH0801", .devs = { { "YMH0021" } } },
+ 	/* NeoMagic MagicWave 3DX */
+ 	{ .id = "NMX2200", .devs = { { "YMH2210" } } },
++	/* NeoMagic MagicWave 3D */
++	{ .id = "NMX2200", .devs = { { "NMX2210" } } },
+ 	/* --- */
+ 	{ .id = "" }	/* end */
+ };</pre><hr><pre>commit dd2c565999e015004622425020a61593deb87a04
+Author: Adam Megacz &lt;megacz@cs.berkeley.edu&gt;
+Date:   Fri Jan 5 16:36:17 2007 -0800
+
+    [PATCH] Add AFS_SUPER_MAGIC to magic.h
+    
+    Jeffrey Altman, one of the gatekeepers of OpenAFS (the open source project
+    which inherited the Transarc/IBM AFS codebase) has requested that the magic
+    number 0x5346414F (little endian 'OAFS') be allocated for the f_type field
+    of the fsinfo structure on Linux:
+    
+      https://lists.openafs.org/pipermail/openafs-info/2006-December/024829.html
+    
+    Add it to include/linux/magic.h, mostly as a way of publishing this number
+    and ensuring that no other filesystem accidentally uses it.
+    
+    Cc: Jeffrey Altman &lt;jaltman@secure-endpoints.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/include/linux/magic.h b/include/linux/magic.h
+index 156c40fc664e..b78bbf42135a 100644
+--- a/include/linux/magic.h
++++ b/include/linux/magic.h
+@@ -3,6 +3,7 @@
+ 
+ #define ADFS_SUPER_MAGIC	0xadf5
+ #define AFFS_SUPER_MAGIC	0xadff
++#define AFS_SUPER_MAGIC                0x5346414F
+ #define AUTOFS_SUPER_MAGIC	0x0187
+ #define CODA_SUPER_MAGIC	0x73757245
+ #define EFS_SUPER_MAGIC		0x414A53</pre><hr><pre>commit 99603966f5b44693901ea68cef2c1c21ce6a49c3
+Author: KAMBAROV, ZAUR &lt;kambarov@berkeley.edu&gt;
+Date:   Fri Feb 3 03:04:49 2006 -0800
+
+    [PATCH] coverity: udf/balloc.c null deref fix
+    
+    It's doing
+    
+            if (obh)
+                    &lt;stuff&gt;
+            else
+                    dereference obh
+    
+    So presumably `obh' is never null in there.
+    
+    This defect was found automatically by Coverity Prevent, a static analysis
+    tool.
+    
+    Signed-off-by: Zaur Kambarov &lt;zkambarov@coverity.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/udf/balloc.c b/fs/udf/balloc.c
+index 4fae57d9d115..201049ac8a96 100644
+--- a/fs/udf/balloc.c
++++ b/fs/udf/balloc.c
+@@ -579,10 +579,9 @@ static void udf_table_free_blocks(struct super_block * sb,
+ 			{
+ 				loffset = nextoffset;
+ 				aed-&gt;lengthAllocDescs = cpu_to_le32(adsize);
+-				if (obh)
+-					sptr = UDF_I_DATA(inode) + nextoffset -  udf_file_entry_alloc_offset(inode) + UDF_I_LENEATTR(inode) - adsize;
+-				else
+-					sptr = obh-&gt;b_data + nextoffset - adsize;
++				sptr = UDF_I_DATA(inode) + nextoffset -
++					udf_file_entry_alloc_offset(inode) +
++					UDF_I_LENEATTR(inode) - adsize;
+ 				dptr = nbh-&gt;b_data + sizeof(struct allocExtDesc);
+ 				memcpy(dptr, sptr, adsize);
+ 				nextoffset = sizeof(struct allocExtDesc) + adsize;</pre><hr><pre>commit b2134bcd2e1bf989e0566dd1b0e59a792722b671
+Author: KAMBAROV, ZAUR &lt;kambarov@berkeley.edu&gt;
+Date:   Fri Jun 24 22:20:35 2005 -0700
+
+    [PATCH] USB: coverity: (desc-&gt;bitmap)[] overrun fix
+    
+    The length of the array desc-&gt;bitmap is 3, and not 4:
+    
+    Definitions involved:
+    
+    In drivers/usb/core/hcd.h
+    
+    464     #define bitmap  DeviceRemovable
+    
+    In drivers/usb/host/ohci-hub.c
+    
+    395             struct usb_hub_descriptor       *desc
+    
+    In drivers/usb/core/hub.h
+    
+    130     struct usb_hub_descriptor {
+    131             __u8  bDescLength;
+    132             __u8  bDescriptorType;
+    133             __u8  bNbrPorts;
+    134             __u16 wHubCharacteristics;
+    135             __u8  bPwrOn2PwrGood;
+    136             __u8  bHubContrCurrent;
+    137                     /* add 1 bit for hub status change; round to bytes */
+    138             __u8  DeviceRemovable[(USB_MAXCHILDREN + 1 + 7) / 8];
+    139             __u8  PortPwrCtrlMask[(USB_MAXCHILDREN + 1 + 7) / 8];
+    140     } __attribute__ ((packed));
+    
+    In include/linux/usb.h
+    
+    306     #define USB_MAXCHILDREN         (16)
+    
+    This defect was found automatically by Coverity Prevent, a static analysis
+    tool.
+    
+    (akpm: this code should be shot.  Field `bitmap' doesn't exist in struct
+    usb_hub_descriptor.  And this .c file is #included in
+    drivers/usb/host/ohci-hcd.c, and someone somewhere #defines `bitmap' to
+    `DeviceRemovable'.
+    
+    &gt;From a maintainability POV it would be better to memset the whole array
+    beforehand - I changed the patch to do that)
+    
+    Signed-off-by: Zaur Kambarov &lt;zkambarov@coverity.com&gt;
+    Cc: &lt;linux-usb-devel@lists.sourceforge.net?
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@suse.de&gt;
+
+diff --git a/drivers/usb/host/ohci-hub.c b/drivers/usb/host/ohci-hub.c
+index e2fc4129dfc6..83ca4549a50e 100644
+--- a/drivers/usb/host/ohci-hub.c
++++ b/drivers/usb/host/ohci-hub.c
+@@ -419,10 +419,11 @@ ohci_hub_descriptor (
+ 
+ 	/* two bitmaps:  ports removable, and usb 1.0 legacy PortPwrCtrlMask */
+ 	rh = roothub_b (ohci);
++	memset(desc-&gt;bitmap, 0xff, sizeof(desc-&gt;bitmap));
+ 	desc-&gt;bitmap [0] = rh &amp; RH_B_DR;
+ 	if (ports &gt; 7) {
+ 		desc-&gt;bitmap [1] = (rh &amp; RH_B_DR) &gt;&gt; 8;
+-		desc-&gt;bitmap [2] = desc-&gt;bitmap [3] = 0xff;
++		desc-&gt;bitmap [2] = 0xff;
+ 	} else
+ 		desc-&gt;bitmap [1] = 0xff;
+ }</pre><hr><pre>commit 7e8d7e3c9e38dab8d28a8667faa4941842f64213
+Author: KAMBAROV, ZAUR &lt;kambarov@berkeley.edu&gt;
+Date:   Thu Jul 7 17:57:07 2005 -0700
+
+    [PATCH] coverity: sunrpc/xprt task null check
+    
+    In __xprt_lock_write() we check to see if `task' is NULL, but in other places
+    we just go and dereference it.
+    
+    `task' shouldn't be NULL anyway, so remove this test.
+    
+    This defect was found automatically by Coverity Prevent, a static analysis
+    tool.
+    
+    Signed-off-by: Zaur Kambarov &lt;zkambarov@coverity.com&gt;
+    Acked-by: Trond Myklebust &lt;trond.myklebust@fys.uio.no&gt;
+    Cc: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/net/sunrpc/xprt.c b/net/sunrpc/xprt.c
+index 269f217918a3..3c654e06b084 100644
+--- a/net/sunrpc/xprt.c
++++ b/net/sunrpc/xprt.c
+@@ -145,8 +145,6 @@ __xprt_lock_write(struct rpc_xprt *xprt, struct rpc_task *task)
+ 	if (test_and_set_bit(XPRT_LOCKED, &amp;xprt-&gt;sockstate)) {
+ 		if (task == xprt-&gt;snd_task)
+ 			return 1;
+-		if (task == NULL)
+-			return 0;
+ 		goto out_sleep;
+ 	}
+ 	if (xprt-&gt;nocong || __xprt_get_cong(xprt, task)) {</pre>
+    <div class="pagination">
+        <span>[1]</span><a href='31_2.html'>2</a><a href='31_3.html'>3</a><a href='31_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

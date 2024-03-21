@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Indiana University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Indiana University</h1>
+    <div class="pagination">
+        <a href='30.html'>&lt;&lt;Prev</a><a href='30.html'>1</a><span>[2]</span><a href='30_3.html'>3</a><a href='30_3.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 4d3297ca5bf37ff5956f76fb352e009880aad62d
+Author: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+Date:   Sun Jul 19 13:41:51 2009 -0600
+
+    9p: Remove redundant inode uid/gid assignment
+    
+    Remove a redundant update of inode's i_uid and i_gid
+    after v9fs_get_inode() since the latter already sets up
+    a new inode and sets the proper uid and gid values.
+    
+    Signed-off-by: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+    Signed-off-by: Eric Van Hensbergen &lt;ericvh@gmail.com&gt;
+
+diff --git a/fs/9p/vfs_super.c b/fs/9p/vfs_super.c
+index 2495af4ad9a6..072dce094477 100644
+--- a/fs/9p/vfs_super.c
++++ b/fs/9p/vfs_super.c
+@@ -113,8 +113,6 @@ static int v9fs_get_sb(struct file_system_type *fs_type, int flags,
+ 	struct v9fs_session_info *v9ses = NULL;
+ 	struct p9_wstat *st = NULL;
+ 	int mode = S_IRWXUGO | S_ISVTX;
+-	uid_t uid = current_fsuid();
+-	gid_t gid = current_fsgid();
+ 	struct p9_fid *fid;
+ 	int retval = 0;
+ 
+@@ -149,9 +147,6 @@ static int v9fs_get_sb(struct file_system_type *fs_type, int flags,
+ 		goto release_sb;
+ 	}
+ 
+-	inode-&gt;i_uid = uid;
+-	inode-&gt;i_gid = gid;
+-
+ 	root = d_alloc_root(inode);
+ 	if (!root) {
+ 		iput(inode);</pre><hr><pre>commit 1b5ab3e86712b6be38ebbe0d821387c1d8f91d7c
+Author: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+Date:   Sun Jul 19 13:41:52 2009 -0600
+
+    9p: Fix possible regressions when -&gt;get_sb fails.
+    
+    -&gt;get_sb can fail causing some badness. this patch fixes
+       * clear sb-&gt;fs_s_info in kill_sb.
+       * deactivate_locked_super() calls kill_sb (v9fs_kill_super) which closes the
+         destroys the client, clunks all its fids and closes the v9fs session.
+         Attempting to do it twice will cause an oops.
+    
+    Signed-off-by: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+    Signed-off-by: Eric Van Hensbergen &lt;ericvh@gmail.com&gt;
+
+diff --git a/fs/9p/vfs_super.c b/fs/9p/vfs_super.c
+index a9d7d08cfbe8..2495af4ad9a6 100644
+--- a/fs/9p/vfs_super.c
++++ b/fs/9p/vfs_super.c
+@@ -120,7 +120,6 @@ static int v9fs_get_sb(struct file_system_type *fs_type, int flags,
+ 
+ 	P9_DPRINTK(P9_DEBUG_VFS, " \n");
+ 
+-	st = NULL;
+ 	v9ses = kzalloc(sizeof(struct v9fs_session_info), GFP_KERNEL);
+ 	if (!v9ses)
+ 		return -ENOMEM;
+@@ -173,10 +172,8 @@ P9_DPRINTK(P9_DEBUG_VFS, " simple set mount, return 0\n");
+ 	simple_set_mnt(mnt, sb);
+ 	return 0;
+ 
+-release_sb:
+-	deactivate_locked_super(sb);
+-
+ free_stat:
++	p9stat_free(st);
+ 	kfree(st);
+ 
+ clunk_fid:
+@@ -185,7 +182,12 @@ P9_DPRINTK(P9_DEBUG_VFS, " simple set mount, return 0\n");
+ close_session:
+ 	v9fs_session_close(v9ses);
+ 	kfree(v9ses);
++	return retval;
+ 
++release_sb:
++	p9stat_free(st);
++	kfree(st);
++	deactivate_locked_super(sb);
+ 	return retval;
+ }
+ 
+@@ -207,6 +209,7 @@ static void v9fs_kill_super(struct super_block *s)
+ 
+ 	v9fs_session_close(v9ses);
+ 	kfree(v9ses);
++	s-&gt;s_fs_info = NULL;
+ 	P9_DPRINTK(P9_DEBUG_VFS, "exiting kill_super\n");
+ }
+ </pre><hr><pre>commit 4f4038328da5eb9cc237b51d3fe68138fd3fea14
+Author: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+Date:   Sun Jul 19 13:41:53 2009 -0600
+
+    9p: Fix v9fs show_options
+    
+    Add the delimiter ',' before the options when they are passed
+    and check if no option parameters are passed to prevent displaying
+    NULL in /proc/mounts.
+    
+    Signed-off-by: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+    Signed-off-by: Eric Van Hensbergen &lt;ericvh@gmail.com&gt;
+
+diff --git a/fs/9p/vfs_super.c b/fs/9p/vfs_super.c
+index 38d695d66a0b..a9d7d08cfbe8 100644
+--- a/fs/9p/vfs_super.c
++++ b/fs/9p/vfs_super.c
+@@ -220,8 +220,8 @@ static void v9fs_kill_super(struct super_block *s)
+ static int v9fs_show_options(struct seq_file *m, struct vfsmount *mnt)
+ {
+ 	struct v9fs_session_info *v9ses = mnt-&gt;mnt_sb-&gt;s_fs_info;
+-
+-	seq_printf(m, "%s", v9ses-&gt;options);
++	if (v9ses-&gt;options != NULL)
++		seq_printf(m, ",%s", v9ses-&gt;options);
+ 	return 0;
+ }
+ </pre><hr><pre>commit 02bc35672b2fdf251e264adca5407792f63191e4
+Author: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+Date:   Sun Jul 19 13:41:54 2009 -0600
+
+    9p: Fix possible memleak in v9fs_inode_from fid.
+    
+    Add missing p9stat_free in v9fs_inode_from_fid to avoid
+    any possible leaks.
+    
+    Signed-off-by: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+    Signed-off-by: Eric Van Hensbergen &lt;ericvh@gmail.com&gt;
+
+diff --git a/fs/9p/vfs_inode.c b/fs/9p/vfs_inode.c
+index f22668afd0d6..fac30d21851f 100644
+--- a/fs/9p/vfs_inode.c
++++ b/fs/9p/vfs_inode.c
+@@ -344,30 +344,25 @@ v9fs_inode_from_fid(struct v9fs_session_info *v9ses, struct p9_fid *fid,
+ 
+ 	ret = NULL;
+ 	st = p9_client_stat(fid);
+-	if (IS_ERR(st)) {
+-		err = PTR_ERR(st);
+-		st = NULL;
+-		goto error;
+-	}
++	if (IS_ERR(st))
++		return ERR_CAST(st);
+ 
+ 	umode = p9mode2unixmode(v9ses, st-&gt;mode);
+ 	ret = v9fs_get_inode(sb, umode);
+ 	if (IS_ERR(ret)) {
+ 		err = PTR_ERR(ret);
+-		ret = NULL;
+ 		goto error;
+ 	}
+ 
+ 	v9fs_stat2inode(st, ret, sb);
+ 	ret-&gt;i_ino = v9fs_qid2ino(&amp;st-&gt;qid);
++	p9stat_free(st);
+ 	kfree(st);
+ 	return ret;
+ 
+ error:
++	p9stat_free(st);
+ 	kfree(st);
+-	if (ret)
+-		iput(ret);
+-
+ 	return ERR_PTR(err);
+ }
+ </pre><hr><pre>commit 0e15597ebfe00e28857185f46aba00f400480ffe
+Author: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+Date:   Sun Jul 19 13:41:55 2009 -0600
+
+    9p: minor comment fixes
+    
+    Fix the comments -- mostly the improper and/or missing descriptions
+    of function parameters.
+    
+    Signed-off-by: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+    Signed-off-by: Eric Van Hensbergen &lt;ericvh@gmail.com&gt;
+
+diff --git a/fs/9p/vfs_inode.c b/fs/9p/vfs_inode.c
+index 0c8af1abf603..f22668afd0d6 100644
+--- a/fs/9p/vfs_inode.c
++++ b/fs/9p/vfs_inode.c
+@@ -171,7 +171,6 @@ int v9fs_uflags2omode(int uflags, int extended)
+ 
+ /**
+  * v9fs_blank_wstat - helper function to setup a 9P stat structure
+- * @v9ses: 9P session info (for determining extended mode)
+  * @wstat: structure to initialize
+  *
+  */
+@@ -410,9 +409,9 @@ v9fs_open_created(struct inode *inode, struct file *file)
+  * @v9ses: session information
+  * @dir: directory that dentry is being created in
+  * @dentry:  dentry that is being created
++ * @extension: 9p2000.u extension string to support devices, etc.
+  * @perm: create permissions
+  * @mode: open mode
+- * @extension: 9p2000.u extension string to support devices, etc.
+  *
+  */
+ static struct p9_fid *
+diff --git a/net/9p/client.c b/net/9p/client.c
+index 787ccddb85ea..7bbd2d5ae8d3 100644
+--- a/net/9p/client.c
++++ b/net/9p/client.c
+@@ -60,9 +60,9 @@ static struct p9_req_t *
+ p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...);
+ 
+ /**
+- * v9fs_parse_options - parse mount options into session structure
+- * @options: options string passed from mount
+- * @v9ses: existing v9fs session information
++ * parse_options - parse mount options into client structure
++ * @opts: options string passed from mount
++ * @clnt: existing v9fs client information
+  *
+  * Return 0 upon success, -ERRNO upon failure
+  */
+@@ -232,7 +232,7 @@ EXPORT_SYMBOL(p9_tag_lookup);
+ 
+ /**
+  * p9_tag_init - setup tags structure and contents
+- * @tags: tags structure from the client struct
++ * @c:  v9fs client struct
+  *
+  * This initializes the tags structure for each client instance.
+  *
+@@ -258,7 +258,7 @@ static int p9_tag_init(struct p9_client *c)
+ 
+ /**
+  * p9_tag_cleanup - cleans up tags structure and reclaims resources
+- * @tags: tags structure from the client struct
++ * @c:  v9fs client struct
+  *
+  * This frees resources associated with the tags structure
+  *
+@@ -430,8 +430,8 @@ static int p9_check_errors(struct p9_client *c, struct p9_req_t *req)
+ 
+ /**
+  * p9_client_flush - flush (cancel) a request
+- * c: client state
+- * req: request to cancel
++ * @c: client state
++ * @oldreq: request to cancel
+  *
+  * This sents a flush for a particular requests and links
+  * the flush request to the original request.  The current
+diff --git a/net/9p/trans_fd.c b/net/9p/trans_fd.c
+index 8c2588e4edc0..8d934dd7fd54 100644
+--- a/net/9p/trans_fd.c
++++ b/net/9p/trans_fd.c
+@@ -119,8 +119,8 @@ struct p9_poll_wait {
+  * @wpos: write position for current frame
+  * @wsize: amount of data to write for current frame
+  * @wbuf: current write buffer
++ * @poll_pending_link: pending links to be polled per conn
+  * @poll_wait: array of wait_q's for various worker threads
+- * @poll_waddr: ????
+  * @pt: poll state
+  * @rq: current read work
+  * @wq: current write work
+@@ -700,9 +700,9 @@ static int p9_fd_cancel(struct p9_client *client, struct p9_req_t *req)
+ }
+ 
+ /**
+- * parse_options - parse mount options into session structure
+- * @options: options string passed from mount
+- * @opts: transport-specific structure to parse options into
++ * parse_opts - parse mount options into p9_fd_opts structure
++ * @params: options string passed from mount
++ * @opts: fd transport-specific structure to parse options into
+  *
+  * Returns 0 upon success, -ERRNO upon failure
+  */
+diff --git a/net/9p/trans_rdma.c b/net/9p/trans_rdma.c
+index ac4990041ebb..65cb29db03f8 100644
+--- a/net/9p/trans_rdma.c
++++ b/net/9p/trans_rdma.c
+@@ -67,14 +67,15 @@
+  * @pd: Protection Domain pointer
+  * @qp: Queue Pair pointer
+  * @cq: Completion Queue pointer
++ * @dm_mr: DMA Memory Region pointer
+  * @lkey: The local access only memory region key
+  * @timeout: Number of uSecs to wait for connection management events
+  * @sq_depth: The depth of the Send Queue
+  * @sq_sem: Semaphore for the SQ
+  * @rq_depth: The depth of the Receive Queue.
++ * @rq_count: Count of requests in the Receive Queue.
+  * @addr: The remote peer's address
+  * @req_lock: Protects the active request list
+- * @send_wait: Wait list when the SQ fills up
+  * @cm_done: Completion event for connection management tracking
+  */
+ struct p9_trans_rdma {
+@@ -154,9 +155,9 @@ static match_table_t tokens = {
+ };
+ 
+ /**
+- * parse_options - parse mount options into session structure
+- * @options: options string passed from mount
+- * @opts: transport-specific structure to parse options into
++ * parse_opts - parse mount options into rdma options structure
++ * @params: options string passed from mount
++ * @opts: rdma transport-specific structure to parse options into
+  *
+  * Returns 0 upon success, -ERRNO upon failure
+  */
+diff --git a/net/9p/trans_virtio.c b/net/9p/trans_virtio.c
+index a49484e67e1d..9bf0b737aa51 100644
+--- a/net/9p/trans_virtio.c
++++ b/net/9p/trans_virtio.c
+@@ -57,11 +57,9 @@ static int chan_index;
+  * @initialized: whether the channel is initialized
+  * @inuse: whether the channel is in use
+  * @lock: protects multiple elements within this structure
++ * @client: client instance
+  * @vdev: virtio dev associated with this channel
+  * @vq: virtio queue associated with this channel
+- * @tagpool: accounting for tag ids (and request slots)
+- * @reqs: array of request slots
+- * @max_tag: current number of request_slots allocated
+  * @sg: scatter gather list which is used to pack a request (protected?)
+  *
+  * We keep all per-channel information in a structure.
+@@ -92,7 +90,7 @@ static unsigned int rest_of_page(void *data)
+ 
+ /**
+  * p9_virtio_close - reclaim resources of a channel
+- * @trans: transport state
++ * @client: client instance
+  *
+  * This reclaims a channel by freeing its resources and
+  * reseting its inuse flag.
+@@ -181,9 +179,8 @@ static int p9_virtio_cancel(struct p9_client *client, struct p9_req_t *req)
+ 
+ /**
+  * p9_virtio_request - issue a request
+- * @t: transport state
+- * @tc: &amp;p9_fcall request to transmit
+- * @rc: &amp;p9_fcall to put reponse into
++ * @client: client instance issuing the request
++ * @req: request to be issued
+  *
+  */
+ </pre><hr><pre>commit 2bb541157fe2602af7b9952096d0524f6f9c1e73
+Author: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+Date:   Sun Jul 19 13:41:56 2009 -0600
+
+    9p: Fix possible inode leak in v9fs_get_inode.
+    
+    Add a missing iput when cleaning up if v9fs_get_inode
+    fails after returning a valid inode.
+    
+    Signed-off-by: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+    Signed-off-by: Eric Van Hensbergen &lt;ericvh@gmail.com&gt;
+
+diff --git a/fs/9p/vfs_inode.c b/fs/9p/vfs_inode.c
+index 1fa5f15eaddc..0c8af1abf603 100644
+--- a/fs/9p/vfs_inode.c
++++ b/fs/9p/vfs_inode.c
+@@ -207,65 +207,72 @@ v9fs_blank_wstat(struct p9_wstat *wstat)
+ 
+ struct inode *v9fs_get_inode(struct super_block *sb, int mode)
+ {
++	int err;
+ 	struct inode *inode;
+ 	struct v9fs_session_info *v9ses = sb-&gt;s_fs_info;
+ 
+ 	P9_DPRINTK(P9_DEBUG_VFS, "super block: %p mode: %o\n", sb, mode);
+ 
+ 	inode = new_inode(sb);
+-	if (inode) {
+-		inode-&gt;i_mode = mode;
+-		inode-&gt;i_uid = current_fsuid();
+-		inode-&gt;i_gid = current_fsgid();
+-		inode-&gt;i_blocks = 0;
+-		inode-&gt;i_rdev = 0;
+-		inode-&gt;i_atime = inode-&gt;i_mtime = inode-&gt;i_ctime = CURRENT_TIME;
+-		inode-&gt;i_mapping-&gt;a_ops = &amp;v9fs_addr_operations;
+-
+-		switch (mode &amp; S_IFMT) {
+-		case S_IFIFO:
+-		case S_IFBLK:
+-		case S_IFCHR:
+-		case S_IFSOCK:
+-			if (!v9fs_extended(v9ses)) {
+-				P9_DPRINTK(P9_DEBUG_ERROR,
+-				      "special files without extended mode\n");
+-				return ERR_PTR(-EINVAL);
+-			}
+-			init_special_inode(inode, inode-&gt;i_mode,
+-					   inode-&gt;i_rdev);
+-			break;
+-		case S_IFREG:
+-			inode-&gt;i_op = &amp;v9fs_file_inode_operations;
+-			inode-&gt;i_fop = &amp;v9fs_file_operations;
+-			break;
+-		case S_IFLNK:
+-			if (!v9fs_extended(v9ses)) {
+-				P9_DPRINTK(P9_DEBUG_ERROR,
+-					"extended modes used w/o 9P2000.u\n");
+-				return ERR_PTR(-EINVAL);
+-			}
+-			inode-&gt;i_op = &amp;v9fs_symlink_inode_operations;
+-			break;
+-		case S_IFDIR:
+-			inc_nlink(inode);
+-			if (v9fs_extended(v9ses))
+-				inode-&gt;i_op = &amp;v9fs_dir_inode_operations_ext;
+-			else
+-				inode-&gt;i_op = &amp;v9fs_dir_inode_operations;
+-			inode-&gt;i_fop = &amp;v9fs_dir_operations;
+-			break;
+-		default:
++	if (!inode) {
++		P9_EPRINTK(KERN_WARNING, "Problem allocating inode\n");
++		return -ENOMEM;
++	}
++
++	inode-&gt;i_mode = mode;
++	inode-&gt;i_uid = current_fsuid();
++	inode-&gt;i_gid = current_fsgid();
++	inode-&gt;i_blocks = 0;
++	inode-&gt;i_rdev = 0;
++	inode-&gt;i_atime = inode-&gt;i_mtime = inode-&gt;i_ctime = CURRENT_TIME;
++	inode-&gt;i_mapping-&gt;a_ops = &amp;v9fs_addr_operations;
++
++	switch (mode &amp; S_IFMT) {
++	case S_IFIFO:
++	case S_IFBLK:
++	case S_IFCHR:
++	case S_IFSOCK:
++		if (!v9fs_extended(v9ses)) {
+ 			P9_DPRINTK(P9_DEBUG_ERROR,
+-				"BAD mode 0x%x S_IFMT 0x%x\n",
+-				mode, mode &amp; S_IFMT);
+-			return ERR_PTR(-EINVAL);
++				   "special files without extended mode\n");
++			err = -EINVAL;
++			goto error;
+ 		}
+-	} else {
+-		P9_EPRINTK(KERN_WARNING, "Problem allocating inode\n");
+-		return ERR_PTR(-ENOMEM);
++		init_special_inode(inode, inode-&gt;i_mode, inode-&gt;i_rdev);
++		break;
++	case S_IFREG:
++		inode-&gt;i_op = &amp;v9fs_file_inode_operations;
++		inode-&gt;i_fop = &amp;v9fs_file_operations;
++		break;
++	case S_IFLNK:
++		if (!v9fs_extended(v9ses)) {
++			P9_DPRINTK(P9_DEBUG_ERROR,
++				   "extended modes used w/o 9P2000.u\n");
++			err = -EINVAL;
++			goto error;
++		}
++		inode-&gt;i_op = &amp;v9fs_symlink_inode_operations;
++		break;
++	case S_IFDIR:
++		inc_nlink(inode);
++		if (v9fs_extended(v9ses))
++			inode-&gt;i_op = &amp;v9fs_dir_inode_operations_ext;
++		else
++			inode-&gt;i_op = &amp;v9fs_dir_inode_operations;
++		inode-&gt;i_fop = &amp;v9fs_dir_operations;
++		break;
++	default:
++		P9_DPRINTK(P9_DEBUG_ERROR, "BAD mode 0x%x S_IFMT 0x%x\n",
++			   mode, mode &amp; S_IFMT);
++		err = -EINVAL;
++		goto error;
+ 	}
++
+ 	return inode;
++
++error:
++	iput(inode);
++	return ERR_PTR(err);
+ }
+ 
+ /*</pre><hr><pre>commit 50fb6d2bd7062708892ae7147f30c3ee905b7a3d
+Author: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+Date:   Sun Jul 19 13:41:57 2009 -0600
+
+    9p: Check for error in return value of v9fs_fid_add
+    
+    Check if v9fs_fid_add was successful or not based on its
+    return value.
+    
+    Signed-off-by: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+    Signed-off-by: Eric Van Hensbergen &lt;ericvh@gmail.com&gt;
+
+diff --git a/fs/9p/vfs_inode.c b/fs/9p/vfs_inode.c
+index 81f8bbf12f9f..1fa5f15eaddc 100644
+--- a/fs/9p/vfs_inode.c
++++ b/fs/9p/vfs_inode.c
+@@ -470,7 +470,10 @@ v9fs_create(struct v9fs_session_info *v9ses, struct inode *dir,
+ 		dentry-&gt;d_op = &amp;v9fs_dentry_operations;
+ 
+ 	d_instantiate(dentry, inode);
+-	v9fs_fid_add(dentry, fid);
++	err = v9fs_fid_add(dentry, fid);
++	if (err &lt; 0)
++		goto error;
++
+ 	return ofid;
+ 
+ error:</pre><hr><pre>commit 9c9ad6162e2aa1e528ed687ccab87fe681ebbef1
+Author: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+Date:   Tue Jul 14 13:26:52 2009 -0500
+
+    9p: Fix incorrect parameters to v9fs_file_readn.
+    
+    Fix v9fs_vfs_readpage. The offset and size parameters to v9fs_file_readn
+    were interchanged and hence passed incorrectly.
+    
+    Signed-off-by: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+    Signed-off-by: Eric Van Hensbergen &lt;ericvh@gmail.com&gt;
+
+diff --git a/fs/9p/vfs_addr.c b/fs/9p/vfs_addr.c
+index 6fcb1e7095cf..92828281a30b 100644
+--- a/fs/9p/vfs_addr.c
++++ b/fs/9p/vfs_addr.c
+@@ -57,7 +57,7 @@ static int v9fs_vfs_readpage(struct file *filp, struct page *page)
+ 	buffer = kmap(page);
+ 	offset = page_offset(page);
+ 
+-	retval = v9fs_file_readn(filp, buffer, NULL, offset, PAGE_CACHE_SIZE);
++	retval = v9fs_file_readn(filp, buffer, NULL, PAGE_CACHE_SIZE, offset);
+ 	if (retval &lt; 0)
+ 		goto done;
+ </pre><hr><pre>commit eedfe1c4289216af5a0a7f38e6b2c4d3f07c087f
+Author: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+Date:   Tue Jul 14 13:25:41 2009 -0500
+
+    9p: Possible regression in p9_client_stat
+    
+    Fix a possible regression with p9_client_stat where it can try to kfree
+    an ERR_PTR after an erroneous p9pdu_readf. Also remove an unnecessary data
+    buffer increment in p9_client_read.
+    
+    Signed-off-by: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+    Signed-off-by: Eric Van Hensbergen &lt;ericvh@gmail.com&gt;
+
+diff --git a/net/9p/client.c b/net/9p/client.c
+index 783a41077403..787ccddb85ea 100644
+--- a/net/9p/client.c
++++ b/net/9p/client.c
+@@ -1098,7 +1098,6 @@ p9_client_read(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
+ 
+ 	if (data) {
+ 		memmove(data, dataptr, count);
+-		data += count;
+ 	}
+ 
+ 	if (udata) {
+@@ -1192,9 +1191,9 @@ struct p9_wstat *p9_client_stat(struct p9_fid *fid)
+ 
+ 	err = p9pdu_readf(req-&gt;rc, clnt-&gt;dotu, "wS", &amp;ignored, ret);
+ 	if (err) {
+-		ret = ERR_PTR(err);
+ 		p9pdu_dump(1, req-&gt;rc);
+-		goto free_and_error;
++		p9_free_req(clnt, req);
++		goto error;
+ 	}
+ 
+ 	P9_DPRINTK(P9_DEBUG_9P,
+@@ -1211,8 +1210,6 @@ struct p9_wstat *p9_client_stat(struct p9_fid *fid)
+ 	p9_free_req(clnt, req);
+ 	return ret;
+ 
+-free_and_error:
+-	p9_free_req(clnt, req);
+ error:
+ 	kfree(ret);
+ 	return ERR_PTR(err);</pre><hr><pre>commit a17d1720aa35623a9bef3707b36242706714bca5
+Author: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+Date:   Tue Jul 14 13:24:10 2009 -0500
+
+    9p: default 9p transport module fix
+    
+    The default 9p transport module is not chosen unless an option parameter (any)
+    is passed to mount, which thus returns a ENOPROTOSUPPORT. This fix moves the
+    check out of parse_opts into p9_client_create.
+    
+    Signed-off-by: Abhishek Kulkarni &lt;adkulkar@umail.iu.edu&gt;
+    Signed-off-by: Eric Van Hensbergen &lt;ericvh@gmail.com&gt;
+
+diff --git a/net/9p/client.c b/net/9p/client.c
+index dd43a8289b0d..783a41077403 100644
+--- a/net/9p/client.c
++++ b/net/9p/client.c
+@@ -117,9 +117,6 @@ static int parse_opts(char *opts, struct p9_client *clnt)
+ 		}
+ 	}
+ 
+-	if (!clnt-&gt;trans_mod)
+-		clnt-&gt;trans_mod = v9fs_get_default_trans();
+-
+ 	kfree(options);
+ 	return ret;
+ }
+@@ -689,6 +686,9 @@ struct p9_client *p9_client_create(const char *dev_name, char *options)
+ 	if (err &lt; 0)
+ 		goto error;
+ 
++	if (!clnt-&gt;trans_mod)
++		clnt-&gt;trans_mod = v9fs_get_default_trans();
++
+ 	if (clnt-&gt;trans_mod == NULL) {
+ 		err = -EPROTONOSUPPORT;
+ 		P9_DPRINTK(P9_DEBUG_ERROR,</pre>
+    <div class="pagination">
+        <a href='30.html'>&lt;&lt;Prev</a><a href='30.html'>1</a><span>[2]</span><a href='30_3.html'>3</a><a href='30_3.html'>Next&gt;&gt;</a>
+    <div>
+</body>

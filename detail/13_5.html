@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Washington</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Washington</h1>
+    <div class="pagination">
+        <a href='13_4.html'>&lt;&lt;Prev</a><a href='13.html'>1</a><a href='13_2.html'>2</a><a href='13_3.html'>3</a><a href='13_4.html'>4</a><span>[5]</span><a href='13_6.html'>6</a><a href='13_7.html'>7</a><a href='13_8.html'>8</a><a href='13_6.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 68a8357ec15bdce55266e9fba8b8b3b8143fa7d2
+Author: Luke Nelson &lt;lukenels@cs.washington.edu&gt;
+Date:   Fri Jun 28 22:57:49 2019 -0700
+
+    bpf, x32: Fix bug with ALU64 {LSH, RSH, ARSH} BPF_X shift by 0
+    
+    The current x32 BPF JIT for shift operations is not correct when the
+    shift amount in a register is 0. The expected behavior is a no-op, whereas
+    the current implementation changes bits in the destination register.
+    
+    The following example demonstrates the bug. The expected result of this
+    program is 1, but the current JITed code returns 2.
+    
+      r0 = 1
+      r1 = 1
+      r2 = 0
+      r1 &lt;&lt;= r2
+      if r1 == 1 goto end
+      r0 = 2
+    end:
+      exit
+    
+    The bug is caused by an incorrect assumption by the JIT that a shift by
+    32 clear the register. On x32 however, shifts use the lower 5 bits of
+    the source, making a shift by 32 equivalent to a shift by 0.
+    
+    This patch fixes the bug using double-precision shifts, which also
+    simplifies the code.
+    
+    Fixes: 03f5781be2c7 ("bpf, x86_32: add eBPF JIT compiler for ia32")
+    Co-developed-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Luke Nelson &lt;luke.r.nels@gmail.com&gt;
+    Signed-off-by: Daniel Borkmann &lt;daniel@iogearbox.net&gt;
+
+diff --git a/arch/x86/net/bpf_jit_comp32.c b/arch/x86/net/bpf_jit_comp32.c
+index b29e82f190c7..f34ef513f4f9 100644
+--- a/arch/x86/net/bpf_jit_comp32.c
++++ b/arch/x86/net/bpf_jit_comp32.c
+@@ -724,9 +724,6 @@ static inline void emit_ia32_lsh_r64(const u8 dst[], const u8 src[],
+ {
+ 	u8 *prog = *pprog;
+ 	int cnt = 0;
+-	static int jmp_label1 = -1;
+-	static int jmp_label2 = -1;
+-	static int jmp_label3 = -1;
+ 	u8 dreg_lo = dstk ? IA32_EAX : dst_lo;
+ 	u8 dreg_hi = dstk ? IA32_EDX : dst_hi;
+ 
+@@ -745,79 +742,23 @@ static inline void emit_ia32_lsh_r64(const u8 dst[], const u8 src[],
+ 		/* mov ecx,src_lo */
+ 		EMIT2(0x8B, add_2reg(0xC0, src_lo, IA32_ECX));
+ 
+-	/* cmp ecx,32 */
+-	EMIT3(0x83, add_1reg(0xF8, IA32_ECX), 32);
+-	/* Jumps when &gt;= 32 */
+-	if (is_imm8(jmp_label(jmp_label1, 2)))
+-		EMIT2(IA32_JAE, jmp_label(jmp_label1, 2));
+-	else
+-		EMIT2_off32(0x0F, IA32_JAE + 0x10, jmp_label(jmp_label1, 6));
+-
+-	/* &lt; 32 */
+-	/* shl dreg_hi,cl */
+-	EMIT2(0xD3, add_1reg(0xE0, dreg_hi));
+-	/* mov ebx,dreg_lo */
+-	EMIT2(0x8B, add_2reg(0xC0, dreg_lo, IA32_EBX));
++	/* shld dreg_hi,dreg_lo,cl */
++	EMIT3(0x0F, 0xA5, add_2reg(0xC0, dreg_hi, dreg_lo));
+ 	/* shl dreg_lo,cl */
+ 	EMIT2(0xD3, add_1reg(0xE0, dreg_lo));
+ 
+-	/* IA32_ECX = -IA32_ECX + 32 */
+-	/* neg ecx */
+-	EMIT2(0xF7, add_1reg(0xD8, IA32_ECX));
+-	/* add ecx,32 */
+-	EMIT3(0x83, add_1reg(0xC0, IA32_ECX), 32);
+-
+-	/* shr ebx,cl */
+-	EMIT2(0xD3, add_1reg(0xE8, IA32_EBX));
+-	/* or dreg_hi,ebx */
+-	EMIT2(0x09, add_2reg(0xC0, dreg_hi, IA32_EBX));
+-
+-	/* goto out; */
+-	if (is_imm8(jmp_label(jmp_label3, 2)))
+-		EMIT2(0xEB, jmp_label(jmp_label3, 2));
+-	else
+-		EMIT1_off32(0xE9, jmp_label(jmp_label3, 5));
+-
+-	/* &gt;= 32 */
+-	if (jmp_label1 == -1)
+-		jmp_label1 = cnt;
++	/* if ecx &gt;= 32, mov dreg_lo into dreg_hi and clear dreg_lo */
+ 
+-	/* cmp ecx,64 */
+-	EMIT3(0x83, add_1reg(0xF8, IA32_ECX), 64);
+-	/* Jumps when &gt;= 64 */
+-	if (is_imm8(jmp_label(jmp_label2, 2)))
+-		EMIT2(IA32_JAE, jmp_label(jmp_label2, 2));
+-	else
+-		EMIT2_off32(0x0F, IA32_JAE + 0x10, jmp_label(jmp_label2, 6));
++	/* cmp ecx,32 */
++	EMIT3(0x83, add_1reg(0xF8, IA32_ECX), 32);
++	/* skip the next two instructions (4 bytes) when &lt; 32 */
++	EMIT2(IA32_JB, 4);
+ 
+-	/* &gt;= 32 &amp;&amp; &lt; 64 */
+-	/* sub ecx,32 */
+-	EMIT3(0x83, add_1reg(0xE8, IA32_ECX), 32);
+-	/* shl dreg_lo,cl */
+-	EMIT2(0xD3, add_1reg(0xE0, dreg_lo));
+ 	/* mov dreg_hi,dreg_lo */
+ 	EMIT2(0x89, add_2reg(0xC0, dreg_hi, dreg_lo));
+-
+ 	/* xor dreg_lo,dreg_lo */
+ 	EMIT2(0x33, add_2reg(0xC0, dreg_lo, dreg_lo));
+ 
+-	/* goto out; */
+-	if (is_imm8(jmp_label(jmp_label3, 2)))
+-		EMIT2(0xEB, jmp_label(jmp_label3, 2));
+-	else
+-		EMIT1_off32(0xE9, jmp_label(jmp_label3, 5));
+-
+-	/* &gt;= 64 */
+-	if (jmp_label2 == -1)
+-		jmp_label2 = cnt;
+-	/* xor dreg_lo,dreg_lo */
+-	EMIT2(0x33, add_2reg(0xC0, dreg_lo, dreg_lo));
+-	/* xor dreg_hi,dreg_hi */
+-	EMIT2(0x33, add_2reg(0xC0, dreg_hi, dreg_hi));
+-
+-	if (jmp_label3 == -1)
+-		jmp_label3 = cnt;
+-
+ 	if (dstk) {
+ 		/* mov dword ptr [ebp+off],dreg_lo */
+ 		EMIT3(0x89, add_2reg(0x40, IA32_EBP, dreg_lo),
+@@ -836,9 +777,6 @@ static inline void emit_ia32_arsh_r64(const u8 dst[], const u8 src[],
+ {
+ 	u8 *prog = *pprog;
+ 	int cnt = 0;
+-	static int jmp_label1 = -1;
+-	static int jmp_label2 = -1;
+-	static int jmp_label3 = -1;
+ 	u8 dreg_lo = dstk ? IA32_EAX : dst_lo;
+ 	u8 dreg_hi = dstk ? IA32_EDX : dst_hi;
+ 
+@@ -857,78 +795,22 @@ static inline void emit_ia32_arsh_r64(const u8 dst[], const u8 src[],
+ 		/* mov ecx,src_lo */
+ 		EMIT2(0x8B, add_2reg(0xC0, src_lo, IA32_ECX));
+ 
+-	/* cmp ecx,32 */
+-	EMIT3(0x83, add_1reg(0xF8, IA32_ECX), 32);
+-	/* Jumps when &gt;= 32 */
+-	if (is_imm8(jmp_label(jmp_label1, 2)))
+-		EMIT2(IA32_JAE, jmp_label(jmp_label1, 2));
+-	else
+-		EMIT2_off32(0x0F, IA32_JAE + 0x10, jmp_label(jmp_label1, 6));
+-
+-	/* &lt; 32 */
+-	/* lshr dreg_lo,cl */
+-	EMIT2(0xD3, add_1reg(0xE8, dreg_lo));
+-	/* mov ebx,dreg_hi */
+-	EMIT2(0x8B, add_2reg(0xC0, dreg_hi, IA32_EBX));
+-	/* ashr dreg_hi,cl */
++	/* shrd dreg_lo,dreg_hi,cl */
++	EMIT3(0x0F, 0xAD, add_2reg(0xC0, dreg_lo, dreg_hi));
++	/* sar dreg_hi,cl */
+ 	EMIT2(0xD3, add_1reg(0xF8, dreg_hi));
+ 
+-	/* IA32_ECX = -IA32_ECX + 32 */
+-	/* neg ecx */
+-	EMIT2(0xF7, add_1reg(0xD8, IA32_ECX));
+-	/* add ecx,32 */
+-	EMIT3(0x83, add_1reg(0xC0, IA32_ECX), 32);
+-
+-	/* shl ebx,cl */
+-	EMIT2(0xD3, add_1reg(0xE0, IA32_EBX));
+-	/* or dreg_lo,ebx */
+-	EMIT2(0x09, add_2reg(0xC0, dreg_lo, IA32_EBX));
+-
+-	/* goto out; */
+-	if (is_imm8(jmp_label(jmp_label3, 2)))
+-		EMIT2(0xEB, jmp_label(jmp_label3, 2));
+-	else
+-		EMIT1_off32(0xE9, jmp_label(jmp_label3, 5));
+-
+-	/* &gt;= 32 */
+-	if (jmp_label1 == -1)
+-		jmp_label1 = cnt;
++	/* if ecx &gt;= 32, mov dreg_hi to dreg_lo and set/clear dreg_hi depending on sign */
+ 
+-	/* cmp ecx,64 */
+-	EMIT3(0x83, add_1reg(0xF8, IA32_ECX), 64);
+-	/* Jumps when &gt;= 64 */
+-	if (is_imm8(jmp_label(jmp_label2, 2)))
+-		EMIT2(IA32_JAE, jmp_label(jmp_label2, 2));
+-	else
+-		EMIT2_off32(0x0F, IA32_JAE + 0x10, jmp_label(jmp_label2, 6));
++	/* cmp ecx,32 */
++	EMIT3(0x83, add_1reg(0xF8, IA32_ECX), 32);
++	/* skip the next two instructions (5 bytes) when &lt; 32 */
++	EMIT2(IA32_JB, 5);
+ 
+-	/* &gt;= 32 &amp;&amp; &lt; 64 */
+-	/* sub ecx,32 */
+-	EMIT3(0x83, add_1reg(0xE8, IA32_ECX), 32);
+-	/* ashr dreg_hi,cl */
+-	EMIT2(0xD3, add_1reg(0xF8, dreg_hi));
+ 	/* mov dreg_lo,dreg_hi */
+ 	EMIT2(0x89, add_2reg(0xC0, dreg_lo, dreg_hi));
+-
+-	/* ashr dreg_hi,imm8 */
+-	EMIT3(0xC1, add_1reg(0xF8, dreg_hi), 31);
+-
+-	/* goto out; */
+-	if (is_imm8(jmp_label(jmp_label3, 2)))
+-		EMIT2(0xEB, jmp_label(jmp_label3, 2));
+-	else
+-		EMIT1_off32(0xE9, jmp_label(jmp_label3, 5));
+-
+-	/* &gt;= 64 */
+-	if (jmp_label2 == -1)
+-		jmp_label2 = cnt;
+-	/* ashr dreg_hi,imm8 */
++	/* sar dreg_hi,31 */
+ 	EMIT3(0xC1, add_1reg(0xF8, dreg_hi), 31);
+-	/* mov dreg_lo,dreg_hi */
+-	EMIT2(0x89, add_2reg(0xC0, dreg_lo, dreg_hi));
+-
+-	if (jmp_label3 == -1)
+-		jmp_label3 = cnt;
+ 
+ 	if (dstk) {
+ 		/* mov dword ptr [ebp+off],dreg_lo */
+@@ -948,9 +830,6 @@ static inline void emit_ia32_rsh_r64(const u8 dst[], const u8 src[], bool dstk,
+ {
+ 	u8 *prog = *pprog;
+ 	int cnt = 0;
+-	static int jmp_label1 = -1;
+-	static int jmp_label2 = -1;
+-	static int jmp_label3 = -1;
+ 	u8 dreg_lo = dstk ? IA32_EAX : dst_lo;
+ 	u8 dreg_hi = dstk ? IA32_EDX : dst_hi;
+ 
+@@ -969,77 +848,23 @@ static inline void emit_ia32_rsh_r64(const u8 dst[], const u8 src[], bool dstk,
+ 		/* mov ecx,src_lo */
+ 		EMIT2(0x8B, add_2reg(0xC0, src_lo, IA32_ECX));
+ 
+-	/* cmp ecx,32 */
+-	EMIT3(0x83, add_1reg(0xF8, IA32_ECX), 32);
+-	/* Jumps when &gt;= 32 */
+-	if (is_imm8(jmp_label(jmp_label1, 2)))
+-		EMIT2(IA32_JAE, jmp_label(jmp_label1, 2));
+-	else
+-		EMIT2_off32(0x0F, IA32_JAE + 0x10, jmp_label(jmp_label1, 6));
+-
+-	/* &lt; 32 */
+-	/* lshr dreg_lo,cl */
+-	EMIT2(0xD3, add_1reg(0xE8, dreg_lo));
+-	/* mov ebx,dreg_hi */
+-	EMIT2(0x8B, add_2reg(0xC0, dreg_hi, IA32_EBX));
++	/* shrd dreg_lo,dreg_hi,cl */
++	EMIT3(0x0F, 0xAD, add_2reg(0xC0, dreg_lo, dreg_hi));
+ 	/* shr dreg_hi,cl */
+ 	EMIT2(0xD3, add_1reg(0xE8, dreg_hi));
+ 
+-	/* IA32_ECX = -IA32_ECX + 32 */
+-	/* neg ecx */
+-	EMIT2(0xF7, add_1reg(0xD8, IA32_ECX));
+-	/* add ecx,32 */
+-	EMIT3(0x83, add_1reg(0xC0, IA32_ECX), 32);
+-
+-	/* shl ebx,cl */
+-	EMIT2(0xD3, add_1reg(0xE0, IA32_EBX));
+-	/* or dreg_lo,ebx */
+-	EMIT2(0x09, add_2reg(0xC0, dreg_lo, IA32_EBX));
++	/* if ecx &gt;= 32, mov dreg_hi to dreg_lo and clear dreg_hi */
+ 
+-	/* goto out; */
+-	if (is_imm8(jmp_label(jmp_label3, 2)))
+-		EMIT2(0xEB, jmp_label(jmp_label3, 2));
+-	else
+-		EMIT1_off32(0xE9, jmp_label(jmp_label3, 5));
+-
+-	/* &gt;= 32 */
+-	if (jmp_label1 == -1)
+-		jmp_label1 = cnt;
+-	/* cmp ecx,64 */
+-	EMIT3(0x83, add_1reg(0xF8, IA32_ECX), 64);
+-	/* Jumps when &gt;= 64 */
+-	if (is_imm8(jmp_label(jmp_label2, 2)))
+-		EMIT2(IA32_JAE, jmp_label(jmp_label2, 2));
+-	else
+-		EMIT2_off32(0x0F, IA32_JAE + 0x10, jmp_label(jmp_label2, 6));
++	/* cmp ecx,32 */
++	EMIT3(0x83, add_1reg(0xF8, IA32_ECX), 32);
++	/* skip the next two instructions (4 bytes) when &lt; 32 */
++	EMIT2(IA32_JB, 4);
+ 
+-	/* &gt;= 32 &amp;&amp; &lt; 64 */
+-	/* sub ecx,32 */
+-	EMIT3(0x83, add_1reg(0xE8, IA32_ECX), 32);
+-	/* shr dreg_hi,cl */
+-	EMIT2(0xD3, add_1reg(0xE8, dreg_hi));
+ 	/* mov dreg_lo,dreg_hi */
+ 	EMIT2(0x89, add_2reg(0xC0, dreg_lo, dreg_hi));
+ 	/* xor dreg_hi,dreg_hi */
+ 	EMIT2(0x33, add_2reg(0xC0, dreg_hi, dreg_hi));
+ 
+-	/* goto out; */
+-	if (is_imm8(jmp_label(jmp_label3, 2)))
+-		EMIT2(0xEB, jmp_label(jmp_label3, 2));
+-	else
+-		EMIT1_off32(0xE9, jmp_label(jmp_label3, 5));
+-
+-	/* &gt;= 64 */
+-	if (jmp_label2 == -1)
+-		jmp_label2 = cnt;
+-	/* xor dreg_lo,dreg_lo */
+-	EMIT2(0x33, add_2reg(0xC0, dreg_lo, dreg_lo));
+-	/* xor dreg_hi,dreg_hi */
+-	EMIT2(0x33, add_2reg(0xC0, dreg_hi, dreg_hi));
+-
+-	if (jmp_label3 == -1)
+-		jmp_label3 = cnt;
+-
+ 	if (dstk) {
+ 		/* mov dword ptr [ebp+off],dreg_lo */
+ 		EMIT3(0x89, add_2reg(0x40, IA32_EBP, dreg_lo),</pre><hr><pre>commit 39d84a58ad6290a43e6503acc8b54ebb7e4ecc54
+Author: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Mon Jun 18 11:04:55 2012 +0000
+
+    sctp: fix warning when compiling without IPv6
+    
+    net/sctp/protocol.c: In function ‘sctp_addr_wq_timeout_handler’:
+    net/sctp/protocol.c:676: warning: label ‘free_next’ defined but not used
+    
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/sctp/protocol.c b/net/sctp/protocol.c
+index 5942d27b1444..9c90811d1134 100644
+--- a/net/sctp/protocol.c
++++ b/net/sctp/protocol.c
+@@ -673,7 +673,9 @@ void sctp_addr_wq_timeout_handler(unsigned long arg)
+ 				SCTP_DEBUG_PRINTK("sctp_addrwq_timo_handler: sctp_asconf_mgmt failed\n");
+ 			sctp_bh_unlock_sock(sk);
+ 		}
++#if IS_ENABLED(CONFIG_IPV6)
+ free_next:
++#endif
+ 		list_del(&amp;addrw-&gt;list);
+ 		kfree(addrw);
+ 	}</pre><hr><pre>commit faa85aa24286a9e14ae7cc797352350c3ac39986
+Author: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Tue Jan 3 13:53:16 2012 -0500
+
+    skge: fix warning when CONFIG_PM is defined but not CONFIG_PM_SLEEP
+    
+    drivers/net/ethernet/marvell/skge.c:4046: warning: ‘skge_suspend’ defined but not used
+    drivers/net/ethernet/marvell/skge.c:4071: warning: ‘skge_resume’ defined but not used
+    
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Cc: Stephen Hemminger &lt;shemminger@linux-foundation.org&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/marvell/skge.c b/drivers/net/ethernet/marvell/skge.c
+index b3f636813089..18a87a57fc0a 100644
+--- a/drivers/net/ethernet/marvell/skge.c
++++ b/drivers/net/ethernet/marvell/skge.c
+@@ -4042,7 +4042,7 @@ static void __devexit skge_remove(struct pci_dev *pdev)
+ 	pci_set_drvdata(pdev, NULL);
+ }
+ 
+-#ifdef CONFIG_PM
++#ifdef CONFIG_PM_SLEEP
+ static int skge_suspend(struct device *dev)
+ {
+ 	struct pci_dev *pdev = to_pci_dev(dev);
+@@ -4104,7 +4104,7 @@ static SIMPLE_DEV_PM_OPS(skge_pm_ops, skge_suspend, skge_resume);
+ #else
+ 
+ #define SKGE_PM_OPS NULL
+-#endif
++#endif /* CONFIG_PM_SLEEP */
+ 
+ static void skge_shutdown(struct pci_dev *pdev)
+ {</pre><hr><pre>commit f090fba305658fe6e464e2fbd25fad81957ece26
+Author: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Thu Aug 25 23:11:15 2011 -0700
+
+    iwlagn: fix compile warnings when CONFIG_PM_SLEEP is not set
+    
+      CC [M]  drivers/net/wireless/iwlwifi/iwl-pci.o
+      drivers/net/wireless/iwlwifi/iwl-pci.c:506: warning: iwl_pci_suspend defined but not used
+      drivers/net/wireless/iwlwifi/iwl-pci.c:519: warning: iwl_pci_resume defined but not used
+    
+    These are only used if CONFIG_PM_SLEEP is enabled. CONFIG_PM depends
+    (CONFIG_PM_SLEEP || CONFIG_PM_RUNTIME), so it can be set without
+    CONFIG_PM_SLEEP selected.
+    
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Signed-off-by: Wey-Yi Guy &lt;wey-yi.w.guy@intel.com&gt;
+    Signed-off-by: John W. Linville &lt;linville@tuxdriver.com&gt;
+
+diff --git a/drivers/net/wireless/iwlwifi/iwl-pci.c b/drivers/net/wireless/iwlwifi/iwl-pci.c
+index 17f3fb241b6f..62c35a5fea80 100644
+--- a/drivers/net/wireless/iwlwifi/iwl-pci.c
++++ b/drivers/net/wireless/iwlwifi/iwl-pci.c
+@@ -506,7 +506,7 @@ static void __devexit iwl_pci_remove(struct pci_dev *pdev)
+ 	iwl_pci_down(bus);
+ }
+ 
+-#ifdef CONFIG_PM
++#ifdef CONFIG_PM_SLEEP
+ 
+ static int iwl_pci_suspend(struct device *device)
+ {</pre><hr><pre>commit 2e5d04dad1934d97057cbecce59834f78dafc067
+Author: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Fri May 27 08:40:28 2011 -0700
+
+    iwlwifi: disambiguate invalid DMA index warnings
+    
+    The exact same error message is used in three different functions in
+    iwlagn. Add the function name to the error string to disambiguate where
+    the error is coming from.
+    
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Signed-off-by: Wey-Yi Guy &lt;wey-yi.w.guy@intel.com&gt;
+    Signed-off-by: John W. Linville &lt;linville@tuxdriver.com&gt;
+
+diff --git a/drivers/net/wireless/iwlwifi/iwl-agn-lib.c b/drivers/net/wireless/iwlwifi/iwl-agn-lib.c
+index f803fb62f8bc..4ab77c8a584c 100644
+--- a/drivers/net/wireless/iwlwifi/iwl-agn-lib.c
++++ b/drivers/net/wireless/iwlwifi/iwl-agn-lib.c
+@@ -408,9 +408,9 @@ static void iwlagn_rx_reply_tx(struct iwl_priv *priv,
+ 	unsigned long flags;
+ 
+ 	if ((index &gt;= txq-&gt;q.n_bd) || (iwl_queue_used(&amp;txq-&gt;q, index) == 0)) {
+-		IWL_ERR(priv, "Read index for DMA queue txq_id (%d) index %d "
+-			  "is out of range [0-%d] %d %d\n", txq_id,
+-			  index, txq-&gt;q.n_bd, txq-&gt;q.write_ptr,
++		IWL_ERR(priv, "%s: Read index for DMA queue txq_id (%d) "
++			  "index %d is out of range [0-%d] %d %d\n", __func__,
++			  txq_id, index, txq-&gt;q.n_bd, txq-&gt;q.write_ptr,
+ 			  txq-&gt;q.read_ptr);
+ 		return;
+ 	}
+diff --git a/drivers/net/wireless/iwlwifi/iwl-agn-tx.c b/drivers/net/wireless/iwlwifi/iwl-agn-tx.c
+index 4974cd7837cb..ce7b49139030 100644
+--- a/drivers/net/wireless/iwlwifi/iwl-agn-tx.c
++++ b/drivers/net/wireless/iwlwifi/iwl-agn-tx.c
+@@ -1236,9 +1236,9 @@ int iwlagn_tx_queue_reclaim(struct iwl_priv *priv, int txq_id, int index)
+ 	struct ieee80211_hdr *hdr;
+ 
+ 	if ((index &gt;= q-&gt;n_bd) || (iwl_queue_used(q, index) == 0)) {
+-		IWL_ERR(priv, "Read index for DMA queue txq id (%d), index %d, "
+-			  "is out of range [0-%d] %d %d.\n", txq_id,
+-			  index, q-&gt;n_bd, q-&gt;write_ptr, q-&gt;read_ptr);
++		IWL_ERR(priv, "%s: Read index for DMA queue txq id (%d), "
++			  "index %d is out of range [0-%d] %d %d.\n", __func__,
++			  txq_id, index, q-&gt;n_bd, q-&gt;write_ptr, q-&gt;read_ptr);
+ 		return 0;
+ 	}
+ 
+diff --git a/drivers/net/wireless/iwlwifi/iwl-tx.c b/drivers/net/wireless/iwlwifi/iwl-tx.c
+index 686e176b5ebd..1084fe0e8a86 100644
+--- a/drivers/net/wireless/iwlwifi/iwl-tx.c
++++ b/drivers/net/wireless/iwlwifi/iwl-tx.c
+@@ -753,9 +753,9 @@ static void iwl_hcmd_queue_reclaim(struct iwl_priv *priv, int txq_id, int idx)
+ 	int nfreed = 0;
+ 
+ 	if ((idx &gt;= q-&gt;n_bd) || (iwl_queue_used(q, idx) == 0)) {
+-		IWL_ERR(priv, "Read index for DMA queue txq id (%d), index %d, "
+-			  "is out of range [0-%d] %d %d.\n", txq_id,
+-			  idx, q-&gt;n_bd, q-&gt;write_ptr, q-&gt;read_ptr);
++		IWL_ERR(priv, "%s: Read index for DMA queue txq id (%d), "
++			  "index %d is out of range [0-%d] %d %d.\n", __func__,
++			  txq_id, idx, q-&gt;n_bd, q-&gt;write_ptr, q-&gt;read_ptr);
+ 		return;
+ 	}
+ </pre><hr><pre>commit 21fdc87248d1d28492c775e05fa92b3c8c7bc8db
+Author: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Tue May 31 11:59:30 2011 -0700
+
+    ath9k: fix two more bugs in tx power
+    
+    This is the same fix as
+    
+       commit 841051602e3fa18ea468fe5a177aa92b6eb44b56
+       Author: Matteo Croce &lt;technoboy85@gmail.com&gt;
+       Date:   Fri Dec 3 02:25:08 2010 +0100
+    
+       The ath9k driver subtracts 3 dBm to the txpower as with two radios the
+       signal power is doubled.
+       The resulting value is assigned in an u16 which overflows and makes
+       the card work at full power.
+    
+    in two more places. I grepped the ath tree and didn't find any others.
+    
+    Cc: stable@kernel.org
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Signed-off-by: John W. Linville &lt;linville@tuxdriver.com&gt;
+
+diff --git a/drivers/net/wireless/ath/ath9k/ar9003_eeprom.c b/drivers/net/wireless/ath/ath9k/ar9003_eeprom.c
+index 0ca7635d0669..ff8150e46f0e 100644
+--- a/drivers/net/wireless/ath/ath9k/ar9003_eeprom.c
++++ b/drivers/net/wireless/ath/ath9k/ar9003_eeprom.c
+@@ -4645,10 +4645,16 @@ static void ar9003_hw_set_power_per_rate_table(struct ath_hw *ah,
+ 	case 1:
+ 		break;
+ 	case 2:
+-		scaledPower -= REDUCE_SCALED_POWER_BY_TWO_CHAIN;
++		if (scaledPower &gt; REDUCE_SCALED_POWER_BY_TWO_CHAIN)
++			scaledPower -= REDUCE_SCALED_POWER_BY_TWO_CHAIN;
++		else
++			scaledPower = 0;
+ 		break;
+ 	case 3:
+-		scaledPower -= REDUCE_SCALED_POWER_BY_THREE_CHAIN;
++		if (scaledPower &gt; REDUCE_SCALED_POWER_BY_THREE_CHAIN)
++			scaledPower -= REDUCE_SCALED_POWER_BY_THREE_CHAIN;
++		else
++			scaledPower = 0;
+ 		break;
+ 	}
+ 
+diff --git a/drivers/net/wireless/ath/ath9k/eeprom_9287.c b/drivers/net/wireless/ath/ath9k/eeprom_9287.c
+index 7856f0d4512d..343fc9f946db 100644
+--- a/drivers/net/wireless/ath/ath9k/eeprom_9287.c
++++ b/drivers/net/wireless/ath/ath9k/eeprom_9287.c
+@@ -524,10 +524,16 @@ static void ath9k_hw_set_ar9287_power_per_rate_table(struct ath_hw *ah,
+ 	case 1:
+ 		break;
+ 	case 2:
+-		scaledPower -= REDUCE_SCALED_POWER_BY_TWO_CHAIN;
++		if (scaledPower &gt; REDUCE_SCALED_POWER_BY_TWO_CHAIN)
++			scaledPower -= REDUCE_SCALED_POWER_BY_TWO_CHAIN;
++		else
++			scaledPower = 0;
+ 		break;
+ 	case 3:
+-		scaledPower -= REDUCE_SCALED_POWER_BY_THREE_CHAIN;
++		if (scaledPower &gt; REDUCE_SCALED_POWER_BY_THREE_CHAIN)
++			scaledPower -= REDUCE_SCALED_POWER_BY_THREE_CHAIN;
++		else
++			scaledPower = 0;
+ 		break;
+ 	}
+ 	scaledPower = max((u16)0, scaledPower);</pre><hr><pre>commit 20ba2861b09ae942398eda6d2dc0bf1019a97ddb
+Author: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Mon May 16 21:46:28 2011 -0700
+
+    iwlwifi: remove unused parameter from iwl_hcmd_queue_reclaim
+    
+    cmd_index is never used.
+    
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Signed-off-by: John W. Linville &lt;linville@tuxdriver.com&gt;
+
+diff --git a/drivers/net/wireless/iwlwifi/iwl-tx.c b/drivers/net/wireless/iwlwifi/iwl-tx.c
+index 54a935ff38fa..686e176b5ebd 100644
+--- a/drivers/net/wireless/iwlwifi/iwl-tx.c
++++ b/drivers/net/wireless/iwlwifi/iwl-tx.c
+@@ -746,8 +746,7 @@ int iwl_enqueue_hcmd(struct iwl_priv *priv, struct iwl_host_cmd *cmd)
+  * need to be reclaimed. As result, some free space forms.  If there is
+  * enough free space (&gt; low mark), wake the stack that feeds us.
+  */
+-static void iwl_hcmd_queue_reclaim(struct iwl_priv *priv, int txq_id,
+-				   int idx, int cmd_idx)
++static void iwl_hcmd_queue_reclaim(struct iwl_priv *priv, int txq_id, int idx)
+ {
+ 	struct iwl_tx_queue *txq = &amp;priv-&gt;txq[txq_id];
+ 	struct iwl_queue *q = &amp;txq-&gt;q;
+@@ -819,7 +818,7 @@ void iwl_tx_cmd_complete(struct iwl_priv *priv, struct iwl_rx_mem_buffer *rxb)
+ 
+ 	spin_lock_irqsave(&amp;priv-&gt;hcmd_lock, flags);
+ 
+-	iwl_hcmd_queue_reclaim(priv, txq_id, index, cmd_index);
++	iwl_hcmd_queue_reclaim(priv, txq_id, index);
+ 
+ 	if (!(meta-&gt;flags &amp; CMD_ASYNC)) {
+ 		clear_bit(STATUS_HCMD_ACTIVE, &amp;priv-&gt;status);</pre><hr><pre>commit 8fddddff0ad4ccc2787464207eba9ed3063e69cd
+Author: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Tue May 10 19:00:45 2011 -0700
+
+    mac80211: fix contention time computation in minstrel, minstrel_ht
+    
+    When transmitting a frame, the transmitter waits a random number of
+    slots between 0 and cw. Thus, the contention time is (cw / 2) * t_slot
+    which we can represent instead as (cw * t_slot) &gt;&gt; 1. Also fix a few
+    other accounting bugs around contention time, and add comments.
+    
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Signed-off-by: John W. Linville &lt;linville@tuxdriver.com&gt;
+
+diff --git a/net/mac80211/rc80211_minstrel.c b/net/mac80211/rc80211_minstrel.c
+index 778c604d7939..8adac67395f7 100644
+--- a/net/mac80211/rc80211_minstrel.c
++++ b/net/mac80211/rc80211_minstrel.c
+@@ -417,8 +417,8 @@ minstrel_rate_init(void *priv, struct ieee80211_supported_band *sband,
+ 			tx_time_single = mr-&gt;ack_time + mr-&gt;perfect_tx_time;
+ 
+ 			/* contention window */
+-			tx_time_single += t_slot + min(cw, mp-&gt;cw_max);
+-			cw = (cw &lt;&lt; 1) | 1;
++			tx_time_single += (t_slot * cw) &gt;&gt; 1;
++			cw = min((cw &lt;&lt; 1) | 1, mp-&gt;cw_max);
+ 
+ 			tx_time += tx_time_single;
+ 			tx_time_cts += tx_time_single + mi-&gt;sp_ack_dur;
+diff --git a/net/mac80211/rc80211_minstrel_ht.c b/net/mac80211/rc80211_minstrel_ht.c
+index dbdebeda097f..3d09c58938e2 100644
+--- a/net/mac80211/rc80211_minstrel_ht.c
++++ b/net/mac80211/rc80211_minstrel_ht.c
+@@ -464,6 +464,7 @@ minstrel_calc_retransmit(struct minstrel_priv *mp, struct minstrel_ht_sta *mi,
+ 	const struct mcs_group *group;
+ 	unsigned int tx_time, tx_time_rtscts, tx_time_data;
+ 	unsigned int cw = mp-&gt;cw_min;
++	unsigned int ctime = 0;
+ 	unsigned int t_slot = 9; /* FIXME */
+ 	unsigned int ampdu_len = MINSTREL_TRUNC(mi-&gt;avg_ampdu_len);
+ 
+@@ -480,13 +481,27 @@ minstrel_calc_retransmit(struct minstrel_priv *mp, struct minstrel_ht_sta *mi,
+ 
+ 	group = &amp;minstrel_mcs_groups[index / MCS_GROUP_RATES];
+ 	tx_time_data = group-&gt;duration[index % MCS_GROUP_RATES] * ampdu_len;
+-	tx_time = 2 * (t_slot + mi-&gt;overhead + tx_time_data);
+-	tx_time_rtscts = 2 * (t_slot + mi-&gt;overhead_rtscts + tx_time_data);
++
++	/* Contention time for first 2 tries */
++	ctime = (t_slot * cw) &gt;&gt; 1;
++	cw = min((cw &lt;&lt; 1) | 1, mp-&gt;cw_max);
++	ctime += (t_slot * cw) &gt;&gt; 1;
++	cw = min((cw &lt;&lt; 1) | 1, mp-&gt;cw_max);
++
++	/* Total TX time for data and Contention after first 2 tries */
++	tx_time = ctime + 2 * (mi-&gt;overhead + tx_time_data);
++	tx_time_rtscts = ctime + 2 * (mi-&gt;overhead_rtscts + tx_time_data);
++
++	/* See how many more tries we can fit inside segment size */
+ 	do {
+-		cw = (cw &lt;&lt; 1) | 1;
+-		cw = min(cw, mp-&gt;cw_max);
+-		tx_time += cw + t_slot + mi-&gt;overhead;
+-		tx_time_rtscts += cw + t_slot + mi-&gt;overhead_rtscts;
++		/* Contention time for this try */
++		ctime = (t_slot * cw) &gt;&gt; 1;
++		cw = min((cw &lt;&lt; 1) | 1, mp-&gt;cw_max);
++
++		/* Total TX time after this try */
++		tx_time += ctime + mi-&gt;overhead + tx_time_data;
++		tx_time_rtscts += ctime + mi-&gt;overhead_rtscts + tx_time_data;
++
+ 		if (tx_time_rtscts &lt; mp-&gt;segment_size)
+ 			mr-&gt;retry_count_rtscts++;
+ 	} while ((tx_time &lt; mp-&gt;segment_size) &amp;&amp;</pre><hr><pre>commit 7caa2316bf0434f1150f58cb576542987a0466d7
+Author: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Wed Apr 6 12:47:25 2011 -0700
+
+    iwlwifi: fix frame injection for HT channels
+    
+    For some reason, sending QoS configuration causes transmission to stop
+    after a single frame on HT channels when not associated. Removing the
+    extra QoS configuration has no effect on station mode, and fixes
+    injection mode.
+    
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Signed-off-by: Wey-Yi Guy &lt;wey-yi.w.guy@intel.com&gt;
+
+diff --git a/drivers/net/wireless/iwlwifi/iwl-agn-rxon.c b/drivers/net/wireless/iwlwifi/iwl-agn-rxon.c
+index dfdbea6e8f99..fbbde0712fa5 100644
+--- a/drivers/net/wireless/iwlwifi/iwl-agn-rxon.c
++++ b/drivers/net/wireless/iwlwifi/iwl-agn-rxon.c
+@@ -335,7 +335,6 @@ int iwlagn_mac_config(struct ieee80211_hw *hw, u32 changed)
+ 	struct ieee80211_channel *channel = conf-&gt;channel;
+ 	const struct iwl_channel_info *ch_info;
+ 	int ret = 0;
+-	bool ht_changed[NUM_IWL_RXON_CTX] = {};
+ 
+ 	IWL_DEBUG_MAC80211(priv, "changed %#x", changed);
+ 
+@@ -383,10 +382,8 @@ int iwlagn_mac_config(struct ieee80211_hw *hw, u32 changed)
+ 
+ 		for_each_context(priv, ctx) {
+ 			/* Configure HT40 channels */
+-			if (ctx-&gt;ht.enabled != conf_is_ht(conf)) {
++			if (ctx-&gt;ht.enabled != conf_is_ht(conf))
+ 				ctx-&gt;ht.enabled = conf_is_ht(conf);
+-				ht_changed[ctx-&gt;ctxid] = true;
+-			}
+ 
+ 			if (ctx-&gt;ht.enabled) {
+ 				if (conf_is_ht40_minus(conf)) {
+@@ -455,8 +452,6 @@ int iwlagn_mac_config(struct ieee80211_hw *hw, u32 changed)
+ 		if (!memcmp(&amp;ctx-&gt;staging, &amp;ctx-&gt;active, sizeof(ctx-&gt;staging)))
+ 			continue;
+ 		iwlagn_commit_rxon(priv, ctx);
+-		if (ht_changed[ctx-&gt;ctxid])
+-			iwlagn_update_qos(priv, ctx);
+ 	}
+  out:
+ 	mutex_unlock(&amp;priv-&gt;mutex);</pre><hr><pre>commit 499fe9a419d43410be576bcc825658997b6ce822
+Author: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Thu Mar 24 16:01:48 2011 -0700
+
+    mac80211: fix aggregation frame release during timeout
+    
+    Suppose the aggregation reorder buffer looks like this:
+    
+    x-T-R1-y-R2,
+    
+    where x and y are frames that have not been received, T is a received
+    frame that has timed out, and R1,R2 are received frames that have not
+    yet timed out. The proper behavior in this scenario is to move the
+    window past x (skipping it), release T and R1, and leave the window at y
+    until y is received or R2 times out.
+    
+    As written, this code will instead leave the window at R1, because it
+    has not yet timed out. Fix this by exiting the reorder loop only when
+    the frame that has not timed out AND there are skipped frames earlier in
+    the current valid window.
+    
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Signed-off-by: John W. Linville &lt;linville@tuxdriver.com&gt;
+
+diff --git a/net/mac80211/rx.c b/net/mac80211/rx.c
+index 5c1930ba8ebe..aa5cc37b4921 100644
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -612,7 +612,8 @@ static void ieee80211_sta_reorder_release(struct ieee80211_hw *hw,
+ 				skipped++;
+ 				continue;
+ 			}
+-			if (!time_after(jiffies, tid_agg_rx-&gt;reorder_time[j] +
++			if (skipped &amp;&amp;
++			    !time_after(jiffies, tid_agg_rx-&gt;reorder_time[j] +
+ 					HT_RX_REORDER_BUF_TIMEOUT))
+ 				goto set_release_timer;
+ </pre>
+    <div class="pagination">
+        <a href='13_4.html'>&lt;&lt;Prev</a><a href='13.html'>1</a><a href='13_2.html'>2</a><a href='13_3.html'>3</a><a href='13_4.html'>4</a><span>[5]</span><a href='13_6.html'>6</a><a href='13_7.html'>7</a><a href='13_8.html'>8</a><a href='13_6.html'>Next&gt;&gt;</a>
+    <div>
+</body>

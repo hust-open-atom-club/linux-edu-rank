@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Huazhong University of Science and Technology</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Huazhong University of Science and Technology</h1>
+    <div class="pagination">
+        <a href='17_6.html'>&lt;&lt;Prev</a><a href='17.html'>1</a><a href='17_2.html'>2</a><a href='17_3.html'>3</a><a href='17_4.html'>4</a><a href='17_5.html'>5</a><a href='17_6.html'>6</a><span>[7]</span>
+    </div>
+    <hr>
+    <pre>commit 48181d285623198c33bb9698992502687b258efa
+Author: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+Date:   Thu Mar 9 10:16:36 2023 +0800
+
+    wifi: rtw88: fix memory leak in rtw_usb_probe()
+    
+    drivers/net/wireless/realtek/rtw88/usb.c:876 rtw_usb_probe()
+    warn: 'hw' from ieee80211_alloc_hw() not released on lines: 811
+    
+    Fix this by modifying return to a goto statement.
+    
+    Signed-off-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Reviewed-by: Ping-Ke Shih &lt;pkshih@realtek.com&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@kernel.org&gt;
+    Link: https://lore.kernel.org/r/20230309021636.528601-1-dzm91@hust.edu.cn
+
+diff --git a/drivers/net/wireless/realtek/rtw88/usb.c b/drivers/net/wireless/realtek/rtw88/usb.c
+index 2a8336b1847a..68e1b782d199 100644
+--- a/drivers/net/wireless/realtek/rtw88/usb.c
++++ b/drivers/net/wireless/realtek/rtw88/usb.c
+@@ -808,7 +808,7 @@ int rtw_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
+ 
+ 	ret = rtw_usb_alloc_rx_bufs(rtwusb);
+ 	if (ret)
+-		return ret;
++		goto err_release_hw;
+ 
+ 	ret = rtw_core_init(rtwdev);
+ 	if (ret)</pre><hr><pre>commit cd53860edd5e66f2faaf1bfbaef81d4be9109c82
+Author: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+Date:   Fri Nov 18 22:14:06 2022 +0800
+
+    fbdev: da8xx-fb: add missing regulator_disable() in fb_probe
+    
+    The error handling code in fb_probe misses regulator_disable if
+    regulator_enable is called successfully. The previous commit only
+    adds regulator_disable in the .remove(), forgetting the error
+    handling code in the .probe.
+    
+    Fix this by adding a new error label to call regulator_disable.
+    
+    Fixes: 611097d5daea("fbdev: da8xx: add support for a regulator")
+    Signed-off-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Signed-off-by: Helge Deller &lt;deller@gmx.de&gt;
+
+diff --git a/drivers/video/fbdev/da8xx-fb.c b/drivers/video/fbdev/da8xx-fb.c
+index 11922b009ed7..cd07e401b326 100644
+--- a/drivers/video/fbdev/da8xx-fb.c
++++ b/drivers/video/fbdev/da8xx-fb.c
+@@ -1431,7 +1431,7 @@ static int fb_probe(struct platform_device *device)
+ 		dev_err(&amp;device-&gt;dev,
+ 			"GLCD: kmalloc for frame buffer failed\n");
+ 		ret = -EINVAL;
+-		goto err_release_fb;
++		goto err_disable_reg;
+ 	}
+ 
+ 	da8xx_fb_info-&gt;screen_base = (char __iomem *) par-&gt;vram_virt;
+@@ -1475,7 +1475,7 @@ static int fb_probe(struct platform_device *device)
+ 
+ 	ret = fb_alloc_cmap(&amp;da8xx_fb_info-&gt;cmap, PALETTE_SIZE, 0);
+ 	if (ret)
+-		goto err_release_fb;
++		goto err_disable_reg;
+ 	da8xx_fb_info-&gt;cmap.len = par-&gt;palette_sz;
+ 
+ 	/* initialize var_screeninfo */
+@@ -1529,6 +1529,9 @@ static int fb_probe(struct platform_device *device)
+ err_dealloc_cmap:
+ 	fb_dealloc_cmap(&amp;da8xx_fb_info-&gt;cmap);
+ 
++err_disable_reg:
++	if (par-&gt;lcd_supply)
++		regulator_disable(par-&gt;lcd_supply);
+ err_release_fb:
+ 	framebuffer_release(da8xx_fb_info);
+ </pre><hr><pre>commit b76449ee75e21acfe9fa4c653d8598f191ed7d68
+Author: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+Date:   Fri Nov 11 13:49:49 2022 +0800
+
+    fbdev: smscufx: fix error handling code in ufx_usb_probe
+    
+    The current error handling code in ufx_usb_probe have many unmatching
+    issues, e.g., missing ufx_free_usb_list, destroy_modedb label should
+    only include framebuffer_release, fb_dealloc_cmap only matches
+    fb_alloc_cmap.
+    
+    My local syzkaller reports a memory leak bug:
+    
+    memory leak in ufx_usb_probe
+    
+    BUG: memory leak
+    unreferenced object 0xffff88802f879580 (size 128):
+      comm "kworker/0:7", pid 17416, jiffies 4295067474 (age 46.710s)
+      hex dump (first 32 bytes):
+        80 21 7c 2e 80 88 ff ff 18 d0 d0 0c 80 88 ff ff  .!|.............
+        00 d0 d0 0c 80 88 ff ff e0 ff ff ff 0f 00 00 00  ................
+      backtrace:
+        [&lt;ffffffff814c99a0&gt;] kmalloc_trace+0x20/0x90 mm/slab_common.c:1045
+        [&lt;ffffffff824d219c&gt;] kmalloc include/linux/slab.h:553 [inline]
+        [&lt;ffffffff824d219c&gt;] kzalloc include/linux/slab.h:689 [inline]
+        [&lt;ffffffff824d219c&gt;] ufx_alloc_urb_list drivers/video/fbdev/smscufx.c:1873 [inline]
+        [&lt;ffffffff824d219c&gt;] ufx_usb_probe+0x11c/0x15a0 drivers/video/fbdev/smscufx.c:1655
+        [&lt;ffffffff82d17927&gt;] usb_probe_interface+0x177/0x370 drivers/usb/core/driver.c:396
+        [&lt;ffffffff82712f0d&gt;] call_driver_probe drivers/base/dd.c:560 [inline]
+        [&lt;ffffffff82712f0d&gt;] really_probe+0x12d/0x390 drivers/base/dd.c:639
+        [&lt;ffffffff8271322f&gt;] __driver_probe_device+0xbf/0x140 drivers/base/dd.c:778
+        [&lt;ffffffff827132da&gt;] driver_probe_device+0x2a/0x120 drivers/base/dd.c:808
+        [&lt;ffffffff82713c27&gt;] __device_attach_driver+0xf7/0x150 drivers/base/dd.c:936
+        [&lt;ffffffff82710137&gt;] bus_for_each_drv+0xb7/0x100 drivers/base/bus.c:427
+        [&lt;ffffffff827136b5&gt;] __device_attach+0x105/0x2d0 drivers/base/dd.c:1008
+        [&lt;ffffffff82711d36&gt;] bus_probe_device+0xc6/0xe0 drivers/base/bus.c:487
+        [&lt;ffffffff8270e242&gt;] device_add+0x642/0xdc0 drivers/base/core.c:3517
+        [&lt;ffffffff82d14d5f&gt;] usb_set_configuration+0x8ef/0xb80 drivers/usb/core/message.c:2170
+        [&lt;ffffffff82d2576c&gt;] usb_generic_driver_probe+0x8c/0xc0 drivers/usb/core/generic.c:238
+        [&lt;ffffffff82d16ffc&gt;] usb_probe_device+0x5c/0x140 drivers/usb/core/driver.c:293
+        [&lt;ffffffff82712f0d&gt;] call_driver_probe drivers/base/dd.c:560 [inline]
+        [&lt;ffffffff82712f0d&gt;] really_probe+0x12d/0x390 drivers/base/dd.c:639
+        [&lt;ffffffff8271322f&gt;] __driver_probe_device+0xbf/0x140 drivers/base/dd.c:778
+    
+    Fix this bug by rewriting the error handling code in ufx_usb_probe.
+    
+    Reported-by: syzkaller &lt;syzkaller@googlegroups.com&gt;
+    Tested-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Signed-off-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Signed-off-by: Helge Deller &lt;deller@gmx.de&gt;
+
+diff --git a/drivers/video/fbdev/smscufx.c b/drivers/video/fbdev/smscufx.c
+index 9343b7a4ac89..2ad6e98ce10d 100644
+--- a/drivers/video/fbdev/smscufx.c
++++ b/drivers/video/fbdev/smscufx.c
+@@ -1622,7 +1622,7 @@ static int ufx_usb_probe(struct usb_interface *interface,
+ 	struct usb_device *usbdev;
+ 	struct ufx_data *dev;
+ 	struct fb_info *info;
+-	int retval;
++	int retval = -ENOMEM;
+ 	u32 id_rev, fpga_rev;
+ 
+ 	/* usb initialization */
+@@ -1654,15 +1654,17 @@ static int ufx_usb_probe(struct usb_interface *interface,
+ 
+ 	if (!ufx_alloc_urb_list(dev, WRITES_IN_FLIGHT, MAX_TRANSFER)) {
+ 		dev_err(dev-&gt;gdev, "ufx_alloc_urb_list failed\n");
+-		goto e_nomem;
++		goto put_ref;
+ 	}
+ 
+ 	/* We don't register a new USB class. Our client interface is fbdev */
+ 
+ 	/* allocates framebuffer driver structure, not framebuffer memory */
+ 	info = framebuffer_alloc(0, &amp;usbdev-&gt;dev);
+-	if (!info)
+-		goto e_nomem;
++	if (!info) {
++		dev_err(dev-&gt;gdev, "framebuffer_alloc failed\n");
++		goto free_urb_list;
++	}
+ 
+ 	dev-&gt;info = info;
+ 	info-&gt;par = dev;
+@@ -1705,22 +1707,34 @@ static int ufx_usb_probe(struct usb_interface *interface,
+ 	check_warn_goto_error(retval, "unable to find common mode for display and adapter");
+ 
+ 	retval = ufx_reg_set_bits(dev, 0x4000, 0x00000001);
+-	check_warn_goto_error(retval, "error %d enabling graphics engine", retval);
++	if (retval &lt; 0) {
++		dev_err(dev-&gt;gdev, "error %d enabling graphics engine", retval);
++		goto setup_modes;
++	}
+ 
+ 	/* ready to begin using device */
+ 	atomic_set(&amp;dev-&gt;usb_active, 1);
+ 
+ 	dev_dbg(dev-&gt;gdev, "checking var");
+ 	retval = ufx_ops_check_var(&amp;info-&gt;var, info);
+-	check_warn_goto_error(retval, "error %d ufx_ops_check_var", retval);
++	if (retval &lt; 0) {
++		dev_err(dev-&gt;gdev, "error %d ufx_ops_check_var", retval);
++		goto reset_active;
++	}
+ 
+ 	dev_dbg(dev-&gt;gdev, "setting par");
+ 	retval = ufx_ops_set_par(info);
+-	check_warn_goto_error(retval, "error %d ufx_ops_set_par", retval);
++	if (retval &lt; 0) {
++		dev_err(dev-&gt;gdev, "error %d ufx_ops_set_par", retval);
++		goto reset_active;
++	}
+ 
+ 	dev_dbg(dev-&gt;gdev, "registering framebuffer");
+ 	retval = register_framebuffer(info);
+-	check_warn_goto_error(retval, "error %d register_framebuffer", retval);
++	if (retval &lt; 0) {
++		dev_err(dev-&gt;gdev, "error %d register_framebuffer", retval);
++		goto reset_active;
++	}
+ 
+ 	dev_info(dev-&gt;gdev, "SMSC UDX USB device /dev/fb%d attached. %dx%d resolution."
+ 		" Using %dK framebuffer memory\n", info-&gt;node,
+@@ -1728,21 +1742,23 @@ static int ufx_usb_probe(struct usb_interface *interface,
+ 
+ 	return 0;
+ 
+-error:
+-	fb_dealloc_cmap(&amp;info-&gt;cmap);
+-destroy_modedb:
++reset_active:
++	atomic_set(&amp;dev-&gt;usb_active, 0);
++setup_modes:
+ 	fb_destroy_modedb(info-&gt;monspecs.modedb);
+ 	vfree(info-&gt;screen_base);
+ 	fb_destroy_modelist(&amp;info-&gt;modelist);
++error:
++	fb_dealloc_cmap(&amp;info-&gt;cmap);
++destroy_modedb:
+ 	framebuffer_release(info);
++free_urb_list:
++	if (dev-&gt;urbs.count &gt; 0)
++		ufx_free_urb_list(dev);
+ put_ref:
+ 	kref_put(&amp;dev-&gt;kref, ufx_free); /* ref for framebuffer */
+ 	kref_put(&amp;dev-&gt;kref, ufx_free); /* last ref from kref_init */
+ 	return retval;
+-
+-e_nomem:
+-	retval = -ENOMEM;
+-	goto put_ref;
+ }
+ 
+ static void ufx_usb_disconnect(struct usb_interface *interface)</pre><hr><pre>commit aa9832e4501264a43db671bba09fe4d8bc39fcff
+Author: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+Date:   Mon Oct 24 19:00:30 2022 +0800
+
+    can: ucan: ucan_disconnect(): change unregister_netdev() to unregister_candev()
+    
+    From API pairing, change unregister_netdev() to unregister_candev()
+    since the registration function is register_candev(). Actually, they
+    are the same.
+    
+    Signed-off-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Link: https://lore.kernel.org/all/20221024110033.727542-1-dzm91@hust.edu.cn
+    [mkl: adjust subject + commit message]
+    Signed-off-by: Marc Kleine-Budde &lt;mkl@pengutronix.de&gt;
+
+diff --git a/drivers/net/can/usb/ucan.c b/drivers/net/can/usb/ucan.c
+index b53e709943bc..a1734f1c0148 100644
+--- a/drivers/net/can/usb/ucan.c
++++ b/drivers/net/can/usb/ucan.c
+@@ -1582,7 +1582,7 @@ static void ucan_disconnect(struct usb_interface *intf)
+ 	usb_set_intfdata(intf, NULL);
+ 
+ 	if (up) {
+-		unregister_netdev(up-&gt;netdev);
++		unregister_candev(up-&gt;netdev);
+ 		free_candev(up-&gt;netdev);
+ 	}
+ }</pre><hr><pre>commit b1a09b63684cea56774786ca14c13b7041ffee63
+Author: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+Date:   Mon Oct 24 17:02:52 2022 +0800
+
+    can: mcp251x: mcp251x_can_probe(): add missing unregister_candev() in error path
+    
+    In mcp251x_can_probe(), if mcp251x_gpio_setup() fails, it forgets to
+    unregister the CAN device.
+    
+    Fix this by unregistering can device in mcp251x_can_probe().
+    
+    Fixes: 2d52dabbef60 ("can: mcp251x: add GPIO support")
+    Signed-off-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Link: https://lore.kernel.org/all/20221024090256.717236-1-dzm91@hust.edu.cn
+    [mkl: adjust label]
+    Signed-off-by: Marc Kleine-Budde &lt;mkl@pengutronix.de&gt;
+
+diff --git a/drivers/net/can/spi/mcp251x.c b/drivers/net/can/spi/mcp251x.c
+index c320de474f40..24883a65ca66 100644
+--- a/drivers/net/can/spi/mcp251x.c
++++ b/drivers/net/can/spi/mcp251x.c
+@@ -1415,11 +1415,14 @@ static int mcp251x_can_probe(struct spi_device *spi)
+ 
+ 	ret = mcp251x_gpio_setup(priv);
+ 	if (ret)
+-		goto error_probe;
++		goto out_unregister_candev;
+ 
+ 	netdev_info(net, "MCP%x successfully initialized.\n", priv-&gt;model);
+ 	return 0;
+ 
++out_unregister_candev:
++	unregister_candev(net);
++
+ error_probe:
+ 	destroy_workqueue(priv-&gt;wq);
+ 	priv-&gt;wq = NULL;</pre><hr><pre>commit 3e5b3418827cefb5e1cc658806f02965791b8f07
+Author: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+Date:   Mon Oct 24 19:48:07 2022 +0800
+
+    can: mscan: mpc5xxx: mpc5xxx_can_probe(): add missing put_clock() in error path
+    
+    The commit 1149108e2fbf ("can: mscan: improve clock API use") only
+    adds put_clock() in mpc5xxx_can_remove() function, forgetting to add
+    put_clock() in the error handling code.
+    
+    Fix this bug by adding put_clock() in the error handling code.
+    
+    Fixes: 1149108e2fbf ("can: mscan: improve clock API use")
+    Signed-off-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Link: https://lore.kernel.org/all/20221024133828.35881-1-mkl@pengutronix.de
+    Signed-off-by: Marc Kleine-Budde &lt;mkl@pengutronix.de&gt;
+
+diff --git a/drivers/net/can/mscan/mpc5xxx_can.c b/drivers/net/can/mscan/mpc5xxx_can.c
+index c469b2f3e57d..b0ed798ae70f 100644
+--- a/drivers/net/can/mscan/mpc5xxx_can.c
++++ b/drivers/net/can/mscan/mpc5xxx_can.c
+@@ -322,14 +322,14 @@ static int mpc5xxx_can_probe(struct platform_device *ofdev)
+ 					       &amp;mscan_clksrc);
+ 	if (!priv-&gt;can.clock.freq) {
+ 		dev_err(&amp;ofdev-&gt;dev, "couldn't get MSCAN clock properties\n");
+-		goto exit_free_mscan;
++		goto exit_put_clock;
+ 	}
+ 
+ 	err = register_mscandev(dev, mscan_clksrc);
+ 	if (err) {
+ 		dev_err(&amp;ofdev-&gt;dev, "registering %s failed (err=%d)\n",
+ 			DRV_NAME, err);
+-		goto exit_free_mscan;
++		goto exit_put_clock;
+ 	}
+ 
+ 	dev_info(&amp;ofdev-&gt;dev, "MSCAN at 0x%p, irq %d, clock %d Hz\n",
+@@ -337,7 +337,9 @@ static int mpc5xxx_can_probe(struct platform_device *ofdev)
+ 
+ 	return 0;
+ 
+-exit_free_mscan:
++exit_put_clock:
++	if (data-&gt;put_clock)
++		data-&gt;put_clock(ofdev);
+ 	free_candev(dev);
+ exit_dispose_irq:
+ 	irq_dispose_mapping(irq);</pre><hr><pre>commit 90732f1769165dcf0778d723ad188f6441a930f5
+Author: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+Date:   Sun Oct 9 15:23:05 2022 +0800
+
+    usb: cdns3: adjust the partial logic of cdnsp_pci_remove
+    
+    In cdnsp_pci_remove, if pci_is_enabled returns true, it will
+    call cdns_remove; else it will call kfree. Then both control flow
+    goes to pci_dev_put.
+    
+    Adjust this logic by modifying it to an if else.
+    
+    Signed-off-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Acked-by: Pawel Laszczak &lt;pawell@cadence.com&gt;
+    Link: https://lore.kernel.org/r/20221009072305.1593707-1-dzm91@hust.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/cdns3/cdnsp-pci.c b/drivers/usb/cdns3/cdnsp-pci.c
+index fe8a114c586c..efd54ed918b9 100644
+--- a/drivers/usb/cdns3/cdnsp-pci.c
++++ b/drivers/usb/cdns3/cdnsp-pci.c
+@@ -192,14 +192,12 @@ static void cdnsp_pci_remove(struct pci_dev *pdev)
+ 	if (pci_dev_run_wake(pdev))
+ 		pm_runtime_get_noresume(&amp;pdev-&gt;dev);
+ 
+-	if (!pci_is_enabled(func)) {
++	if (pci_is_enabled(func)) {
++		cdns_remove(cdnsp);
++	} else {
+ 		kfree(cdnsp);
+-		goto pci_put;
+ 	}
+ 
+-	cdns_remove(cdnsp);
+-
+-pci_put:
+ 	pci_dev_put(func);
+ }
+ </pre>
+    <div class="pagination">
+        <a href='17_6.html'>&lt;&lt;Prev</a><a href='17.html'>1</a><a href='17_2.html'>2</a><a href='17_3.html'>3</a><a href='17_4.html'>4</a><a href='17_5.html'>5</a><a href='17_6.html'>6</a><span>[7]</span>
+    <div>
+</body>

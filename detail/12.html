@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Science and Technology of China</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Science and Technology of China</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='12_2.html'>2</a><a href='12_3.html'>3</a><a href='12_4.html'>4</a><a href='12_5.html'>5</a><a href='12_6.html'>6</a><a href='12_7.html'>7</a><a href='12_8.html'>8</a><a href='12_9.html'>9</a><a href='12_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 3b79954fd00d540677c97a560622b73f3a1f4e28
+Author: Zihao Wang &lt;wzhd@ustc.edu&gt;
+Date:   Sun Apr 24 16:41:20 2022 +0800
+
+    ALSA: hda/realtek: Add quirk for Yoga Duet 7 13ITL6 speakers
+    
+    Lenovo Yoga Duet 7 13ITL6 has Realtek ALC287 and built-in
+    speakers do not work out of the box. The fix developed for
+    Yoga 7i 14ITL5 also enables speaker output for this model.
+    
+    Signed-off-by: Zihao Wang &lt;wzhd@ustc.edu&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Link: https://lore.kernel.org/r/20220424084120.74125-1-wzhd@ustc.edu
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/patch_realtek.c b/sound/pci/hda/patch_realtek.c
+index c65d3dbc6cc9..cf531c1efa13 100644
+--- a/sound/pci/hda/patch_realtek.c
++++ b/sound/pci/hda/patch_realtek.c
+@@ -9247,6 +9247,7 @@ static const struct snd_pci_quirk alc269_fixup_tbl[] = {
+ 	SND_PCI_QUIRK(0x17aa, 0x3813, "Legion 7i 15IMHG05", ALC287_FIXUP_LEGION_15IMHG05_SPEAKERS),
+ 	SND_PCI_QUIRK(0x17aa, 0x3818, "Lenovo C940", ALC298_FIXUP_LENOVO_SPK_VOLUME),
+ 	SND_PCI_QUIRK(0x17aa, 0x3819, "Lenovo 13s Gen2 ITL", ALC287_FIXUP_13S_GEN2_SPEAKERS),
++	SND_PCI_QUIRK(0x17aa, 0x3820, "Yoga Duet 7 13ITL6", ALC287_FIXUP_YOGA7_14ITL_SPEAKERS),
+ 	SND_PCI_QUIRK(0x17aa, 0x3824, "Legion Y9000X 2020", ALC285_FIXUP_LEGION_Y9000X_SPEAKERS),
+ 	SND_PCI_QUIRK(0x17aa, 0x3827, "Ideapad S740", ALC285_FIXUP_IDEAPAD_S740_COEF),
+ 	SND_PCI_QUIRK(0x17aa, 0x3834, "Lenovo IdeaPad Slim 9i 14ITL5", ALC287_FIXUP_YOGA7_14ITL_SPEAKERS),</pre><hr><pre>commit aadb22ba2f656581b2f733deb3a467c48cc618f6
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Wed Apr 6 21:04:43 2022 +0200
+
+    drbd: Fix five use after free bugs in get_initial_state
+    
+    In get_initial_state, it calls notify_initial_state_done(skb,..) if
+    cb-&gt;args[5]==1. If genlmsg_put() failed in notify_initial_state_done(),
+    the skb will be freed by nlmsg_free(skb).
+    Then get_initial_state will goto out and the freed skb will be used by
+    return value skb-&gt;len, which is a uaf bug.
+    
+    What's worse, the same problem goes even further: skb can also be
+    freed in the notify_*_state_change -&gt; notify_*_state calls below.
+    Thus 4 additional uaf bugs happened.
+    
+    My patch lets the problem callee functions: notify_initial_state_done
+    and notify_*_state_change return an error code if errors happen.
+    So that the error codes could be propagated and the uaf bugs can be avoid.
+    
+    v2 reports a compilation warning. This v3 fixed this warning and built
+    successfully in my local environment with no additional warnings.
+    v2: https://lore.kernel.org/patchwork/patch/1435218/
+    
+    Fixes: a29728463b254 ("drbd: Backport the "events2" command")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Reviewed-by: Christoph Böhmwalder &lt;christoph.boehmwalder@linbit.com&gt;
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/drivers/block/drbd/drbd_int.h b/drivers/block/drbd/drbd_int.h
+index 4b55e864a0a3..4d3efaa20b7b 100644
+--- a/drivers/block/drbd/drbd_int.h
++++ b/drivers/block/drbd/drbd_int.h
+@@ -1638,22 +1638,22 @@ struct sib_info {
+ };
+ void drbd_bcast_event(struct drbd_device *device, const struct sib_info *sib);
+ 
+-extern void notify_resource_state(struct sk_buff *,
++extern int notify_resource_state(struct sk_buff *,
+ 				  unsigned int,
+ 				  struct drbd_resource *,
+ 				  struct resource_info *,
+ 				  enum drbd_notification_type);
+-extern void notify_device_state(struct sk_buff *,
++extern int notify_device_state(struct sk_buff *,
+ 				unsigned int,
+ 				struct drbd_device *,
+ 				struct device_info *,
+ 				enum drbd_notification_type);
+-extern void notify_connection_state(struct sk_buff *,
++extern int notify_connection_state(struct sk_buff *,
+ 				    unsigned int,
+ 				    struct drbd_connection *,
+ 				    struct connection_info *,
+ 				    enum drbd_notification_type);
+-extern void notify_peer_device_state(struct sk_buff *,
++extern int notify_peer_device_state(struct sk_buff *,
+ 				     unsigned int,
+ 				     struct drbd_peer_device *,
+ 				     struct peer_device_info *,
+diff --git a/drivers/block/drbd/drbd_nl.c b/drivers/block/drbd/drbd_nl.c
+index 02030c9c4d3b..b7216c186ba4 100644
+--- a/drivers/block/drbd/drbd_nl.c
++++ b/drivers/block/drbd/drbd_nl.c
+@@ -4549,7 +4549,7 @@ static int nla_put_notification_header(struct sk_buff *msg,
+ 	return drbd_notification_header_to_skb(msg, &amp;nh, true);
+ }
+ 
+-void notify_resource_state(struct sk_buff *skb,
++int notify_resource_state(struct sk_buff *skb,
+ 			   unsigned int seq,
+ 			   struct drbd_resource *resource,
+ 			   struct resource_info *resource_info,
+@@ -4591,16 +4591,17 @@ void notify_resource_state(struct sk_buff *skb,
+ 		if (err &amp;&amp; err != -ESRCH)
+ 			goto failed;
+ 	}
+-	return;
++	return 0;
+ 
+ nla_put_failure:
+ 	nlmsg_free(skb);
+ failed:
+ 	drbd_err(resource, "Error %d while broadcasting event. Event seq:%u\n",
+ 			err, seq);
++	return err;
+ }
+ 
+-void notify_device_state(struct sk_buff *skb,
++int notify_device_state(struct sk_buff *skb,
+ 			 unsigned int seq,
+ 			 struct drbd_device *device,
+ 			 struct device_info *device_info,
+@@ -4640,16 +4641,17 @@ void notify_device_state(struct sk_buff *skb,
+ 		if (err &amp;&amp; err != -ESRCH)
+ 			goto failed;
+ 	}
+-	return;
++	return 0;
+ 
+ nla_put_failure:
+ 	nlmsg_free(skb);
+ failed:
+ 	drbd_err(device, "Error %d while broadcasting event. Event seq:%u\n",
+ 		 err, seq);
++	return err;
+ }
+ 
+-void notify_connection_state(struct sk_buff *skb,
++int notify_connection_state(struct sk_buff *skb,
+ 			     unsigned int seq,
+ 			     struct drbd_connection *connection,
+ 			     struct connection_info *connection_info,
+@@ -4689,16 +4691,17 @@ void notify_connection_state(struct sk_buff *skb,
+ 		if (err &amp;&amp; err != -ESRCH)
+ 			goto failed;
+ 	}
+-	return;
++	return 0;
+ 
+ nla_put_failure:
+ 	nlmsg_free(skb);
+ failed:
+ 	drbd_err(connection, "Error %d while broadcasting event. Event seq:%u\n",
+ 		 err, seq);
++	return err;
+ }
+ 
+-void notify_peer_device_state(struct sk_buff *skb,
++int notify_peer_device_state(struct sk_buff *skb,
+ 			      unsigned int seq,
+ 			      struct drbd_peer_device *peer_device,
+ 			      struct peer_device_info *peer_device_info,
+@@ -4739,13 +4742,14 @@ void notify_peer_device_state(struct sk_buff *skb,
+ 		if (err &amp;&amp; err != -ESRCH)
+ 			goto failed;
+ 	}
+-	return;
++	return 0;
+ 
+ nla_put_failure:
+ 	nlmsg_free(skb);
+ failed:
+ 	drbd_err(peer_device, "Error %d while broadcasting event. Event seq:%u\n",
+ 		 err, seq);
++	return err;
+ }
+ 
+ void notify_helper(enum drbd_notification_type type,
+@@ -4796,7 +4800,7 @@ void notify_helper(enum drbd_notification_type type,
+ 		 err, seq);
+ }
+ 
+-static void notify_initial_state_done(struct sk_buff *skb, unsigned int seq)
++static int notify_initial_state_done(struct sk_buff *skb, unsigned int seq)
+ {
+ 	struct drbd_genlmsghdr *dh;
+ 	int err;
+@@ -4810,11 +4814,12 @@ static void notify_initial_state_done(struct sk_buff *skb, unsigned int seq)
+ 	if (nla_put_notification_header(skb, NOTIFY_EXISTS))
+ 		goto nla_put_failure;
+ 	genlmsg_end(skb, dh);
+-	return;
++	return 0;
+ 
+ nla_put_failure:
+ 	nlmsg_free(skb);
+ 	pr_err("Error %d sending event. Event seq:%u\n", err, seq);
++	return err;
+ }
+ 
+ static void free_state_changes(struct list_head *list)
+@@ -4841,6 +4846,7 @@ static int get_initial_state(struct sk_buff *skb, struct netlink_callback *cb)
+ 	unsigned int seq = cb-&gt;args[2];
+ 	unsigned int n;
+ 	enum drbd_notification_type flags = 0;
++	int err = 0;
+ 
+ 	/* There is no need for taking notification_mutex here: it doesn't
+ 	   matter if the initial state events mix with later state chage
+@@ -4849,32 +4855,32 @@ static int get_initial_state(struct sk_buff *skb, struct netlink_callback *cb)
+ 
+ 	cb-&gt;args[5]--;
+ 	if (cb-&gt;args[5] == 1) {
+-		notify_initial_state_done(skb, seq);
++		err = notify_initial_state_done(skb, seq);
+ 		goto out;
+ 	}
+ 	n = cb-&gt;args[4]++;
+ 	if (cb-&gt;args[4] &lt; cb-&gt;args[3])
+ 		flags |= NOTIFY_CONTINUES;
+ 	if (n &lt; 1) {
+-		notify_resource_state_change(skb, seq, state_change-&gt;resource,
++		err = notify_resource_state_change(skb, seq, state_change-&gt;resource,
+ 					     NOTIFY_EXISTS | flags);
+ 		goto next;
+ 	}
+ 	n--;
+ 	if (n &lt; state_change-&gt;n_connections) {
+-		notify_connection_state_change(skb, seq, &amp;state_change-&gt;connections[n],
++		err = notify_connection_state_change(skb, seq, &amp;state_change-&gt;connections[n],
+ 					       NOTIFY_EXISTS | flags);
+ 		goto next;
+ 	}
+ 	n -= state_change-&gt;n_connections;
+ 	if (n &lt; state_change-&gt;n_devices) {
+-		notify_device_state_change(skb, seq, &amp;state_change-&gt;devices[n],
++		err = notify_device_state_change(skb, seq, &amp;state_change-&gt;devices[n],
+ 					   NOTIFY_EXISTS | flags);
+ 		goto next;
+ 	}
+ 	n -= state_change-&gt;n_devices;
+ 	if (n &lt; state_change-&gt;n_devices * state_change-&gt;n_connections) {
+-		notify_peer_device_state_change(skb, seq, &amp;state_change-&gt;peer_devices[n],
++		err = notify_peer_device_state_change(skb, seq, &amp;state_change-&gt;peer_devices[n],
+ 						NOTIFY_EXISTS | flags);
+ 		goto next;
+ 	}
+@@ -4889,7 +4895,10 @@ static int get_initial_state(struct sk_buff *skb, struct netlink_callback *cb)
+ 		cb-&gt;args[4] = 0;
+ 	}
+ out:
+-	return skb-&gt;len;
++	if (err)
++		return err;
++	else
++		return skb-&gt;len;
+ }
+ 
+ int drbd_adm_get_initial_state(struct sk_buff *skb, struct netlink_callback *cb)
+diff --git a/drivers/block/drbd/drbd_state.c b/drivers/block/drbd/drbd_state.c
+index b8a27818ab3f..4ee11aef6672 100644
+--- a/drivers/block/drbd/drbd_state.c
++++ b/drivers/block/drbd/drbd_state.c
+@@ -1537,7 +1537,7 @@ int drbd_bitmap_io_from_worker(struct drbd_device *device,
+ 	return rv;
+ }
+ 
+-void notify_resource_state_change(struct sk_buff *skb,
++int notify_resource_state_change(struct sk_buff *skb,
+ 				  unsigned int seq,
+ 				  struct drbd_resource_state_change *resource_state_change,
+ 				  enum drbd_notification_type type)
+@@ -1550,10 +1550,10 @@ void notify_resource_state_change(struct sk_buff *skb,
+ 		.res_susp_fen = resource_state_change-&gt;susp_fen[NEW],
+ 	};
+ 
+-	notify_resource_state(skb, seq, resource, &amp;resource_info, type);
++	return notify_resource_state(skb, seq, resource, &amp;resource_info, type);
+ }
+ 
+-void notify_connection_state_change(struct sk_buff *skb,
++int notify_connection_state_change(struct sk_buff *skb,
+ 				    unsigned int seq,
+ 				    struct drbd_connection_state_change *connection_state_change,
+ 				    enum drbd_notification_type type)
+@@ -1564,10 +1564,10 @@ void notify_connection_state_change(struct sk_buff *skb,
+ 		.conn_role = connection_state_change-&gt;peer_role[NEW],
+ 	};
+ 
+-	notify_connection_state(skb, seq, connection, &amp;connection_info, type);
++	return notify_connection_state(skb, seq, connection, &amp;connection_info, type);
+ }
+ 
+-void notify_device_state_change(struct sk_buff *skb,
++int notify_device_state_change(struct sk_buff *skb,
+ 				unsigned int seq,
+ 				struct drbd_device_state_change *device_state_change,
+ 				enum drbd_notification_type type)
+@@ -1577,10 +1577,10 @@ void notify_device_state_change(struct sk_buff *skb,
+ 		.dev_disk_state = device_state_change-&gt;disk_state[NEW],
+ 	};
+ 
+-	notify_device_state(skb, seq, device, &amp;device_info, type);
++	return notify_device_state(skb, seq, device, &amp;device_info, type);
+ }
+ 
+-void notify_peer_device_state_change(struct sk_buff *skb,
++int notify_peer_device_state_change(struct sk_buff *skb,
+ 				     unsigned int seq,
+ 				     struct drbd_peer_device_state_change *p,
+ 				     enum drbd_notification_type type)
+@@ -1594,7 +1594,7 @@ void notify_peer_device_state_change(struct sk_buff *skb,
+ 		.peer_resync_susp_dependency = p-&gt;resync_susp_dependency[NEW],
+ 	};
+ 
+-	notify_peer_device_state(skb, seq, peer_device, &amp;peer_device_info, type);
++	return notify_peer_device_state(skb, seq, peer_device, &amp;peer_device_info, type);
+ }
+ 
+ static void broadcast_state_change(struct drbd_state_change *state_change)
+@@ -1602,7 +1602,7 @@ static void broadcast_state_change(struct drbd_state_change *state_change)
+ 	struct drbd_resource_state_change *resource_state_change = &amp;state_change-&gt;resource[0];
+ 	bool resource_state_has_changed;
+ 	unsigned int n_device, n_connection, n_peer_device, n_peer_devices;
+-	void (*last_func)(struct sk_buff *, unsigned int, void *,
++	int (*last_func)(struct sk_buff *, unsigned int, void *,
+ 			  enum drbd_notification_type) = NULL;
+ 	void *last_arg = NULL;
+ 
+diff --git a/drivers/block/drbd/drbd_state_change.h b/drivers/block/drbd/drbd_state_change.h
+index ba80f612d6ab..d5b0479bc9a6 100644
+--- a/drivers/block/drbd/drbd_state_change.h
++++ b/drivers/block/drbd/drbd_state_change.h
+@@ -44,19 +44,19 @@ extern struct drbd_state_change *remember_old_state(struct drbd_resource *, gfp_
+ extern void copy_old_to_new_state_change(struct drbd_state_change *);
+ extern void forget_state_change(struct drbd_state_change *);
+ 
+-extern void notify_resource_state_change(struct sk_buff *,
++extern int notify_resource_state_change(struct sk_buff *,
+ 					 unsigned int,
+ 					 struct drbd_resource_state_change *,
+ 					 enum drbd_notification_type type);
+-extern void notify_connection_state_change(struct sk_buff *,
++extern int notify_connection_state_change(struct sk_buff *,
+ 					   unsigned int,
+ 					   struct drbd_connection_state_change *,
+ 					   enum drbd_notification_type type);
+-extern void notify_device_state_change(struct sk_buff *,
++extern int notify_device_state_change(struct sk_buff *,
+ 				       unsigned int,
+ 				       struct drbd_device_state_change *,
+ 				       enum drbd_notification_type type);
+-extern void notify_peer_device_state_change(struct sk_buff *,
++extern int notify_peer_device_state_change(struct sk_buff *,
+ 					    unsigned int,
+ 					    struct drbd_peer_device_state_change *,
+ 					    enum drbd_notification_type type);</pre><hr><pre>commit f27456693b960ce4022d40b943808b3362ce80f9
+Author: zhuxinran &lt;zhuran@mail.ustc.edu.cn&gt;
+Date:   Thu Dec 16 14:14:39 2021 +0800
+
+    9p/trans_virtio: Fix typo in the comment for p9_virtio_create()
+    
+    couldlook ==&gt; could look
+    
+    Link: https://lkml.kernel.org/r/20211216061439.4186-1-zhuran@mail.ustc.edu.cn
+    Signed-off-by: zhuxinran &lt;zhuran@mail.ustc.edu.cn&gt;
+    Signed-off-by: Dominique Martinet &lt;asmadeus@codewreck.org&gt;
+
+diff --git a/net/9p/trans_virtio.c b/net/9p/trans_virtio.c
+index bd5a89c4960d..f7dc561ca516 100644
+--- a/net/9p/trans_virtio.c
++++ b/net/9p/trans_virtio.c
+@@ -648,7 +648,7 @@ static int p9_virtio_probe(struct virtio_device *vdev)
+  * @args: args passed from sys_mount() for per-transport options (unused)
+  *
+  * This sets up a transport channel for 9p communication.  Right now
+- * we only match the first available channel, but eventually we couldlook up
++ * we only match the first available channel, but eventually we could look up
+  * alternate channels by matching devname versus a virtio_config entry.
+  * We use a simple reference count mechanism to ensure that only a single
+  * mount has a channel open at a time.</pre><hr><pre>commit f973795a8d19cbf3d03807704eb7c6ff65788d5a
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Fri Apr 2 22:47:55 2021 -0700
+
+    wireless: iwlwifi: Fix a double free in iwl_txq_dyn_alloc_dma
+    
+    In iwl_txq_dyn_alloc_dma, txq-&gt;tfds is freed at first time by:
+    iwl_txq_alloc()-&gt;goto err_free_tfds-&gt;dma_free_coherent(). But
+    it forgot to set txq-&gt;tfds to NULL.
+    
+    Then the txq-&gt;tfds is freed again in iwl_txq_dyn_alloc_dma by:
+    goto error-&gt;iwl_txq_gen2_free_memory()-&gt;dma_free_coherent().
+    
+    My patch sets txq-&gt;tfds to NULL after the first free to avoid the
+    double free.
+    
+    Fixes: 0cd1ad2d7fd41 ("iwlwifi: move all bus-independent TX functions to common code")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20210403054755.4781-1-lyl2019@mail.ustc.edu.cn
+    Signed-off-by: Luca Coelho &lt;luciano.coelho@intel.com&gt;
+
+diff --git a/drivers/net/wireless/intel/iwlwifi/queue/tx.c b/drivers/net/wireless/intel/iwlwifi/queue/tx.c
+index 451b06069350..0f3526b0c5b0 100644
+--- a/drivers/net/wireless/intel/iwlwifi/queue/tx.c
++++ b/drivers/net/wireless/intel/iwlwifi/queue/tx.c
+@@ -1072,6 +1072,7 @@ int iwl_txq_alloc(struct iwl_trans *trans, struct iwl_txq *txq, int slots_num,
+ 	return 0;
+ err_free_tfds:
+ 	dma_free_coherent(trans-&gt;dev, tfd_sz, txq-&gt;tfds, txq-&gt;dma_addr);
++	txq-&gt;tfds = NULL;
+ error:
+ 	if (txq-&gt;entries &amp;&amp; cmd_queue)
+ 		for (i = 0; i &lt; slots_num; i++)</pre><hr><pre>commit 7dd0c9e547b6924e18712b6b51aa3cba1896ee2c
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Sun May 9 10:24:02 2021 +0200
+
+    media: v4l2-core: Avoid the dangling pointer in v4l2_fh_release
+    
+    A use after free bug caused by the dangling pointer
+    filp-&gt;privitate_data in v4l2_fh_release.
+    See https://lore.kernel.org/patchwork/patch/1419058/.
+    
+    My patch sets the dangling pointer to NULL to provide
+    robust.
+    
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+huawei@kernel.org&gt;
+
+diff --git a/drivers/media/v4l2-core/v4l2-fh.c b/drivers/media/v4l2-core/v4l2-fh.c
+index 684574f58e82..90eec79ee995 100644
+--- a/drivers/media/v4l2-core/v4l2-fh.c
++++ b/drivers/media/v4l2-core/v4l2-fh.c
+@@ -96,6 +96,7 @@ int v4l2_fh_release(struct file *filp)
+ 		v4l2_fh_del(fh);
+ 		v4l2_fh_exit(fh);
+ 		kfree(fh);
++		filp-&gt;private_data = NULL;
+ 	}
+ 	return 0;
+ }</pre><hr><pre>commit 01fe904c9afd26e79c1f73aa0ca2e3d785e5e319
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Sun May 9 10:12:31 2021 +0200
+
+    media: exynos4-is: Fix a use after free in isp_video_release
+    
+    In isp_video_release, file-&gt;private_data is freed via
+    _vb2_fop_release()-&gt;v4l2_fh_release(). But the freed
+    file-&gt;private_data is still used in v4l2_fh_is_singular_file()
+    -&gt;v4l2_fh_is_singular(file-&gt;private_data), which is a use
+    after free bug.
+    
+    My patch uses a variable 'is_singular_file' to avoid the uaf.
+    v3: https://lore.kernel.org/patchwork/patch/1419058/
+    
+    Fixes: 34947b8aebe3f ("[media] exynos4-is: Add the FIMC-IS ISP capture DMA driver")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+huawei@kernel.org&gt;
+
+diff --git a/drivers/media/platform/exynos4-is/fimc-isp-video.c b/drivers/media/platform/exynos4-is/fimc-isp-video.c
+index 8d9dc597deaa..83688a7982f7 100644
+--- a/drivers/media/platform/exynos4-is/fimc-isp-video.c
++++ b/drivers/media/platform/exynos4-is/fimc-isp-video.c
+@@ -305,17 +305,20 @@ static int isp_video_release(struct file *file)
+ 	struct fimc_is_video *ivc = &amp;isp-&gt;video_capture;
+ 	struct media_entity *entity = &amp;ivc-&gt;ve.vdev.entity;
+ 	struct media_device *mdev = entity-&gt;graph_obj.mdev;
++	bool is_singular_file;
+ 
+ 	mutex_lock(&amp;isp-&gt;video_lock);
+ 
+-	if (v4l2_fh_is_singular_file(file) &amp;&amp; ivc-&gt;streaming) {
++	is_singular_file = v4l2_fh_is_singular_file(file);
++
++	if (is_singular_file &amp;&amp; ivc-&gt;streaming) {
+ 		media_pipeline_stop(entity);
+ 		ivc-&gt;streaming = 0;
+ 	}
+ 
+ 	_vb2_fop_release(file, NULL);
+ 
+-	if (v4l2_fh_is_singular_file(file)) {
++	if (is_singular_file) {
+ 		fimc_pipeline_call(&amp;ivc-&gt;ve, close);
+ 
+ 		mutex_lock(&amp;mdev-&gt;graph_mutex);</pre><hr><pre>commit 9272e5d0028d45a3b45b58c9255e6e0df53f7ad9
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon May 24 02:32:05 2021 -0700
+
+    ipack/carriers/tpci200: Fix a double free in tpci200_pci_probe
+    
+    In the out_err_bus_register error branch of tpci200_pci_probe,
+    tpci200-&gt;info-&gt;cfg_regs is freed by tpci200_uninstall()-&gt;
+    tpci200_unregister()-&gt;pci_iounmap(..,tpci200-&gt;info-&gt;cfg_regs)
+    in the first time.
+    
+    But later, iounmap() is called to free tpci200-&gt;info-&gt;cfg_regs
+    again.
+    
+    My patch sets tpci200-&gt;info-&gt;cfg_regs to NULL after tpci200_uninstall()
+    to avoid the double free.
+    
+    Fixes: cea2f7cdff2af ("Staging: ipack/bridges/tpci200: Use the TPCI200 in big endian mode")
+    Cc: stable &lt;stable@vger.kernel.org&gt;
+    Acked-by: Samuel Iglesias Gonsalvez &lt;siglesias@igalia.com&gt;
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20210524093205.8333-1-lyl2019@mail.ustc.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/ipack/carriers/tpci200.c b/drivers/ipack/carriers/tpci200.c
+index ec71063fff76..e1822e87ec3d 100644
+--- a/drivers/ipack/carriers/tpci200.c
++++ b/drivers/ipack/carriers/tpci200.c
+@@ -596,8 +596,11 @@ static int tpci200_pci_probe(struct pci_dev *pdev,
+ 
+ out_err_bus_register:
+ 	tpci200_uninstall(tpci200);
++	/* tpci200-&gt;info-&gt;cfg_regs is unmapped in tpci200_uninstall */
++	tpci200-&gt;info-&gt;cfg_regs = NULL;
+ out_err_install:
+-	iounmap(tpci200-&gt;info-&gt;cfg_regs);
++	if (tpci200-&gt;info-&gt;cfg_regs)
++		iounmap(tpci200-&gt;info-&gt;cfg_regs);
+ out_err_ioremap:
+ 	pci_release_region(pdev, TPCI200_CFG_MEM_BAR);
+ out_err_pci_request:</pre><hr><pre>commit 8f3e136ff378a2b22dbc0ca2a6e58022e6df36d2
+Author: Jisheng Zhang &lt;jszhang3@mail.ustc.edu.cn&gt;
+Date:   Fri May 7 22:19:59 2021 +0800
+
+    riscv: mm: Remove setup_zero_page()
+    
+    The empty_zero_page sits at .bss..page_aligned section, so will be
+    cleared to zero during clearing bss, we don't need to clear it again.
+    
+    Signed-off-by: Jisheng Zhang &lt;jszhang@kernel.org&gt;
+    Reviewed-by: Anup Patel &lt;anup@brainfault.org&gt;
+    Signed-off-by: Palmer Dabbelt &lt;palmerdabbelt@google.com&gt;
+
+diff --git a/arch/riscv/mm/init.c b/arch/riscv/mm/init.c
+index 4faf8bd157ea..11b61bea0c4d 100644
+--- a/arch/riscv/mm/init.c
++++ b/arch/riscv/mm/init.c
+@@ -67,11 +67,6 @@ static void __init zone_sizes_init(void)
+ 	free_area_init(max_zone_pfns);
+ }
+ 
+-static void __init setup_zero_page(void)
+-{
+-	memset((void *)empty_zero_page, 0, PAGE_SIZE);
+-}
+-
+ #if defined(CONFIG_MMU) &amp;&amp; defined(CONFIG_DEBUG_VM)
+ static inline void print_mlk(char *name, unsigned long b, unsigned long t)
+ {
+@@ -867,7 +862,6 @@ RESERVEDMEM_OF_DECLARE(elfcorehdr, "linux,elfcorehdr", elfcore_hdr_setup);
+ void __init paging_init(void)
+ {
+ 	setup_vm_final();
+-	setup_zero_page();
+ }
+ 
+ void __init misc_mem_init(void)</pre><hr><pre>commit 7272b591c4cb9327c43443f67b8fbae7657dd9ae
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Apr 26 10:06:20 2021 -0700
+
+    misc/libmasm/module: Fix two use after free in ibmasm_init_one
+    
+    In ibmasm_init_one, it calls ibmasm_init_remote_input_dev().
+    Inside ibmasm_init_remote_input_dev, mouse_dev and keybd_dev are
+    allocated by input_allocate_device(), and assigned to
+    sp-&gt;remote.mouse_dev and sp-&gt;remote.keybd_dev respectively.
+    
+    In the err_free_devices error branch of ibmasm_init_one,
+    mouse_dev and keybd_dev are freed by input_free_device(), and return
+    error. Then the execution runs into error_send_message error branch
+    of ibmasm_init_one, where ibmasm_free_remote_input_dev(sp) is called
+    to unregister the freed sp-&gt;remote.mouse_dev and sp-&gt;remote.keybd_dev.
+    
+    My patch add a "error_init_remote" label to handle the error of
+    ibmasm_init_remote_input_dev(), to avoid the uaf bugs.
+    
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20210426170620.10546-1-lyl2019@mail.ustc.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/misc/ibmasm/module.c b/drivers/misc/ibmasm/module.c
+index 4edad6c445d3..dc8a06c06c63 100644
+--- a/drivers/misc/ibmasm/module.c
++++ b/drivers/misc/ibmasm/module.c
+@@ -111,7 +111,7 @@ static int ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
+ 	result = ibmasm_init_remote_input_dev(sp);
+ 	if (result) {
+ 		dev_err(sp-&gt;dev, "Failed to initialize remote queue\n");
+-		goto error_send_message;
++		goto error_init_remote;
+ 	}
+ 
+ 	result = ibmasm_send_driver_vpd(sp);
+@@ -131,8 +131,9 @@ static int ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
+ 	return 0;
+ 
+ error_send_message:
+-	disable_sp_interrupts(sp-&gt;base_address);
+ 	ibmasm_free_remote_input_dev(sp);
++error_init_remote:
++	disable_sp_interrupts(sp-&gt;base_address);
+ 	free_irq(sp-&gt;irq, (void *)sp);
+ error_request_irq:
+ 	iounmap(sp-&gt;base_address);</pre><hr><pre>commit ea995218dddba171fecd05496c69617c5ef3c5b8
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Apr 26 05:43:40 2021 -0700
+
+    drm/i915/gt: Fix a double free in gen8_preallocate_top_level_pdp
+    
+    Our code analyzer reported a double free bug.
+    
+    In gen8_preallocate_top_level_pdp, pde and pde-&gt;pt.base are allocated
+    via alloc_pd(vm) with one reference. If pin_pt_dma() failed, pde-&gt;pt.base
+    is freed by i915_gem_object_put() with a reference dropped. Then free_pd
+    calls free_px() defined in intel_ppgtt.c, which calls i915_gem_object_put()
+    to put pde-&gt;pt.base again.
+    
+    As pde-&gt;pt.base is protected by refcount, so the second put will not free
+    pde-&gt;pt.base actually. But, maybe it is better to remove the first put?
+    
+    Fixes: 82adf901138cc ("drm/i915/gt: Shrink i915_page_directory's slab bucket")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Reviewed-by: Matthew Auld &lt;matthew.auld@intel.com&gt;
+    Signed-off-by: Matthew Auld &lt;matthew.auld@intel.com&gt;
+    Link: https://patchwork.freedesktop.org/patch/msgid/20210426124340.4238-1-lyl2019@mail.ustc.edu.cn
+    (cherry picked from commit ac69496fe65cca0611d5917b7d232730ff605bc7)
+    Signed-off-by: Jani Nikula &lt;jani.nikula@intel.com&gt;
+
+diff --git a/drivers/gpu/drm/i915/gt/gen8_ppgtt.c b/drivers/gpu/drm/i915/gt/gen8_ppgtt.c
+index 176c19633412..74bf6fc8461f 100644
+--- a/drivers/gpu/drm/i915/gt/gen8_ppgtt.c
++++ b/drivers/gpu/drm/i915/gt/gen8_ppgtt.c
+@@ -641,7 +641,6 @@ static int gen8_preallocate_top_level_pdp(struct i915_ppgtt *ppgtt)
+ 
+ 		err = pin_pt_dma(vm, pde-&gt;pt.base);
+ 		if (err) {
+-			i915_gem_object_put(pde-&gt;pt.base);
+ 			free_pd(vm, pde);
+ 			return err;
+ 		}</pre>
+    <div class="pagination">
+        <span>[1]</span><a href='12_2.html'>2</a><a href='12_3.html'>3</a><a href='12_4.html'>4</a><a href='12_5.html'>5</a><a href='12_6.html'>6</a><a href='12_7.html'>7</a><a href='12_8.html'>8</a><a href='12_9.html'>9</a><a href='12_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

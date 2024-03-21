@@ -1,0 +1,1222 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_26.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><span>[27]</span><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_28.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 2efef7080f471d312a9c4feb3dc5ee038039c7ed
+Author: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+Date:   Tue Dec 23 16:19:56 2008 -0500
+
+    rpc: add service field to new upcall
+    
+    This patch extends the new upcall with a "service" field that currently
+    can have 2 values: "*" or "nfs". These values specify matching rules for
+    principals in the keytab file. The "*" means that gssd is allowed to use
+    "root", "nfs", or "host" keytab entries while the other option requires
+    "nfs".
+    
+    Restricting gssd to use the "nfs" principal is needed for when the
+    server performs a callback to the client.  The server in this case has
+    to authenticate itself as an "nfs" principal.
+    
+    We also need "service" field to distiguish between two client-side cases
+    both currently using a uid of 0: the case of regular file access by the
+    root user, and the case of state-management calls (such as setclientid)
+    which should use a keytab for authentication.  (And the upcall should
+    fail if an appropriate principal can't be found.)
+    
+    Signed-off: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index 1e8cced55ff7..e630b38a6047 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -369,7 +369,7 @@ static void gss_encode_v0_msg(struct gss_upcall_msg *gss_msg)
+ }
+ 
+ static void gss_encode_v1_msg(struct gss_upcall_msg *gss_msg,
+-				struct rpc_clnt *clnt)
++				struct rpc_clnt *clnt, int machine_cred)
+ {
+ 	char *p = gss_msg-&gt;databuf;
+ 	int len = 0;
+@@ -383,6 +383,15 @@ static void gss_encode_v1_msg(struct gss_upcall_msg *gss_msg,
+ 		p += len;
+ 		gss_msg-&gt;msg.len += len;
+ 	}
++	if (machine_cred) {
++		len = sprintf(p, "service=* ");
++		p += len;
++		gss_msg-&gt;msg.len += len;
++	} else if (!strcmp(clnt-&gt;cl_program-&gt;name, "nfs4_cb")) {
++		len = sprintf(p, "service=nfs ");
++		p += len;
++		gss_msg-&gt;msg.len += len;
++	}
+ 	len = sprintf(p, "\n");
+ 	gss_msg-&gt;msg.len += len;
+ 
+@@ -391,16 +400,17 @@ static void gss_encode_v1_msg(struct gss_upcall_msg *gss_msg,
+ }
+ 
+ static void gss_encode_msg(struct gss_upcall_msg *gss_msg,
+-				struct rpc_clnt *clnt)
++				struct rpc_clnt *clnt, int machine_cred)
+ {
+ 	if (pipe_version == 0)
+ 		gss_encode_v0_msg(gss_msg);
+ 	else /* pipe_version == 1 */
+-		gss_encode_v1_msg(gss_msg, clnt);
++		gss_encode_v1_msg(gss_msg, clnt, machine_cred);
+ }
+ 
+ static inline struct gss_upcall_msg *
+-gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid, struct rpc_clnt *clnt)
++gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid, struct rpc_clnt *clnt,
++		int machine_cred)
+ {
+ 	struct gss_upcall_msg *gss_msg;
+ 	int vers;
+@@ -420,7 +430,7 @@ gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid, struct rpc_clnt *clnt)
+ 	atomic_set(&amp;gss_msg-&gt;count, 1);
+ 	gss_msg-&gt;uid = uid;
+ 	gss_msg-&gt;auth = gss_auth;
+-	gss_encode_msg(gss_msg, clnt);
++	gss_encode_msg(gss_msg, clnt, machine_cred);
+ 	return gss_msg;
+ }
+ 
+@@ -432,11 +442,7 @@ gss_setup_upcall(struct rpc_clnt *clnt, struct gss_auth *gss_auth, struct rpc_cr
+ 	struct gss_upcall_msg *gss_new, *gss_msg;
+ 	uid_t uid = cred-&gt;cr_uid;
+ 
+-	/* Special case: rpc.gssd assumes that uid == 0 implies machine creds */
+-	if (gss_cred-&gt;gc_machine_cred != 0)
+-		uid = 0;
+-
+-	gss_new = gss_alloc_msg(gss_auth, uid, clnt);
++	gss_new = gss_alloc_msg(gss_auth, uid, clnt, gss_cred-&gt;gc_machine_cred);
+ 	if (IS_ERR(gss_new))
+ 		return gss_new;
+ 	gss_msg = gss_add_msg(gss_auth, gss_new);</pre><hr><pre>commit 8b1c7bf5b624c9bc91b41ae577b9fc5c21641705
+Author: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+Date:   Tue Dec 23 16:19:26 2008 -0500
+
+    rpc: add target field to new upcall
+    
+    This patch extends the new upcall by adding a "target" field
+    communicating who we want to authenticate to (equivalently, the service
+    principal that we want to acquire a ticket for).
+    
+    Signed-off: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index 153b3e11e61a..1e8cced55ff7 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -368,25 +368,39 @@ static void gss_encode_v0_msg(struct gss_upcall_msg *gss_msg)
+ 	gss_msg-&gt;msg.len = sizeof(gss_msg-&gt;uid);
+ }
+ 
+-static void gss_encode_v1_msg(struct gss_upcall_msg *gss_msg)
++static void gss_encode_v1_msg(struct gss_upcall_msg *gss_msg,
++				struct rpc_clnt *clnt)
+ {
+-	gss_msg-&gt;msg.len = sprintf(gss_msg-&gt;databuf, "mech=%s uid=%d\n",
++	char *p = gss_msg-&gt;databuf;
++	int len = 0;
++
++	gss_msg-&gt;msg.len = sprintf(gss_msg-&gt;databuf, "mech=%s uid=%d ",
+ 				   gss_msg-&gt;auth-&gt;mech-&gt;gm_name,
+ 				   gss_msg-&gt;uid);
++	p += gss_msg-&gt;msg.len;
++	if (clnt-&gt;cl_principal) {
++		len = sprintf(p, "target=%s ", clnt-&gt;cl_principal);
++		p += len;
++		gss_msg-&gt;msg.len += len;
++	}
++	len = sprintf(p, "\n");
++	gss_msg-&gt;msg.len += len;
++
+ 	gss_msg-&gt;msg.data = gss_msg-&gt;databuf;
+ 	BUG_ON(gss_msg-&gt;msg.len &gt; UPCALL_BUF_LEN);
+ }
+ 
+-static void gss_encode_msg(struct gss_upcall_msg *gss_msg)
++static void gss_encode_msg(struct gss_upcall_msg *gss_msg,
++				struct rpc_clnt *clnt)
+ {
+ 	if (pipe_version == 0)
+ 		gss_encode_v0_msg(gss_msg);
+ 	else /* pipe_version == 1 */
+-		gss_encode_v1_msg(gss_msg);
++		gss_encode_v1_msg(gss_msg, clnt);
+ }
+ 
+ static inline struct gss_upcall_msg *
+-gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid)
++gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid, struct rpc_clnt *clnt)
+ {
+ 	struct gss_upcall_msg *gss_msg;
+ 	int vers;
+@@ -406,7 +420,7 @@ gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid)
+ 	atomic_set(&amp;gss_msg-&gt;count, 1);
+ 	gss_msg-&gt;uid = uid;
+ 	gss_msg-&gt;auth = gss_auth;
+-	gss_encode_msg(gss_msg);
++	gss_encode_msg(gss_msg, clnt);
+ 	return gss_msg;
+ }
+ 
+@@ -422,7 +436,7 @@ gss_setup_upcall(struct rpc_clnt *clnt, struct gss_auth *gss_auth, struct rpc_cr
+ 	if (gss_cred-&gt;gc_machine_cred != 0)
+ 		uid = 0;
+ 
+-	gss_new = gss_alloc_msg(gss_auth, uid);
++	gss_new = gss_alloc_msg(gss_auth, uid, clnt);
+ 	if (IS_ERR(gss_new))
+ 		return gss_new;
+ 	gss_msg = gss_add_msg(gss_auth, gss_new);</pre><hr><pre>commit 61054b14d545e257b9415d5ca0cd5f43762b4d0c
+Author: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+Date:   Tue Dec 23 16:19:00 2008 -0500
+
+    nfsd: support callbacks with gss flavors
+    
+    This patch adds server-side support for callbacks other than AUTH_SYS.
+    
+    Signed-off-by: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 3ca141782145..6d7d8c02c197 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -358,6 +358,7 @@ static struct rpc_program cb_program = {
+ 		.nrvers		= ARRAY_SIZE(nfs_cb_version),
+ 		.version	= nfs_cb_version,
+ 		.stats		= &amp;cb_stats,
++		.pipe_dir_name  = "/nfsd4_cb",
+ };
+ 
+ /* Reference counting, callback cleanup, etc., all look racy as heck.
+@@ -382,7 +383,7 @@ static int do_probe_callback(void *data)
+ 		.program	= &amp;cb_program,
+ 		.prognumber	= cb-&gt;cb_prog,
+ 		.version	= nfs_cb_version[1]-&gt;number,
+-		.authflavor	= RPC_AUTH_UNIX, /* XXX: need AUTH_GSS... */
++		.authflavor	= clp-&gt;cl_flavor,
+ 		.flags		= (RPC_CLNT_CREATE_NOPING | RPC_CLNT_CREATE_QUIET),
+ 		.client_name    = clp-&gt;cl_principal,
+ 	};
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index f3b9a8d064f3..07db31568ac9 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -786,6 +786,7 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	}
+ 	copy_verf(new, &amp;clverifier);
+ 	new-&gt;cl_addr = sin-&gt;sin_addr.s_addr;
++	new-&gt;cl_flavor = rqstp-&gt;rq_flavor;
+ 	princ = svc_gss_principal(rqstp);
+ 	if (princ) {
+ 		new-&gt;cl_principal = kstrdup(princ, GFP_KERNEL);
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index ce7cbf4b7c93..128298c0362d 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -124,6 +124,7 @@ struct nfs4_client {
+ 	nfs4_verifier		cl_verifier; 	/* generated by client */
+ 	time_t                  cl_time;        /* time of last lease renewal */
+ 	__be32			cl_addr; 	/* client ipaddress */
++	u32			cl_flavor;	/* setclientid pseudoflavor */
+ 	char			*cl_principal;	/* setclientid principal name */
+ 	struct svc_cred		cl_cred; 	/* setclientid principal */
+ 	clientid_t		cl_clientid;	/* generated by server */
+diff --git a/net/sunrpc/rpc_pipe.c b/net/sunrpc/rpc_pipe.c
+index 3105efbb182d..192453248870 100644
+--- a/net/sunrpc/rpc_pipe.c
++++ b/net/sunrpc/rpc_pipe.c
+@@ -407,6 +407,7 @@ enum {
+ 	RPCAUTH_nfs,
+ 	RPCAUTH_portmap,
+ 	RPCAUTH_statd,
++	RPCAUTH_nfsd4_cb,
+ 	RPCAUTH_RootEOF
+ };
+ 
+@@ -440,6 +441,10 @@ static struct rpc_filelist files[] = {
+ 		.name = "statd",
+ 		.mode = S_IFDIR | S_IRUGO | S_IXUGO,
+ 	},
++	[RPCAUTH_nfsd4_cb] = {
++		.name = "nfsd4_cb",
++		.mode = S_IFDIR | S_IRUGO | S_IXUGO,
++	},
+ };
+ 
+ enum {</pre><hr><pre>commit 945b34a7725a5f0741de7775132aafc58bfecfbb
+Author: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+Date:   Tue Dec 23 16:18:34 2008 -0500
+
+    rpc: allow gss callbacks to client
+    
+    This patch adds client-side support to allow for callbacks other than
+    AUTH_SYS.
+    
+    Signed-off-by: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/callback.c b/fs/nfs/callback.c
+index c2e9cfd9e5a4..3e634f2a1083 100644
+--- a/fs/nfs/callback.c
++++ b/fs/nfs/callback.c
+@@ -16,6 +16,7 @@
+ #include &lt;linux/mutex.h&gt;
+ #include &lt;linux/freezer.h&gt;
+ #include &lt;linux/kthread.h&gt;
++#include &lt;linux/sunrpc/svcauth_gss.h&gt;
+ 
+ #include &lt;net/inet_sock.h&gt;
+ 
+@@ -182,10 +183,34 @@ void nfs_callback_down(void)
+ 	mutex_unlock(&amp;nfs_callback_mutex);
+ }
+ 
++static int check_gss_callback_principal(struct nfs_client *clp,
++					struct svc_rqst *rqstp)
++{
++	struct rpc_clnt *r = clp-&gt;cl_rpcclient;
++	char *p = svc_gss_principal(rqstp);
++
++	/*
++	 * It might just be a normal user principal, in which case
++	 * userspace won't bother to tell us the name at all.
++	 */
++	if (p == NULL)
++		return SVC_DENIED;
++
++	/* Expect a GSS_C_NT_HOSTBASED_NAME like "nfs@serverhostname" */
++
++	if (memcmp(p, "nfs@", 4) != 0)
++		return SVC_DENIED;
++	p += 4;
++	if (strcmp(p, r-&gt;cl_server) != 0)
++		return SVC_DENIED;
++	return SVC_OK;
++}
++
+ static int nfs_callback_authenticate(struct svc_rqst *rqstp)
+ {
+ 	struct nfs_client *clp;
+ 	RPC_IFDEBUG(char buf[RPC_MAX_ADDRBUFLEN]);
++	int ret = SVC_OK;
+ 
+ 	/* Don't talk to strangers */
+ 	clp = nfs_find_client(svc_addr(rqstp), 4);
+@@ -194,21 +219,22 @@ static int nfs_callback_authenticate(struct svc_rqst *rqstp)
+ 
+ 	dprintk("%s: %s NFSv4 callback!\n", __func__,
+ 			svc_print_addr(rqstp, buf, sizeof(buf)));
+-	nfs_put_client(clp);
+ 
+ 	switch (rqstp-&gt;rq_authop-&gt;flavour) {
+ 		case RPC_AUTH_NULL:
+ 			if (rqstp-&gt;rq_proc != CB_NULL)
+-				return SVC_DENIED;
++				ret = SVC_DENIED;
+ 			break;
+ 		case RPC_AUTH_UNIX:
+ 			break;
+ 		case RPC_AUTH_GSS:
+-			/* FIXME: RPCSEC_GSS handling? */
++			ret = check_gss_callback_principal(clp, rqstp);
++			break;
+ 		default:
+-			return SVC_DENIED;
++			ret = SVC_DENIED;
+ 	}
+-	return SVC_OK;
++	nfs_put_client(clp);
++	return ret;
+ }
+ 
+ /*
+diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
+index e9baa6ebb1dd..2278a50c6444 100644
+--- a/net/sunrpc/auth_gss/svcauth_gss.c
++++ b/net/sunrpc/auth_gss/svcauth_gss.c
+@@ -935,6 +935,7 @@ char *svc_gss_principal(struct svc_rqst *rqstp)
+ 		return gd-&gt;rsci-&gt;client_name;
+ 	return NULL;
+ }
++EXPORT_SYMBOL_GPL(svc_gss_principal);
+ 
+ static int
+ svcauth_gss_set_client(struct svc_rqst *rqstp)</pre><hr><pre>commit 608207e8884e083ad8b8d33eda868da70f0d63e8
+Author: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+Date:   Tue Dec 23 16:17:40 2008 -0500
+
+    rpc: pass target name down to rpc level on callbacks
+    
+    The rpc client needs to know the principal that the setclientid was done
+    as, so it can tell gssd who to authenticate to.
+    
+    Signed-off-by: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 094747a1227c..3ca141782145 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -384,6 +384,7 @@ static int do_probe_callback(void *data)
+ 		.version	= nfs_cb_version[1]-&gt;number,
+ 		.authflavor	= RPC_AUTH_UNIX, /* XXX: need AUTH_GSS... */
+ 		.flags		= (RPC_CLNT_CREATE_NOPING | RPC_CLNT_CREATE_QUIET),
++		.client_name    = clp-&gt;cl_principal,
+ 	};
+ 	struct rpc_message msg = {
+ 		.rpc_proc       = &amp;nfs4_cb_procedures[NFSPROC4_CLNT_CB_NULL],
+@@ -392,6 +393,11 @@ static int do_probe_callback(void *data)
+ 	struct rpc_clnt *client;
+ 	int status;
+ 
++	if (!clp-&gt;cl_principal &amp;&amp; (clp-&gt;cl_flavor &gt;= RPC_AUTH_GSS_KRB5)) {
++		status = nfserr_cb_path_down;
++		goto out_err;
++	}
++
+ 	/* Initialize address */
+ 	memset(&amp;addr, 0, sizeof(addr));
+ 	addr.sin_family = AF_INET;
+diff --git a/include/linux/sunrpc/clnt.h b/include/linux/sunrpc/clnt.h
+index 6f0ee1b84a4f..c39a21040dcb 100644
+--- a/include/linux/sunrpc/clnt.h
++++ b/include/linux/sunrpc/clnt.h
+@@ -58,6 +58,7 @@ struct rpc_clnt {
+ 	struct rpc_timeout	cl_timeout_default;
+ 	struct rpc_program *	cl_program;
+ 	char			cl_inline_name[32];
++	char			*cl_principal;	/* target to authenticate to */
+ };
+ 
+ /*
+@@ -108,6 +109,7 @@ struct rpc_create_args {
+ 	u32			version;
+ 	rpc_authflavor_t	authflavor;
+ 	unsigned long		flags;
++	char			*client_name;
+ };
+ 
+ /* Values for "flags" field */
+diff --git a/net/sunrpc/clnt.c b/net/sunrpc/clnt.c
+index 4895c341e46d..347f2a25abb6 100644
+--- a/net/sunrpc/clnt.c
++++ b/net/sunrpc/clnt.c
+@@ -197,6 +197,12 @@ static struct rpc_clnt * rpc_new_client(const struct rpc_create_args *args, stru
+ 
+ 	clnt-&gt;cl_rtt = &amp;clnt-&gt;cl_rtt_default;
+ 	rpc_init_rtt(&amp;clnt-&gt;cl_rtt_default, clnt-&gt;cl_timeout-&gt;to_initval);
++	clnt-&gt;cl_principal = NULL;
++	if (args-&gt;client_name) {
++		clnt-&gt;cl_principal = kstrdup(args-&gt;client_name, GFP_KERNEL);
++		if (!clnt-&gt;cl_principal)
++			goto out_no_principal;
++	}
+ 
+ 	kref_init(&amp;clnt-&gt;cl_kref);
+ 
+@@ -226,6 +232,8 @@ static struct rpc_clnt * rpc_new_client(const struct rpc_create_args *args, stru
+ 		rpc_put_mount();
+ 	}
+ out_no_path:
++	kfree(clnt-&gt;cl_principal);
++out_no_principal:
+ 	rpc_free_iostats(clnt-&gt;cl_metrics);
+ out_no_stats:
+ 	if (clnt-&gt;cl_server != clnt-&gt;cl_inline_name)
+@@ -354,6 +362,11 @@ rpc_clone_client(struct rpc_clnt *clnt)
+ 	new-&gt;cl_metrics = rpc_alloc_iostats(clnt);
+ 	if (new-&gt;cl_metrics == NULL)
+ 		goto out_no_stats;
++	if (clnt-&gt;cl_principal) {
++		new-&gt;cl_principal = kstrdup(clnt-&gt;cl_principal, GFP_KERNEL);
++		if (new-&gt;cl_principal == NULL)
++			goto out_no_principal;
++	}
+ 	kref_init(&amp;new-&gt;cl_kref);
+ 	err = rpc_setup_pipedir(new, clnt-&gt;cl_program-&gt;pipe_dir_name);
+ 	if (err != 0)
+@@ -366,6 +379,8 @@ rpc_clone_client(struct rpc_clnt *clnt)
+ 	rpciod_up();
+ 	return new;
+ out_no_path:
++	kfree(new-&gt;cl_principal);
++out_no_principal:
+ 	rpc_free_iostats(new-&gt;cl_metrics);
+ out_no_stats:
+ 	kfree(new);
+@@ -417,6 +432,7 @@ rpc_free_client(struct kref *kref)
+ out_free:
+ 	rpc_unregister_client(clnt);
+ 	rpc_free_iostats(clnt-&gt;cl_metrics);
++	kfree(clnt-&gt;cl_principal);
+ 	clnt-&gt;cl_metrics = NULL;
+ 	xprt_put(clnt-&gt;cl_xprt);
+ 	rpciod_down();</pre><hr><pre>commit 68e76ad0baf8f5d5060377c2423ee6eed5c63057
+Author: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+Date:   Tue Dec 23 16:17:15 2008 -0500
+
+    nfsd: pass client principal name in rsc downcall
+    
+    Two principals are involved in krb5 authentication: the target, who we
+    authenticate *to* (normally the name of the server, like
+    nfs/server.citi.umich.edu@CITI.UMICH.EDU), and the source, we we
+    authenticate *as* (normally a user, like bfields@UMICH.EDU)
+    
+    In the case of NFSv4 callbacks, the target of the callback should be the
+    source of the client's setclientid call, and the source should be the
+    nfs server's own principal.
+    
+    Therefore we allow svcgssd to pass down the name of the principal that
+    just authenticated, so that on setclientid we can store that principal
+    name with the new client, to be used later on callbacks.
+    
+    Signed-off-by: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 1a052ac2bde9..f3b9a8d064f3 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -54,6 +54,7 @@
+ #include &lt;linux/mutex.h&gt;
+ #include &lt;linux/lockd/bind.h&gt;
+ #include &lt;linux/module.h&gt;
++#include &lt;linux/sunrpc/svcauth_gss.h&gt;
+ 
+ #define NFSDDBG_FACILITY                NFSDDBG_PROC
+ 
+@@ -377,6 +378,7 @@ free_client(struct nfs4_client *clp)
+ 	shutdown_callback_client(clp);
+ 	if (clp-&gt;cl_cred.cr_group_info)
+ 		put_group_info(clp-&gt;cl_cred.cr_group_info);
++	kfree(clp-&gt;cl_principal);
+ 	kfree(clp-&gt;cl_name.data);
+ 	kfree(clp);
+ }
+@@ -696,6 +698,7 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	unsigned int 		strhashval;
+ 	struct nfs4_client	*conf, *unconf, *new;
+ 	__be32 			status;
++	char			*princ;
+ 	char                    dname[HEXDIR_LEN];
+ 	
+ 	if (!check_name(clname))
+@@ -783,6 +786,14 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	}
+ 	copy_verf(new, &amp;clverifier);
+ 	new-&gt;cl_addr = sin-&gt;sin_addr.s_addr;
++	princ = svc_gss_principal(rqstp);
++	if (princ) {
++		new-&gt;cl_principal = kstrdup(princ, GFP_KERNEL);
++		if (new-&gt;cl_principal == NULL) {
++			free_client(new);
++			goto out;
++		}
++	}
+ 	copy_cred(&amp;new-&gt;cl_cred, &amp;rqstp-&gt;rq_cred);
+ 	gen_confirm(new);
+ 	gen_callback(new, setclid);
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index d0fe2e378452..ce7cbf4b7c93 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -124,6 +124,7 @@ struct nfs4_client {
+ 	nfs4_verifier		cl_verifier; 	/* generated by client */
+ 	time_t                  cl_time;        /* time of last lease renewal */
+ 	__be32			cl_addr; 	/* client ipaddress */
++	char			*cl_principal;	/* setclientid principal name */
+ 	struct svc_cred		cl_cred; 	/* setclientid principal */
+ 	clientid_t		cl_clientid;	/* generated by server */
+ 	nfs4_verifier		cl_confirm;	/* generated by server */
+diff --git a/include/linux/sunrpc/svcauth_gss.h b/include/linux/sunrpc/svcauth_gss.h
+index c9165d9771a8..ca7d725861fc 100644
+--- a/include/linux/sunrpc/svcauth_gss.h
++++ b/include/linux/sunrpc/svcauth_gss.h
+@@ -20,6 +20,7 @@ int gss_svc_init(void);
+ void gss_svc_shutdown(void);
+ int svcauth_gss_register_pseudoflavor(u32 pseudoflavor, char * name);
+ u32 svcauth_gss_flavor(struct auth_domain *dom);
++char *svc_gss_principal(struct svc_rqst *);
+ 
+ #endif /* __KERNEL__ */
+ #endif /* _LINUX_SUNRPC_SVCAUTH_GSS_H */
+diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
+index 12803da95dc4..e9baa6ebb1dd 100644
+--- a/net/sunrpc/auth_gss/svcauth_gss.c
++++ b/net/sunrpc/auth_gss/svcauth_gss.c
+@@ -332,6 +332,7 @@ struct rsc {
+ 	struct svc_cred		cred;
+ 	struct gss_svc_seq_data	seqdata;
+ 	struct gss_ctx		*mechctx;
++	char			*client_name;
+ };
+ 
+ static struct cache_head *rsc_table[RSC_HASHMAX];
+@@ -346,6 +347,7 @@ static void rsc_free(struct rsc *rsci)
+ 		gss_delete_sec_context(&amp;rsci-&gt;mechctx);
+ 	if (rsci-&gt;cred.cr_group_info)
+ 		put_group_info(rsci-&gt;cred.cr_group_info);
++	kfree(rsci-&gt;client_name);
+ }
+ 
+ static void rsc_put(struct kref *ref)
+@@ -383,6 +385,7 @@ rsc_init(struct cache_head *cnew, struct cache_head *ctmp)
+ 	tmp-&gt;handle.data = NULL;
+ 	new-&gt;mechctx = NULL;
+ 	new-&gt;cred.cr_group_info = NULL;
++	new-&gt;client_name = NULL;
+ }
+ 
+ static void
+@@ -397,6 +400,8 @@ update_rsc(struct cache_head *cnew, struct cache_head *ctmp)
+ 	spin_lock_init(&amp;new-&gt;seqdata.sd_lock);
+ 	new-&gt;cred = tmp-&gt;cred;
+ 	tmp-&gt;cred.cr_group_info = NULL;
++	new-&gt;client_name = tmp-&gt;client_name;
++	tmp-&gt;client_name = NULL;
+ }
+ 
+ static struct cache_head *
+@@ -486,6 +491,15 @@ static int rsc_parse(struct cache_detail *cd,
+ 		status = gss_import_sec_context(buf, len, gm, &amp;rsci.mechctx);
+ 		if (status)
+ 			goto out;
++
++		/* get client name */
++		len = qword_get(&amp;mesg, buf, mlen);
++		if (len &gt; 0) {
++			rsci.client_name = kstrdup(buf, GFP_KERNEL);
++			if (!rsci.client_name)
++				goto out;
++		}
++
+ 	}
+ 	rsci.h.expiry_time = expiry;
+ 	rscp = rsc_update(&amp;rsci, rscp);
+@@ -913,6 +927,15 @@ struct gss_svc_data {
+ 	struct rsc			*rsci;
+ };
+ 
++char *svc_gss_principal(struct svc_rqst *rqstp)
++{
++	struct gss_svc_data *gd = (struct gss_svc_data *)rqstp-&gt;rq_auth_data;
++
++	if (gd &amp;&amp; gd-&gt;rsci)
++		return gd-&gt;rsci-&gt;client_name;
++	return NULL;
++}
++
+ static int
+ svcauth_gss_set_client(struct svc_rqst *rqstp)
+ {</pre><hr><pre>commit 34769fc488b463cb753fc632f8f5ba56c918b7cb
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 23 16:16:37 2008 -0500
+
+    rpc: implement new upcall
+    
+    Implement the new upcall.  We decide which version of the upcall gssd
+    will use (new or old), by creating both pipes (the new one named "gssd",
+    the old one named after the mechanism (e.g., "krb5")), and then waiting
+    to see which version gssd actually opens.
+    
+    We don't permit pipes of the two different types to be opened at once.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index fe06acd6029b..153b3e11e61a 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -72,7 +72,13 @@ struct gss_auth {
+ 	struct gss_api_mech *mech;
+ 	enum rpc_gss_svc service;
+ 	struct rpc_clnt *client;
+-	struct dentry *dentry;
++	/*
++	 * There are two upcall pipes; dentry[1], named "gssd", is used
++	 * for the new text-based upcall; dentry[0] is named after the
++	 * mechanism (for example, "krb5") and exists for
++	 * backwards-compatibility with older gssd's.
++	 */
++	struct dentry *dentry[2];
+ };
+ 
+ /* pipe_version &gt;= 0 if and only if someone has a pipe open. */
+@@ -83,7 +89,8 @@ static struct rpc_wait_queue pipe_version_rpc_waitqueue;
+ static DECLARE_WAIT_QUEUE_HEAD(pipe_version_waitqueue);
+ 
+ static void gss_free_ctx(struct gss_cl_ctx *);
+-static struct rpc_pipe_ops gss_upcall_ops;
++static struct rpc_pipe_ops gss_upcall_ops_v0;
++static struct rpc_pipe_ops gss_upcall_ops_v1;
+ 
+ static inline struct gss_cl_ctx *
+ gss_get_ctx(struct gss_cl_ctx *ctx)
+@@ -227,6 +234,7 @@ gss_fill_context(const void *p, const void *end, struct gss_cl_ctx *ctx, struct
+ 	return p;
+ }
+ 
++#define UPCALL_BUF_LEN 128
+ 
+ struct gss_upcall_msg {
+ 	atomic_t count;
+@@ -238,6 +246,7 @@ struct gss_upcall_msg {
+ 	struct rpc_wait_queue rpc_waitqueue;
+ 	wait_queue_head_t waitqueue;
+ 	struct gss_cl_ctx *ctx;
++	char databuf[UPCALL_BUF_LEN];
+ };
+ 
+ static int get_pipe_version(void)
+@@ -247,7 +256,7 @@ static int get_pipe_version(void)
+ 	spin_lock(&amp;pipe_version_lock);
+ 	if (pipe_version &gt;= 0) {
+ 		atomic_inc(&amp;pipe_users);
+-		ret = 0;
++		ret = pipe_version;
+ 	} else
+ 		ret = -EAGAIN;
+ 	spin_unlock(&amp;pipe_version_lock);
+@@ -353,6 +362,29 @@ gss_upcall_callback(struct rpc_task *task)
+ 	gss_release_msg(gss_msg);
+ }
+ 
++static void gss_encode_v0_msg(struct gss_upcall_msg *gss_msg)
++{
++	gss_msg-&gt;msg.data = &amp;gss_msg-&gt;uid;
++	gss_msg-&gt;msg.len = sizeof(gss_msg-&gt;uid);
++}
++
++static void gss_encode_v1_msg(struct gss_upcall_msg *gss_msg)
++{
++	gss_msg-&gt;msg.len = sprintf(gss_msg-&gt;databuf, "mech=%s uid=%d\n",
++				   gss_msg-&gt;auth-&gt;mech-&gt;gm_name,
++				   gss_msg-&gt;uid);
++	gss_msg-&gt;msg.data = gss_msg-&gt;databuf;
++	BUG_ON(gss_msg-&gt;msg.len &gt; UPCALL_BUF_LEN);
++}
++
++static void gss_encode_msg(struct gss_upcall_msg *gss_msg)
++{
++	if (pipe_version == 0)
++		gss_encode_v0_msg(gss_msg);
++	else /* pipe_version == 1 */
++		gss_encode_v1_msg(gss_msg);
++}
++
+ static inline struct gss_upcall_msg *
+ gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid)
+ {
+@@ -367,15 +399,14 @@ gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid)
+ 		kfree(gss_msg);
+ 		return ERR_PTR(vers);
+ 	}
+-	gss_msg-&gt;inode = RPC_I(gss_auth-&gt;dentry-&gt;d_inode);
++	gss_msg-&gt;inode = RPC_I(gss_auth-&gt;dentry[vers]-&gt;d_inode);
+ 	INIT_LIST_HEAD(&amp;gss_msg-&gt;list);
+ 	rpc_init_wait_queue(&amp;gss_msg-&gt;rpc_waitqueue, "RPCSEC_GSS upcall waitq");
+ 	init_waitqueue_head(&amp;gss_msg-&gt;waitqueue);
+ 	atomic_set(&amp;gss_msg-&gt;count, 1);
+-	gss_msg-&gt;msg.data = &amp;gss_msg-&gt;uid;
+-	gss_msg-&gt;msg.len = sizeof(gss_msg-&gt;uid);
+ 	gss_msg-&gt;uid = uid;
+ 	gss_msg-&gt;auth = gss_auth;
++	gss_encode_msg(gss_msg);
+ 	return gss_msg;
+ }
+ 
+@@ -613,18 +644,36 @@ gss_pipe_downcall(struct file *filp, const char __user *src, size_t mlen)
+ 	return err;
+ }
+ 
+-static int
+-gss_pipe_open(struct inode *inode)
++static int gss_pipe_open(struct inode *inode, int new_version)
+ {
++	int ret = 0;
++
+ 	spin_lock(&amp;pipe_version_lock);
+ 	if (pipe_version &lt; 0) {
+-		pipe_version = 0;
++		/* First open of any gss pipe determines the version: */
++		pipe_version = new_version;
+ 		rpc_wake_up(&amp;pipe_version_rpc_waitqueue);
+ 		wake_up(&amp;pipe_version_waitqueue);
++	} else if (pipe_version != new_version) {
++		/* Trying to open a pipe of a different version */
++		ret = -EBUSY;
++		goto out;
+ 	}
+ 	atomic_inc(&amp;pipe_users);
++out:
+ 	spin_unlock(&amp;pipe_version_lock);
+-	return 0;
++	return ret;
++
++}
++
++static int gss_pipe_open_v0(struct inode *inode)
++{
++	return gss_pipe_open(inode, 0);
++}
++
++static int gss_pipe_open_v1(struct inode *inode)
++{
++	return gss_pipe_open(inode, 1);
+ }
+ 
+ static void
+@@ -702,20 +751,38 @@ gss_create(struct rpc_clnt *clnt, rpc_authflavor_t flavor)
+ 	atomic_set(&amp;auth-&gt;au_count, 1);
+ 	kref_init(&amp;gss_auth-&gt;kref);
+ 
+-	gss_auth-&gt;dentry = rpc_mkpipe(clnt-&gt;cl_dentry, gss_auth-&gt;mech-&gt;gm_name,
+-			clnt, &amp;gss_upcall_ops, RPC_PIPE_WAIT_FOR_OPEN);
+-	if (IS_ERR(gss_auth-&gt;dentry)) {
+-		err = PTR_ERR(gss_auth-&gt;dentry);
++	/*
++	 * Note: if we created the old pipe first, then someone who
++	 * examined the directory at the right moment might conclude
++	 * that we supported only the old pipe.  So we instead create
++	 * the new pipe first.
++	 */
++	gss_auth-&gt;dentry[1] = rpc_mkpipe(clnt-&gt;cl_dentry,
++					 "gssd",
++					 clnt, &amp;gss_upcall_ops_v1,
++					 RPC_PIPE_WAIT_FOR_OPEN);
++	if (IS_ERR(gss_auth-&gt;dentry[1])) {
++		err = PTR_ERR(gss_auth-&gt;dentry[1]);
+ 		goto err_put_mech;
+ 	}
+ 
++	gss_auth-&gt;dentry[0] = rpc_mkpipe(clnt-&gt;cl_dentry,
++					 gss_auth-&gt;mech-&gt;gm_name,
++					 clnt, &amp;gss_upcall_ops_v0,
++					 RPC_PIPE_WAIT_FOR_OPEN);
++	if (IS_ERR(gss_auth-&gt;dentry[0])) {
++		err = PTR_ERR(gss_auth-&gt;dentry[0]);
++		goto err_unlink_pipe_1;
++	}
+ 	err = rpcauth_init_credcache(auth);
+ 	if (err)
+-		goto err_unlink_pipe;
++		goto err_unlink_pipe_0;
+ 
+ 	return auth;
+-err_unlink_pipe:
+-	rpc_unlink(gss_auth-&gt;dentry);
++err_unlink_pipe_0:
++	rpc_unlink(gss_auth-&gt;dentry[0]);
++err_unlink_pipe_1:
++	rpc_unlink(gss_auth-&gt;dentry[1]);
+ err_put_mech:
+ 	gss_mech_put(gss_auth-&gt;mech);
+ err_free:
+@@ -728,7 +795,8 @@ gss_create(struct rpc_clnt *clnt, rpc_authflavor_t flavor)
+ static void
+ gss_free(struct gss_auth *gss_auth)
+ {
+-	rpc_unlink(gss_auth-&gt;dentry);
++	rpc_unlink(gss_auth-&gt;dentry[1]);
++	rpc_unlink(gss_auth-&gt;dentry[0]);
+ 	gss_mech_put(gss_auth-&gt;mech);
+ 
+ 	kfree(gss_auth);
+@@ -1419,11 +1487,19 @@ static const struct rpc_credops gss_nullops = {
+ 	.crunwrap_resp	= gss_unwrap_resp,
+ };
+ 
+-static struct rpc_pipe_ops gss_upcall_ops = {
++static struct rpc_pipe_ops gss_upcall_ops_v0 = {
++	.upcall		= gss_pipe_upcall,
++	.downcall	= gss_pipe_downcall,
++	.destroy_msg	= gss_pipe_destroy_msg,
++	.open_pipe	= gss_pipe_open_v0,
++	.release_pipe	= gss_pipe_release,
++};
++
++static struct rpc_pipe_ops gss_upcall_ops_v1 = {
+ 	.upcall		= gss_pipe_upcall,
+ 	.downcall	= gss_pipe_downcall,
+ 	.destroy_msg	= gss_pipe_destroy_msg,
+-	.open_pipe	= gss_pipe_open,
++	.open_pipe	= gss_pipe_open_v1,
+ 	.release_pipe	= gss_pipe_release,
+ };
+ </pre><hr><pre>commit 5b7ddd4a7b19f913901140ef7807dbf5e2b301cd
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 23 16:15:44 2008 -0500
+
+    rpc: store pointer to pipe inode in gss upcall message
+    
+    Keep a pointer to the inode that the message is queued on in the struct
+    gss_upcall_msg.  This will be convenient, especially after we have a
+    choice of two pipes that an upcall could be queued on.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index e451d104a434..fe06acd6029b 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -234,6 +234,7 @@ struct gss_upcall_msg {
+ 	struct rpc_pipe_msg msg;
+ 	struct list_head list;
+ 	struct gss_auth *auth;
++	struct rpc_inode *inode;
+ 	struct rpc_wait_queue rpc_waitqueue;
+ 	wait_queue_head_t waitqueue;
+ 	struct gss_cl_ctx *ctx;
+@@ -296,8 +297,8 @@ __gss_find_upcall(struct rpc_inode *rpci, uid_t uid)
+ static inline struct gss_upcall_msg *
+ gss_add_msg(struct gss_auth *gss_auth, struct gss_upcall_msg *gss_msg)
+ {
+-	struct inode *inode = gss_auth-&gt;dentry-&gt;d_inode;
+-	struct rpc_inode *rpci = RPC_I(inode);
++	struct rpc_inode *rpci = gss_msg-&gt;inode;
++	struct inode *inode = &amp;rpci-&gt;vfs_inode;
+ 	struct gss_upcall_msg *old;
+ 
+ 	spin_lock(&amp;inode-&gt;i_lock);
+@@ -323,8 +324,7 @@ __gss_unhash_msg(struct gss_upcall_msg *gss_msg)
+ static void
+ gss_unhash_msg(struct gss_upcall_msg *gss_msg)
+ {
+-	struct gss_auth *gss_auth = gss_msg-&gt;auth;
+-	struct inode *inode = gss_auth-&gt;dentry-&gt;d_inode;
++	struct inode *inode = &amp;gss_msg-&gt;inode-&gt;vfs_inode;
+ 
+ 	if (list_empty(&amp;gss_msg-&gt;list))
+ 		return;
+@@ -340,7 +340,7 @@ gss_upcall_callback(struct rpc_task *task)
+ 	struct gss_cred *gss_cred = container_of(task-&gt;tk_msg.rpc_cred,
+ 			struct gss_cred, gc_base);
+ 	struct gss_upcall_msg *gss_msg = gss_cred-&gt;gc_upcall;
+-	struct inode *inode = gss_msg-&gt;auth-&gt;dentry-&gt;d_inode;
++	struct inode *inode = &amp;gss_msg-&gt;inode-&gt;vfs_inode;
+ 
+ 	spin_lock(&amp;inode-&gt;i_lock);
+ 	if (gss_msg-&gt;ctx)
+@@ -367,6 +367,7 @@ gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid)
+ 		kfree(gss_msg);
+ 		return ERR_PTR(vers);
+ 	}
++	gss_msg-&gt;inode = RPC_I(gss_auth-&gt;dentry-&gt;d_inode);
+ 	INIT_LIST_HEAD(&amp;gss_msg-&gt;list);
+ 	rpc_init_wait_queue(&amp;gss_msg-&gt;rpc_waitqueue, "RPCSEC_GSS upcall waitq");
+ 	init_waitqueue_head(&amp;gss_msg-&gt;waitqueue);
+@@ -395,7 +396,8 @@ gss_setup_upcall(struct rpc_clnt *clnt, struct gss_auth *gss_auth, struct rpc_cr
+ 		return gss_new;
+ 	gss_msg = gss_add_msg(gss_auth, gss_new);
+ 	if (gss_msg == gss_new) {
+-		int res = rpc_queue_upcall(gss_auth-&gt;dentry-&gt;d_inode, &amp;gss_new-&gt;msg);
++		struct inode *inode = &amp;gss_new-&gt;inode-&gt;vfs_inode;
++		int res = rpc_queue_upcall(inode, &amp;gss_new-&gt;msg);
+ 		if (res) {
+ 			gss_unhash_msg(gss_new);
+ 			gss_msg = ERR_PTR(res);
+@@ -426,7 +428,7 @@ gss_refresh_upcall(struct rpc_task *task)
+ 	struct gss_cred *gss_cred = container_of(cred,
+ 			struct gss_cred, gc_base);
+ 	struct gss_upcall_msg *gss_msg;
+-	struct inode *inode = gss_auth-&gt;dentry-&gt;d_inode;
++	struct inode *inode;
+ 	int err = 0;
+ 
+ 	dprintk("RPC: %5u gss_refresh_upcall for uid %u\n", task-&gt;tk_pid,
+@@ -444,6 +446,7 @@ gss_refresh_upcall(struct rpc_task *task)
+ 		err = PTR_ERR(gss_msg);
+ 		goto out;
+ 	}
++	inode = &amp;gss_msg-&gt;inode-&gt;vfs_inode;
+ 	spin_lock(&amp;inode-&gt;i_lock);
+ 	if (gss_cred-&gt;gc_upcall != NULL)
+ 		rpc_sleep_on(&amp;gss_cred-&gt;gc_upcall-&gt;rpc_waitqueue, task, NULL);
+@@ -470,7 +473,7 @@ gss_refresh_upcall(struct rpc_task *task)
+ static inline int
+ gss_create_upcall(struct gss_auth *gss_auth, struct gss_cred *gss_cred)
+ {
+-	struct inode *inode = gss_auth-&gt;dentry-&gt;d_inode;
++	struct inode *inode;
+ 	struct rpc_cred *cred = &amp;gss_cred-&gt;gc_base;
+ 	struct gss_upcall_msg *gss_msg;
+ 	DEFINE_WAIT(wait);
+@@ -492,6 +495,7 @@ gss_create_upcall(struct gss_auth *gss_auth, struct gss_cred *gss_cred)
+ 		err = PTR_ERR(gss_msg);
+ 		goto out;
+ 	}
++	inode = &amp;gss_msg-&gt;inode-&gt;vfs_inode;
+ 	for (;;) {
+ 		prepare_to_wait(&amp;gss_msg-&gt;waitqueue, &amp;wait, TASK_INTERRUPTIBLE);
+ 		spin_lock(&amp;inode-&gt;i_lock);</pre><hr><pre>commit 79a3f20b641f9f93787ada49d1d7cfa98ee5a11e
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 23 16:10:52 2008 -0500
+
+    rpc: use count of pipe openers to wait for first open
+    
+    Introduce a global variable pipe_version which will eventually be used
+    to keep track of which version of the upcall gssd is using.
+    
+    For now, though, it only keeps track of whether any pipe is open or not;
+    it is negative if not, zero if one is opened.  We use this to wait for
+    the first gssd to open a pipe.
+    
+    (Minor digression: note this waits only for the very first open of any
+    pipe, not for the first open of a pipe for a given auth; thus we still
+    need the RPC_PIPE_WAIT_FOR_OPEN behavior to wait for gssd to open new
+    pipes that pop up on subsequent mounts.)
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index 51aa27d32b5a..e451d104a434 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -75,7 +75,12 @@ struct gss_auth {
+ 	struct dentry *dentry;
+ };
+ 
++/* pipe_version &gt;= 0 if and only if someone has a pipe open. */
++static int pipe_version = -1;
+ static atomic_t pipe_users = ATOMIC_INIT(0);
++static DEFINE_SPINLOCK(pipe_version_lock);
++static struct rpc_wait_queue pipe_version_rpc_waitqueue;
++static DECLARE_WAIT_QUEUE_HEAD(pipe_version_waitqueue);
+ 
+ static void gss_free_ctx(struct gss_cl_ctx *);
+ static struct rpc_pipe_ops gss_upcall_ops;
+@@ -234,12 +239,34 @@ struct gss_upcall_msg {
+ 	struct gss_cl_ctx *ctx;
+ };
+ 
++static int get_pipe_version(void)
++{
++	int ret;
++
++	spin_lock(&amp;pipe_version_lock);
++	if (pipe_version &gt;= 0) {
++		atomic_inc(&amp;pipe_users);
++		ret = 0;
++	} else
++		ret = -EAGAIN;
++	spin_unlock(&amp;pipe_version_lock);
++	return ret;
++}
++
++static void put_pipe_version(void)
++{
++	if (atomic_dec_and_lock(&amp;pipe_users, &amp;pipe_version_lock)) {
++		pipe_version = -1;
++		spin_unlock(&amp;pipe_version_lock);
++	}
++}
++
+ static void
+ gss_release_msg(struct gss_upcall_msg *gss_msg)
+ {
+ 	if (!atomic_dec_and_test(&amp;gss_msg-&gt;count))
+ 		return;
+-	atomic_dec(&amp;pipe_users);
++	put_pipe_version();
+ 	BUG_ON(!list_empty(&amp;gss_msg-&gt;list));
+ 	if (gss_msg-&gt;ctx != NULL)
+ 		gss_put_ctx(gss_msg-&gt;ctx);
+@@ -330,11 +357,16 @@ static inline struct gss_upcall_msg *
+ gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid)
+ {
+ 	struct gss_upcall_msg *gss_msg;
++	int vers;
+ 
+ 	gss_msg = kzalloc(sizeof(*gss_msg), GFP_NOFS);
+ 	if (gss_msg == NULL)
+ 		return ERR_PTR(-ENOMEM);
+-	atomic_inc(&amp;pipe_users);
++	vers = get_pipe_version();
++	if (vers &lt; 0) {
++		kfree(gss_msg);
++		return ERR_PTR(vers);
++	}
+ 	INIT_LIST_HEAD(&amp;gss_msg-&gt;list);
+ 	rpc_init_wait_queue(&amp;gss_msg-&gt;rpc_waitqueue, "RPCSEC_GSS upcall waitq");
+ 	init_waitqueue_head(&amp;gss_msg-&gt;waitqueue);
+@@ -400,6 +432,14 @@ gss_refresh_upcall(struct rpc_task *task)
+ 	dprintk("RPC: %5u gss_refresh_upcall for uid %u\n", task-&gt;tk_pid,
+ 								cred-&gt;cr_uid);
+ 	gss_msg = gss_setup_upcall(task-&gt;tk_client, gss_auth, cred);
++	if (IS_ERR(gss_msg) == -EAGAIN) {
++		/* XXX: warning on the first, under the assumption we
++		 * shouldn't normally hit this case on a refresh. */
++		warn_gssd();
++		task-&gt;tk_timeout = 15*HZ;
++		rpc_sleep_on(&amp;pipe_version_rpc_waitqueue, task, NULL);
++		return 0;
++	}
+ 	if (IS_ERR(gss_msg)) {
+ 		err = PTR_ERR(gss_msg);
+ 		goto out;
+@@ -437,7 +477,17 @@ gss_create_upcall(struct gss_auth *gss_auth, struct gss_cred *gss_cred)
+ 	int err = 0;
+ 
+ 	dprintk("RPC:       gss_upcall for uid %u\n", cred-&gt;cr_uid);
++retry:
+ 	gss_msg = gss_setup_upcall(gss_auth-&gt;client, gss_auth, cred);
++	if (PTR_ERR(gss_msg) == -EAGAIN) {
++		err = wait_event_interruptible_timeout(pipe_version_waitqueue,
++				pipe_version &gt;= 0, 15*HZ);
++		if (err)
++			goto out;
++		if (pipe_version &lt; 0)
++			warn_gssd();
++		goto retry;
++	}
+ 	if (IS_ERR(gss_msg)) {
+ 		err = PTR_ERR(gss_msg);
+ 		goto out;
+@@ -562,7 +612,14 @@ gss_pipe_downcall(struct file *filp, const char __user *src, size_t mlen)
+ static int
+ gss_pipe_open(struct inode *inode)
+ {
++	spin_lock(&amp;pipe_version_lock);
++	if (pipe_version &lt; 0) {
++		pipe_version = 0;
++		rpc_wake_up(&amp;pipe_version_rpc_waitqueue);
++		wake_up(&amp;pipe_version_waitqueue);
++	}
+ 	atomic_inc(&amp;pipe_users);
++	spin_unlock(&amp;pipe_version_lock);
+ 	return 0;
+ }
+ 
+@@ -586,7 +643,7 @@ gss_pipe_release(struct inode *inode)
+ 	}
+ 	spin_unlock(&amp;inode-&gt;i_lock);
+ 
+-	atomic_dec(&amp;pipe_users);
++	put_pipe_version();
+ }
+ 
+ static void
+@@ -1379,6 +1436,7 @@ static int __init init_rpcsec_gss(void)
+ 	err = gss_svc_init();
+ 	if (err)
+ 		goto out_unregister;
++	rpc_init_wait_queue(&amp;pipe_version_rpc_waitqueue, "gss pipe version");
+ 	return 0;
+ out_unregister:
+ 	rpcauth_unregister(&amp;authgss_ops);</pre><hr><pre>commit cf81939d6fcdf381fcb069d780c29eceb516bccd
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 23 16:10:19 2008 -0500
+
+    rpc: track number of users of the gss upcall pipe
+    
+    Keep a count of the number of pipes open plus the number of messages on
+    a pipe.  This count isn't used yet.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index bc512fff8a41..51aa27d32b5a 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -75,6 +75,8 @@ struct gss_auth {
+ 	struct dentry *dentry;
+ };
+ 
++static atomic_t pipe_users = ATOMIC_INIT(0);
++
+ static void gss_free_ctx(struct gss_cl_ctx *);
+ static struct rpc_pipe_ops gss_upcall_ops;
+ 
+@@ -237,6 +239,7 @@ gss_release_msg(struct gss_upcall_msg *gss_msg)
+ {
+ 	if (!atomic_dec_and_test(&amp;gss_msg-&gt;count))
+ 		return;
++	atomic_dec(&amp;pipe_users);
+ 	BUG_ON(!list_empty(&amp;gss_msg-&gt;list));
+ 	if (gss_msg-&gt;ctx != NULL)
+ 		gss_put_ctx(gss_msg-&gt;ctx);
+@@ -331,6 +334,7 @@ gss_alloc_msg(struct gss_auth *gss_auth, uid_t uid)
+ 	gss_msg = kzalloc(sizeof(*gss_msg), GFP_NOFS);
+ 	if (gss_msg == NULL)
+ 		return ERR_PTR(-ENOMEM);
++	atomic_inc(&amp;pipe_users);
+ 	INIT_LIST_HEAD(&amp;gss_msg-&gt;list);
+ 	rpc_init_wait_queue(&amp;gss_msg-&gt;rpc_waitqueue, "RPCSEC_GSS upcall waitq");
+ 	init_waitqueue_head(&amp;gss_msg-&gt;waitqueue);
+@@ -555,6 +559,13 @@ gss_pipe_downcall(struct file *filp, const char __user *src, size_t mlen)
+ 	return err;
+ }
+ 
++static int
++gss_pipe_open(struct inode *inode)
++{
++	atomic_inc(&amp;pipe_users);
++	return 0;
++}
++
+ static void
+ gss_pipe_release(struct inode *inode)
+ {
+@@ -574,6 +585,8 @@ gss_pipe_release(struct inode *inode)
+ 		spin_lock(&amp;inode-&gt;i_lock);
+ 	}
+ 	spin_unlock(&amp;inode-&gt;i_lock);
++
++	atomic_dec(&amp;pipe_users);
+ }
+ 
+ static void
+@@ -1349,6 +1362,7 @@ static struct rpc_pipe_ops gss_upcall_ops = {
+ 	.upcall		= gss_pipe_upcall,
+ 	.downcall	= gss_pipe_downcall,
+ 	.destroy_msg	= gss_pipe_destroy_msg,
++	.open_pipe	= gss_pipe_open,
+ 	.release_pipe	= gss_pipe_release,
+ };
+ </pre>
+    <div class="pagination">
+        <a href='4_26.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><span>[27]</span><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_28.html'>Next&gt;&gt;</a>
+    <div>
+</body>

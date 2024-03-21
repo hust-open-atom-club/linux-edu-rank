@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Fudan University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Fudan University</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='15_2.html'>2</a><a href='15_3.html'>3</a><a href='15_4.html'>4</a><a href='15_5.html'>5</a><a href='15_6.html'>6</a><a href='15_7.html'>7</a><a href='15_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 53fc25b7f557089aff101235152ae4bff15c428a
+Author: Chenyuan Mi &lt;cymi20@fudan.edu.cn&gt;
+Date:   Wed Jun 14 08:01:18 2023 -0700
+
+    perf subcmd: Fix missing check for return value of malloc() in add_cmdname()
+    
+    The malloc() function may return NULL when it fails,
+    which may cause null pointer deference in add_cmdname(),
+    add Null check for return value of malloc().
+    
+    Found by our static analysis tool.
+    
+    Signed-off-by: Chenyuan Mi &lt;cymi20@fudan.edu.cn&gt;
+    Acked-by: Ian Rogers &lt;irogers@google.com&gt;
+    Cc: Leo Yan &lt;leo.yan@linaro.org&gt;
+    Cc: Arnaldo Carvalho de Melo &lt;acme@redhat.com&gt;
+    Cc: linux-kernel@vger.kernel.org
+    Link: https://lore.kernel.org/r/20230614150118.115208-1-cymi20@fudan.edu.cn
+    Signed-off-by: Namhyung Kim &lt;namhyung@kernel.org&gt;
+
+diff --git a/tools/lib/subcmd/help.c b/tools/lib/subcmd/help.c
+index a66fb1a1a312..67a8d6b740ea 100644
+--- a/tools/lib/subcmd/help.c
++++ b/tools/lib/subcmd/help.c
+@@ -16,6 +16,8 @@
+ void add_cmdname(struct cmdnames *cmds, const char *name, size_t len)
+ {
+ 	struct cmdname *ent = malloc(sizeof(*ent) + len + 1);
++	if (!ent)
++		return;
+ 
+ 	ent-&gt;len = len;
+ 	memcpy(ent-&gt;name, name, len);</pre><hr><pre>commit 7396ba87f1edf549284869451665c7c4e74ecd4f
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Sat Aug 13 20:49:08 2022 +0800
+
+    net: fix potential refcount leak in ndisc_router_discovery()
+    
+    The issue happens on specific paths in the function. After both the
+    object `rt` and `neigh` are grabbed successfully, when `lifetime` is
+    nonzero but the metric needs change, the function just deletes the
+    route and set `rt` to NULL. Then, it may try grabbing `rt` and `neigh`
+    again if above conditions hold. The function simply overwrite `neigh`
+    if succeeds or returns if fails, without decreasing the reference
+    count of previous `neigh`. This may result in memory leaks.
+    
+    Fix it by decrementing the reference count of `neigh` in place.
+    
+    Fixes: 6b2e04bc240f ("net: allow user to set metric on default route learned via Router Advertisement")
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ipv6/ndisc.c b/net/ipv6/ndisc.c
+index 98453693e400..3a553494ff16 100644
+--- a/net/ipv6/ndisc.c
++++ b/net/ipv6/ndisc.c
+@@ -1378,6 +1378,9 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 	if (!rt &amp;&amp; lifetime) {
+ 		ND_PRINTK(3, info, "RA: adding default router\n");
+ 
++		if (neigh)
++			neigh_release(neigh);
++
+ 		rt = rt6_add_dflt_router(net, &amp;ipv6_hdr(skb)-&gt;saddr,
+ 					 skb-&gt;dev, pref, defrtr_usr_metric);
+ 		if (!rt) {</pre><hr><pre>commit bfc48f1b0505ffcb03a6d749139b7577d6b81ae0
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Wed Aug 10 23:29:13 2022 +0800
+
+    net/sunrpc: fix potential memory leaks in rpc_sysfs_xprt_state_change()
+    
+    The issue happens on some error handling paths. When the function
+    fails to grab the object `xprt`, it simply returns 0, forgetting to
+    decrease the reference count of another object `xps`, which is
+    increased by rpc_sysfs_xprt_kobj_get_xprt_switch(), causing refcount
+    leaks. Also, the function forgets to check whether `xps` is valid
+    before using it, which may result in NULL-dereferencing issues.
+    
+    Fix it by adding proper error handling code when either `xprt` or
+    `xps` is NULL.
+    
+    Fixes: 5b7eb78486cd ("SUNRPC: take a xprt offline using sysfs")
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/sunrpc/sysfs.c b/net/sunrpc/sysfs.c
+index 7330eb9a70cf..c65c90ad626a 100644
+--- a/net/sunrpc/sysfs.c
++++ b/net/sunrpc/sysfs.c
+@@ -291,8 +291,10 @@ static ssize_t rpc_sysfs_xprt_state_change(struct kobject *kobj,
+ 	int offline = 0, online = 0, remove = 0;
+ 	struct rpc_xprt_switch *xps = rpc_sysfs_xprt_kobj_get_xprt_switch(kobj);
+ 
+-	if (!xprt)
+-		return 0;
++	if (!xprt || !xps) {
++		count = 0;
++		goto out_put;
++	}
+ 
+ 	if (!strncmp(buf, "offline", 7))
+ 		offline = 1;</pre><hr><pre>commit 9c9cb23e00ddf45679b21b4dacc11d1ae7961ebe
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Sun Jul 24 17:55:58 2022 +0800
+
+    xfrm: fix refcount leak in __xfrm_policy_check()
+    
+    The issue happens on an error path in __xfrm_policy_check(). When the
+    fetching process of the object `pols[1]` fails, the function simply
+    returns 0, forgetting to decrement the reference count of `pols[0]`,
+    which is incremented earlier by either xfrm_sk_policy_lookup() or
+    xfrm_policy_lookup(). This may result in memory leaks.
+    
+    Fix it by decreasing the reference count of `pols[0]` in that path.
+    
+    Fixes: 134b0fc544ba ("IPsec: propagate security module errors up from flow_cache_lookup")
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Steffen Klassert &lt;steffen.klassert@secunet.com&gt;
+
+diff --git a/net/xfrm/xfrm_policy.c b/net/xfrm/xfrm_policy.c
+index f1a0bab920a5..4f8bbb825abc 100644
+--- a/net/xfrm/xfrm_policy.c
++++ b/net/xfrm/xfrm_policy.c
+@@ -3599,6 +3599,7 @@ int __xfrm_policy_check(struct sock *sk, int dir, struct sk_buff *skb,
+ 		if (pols[1]) {
+ 			if (IS_ERR(pols[1])) {
+ 				XFRM_INC_STATS(net, LINUX_MIB_XFRMINPOLERROR);
++				xfrm_pol_put(pols[0]);
+ 				return 0;
+ 			}
+ 			pols[1]-&gt;curlft.use_time = ktime_get_real_seconds();</pre><hr><pre>commit 11c3627ec6b56c1525013f336f41b79a983b4d46
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Thu Apr 28 11:39:08 2022 +0800
+
+    apparmor: fix reference count leak in aa_pivotroot()
+    
+    The aa_pivotroot() function has a reference counting bug in a specific
+    path. When aa_replace_current_label() returns on success, the function
+    forgets to decrement the reference count of “target”, which is
+    increased earlier by build_pivotroot(), causing a reference leak.
+    
+    Fix it by decreasing the refcount of “target” in that path.
+    
+    Fixes: 2ea3ffb7782a ("apparmor: add mount mediation")
+    Co-developed-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Co-developed-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: John Johansen &lt;john.johansen@canonical.com&gt;
+
+diff --git a/security/apparmor/mount.c b/security/apparmor/mount.c
+index 5cc5de062fc8..fa64a2db3aec 100644
+--- a/security/apparmor/mount.c
++++ b/security/apparmor/mount.c
+@@ -719,6 +719,7 @@ int aa_pivotroot(struct aa_label *label, const struct path *old_path,
+ 			aa_put_label(target);
+ 			goto out;
+ 		}
++		aa_put_label(target);
+ 	} else
+ 		/* already audited error */
+ 		error = PTR_ERR(target);</pre><hr><pre>commit d21a580dafc69aa04f46e6099616146a536b0724
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Fri Apr 29 16:11:22 2022 +0800
+
+    ksmbd: fix reference count leak in smb_check_perm_dacl()
+    
+    The issue happens in a specific path in smb_check_perm_dacl(). When
+    "id" and "uid" have the same value, the function simply jumps out of
+    the loop without decrementing the reference count of the object
+    "posix_acls", which is increased by get_acl() earlier. This may
+    result in memory leaks.
+    
+    Fix it by decreasing the reference count of "posix_acls" before
+    jumping to label "check_access_bits".
+    
+    Fixes: 777cad1604d6 ("ksmbd: remove select FS_POSIX_ACL in Kconfig")
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Acked-by: Namjae Jeon &lt;linkinjeon@kernel.org&gt;
+    Signed-off-by: Steve French &lt;stfrench@microsoft.com&gt;
+
+diff --git a/fs/ksmbd/smbacl.c b/fs/ksmbd/smbacl.c
+index 6ecf55ea1fed..38f23bf981ac 100644
+--- a/fs/ksmbd/smbacl.c
++++ b/fs/ksmbd/smbacl.c
+@@ -1261,6 +1261,7 @@ int smb_check_perm_dacl(struct ksmbd_conn *conn, struct path *path,
+ 					if (!access_bits)
+ 						access_bits =
+ 							SET_MINIMUM_RIGHTS;
++					posix_acl_release(posix_acls);
+ 					goto check_access_bits;
+ 				}
+ 			}</pre><hr><pre>commit fecbd4a317c95d73c849648c406bcf1b6a0ec1cf
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Fri Mar 4 16:53:32 2022 +0800
+
+    mtd: rawnand: atmel: fix refcount issue in atmel_nand_controller_init
+    
+    The reference counting issue happens in several error handling paths
+    on a refcounted object "nc-&gt;dmac". In these paths, the function simply
+    returns the error code, forgetting to balance the reference count of
+    "nc-&gt;dmac", increased earlier by dma_request_channel(), which may
+    cause refcount leaks.
+    
+    Fix it by decrementing the refcount of specific object in those error
+    paths.
+    
+    Fixes: f88fc122cc34 ("mtd: nand: Cleanup/rework the atmel_nand driver")
+    Co-developed-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Co-developed-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Reviewed-by: Claudiu Beznea &lt;claudiu.beznea@microchip.com&gt;
+    Signed-off-by: Miquel Raynal &lt;miquel.raynal@bootlin.com&gt;
+    Link: https://lore.kernel.org/linux-mtd/20220304085330.3610-1-xiongx18@fudan.edu.cn
+
+diff --git a/drivers/mtd/nand/raw/atmel/nand-controller.c b/drivers/mtd/nand/raw/atmel/nand-controller.c
+index f3276ee9e4fe..ddd93bc38ea6 100644
+--- a/drivers/mtd/nand/raw/atmel/nand-controller.c
++++ b/drivers/mtd/nand/raw/atmel/nand-controller.c
+@@ -2060,13 +2060,15 @@ static int atmel_nand_controller_init(struct atmel_nand_controller *nc,
+ 	nc-&gt;mck = of_clk_get(dev-&gt;parent-&gt;of_node, 0);
+ 	if (IS_ERR(nc-&gt;mck)) {
+ 		dev_err(dev, "Failed to retrieve MCK clk\n");
+-		return PTR_ERR(nc-&gt;mck);
++		ret = PTR_ERR(nc-&gt;mck);
++		goto out_release_dma;
+ 	}
+ 
+ 	np = of_parse_phandle(dev-&gt;parent-&gt;of_node, "atmel,smc", 0);
+ 	if (!np) {
+ 		dev_err(dev, "Missing or invalid atmel,smc property\n");
+-		return -EINVAL;
++		ret = -EINVAL;
++		goto out_release_dma;
+ 	}
+ 
+ 	nc-&gt;smc = syscon_node_to_regmap(np);
+@@ -2074,10 +2076,16 @@ static int atmel_nand_controller_init(struct atmel_nand_controller *nc,
+ 	if (IS_ERR(nc-&gt;smc)) {
+ 		ret = PTR_ERR(nc-&gt;smc);
+ 		dev_err(dev, "Could not get SMC regmap (err = %d)\n", ret);
+-		return ret;
++		goto out_release_dma;
+ 	}
+ 
+ 	return 0;
++
++out_release_dma:
++	if (nc-&gt;dmac)
++		dma_release_channel(nc-&gt;dmac);
++
++	return ret;
+ }
+ 
+ static int</pre><hr><pre>commit b7f114edd54326f730a754547e7cfb197b5bc132
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Tue Jan 25 21:10:45 2022 +0800
+
+    NFSv4.2: fix reference count leaks in _nfs42_proc_copy_notify()
+    
+    [You don't often get email from xiongx18@fudan.edu.cn. Learn why this is important at http://aka.ms/LearnAboutSenderIdentification.]
+    
+    The reference counting issue happens in two error paths in the
+    function _nfs42_proc_copy_notify(). In both error paths, the function
+    simply returns the error code and forgets to balance the refcount of
+    object `ctx`, bumped by get_nfs_open_context() earlier, which may
+    cause refcount leaks.
+    
+    Fix it by balancing refcount of the `ctx` object before the function
+    returns in both error paths.
+    
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Trond Myklebust &lt;trond.myklebust@hammerspace.com&gt;
+
+diff --git a/fs/nfs/nfs42proc.c b/fs/nfs/nfs42proc.c
+index 32129446beca..ca878d021fab 100644
+--- a/fs/nfs/nfs42proc.c
++++ b/fs/nfs/nfs42proc.c
+@@ -591,8 +591,10 @@ static int _nfs42_proc_copy_notify(struct file *src, struct file *dst,
+ 
+ 	ctx = get_nfs_open_context(nfs_file_open_context(src));
+ 	l_ctx = nfs_get_lock_context(ctx);
+-	if (IS_ERR(l_ctx))
+-		return PTR_ERR(l_ctx);
++	if (IS_ERR(l_ctx)) {
++		status = PTR_ERR(l_ctx);
++		goto out;
++	}
+ 
+ 	status = nfs4_set_rw_stateid(&amp;args-&gt;cna_src_stateid, ctx, l_ctx,
+ 				     FMODE_READ);
+@@ -600,7 +602,7 @@ static int _nfs42_proc_copy_notify(struct file *src, struct file *dst,
+ 	if (status) {
+ 		if (status == -EAGAIN)
+ 			status = -NFS4ERR_BAD_STATEID;
+-		return status;
++		goto out;
+ 	}
+ 
+ 	status = nfs4_call_sync(src_server-&gt;client, src_server, &amp;msg,
+@@ -609,6 +611,7 @@ static int _nfs42_proc_copy_notify(struct file *src, struct file *dst,
+ 	if (status == -ENOTSUPP)
+ 		src_server-&gt;caps &amp;= ~NFS_CAP_COPY_NOTIFY;
+ 
++out:
+ 	put_nfs_open_context(nfs_file_open_context(src));
+ 	return status;
+ }</pre><hr><pre>commit 37c2c83ca4f1ef4b6908181ac98e18360af89b42
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Tue Jan 25 18:12:15 2022 +0800
+
+    spi: uniphier: fix reference count leak in uniphier_spi_probe()
+    
+    The issue happens in several error paths in uniphier_spi_probe().
+    When either dma_get_slave_caps() or devm_spi_register_master() returns
+    an error code, the function forgets to decrease the refcount of both
+    `dma_rx` and `dma_tx` objects, which may lead to refcount leaks.
+    
+    Fix it by decrementing the reference count of specific objects in
+    those error paths.
+    
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Reviewed-by: Kunihiko Hayashi &lt;hayashi.kunihiko@socionext.com&gt;
+    Fixes: 28d1dddc59f6 ("spi: uniphier: Add DMA transfer mode support")
+    Link: https://lore.kernel.org/r/20220125101214.35677-1-xiongx18@fudan.edu.cn
+    Signed-off-by: Mark Brown &lt;broonie@kernel.org&gt;
+
+diff --git a/drivers/spi/spi-uniphier.c b/drivers/spi/spi-uniphier.c
+index 342ee8d2c476..cc0da4822231 100644
+--- a/drivers/spi/spi-uniphier.c
++++ b/drivers/spi/spi-uniphier.c
+@@ -726,7 +726,7 @@ static int uniphier_spi_probe(struct platform_device *pdev)
+ 		if (ret) {
+ 			dev_err(&amp;pdev-&gt;dev, "failed to get TX DMA capacities: %d\n",
+ 				ret);
+-			goto out_disable_clk;
++			goto out_release_dma;
+ 		}
+ 		dma_tx_burst = caps.max_burst;
+ 	}
+@@ -735,7 +735,7 @@ static int uniphier_spi_probe(struct platform_device *pdev)
+ 	if (IS_ERR_OR_NULL(master-&gt;dma_rx)) {
+ 		if (PTR_ERR(master-&gt;dma_rx) == -EPROBE_DEFER) {
+ 			ret = -EPROBE_DEFER;
+-			goto out_disable_clk;
++			goto out_release_dma;
+ 		}
+ 		master-&gt;dma_rx = NULL;
+ 		dma_rx_burst = INT_MAX;
+@@ -744,7 +744,7 @@ static int uniphier_spi_probe(struct platform_device *pdev)
+ 		if (ret) {
+ 			dev_err(&amp;pdev-&gt;dev, "failed to get RX DMA capacities: %d\n",
+ 				ret);
+-			goto out_disable_clk;
++			goto out_release_dma;
+ 		}
+ 		dma_rx_burst = caps.max_burst;
+ 	}
+@@ -753,10 +753,20 @@ static int uniphier_spi_probe(struct platform_device *pdev)
+ 
+ 	ret = devm_spi_register_master(&amp;pdev-&gt;dev, master);
+ 	if (ret)
+-		goto out_disable_clk;
++		goto out_release_dma;
+ 
+ 	return 0;
+ 
++out_release_dma:
++	if (!IS_ERR_OR_NULL(master-&gt;dma_rx)) {
++		dma_release_channel(master-&gt;dma_rx);
++		master-&gt;dma_rx = NULL;
++	}
++	if (!IS_ERR_OR_NULL(master-&gt;dma_tx)) {
++		dma_release_channel(master-&gt;dma_tx);
++		master-&gt;dma_tx = NULL;
++	}
++
+ out_disable_clk:
+ 	clk_disable_unprepare(priv-&gt;clk);
+ </pre><hr><pre>commit dfced44f122c500004a48ecc8db516bb6a295a1b
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Fri Jan 21 15:46:23 2022 -0500
+
+    drm/amd/amdgpu/amdgpu_cs: fix refcount leak of a dma_fence obj
+    
+    This issue takes place in an error path in
+    amdgpu_cs_fence_to_handle_ioctl(). When `info-&gt;in.what` falls into
+    default case, the function simply returns -EINVAL, forgetting to
+    decrement the reference count of a dma_fence obj, which is bumped
+    earlier by amdgpu_cs_get_fence(). This may result in reference count
+    leaks.
+    
+    Fix it by decreasing the refcount of specific object before returning
+    the error code.
+    
+    Reviewed-by: Christian König &lt;christian.koenig@amd.com&gt;
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Alex Deucher &lt;alexander.deucher@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_cs.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_cs.c
+index 06d07502a1f6..a34be65c9eaa 100644
+--- a/drivers/gpu/drm/amd/amdgpu/amdgpu_cs.c
++++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_cs.c
+@@ -1509,6 +1509,7 @@ int amdgpu_cs_fence_to_handle_ioctl(struct drm_device *dev, void *data,
+ 		return 0;
+ 
+ 	default:
++		dma_fence_put(fence);
+ 		return -EINVAL;
+ 	}
+ }</pre>
+    <div class="pagination">
+        <span>[1]</span><a href='15_2.html'>2</a><a href='15_3.html'>3</a><a href='15_4.html'>4</a><a href='15_5.html'>5</a><a href='15_6.html'>6</a><a href='15_7.html'>7</a><a href='15_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

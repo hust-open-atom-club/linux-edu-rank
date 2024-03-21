@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Tennessee, Knoxville</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Tennessee, Knoxville</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit c48b60538c3ba05a7a2713c4791b25405525431b
+Author: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+Date:   Thu Mar 1 17:28:14 2012 -0500
+
+    perf/x86: Use rdpmc() rather than rdmsr() when possible in the kernel
+    
+    The rdpmc instruction is faster than the equivelant rdmsr call,
+    so use it when possible in the kernel.
+    
+    The perfctr kernel patches did this, after extensive testing showed
+    rdpmc to always be faster (One can look in etc/costs in the perfctr-2.6
+    package to see a historical list of the overhead).
+    
+    I have done some tests on a 3.2 kernel, the kernel module I used
+    was included in the first posting of this patch:
+    
+                       rdmsr           rdpmc
+     Core2 T9900:      203.9 cycles     30.9 cycles
+     AMD fam0fh:        56.2 cycles      9.8 cycles
+     Atom 6/28/2:      129.7 cycles     50.6 cycles
+    
+    The speedup of using rdpmc is large.
+    
+    [ It's probably possible (and desirable) to do this without
+      requiring a new field in the hw_perf_event structure, but
+      the fixed events make this tricky. ]
+    
+    Signed-off-by: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+    Signed-off-by: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.00.1203011724030.26934@cl320.eecs.utk.edu
+    Signed-off-by: Ingo Molnar &lt;mingo@kernel.org&gt;
+
+diff --git a/arch/x86/kernel/cpu/perf_event.c b/arch/x86/kernel/cpu/perf_event.c
+index 43c2017347e7..000a4746c7ce 100644
+--- a/arch/x86/kernel/cpu/perf_event.c
++++ b/arch/x86/kernel/cpu/perf_event.c
+@@ -75,7 +75,7 @@ u64 x86_perf_event_update(struct perf_event *event)
+ 	 */
+ again:
+ 	prev_raw_count = local64_read(&amp;hwc-&gt;prev_count);
+-	rdmsrl(hwc-&gt;event_base, new_raw_count);
++	rdpmcl(hwc-&gt;event_base_rdpmc, new_raw_count);
+ 
+ 	if (local64_cmpxchg(&amp;hwc-&gt;prev_count, prev_raw_count,
+ 					new_raw_count) != prev_raw_count)
+@@ -819,9 +819,11 @@ static inline void x86_assign_hw_event(struct perf_event *event,
+ 	} else if (hwc-&gt;idx &gt;= X86_PMC_IDX_FIXED) {
+ 		hwc-&gt;config_base = MSR_ARCH_PERFMON_FIXED_CTR_CTRL;
+ 		hwc-&gt;event_base = MSR_ARCH_PERFMON_FIXED_CTR0 + (hwc-&gt;idx - X86_PMC_IDX_FIXED);
++		hwc-&gt;event_base_rdpmc = (hwc-&gt;idx - X86_PMC_IDX_FIXED) | 1&lt;&lt;30;
+ 	} else {
+ 		hwc-&gt;config_base = x86_pmu_config_addr(hwc-&gt;idx);
+ 		hwc-&gt;event_base  = x86_pmu_event_addr(hwc-&gt;idx);
++		hwc-&gt;event_base_rdpmc = x86_pmu_addr_offset(hwc-&gt;idx);
+ 	}
+ }
+ 
+diff --git a/include/linux/perf_event.h b/include/linux/perf_event.h
+index 45db49f64bb4..1ce887abcc5c 100644
+--- a/include/linux/perf_event.h
++++ b/include/linux/perf_event.h
+@@ -677,6 +677,7 @@ struct hw_perf_event {
+ 			u64		last_tag;
+ 			unsigned long	config_base;
+ 			unsigned long	event_base;
++			int		event_base_rdpmc;
+ 			int		idx;
+ 			int		last_cpu;
+ </pre><hr><pre>commit 4ec8363dfc1451f8c8f86825731fe712798ada02
+Author: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+Date:   Wed Jun 1 15:15:36 2011 -0400
+
+    perf_events: Fix perf buffer watermark setting
+    
+    Since 2.6.36 (specifically commit d57e34fdd60b ("perf: Simplify the
+    ring-buffer logic: make perf_buffer_alloc() do everything needed"),
+    the perf_buffer_init_code() has been mis-setting the buffer watermark
+    if perf_event_attr.wakeup_events has a non-zero value.
+    
+    This is because perf_event_attr.wakeup_events is a union with
+    perf_event_attr.wakeup_watermark.
+    
+    This commit re-enables the check for perf_event_attr.watermark being
+    set before continuing with setting a non-default watermark.
+    
+    This bug is most noticable when you are trying to use PERF_IOC_REFRESH
+    with a value larger than one and perf_event_attr.wakeup_events is set to
+    one.  In this case the buffer watermark will be set to 1 and you will
+    get extraneous POLL_IN overflows rather than POLL_HUP as expected.
+    
+    [ avoid using attr.wakeup_events when attr.watermark is set ]
+    
+    Signed-off-by: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+    Signed-off-by: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Cc: &lt;stable@kernel.org&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.00.1106011506390.5384@cl320.eecs.utk.edu
+    Signed-off-by: Ingo Molnar &lt;mingo@elte.hu&gt;
+
+diff --git a/kernel/events/core.c b/kernel/events/core.c
+index 5e70f62752a2..e4aee519572d 100644
+--- a/kernel/events/core.c
++++ b/kernel/events/core.c
+@@ -3569,8 +3569,10 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
+ 	if (vma-&gt;vm_flags &amp; VM_WRITE)
+ 		flags |= RING_BUFFER_WRITABLE;
+ 
+-	rb = rb_alloc(nr_pages, event-&gt;attr.wakeup_watermark,
+-				   event-&gt;cpu, flags);
++	rb = rb_alloc(nr_pages, 
++		event-&gt;attr.watermark ? event-&gt;attr.wakeup_watermark : 0,
++		event-&gt;cpu, flags);
++
+ 	if (!rb) {
+ 		ret = -ENOMEM;
+ 		goto unlock;
+diff --git a/kernel/events/ring_buffer.c b/kernel/events/ring_buffer.c
+index fde52595d8f7..fc2701c99207 100644
+--- a/kernel/events/ring_buffer.c
++++ b/kernel/events/ring_buffer.c
+@@ -199,13 +199,15 @@ void perf_output_end(struct perf_output_handle *handle)
+ 	struct perf_event *event = handle-&gt;event;
+ 	struct ring_buffer *rb = handle-&gt;rb;
+ 
+-	int wakeup_events = event-&gt;attr.wakeup_events;
+-
+-	if (handle-&gt;sample &amp;&amp; wakeup_events) {
+-		int events = local_inc_return(&amp;rb-&gt;events);
+-		if (events &gt;= wakeup_events) {
+-			local_sub(wakeup_events, &amp;rb-&gt;events);
+-			local_inc(&amp;rb-&gt;wakeup);
++	if (handle-&gt;sample &amp;&amp; !event-&gt;attr.watermark) {
++		int wakeup_events = event-&gt;attr.wakeup_events;
++
++		if (wakeup_events) {
++			int events = local_inc_return(&amp;rb-&gt;events);
++			if (events &gt;= wakeup_events) {
++				local_sub(wakeup_events, &amp;rb-&gt;events);
++				local_inc(&amp;rb-&gt;wakeup);
++			}
+ 		}
+ 	}
+ </pre><hr><pre>commit d7ebe75b065a7c2d58ffc12f9d2e00d5ea4e71eb
+Author: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+Date:   Fri Jun 3 17:59:51 2011 -0400
+
+    perf: Fix comments in include/linux/perf_event.h
+    
+    Fix include/linux/perf_event.h comments to be consistent with
+    the actual #define names. This is trivial, but it can be a bit
+    confusing when first  reading through the file.
+    
+    Signed-off-by: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+    Cc: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Cc: paulus@samba.org
+    Cc: Arnaldo Carvalho de Melo &lt;acme@redhat.com&gt;
+    Cc: Frederic Weisbecker &lt;fweisbec@gmail.com&gt;
+    Cc: Steven Rostedt &lt;rostedt@goodmis.org&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.00.1106031757090.29381@cl320.eecs.utk.edu
+    Signed-off-by: Ingo Molnar &lt;mingo@elte.hu&gt;
+
+diff --git a/include/linux/perf_event.h b/include/linux/perf_event.h
+index 3412684ce5d5..e0786e35f247 100644
+--- a/include/linux/perf_event.h
++++ b/include/linux/perf_event.h
+@@ -137,14 +137,14 @@ enum perf_event_sample_format {
+  *
+  * struct read_format {
+  *	{ u64		value;
+- *	  { u64		time_enabled; } &amp;&amp; PERF_FORMAT_ENABLED
+- *	  { u64		time_running; } &amp;&amp; PERF_FORMAT_RUNNING
++ *	  { u64		time_enabled; } &amp;&amp; PERF_FORMAT_TOTAL_TIME_ENABLED
++ *	  { u64		time_running; } &amp;&amp; PERF_FORMAT_TOTAL_TIME_RUNNING
+  *	  { u64		id;           } &amp;&amp; PERF_FORMAT_ID
+  *	} &amp;&amp; !PERF_FORMAT_GROUP
+  *
+  *	{ u64		nr;
+- *	  { u64		time_enabled; } &amp;&amp; PERF_FORMAT_ENABLED
+- *	  { u64		time_running; } &amp;&amp; PERF_FORMAT_RUNNING
++ *	  { u64		time_enabled; } &amp;&amp; PERF_FORMAT_TOTAL_TIME_ENABLED
++ *	  { u64		time_running; } &amp;&amp; PERF_FORMAT_TOTAL_TIME_RUNNING
+  *	  { u64		value;
+  *	    { u64	id;           } &amp;&amp; PERF_FORMAT_ID
+  *	  }		cntr[nr];</pre><hr><pre>commit aa4a221875873d2a1f9656cb7fd7e545e952b4fa
+Author: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+Date:   Fri Jun 3 17:54:40 2011 -0400
+
+    perf: Comment /proc/sys/kernel/perf_event_paranoid to be part of user ABI
+    
+    Turns out that distro packages use this file as an indicator of
+    the perf event subsystem - this is easier to check for from scripts
+    than the existence of the system call.
+    
+    This is easy enough to keep around for the kernel, so add a
+    comment to make sure it stays so.
+    
+    Signed-off-by: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+    Cc: David Ahern &lt;dsahern@gmail.com&gt;
+    Cc: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Cc: paulus@samba.org
+    Cc: acme@redhat.com
+    Cc: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+    Cc: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Link: http://lkml.kernel.org/r/alpine.DEB.2.00.1106031751170.29381@cl320.eecs.utk.edu
+    Signed-off-by: Ingo Molnar &lt;mingo@elte.hu&gt;
+
+diff --git a/kernel/sysctl.c b/kernel/sysctl.c
+index 4fc92445a29c..f175d98bd355 100644
+--- a/kernel/sysctl.c
++++ b/kernel/sysctl.c
+@@ -938,6 +938,12 @@ static struct ctl_table kern_table[] = {
+ 	},
+ #endif
+ #ifdef CONFIG_PERF_EVENTS
++	/*
++	 * User-space scripts rely on the existence of this file
++	 * as a feature check for perf_events being enabled.
++	 *
++	 * So it's an ABI, do not remove!
++	 */
+ 	{
+ 		.procname	= "perf_event_paranoid",
+ 		.data		= &amp;sysctl_perf_event_paranoid,</pre><hr><pre>commit 4e7d7c6018567fa03f387d06602d4145c75ebbe0
+Author: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+Date:   Wed Sep 22 17:31:37 2010 -0400
+
+    ALSA: hda - MacBookPro 5,3 line-in support
+    
+    I've found the following patch is necessary to enable line-in on
+    my MacBookPro 5,3 machine.  With the patch applied I've successfully
+    recorded audio from the line-in jack.  This is based on the existing
+    5,5 support.
+    
+    Signed-off-by: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/patch_cirrus.c b/sound/pci/hda/patch_cirrus.c
+index 483c3f2d8d39..5c00106cbc2e 100644
+--- a/sound/pci/hda/patch_cirrus.c
++++ b/sound/pci/hda/patch_cirrus.c
+@@ -65,6 +65,7 @@ struct cs_spec {
+ 
+ /* available models */
+ enum {
++	CS420X_MBP53,
+ 	CS420X_MBP55,
+ 	CS420X_IMAC27,
+ 	CS420X_AUTO,
+@@ -839,7 +840,8 @@ static void cs_automute(struct hda_codec *codec)
+ 				    AC_VERB_SET_PIN_WIDGET_CONTROL,
+ 				    hp_present ? 0 : PIN_OUT);
+ 	}
+-	if (spec-&gt;board_config == CS420X_MBP55 ||
++	if (spec-&gt;board_config == CS420X_MBP53 ||
++	    spec-&gt;board_config == CS420X_MBP55 ||
+ 	    spec-&gt;board_config == CS420X_IMAC27) {
+ 		unsigned int gpio = hp_present ? 0x02 : 0x08;
+ 		snd_hda_codec_write(codec, 0x01, 0,
+@@ -1128,6 +1130,7 @@ static int cs_parse_auto_config(struct hda_codec *codec)
+ }
+ 
+ static const char *cs420x_models[CS420X_MODELS] = {
++	[CS420X_MBP53] = "mbp53",
+ 	[CS420X_MBP55] = "mbp55",
+ 	[CS420X_IMAC27] = "imac27",
+ 	[CS420X_AUTO] = "auto",
+@@ -1135,6 +1138,7 @@ static const char *cs420x_models[CS420X_MODELS] = {
+ 
+ 
+ static struct snd_pci_quirk cs420x_cfg_tbl[] = {
++	SND_PCI_QUIRK(0x10de, 0x0ac0, "MacBookPro 5,3", CS420X_MBP53),
+ 	SND_PCI_QUIRK(0x10de, 0xcb79, "MacBookPro 5,5", CS420X_MBP55),
+ 	SND_PCI_QUIRK(0x8086, 0x7270, "IMac 27 Inch", CS420X_IMAC27),
+ 	{} /* terminator */
+@@ -1145,6 +1149,20 @@ struct cs_pincfg {
+ 	u32 val;
+ };
+ 
++static struct cs_pincfg mbp53_pincfgs[] = {
++	{ 0x09, 0x012b4050 },
++	{ 0x0a, 0x90100141 },
++	{ 0x0b, 0x90100140 },
++	{ 0x0c, 0x018b3020 },
++	{ 0x0d, 0x90a00110 },
++	{ 0x0e, 0x400000f0 },
++	{ 0x0f, 0x01cbe030 },
++	{ 0x10, 0x014be060 },
++	{ 0x12, 0x400000f0 },
++	{ 0x15, 0x400000f0 },
++	{} /* terminator */
++};
++
+ static struct cs_pincfg mbp55_pincfgs[] = {
+ 	{ 0x09, 0x012b4030 },
+ 	{ 0x0a, 0x90100121 },
+@@ -1174,6 +1192,7 @@ static struct cs_pincfg imac27_pincfgs[] = {
+ };
+ 
+ static struct cs_pincfg *cs_pincfgs[CS420X_MODELS] = {
++	[CS420X_MBP53] = mbp53_pincfgs,
+ 	[CS420X_MBP55] = mbp55_pincfgs,
+ 	[CS420X_IMAC27] = imac27_pincfgs,
+ };
+@@ -1206,6 +1225,7 @@ static int patch_cs420x(struct hda_codec *codec)
+ 
+ 	switch (spec-&gt;board_config) {
+ 	case CS420X_IMAC27:
++	case CS420X_MBP53:
+ 	case CS420X_MBP55:
+ 		/* GPIO1 = headphones */
+ 		/* GPIO3 = speakers */</pre><hr><pre>commit f287d332ce835f77a4f5077d2c0ef1e3f9ea42d2
+Author: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+Date:   Thu Jul 1 15:30:16 2010 -0400
+
+    perf, x86: Fix incorrect branches event on AMD CPUs
+    
+    While doing some performance counter validation tests on some
+    assembly language programs I noticed that the "branches:u"
+    count was very wrong on AMD machines.
+    
+    It looks like the wrong event was selected.
+    
+    Signed-off-by: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+    Acked-by: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Cc: Paul Mackerras &lt;paulus@samba.org&gt;
+    Cc: Arnaldo Carvalho de Melo &lt;acme@redhat.com&gt;
+    Cc: Robert Richter &lt;robert.richter@amd.com&gt;
+    Cc: Borislav Petkov &lt;borislav.petkov@amd.com&gt;
+    Cc: Frederic Weisbecker &lt;fweisbec@gmail.com&gt;
+    Cc: &lt;stable@kernel.org&gt;
+    LKML-Reference: &lt;alpine.DEB.2.00.1007011526010.23160@cl320.eecs.utk.edu&gt;
+    Signed-off-by: Ingo Molnar &lt;mingo@elte.hu&gt;
+
+diff --git a/arch/x86/kernel/cpu/perf_event_amd.c b/arch/x86/kernel/cpu/perf_event_amd.c
+index 611df11ba15e..c2897b7b4a3b 100644
+--- a/arch/x86/kernel/cpu/perf_event_amd.c
++++ b/arch/x86/kernel/cpu/perf_event_amd.c
+@@ -102,8 +102,8 @@ static const u64 amd_perfmon_event_map[] =
+   [PERF_COUNT_HW_INSTRUCTIONS]		= 0x00c0,
+   [PERF_COUNT_HW_CACHE_REFERENCES]	= 0x0080,
+   [PERF_COUNT_HW_CACHE_MISSES]		= 0x0081,
+-  [PERF_COUNT_HW_BRANCH_INSTRUCTIONS]	= 0x00c4,
+-  [PERF_COUNT_HW_BRANCH_MISSES]		= 0x00c5,
++  [PERF_COUNT_HW_BRANCH_INSTRUCTIONS]	= 0x00c2,
++  [PERF_COUNT_HW_BRANCH_MISSES]		= 0x00c3,
+ };
+ 
+ static u64 amd_pmu_event_map(int hw_event)</pre><hr><pre>commit 134fbadf028a5977a1b06b0253d3ee33e6f0c642
+Author: Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+Date:   Tue Apr 6 10:01:19 2010 -0400
+
+    perf, x86: Enable Nehalem-EX support
+    
+    According to Intel Software Devel Manual Volume 3B, the
+    Nehalem-EX PMU is just like regular Nehalem (except for the
+    uncore support, which is completely different).
+    
+    Signed-off-by:  Vince Weaver &lt;vweaver1@eecs.utk.edu&gt;
+    Cc: Peter Zijlstra &lt;a.p.zijlstra@chello.nl&gt;
+    Cc: Paul Mackerras &lt;paulus@samba.org&gt;
+    Cc: Arnaldo Carvalho de Melo &lt;acme@redhat.com&gt;
+    Cc: "H. Peter Anvin" &lt;hpa@zytor.com&gt;
+    Cc: Arjan van de Ven &lt;arjan@linux.intel.com&gt;
+    Cc: Lin Ming &lt;ming.m.lin@intel.com&gt;
+    LKML-Reference: &lt;alpine.DEB.2.00.1004060956580.1417@cl320.eecs.utk.edu&gt;
+    Signed-off-by: Ingo Molnar &lt;mingo@elte.hu&gt;
+
+diff --git a/arch/x86/kernel/cpu/perf_event_intel.c b/arch/x86/kernel/cpu/perf_event_intel.c
+index 84bfde64a337..9c794ac87837 100644
+--- a/arch/x86/kernel/cpu/perf_event_intel.c
++++ b/arch/x86/kernel/cpu/perf_event_intel.c
+@@ -936,6 +936,7 @@ static __init int intel_pmu_init(void)
+ 
+ 	case 26: /* 45 nm nehalem, "Bloomfield" */
+ 	case 30: /* 45 nm nehalem, "Lynnfield" */
++	case 46: /* 45 nm nehalem-ex, "Beckton" */
+ 		memcpy(hw_cache_event_ids, nehalem_hw_cache_event_ids,
+ 		       sizeof(hw_cache_event_ids));
+ </pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

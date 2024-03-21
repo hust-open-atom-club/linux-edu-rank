@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Minnesota</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Minnesota</h1>
+    <div class="pagination">
+        <a href='7_6.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><span>[7]</span><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><a href='7_28.html'>28</a><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_8.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 0b8e125e213204508e1b3c4bdfe69713280b7abd
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Wed May 27 22:02:30 2020 -0500
+
+    RDMA/core: Fix several reference count leaks.
+    
+    kobject_init_and_add() takes reference even when it fails.  If this
+    function returns an error, kobject_put() must be called to properly clean
+    up the memory associated with the object. Previous
+    commit b8eb718348b8 ("net-sysfs: Fix reference count leak in
+    rx|netdev_queue_add_kobject") fixed a similar problem.
+    
+    Link: https://lore.kernel.org/r/20200528030231.9082-1-wu000273@umn.edu
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Reviewed-by: Jason Gunthorpe &lt;jgg@mellanox.com&gt;
+    Signed-off-by: Jason Gunthorpe &lt;jgg@mellanox.com&gt;
+
+diff --git a/drivers/infiniband/core/sysfs.c b/drivers/infiniband/core/sysfs.c
+index 087682e6969e..defe9cd4c5ee 100644
+--- a/drivers/infiniband/core/sysfs.c
++++ b/drivers/infiniband/core/sysfs.c
+@@ -1058,8 +1058,7 @@ static int add_port(struct ib_core_device *coredev, int port_num)
+ 				   coredev-&gt;ports_kobj,
+ 				   "%d", port_num);
+ 	if (ret) {
+-		kfree(p);
+-		return ret;
++		goto err_put;
+ 	}
+ 
+ 	p-&gt;gid_attr_group = kzalloc(sizeof(*p-&gt;gid_attr_group), GFP_KERNEL);
+@@ -1072,8 +1071,7 @@ static int add_port(struct ib_core_device *coredev, int port_num)
+ 	ret = kobject_init_and_add(&amp;p-&gt;gid_attr_group-&gt;kobj, &amp;gid_attr_type,
+ 				   &amp;p-&gt;kobj, "gid_attrs");
+ 	if (ret) {
+-		kfree(p-&gt;gid_attr_group);
+-		goto err_put;
++		goto err_put_gid_attrs;
+ 	}
+ 
+ 	if (device-&gt;ops.process_mad &amp;&amp; is_full_dev) {
+@@ -1404,8 +1402,10 @@ int ib_port_register_module_stat(struct ib_device *device, u8 port_num,
+ 
+ 		ret = kobject_init_and_add(kobj, ktype, &amp;port-&gt;kobj, "%s",
+ 					   name);
+-		if (ret)
++		if (ret) {
++			kobject_put(kobj);
+ 			return ret;
++		}
+ 	}
+ 
+ 	return 0;</pre><hr><pre>commit c343bf1ba5efcbf2266a1fe3baefec9cc82f867f
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Thu May 28 13:20:46 2020 -0500
+
+    cpuidle: Fix three reference count leaks
+    
+    kobject_init_and_add() takes reference even when it fails.
+    If this function returns an error, kobject_put() must be called to
+    properly clean up the memory associated with the object.
+    
+    Previous commit "b8eb718348b8" fixed a similar problem.
+    
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    [ rjw: Subject ]
+    Signed-off-by: Rafael J. Wysocki &lt;rafael.j.wysocki@intel.com&gt;
+
+diff --git a/drivers/cpuidle/sysfs.c b/drivers/cpuidle/sysfs.c
+index 14c0eb536787..091d1caceb41 100644
+--- a/drivers/cpuidle/sysfs.c
++++ b/drivers/cpuidle/sysfs.c
+@@ -484,7 +484,7 @@ static int cpuidle_add_state_sysfs(struct cpuidle_device *device)
+ 		ret = kobject_init_and_add(&amp;kobj-&gt;kobj, &amp;ktype_state_cpuidle,
+ 					   &amp;kdev-&gt;kobj, "state%d", i);
+ 		if (ret) {
+-			kfree(kobj);
++			kobject_put(&amp;kobj-&gt;kobj);
+ 			goto error_state;
+ 		}
+ 		cpuidle_add_s2idle_attr_group(kobj);
+@@ -615,7 +615,7 @@ static int cpuidle_add_driver_sysfs(struct cpuidle_device *dev)
+ 	ret = kobject_init_and_add(&amp;kdrv-&gt;kobj, &amp;ktype_driver_cpuidle,
+ 				   &amp;kdev-&gt;kobj, "driver");
+ 	if (ret) {
+-		kfree(kdrv);
++		kobject_put(&amp;kdrv-&gt;kobj);
+ 		return ret;
+ 	}
+ 
+@@ -709,7 +709,7 @@ int cpuidle_add_sysfs(struct cpuidle_device *dev)
+ 	error = kobject_init_and_add(&amp;kdev-&gt;kobj, &amp;ktype_cpuidle, &amp;cpu_dev-&gt;kobj,
+ 				   "cpuidle");
+ 	if (error) {
+-		kfree(kdev);
++		kobject_put(&amp;kdev-&gt;kobj);
+ 		return error;
+ 	}
+ </pre><hr><pre>commit 7cc31613734c4870ae32f5265d576ef296621343
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Wed May 27 16:00:19 2020 -0500
+
+    iommu: Fix reference count leak in iommu_group_alloc.
+    
+    kobject_init_and_add() takes reference even when it fails.
+    Thus, when kobject_init_and_add() returns an error,
+    kobject_put() must be called to properly clean up the kobject.
+    
+    Fixes: d72e31c93746 ("iommu: IOMMU Groups")
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Link: https://lore.kernel.org/r/20200527210020.6522-1-wu000273@umn.edu
+    Signed-off-by: Joerg Roedel &lt;jroedel@suse.de&gt;
+
+diff --git a/drivers/iommu/iommu.c b/drivers/iommu/iommu.c
+index 1faa08c8bbb4..03d6a26687bc 100644
+--- a/drivers/iommu/iommu.c
++++ b/drivers/iommu/iommu.c
+@@ -510,7 +510,7 @@ struct iommu_group *iommu_group_alloc(void)
+ 				   NULL, "%d", group-&gt;id);
+ 	if (ret) {
+ 		ida_simple_remove(&amp;iommu_group_ida, group-&gt;id);
+-		kfree(group);
++		kobject_put(&amp;group-&gt;kobj);
+ 		return ERR_PTR(ret);
+ 	}
+ </pre><hr><pre>commit a068aab42258e25094bc2c159948d263ed7d7a77
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Wed May 27 22:10:29 2020 -0500
+
+    bonding: Fix reference count leak in bond_sysfs_slave_add.
+    
+    kobject_init_and_add() takes reference even when it fails.
+    If this function returns an error, kobject_put() must be called to
+    properly clean up the memory associated with the object. Previous
+    commit "b8eb718348b8" fixed a similar problem.
+    
+    Fixes: 07699f9a7c8d ("bonding: add sysfs /slave dir for bond slave devices.")
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Acked-by: Jay Vosburgh &lt;jay.vosburgh@canonical.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/bonding/bond_sysfs_slave.c b/drivers/net/bonding/bond_sysfs_slave.c
+index 007481557191..9b8346638f69 100644
+--- a/drivers/net/bonding/bond_sysfs_slave.c
++++ b/drivers/net/bonding/bond_sysfs_slave.c
+@@ -149,8 +149,10 @@ int bond_sysfs_slave_add(struct slave *slave)
+ 
+ 	err = kobject_init_and_add(&amp;slave-&gt;kobj, &amp;slave_ktype,
+ 				   &amp;(slave-&gt;dev-&gt;dev.kobj), "bonding_slave");
+-	if (err)
++	if (err) {
++		kobject_put(&amp;slave-&gt;kobj);
+ 		return err;
++	}
+ 
+ 	for (a = slave_attrs; *a; ++a) {
+ 		err = sysfs_create_file(&amp;slave-&gt;kobj, &amp;((*a)-&gt;attr));</pre><hr><pre>commit 4d8be4bc94f74bb7d096e1c2e44457b530d5a170
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Wed May 27 17:35:51 2020 -0500
+
+    ACPI: CPPC: Fix reference count leak in acpi_cppc_processor_probe()
+    
+    kobject_init_and_add() takes reference even when it fails.
+    If this function returns an error, kobject_put() must be called to
+    properly clean up the memory associated with the object. Previous
+    commit "b8eb718348b8" fixed a similar problem.
+    
+    Fixes: 158c998ea44b ("ACPI / CPPC: add sysfs support to compute delivered performance")
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Cc: 4.10+ &lt;stable@vger.kernel.org&gt; # 4.10+
+    Signed-off-by: Rafael J. Wysocki &lt;rafael.j.wysocki@intel.com&gt;
+
+diff --git a/drivers/acpi/cppc_acpi.c b/drivers/acpi/cppc_acpi.c
+index f8184004294a..7a99b19bb893 100644
+--- a/drivers/acpi/cppc_acpi.c
++++ b/drivers/acpi/cppc_acpi.c
+@@ -846,6 +846,7 @@ int acpi_cppc_processor_probe(struct acpi_processor *pr)
+ 			"acpi_cppc");
+ 	if (ret) {
+ 		per_cpu(cpc_desc_ptr, pr-&gt;id) = NULL;
++		kobject_put(&amp;cpc_ptr-&gt;kobj);
+ 		goto out_free;
+ 	}
+ </pre><hr><pre>commit 6e6c25283dff866308c87b49434c7dbad4774cc0
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Wed May 27 16:17:17 2020 -0500
+
+    ACPI: sysfs: Fix reference count leak in acpi_sysfs_add_hotplug_profile()
+    
+    kobject_init_and_add() takes reference even when it fails.
+    Thus, when kobject_init_and_add() returns an error,
+    kobject_put() must be called to properly clean up the kobject.
+    
+    Fixes: 3f8055c35836 ("ACPI / hotplug: Introduce user space interface for hotplug profiles")
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Cc: 3.10+ &lt;stable@vger.kernel.org&gt; # 3.10+
+    Signed-off-by: Rafael J. Wysocki &lt;rafael.j.wysocki@intel.com&gt;
+
+diff --git a/drivers/acpi/sysfs.c b/drivers/acpi/sysfs.c
+index c60d2c6d31d6..3a89909b50a6 100644
+--- a/drivers/acpi/sysfs.c
++++ b/drivers/acpi/sysfs.c
+@@ -993,8 +993,10 @@ void acpi_sysfs_add_hotplug_profile(struct acpi_hotplug_profile *hotplug,
+ 
+ 	error = kobject_init_and_add(&amp;hotplug-&gt;kobj,
+ 		&amp;acpi_hotplug_profile_ktype, hotplug_kobj, "%s", name);
+-	if (error)
++	if (error) {
++		kobject_put(&amp;hotplug-&gt;kobj);
+ 		goto err_out;
++	}
+ 
+ 	kobject_uevent(&amp;hotplug-&gt;kobj, KOBJ_ADD);
+ 	return;</pre><hr><pre>commit 25bf943e4e7b47282bd86ae7d39e039217ebb007
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Mon May 25 00:50:11 2020 -0500
+
+    ASoC: fix incomplete error-handling in img_i2s_in_probe.
+    
+    Function "pm_runtime_get_sync()" is not handled by "pm_runtime_put()"
+    if "PTR_ERR(rst) == -EPROBE_DEFER". Fix this issue by adding
+    "pm_runtime_put()" into this error path.
+    
+    Fixes: f65bb92ca12e ("ASoC: img-i2s-in: Add runtime PM")
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Link: https://lore.kernel.org/r/20200525055011.31925-1-wu000273@umn.edu
+    Signed-off-by: Mark Brown &lt;broonie@kernel.org&gt;
+
+diff --git a/sound/soc/img/img-i2s-in.c b/sound/soc/img/img-i2s-in.c
+index a495d1050d49..e30b66b94bf6 100644
+--- a/sound/soc/img/img-i2s-in.c
++++ b/sound/soc/img/img-i2s-in.c
+@@ -482,6 +482,7 @@ static int img_i2s_in_probe(struct platform_device *pdev)
+ 	if (IS_ERR(rst)) {
+ 		if (PTR_ERR(rst) == -EPROBE_DEFER) {
+ 			ret = -EPROBE_DEFER;
++			pm_runtime_put(&amp;pdev-&gt;dev);
+ 			goto err_suspend;
+ 		}
+ </pre><hr><pre>commit 15c973858903009e995b2037683de29dfe968621
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Mon May 25 03:24:39 2020 -0500
+
+    qlcnic: fix missing release in qlcnic_83xx_interrupt_test.
+    
+    In function qlcnic_83xx_interrupt_test(), function
+    qlcnic_83xx_diag_alloc_res() is not handled by function
+    qlcnic_83xx_diag_free_res() after a call of the function
+    qlcnic_alloc_mbx_args() failed. Fix this issue by adding
+    a jump target "fail_mbx_args", and jump to this new target
+    when qlcnic_alloc_mbx_args() failed.
+    
+    Fixes: b6b4316c8b2f ("qlcnic: Handle qlcnic_alloc_mbx_args() failure")
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/qlogic/qlcnic/qlcnic_83xx_hw.c b/drivers/net/ethernet/qlogic/qlcnic/qlcnic_83xx_hw.c
+index 2a533280b124..29b9c728a65e 100644
+--- a/drivers/net/ethernet/qlogic/qlcnic/qlcnic_83xx_hw.c
++++ b/drivers/net/ethernet/qlogic/qlcnic/qlcnic_83xx_hw.c
+@@ -3651,7 +3651,7 @@ int qlcnic_83xx_interrupt_test(struct net_device *netdev)
+ 	ahw-&gt;diag_cnt = 0;
+ 	ret = qlcnic_alloc_mbx_args(&amp;cmd, adapter, QLCNIC_CMD_INTRPT_TEST);
+ 	if (ret)
+-		goto fail_diag_irq;
++		goto fail_mbx_args;
+ 
+ 	if (adapter-&gt;flags &amp; QLCNIC_MSIX_ENABLED)
+ 		intrpt_id = ahw-&gt;intr_tbl[0].id;
+@@ -3681,6 +3681,8 @@ int qlcnic_83xx_interrupt_test(struct net_device *netdev)
+ 
+ done:
+ 	qlcnic_free_mbx_args(&amp;cmd);
++
++fail_mbx_args:
+ 	qlcnic_83xx_diag_free_res(netdev, drv_sds_rings);
+ 
+ fail_diag_irq:</pre><hr><pre>commit db857e6ae548f0f4f4a0f63fffeeedf3cca21f9d
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Fri May 22 22:04:57 2020 -0500
+
+    RDMA/pvrdma: Fix missing pci disable in pvrdma_pci_probe()
+    
+    In function pvrdma_pci_probe(), pdev was not disabled in one error
+    path. Thus replace the jump target “err_free_device” by
+    "err_disable_pdev".
+    
+    Fixes: 29c8d9eba550 ("IB: Add vmw_pvrdma driver")
+    Link: https://lore.kernel.org/r/20200523030457.16160-1-wu000273@umn.edu
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Signed-off-by: Jason Gunthorpe &lt;jgg@mellanox.com&gt;
+
+diff --git a/drivers/infiniband/hw/vmw_pvrdma/pvrdma_main.c b/drivers/infiniband/hw/vmw_pvrdma/pvrdma_main.c
+index e580ae9cc55a..780fd2dfc07e 100644
+--- a/drivers/infiniband/hw/vmw_pvrdma/pvrdma_main.c
++++ b/drivers/infiniband/hw/vmw_pvrdma/pvrdma_main.c
+@@ -829,7 +829,7 @@ static int pvrdma_pci_probe(struct pci_dev *pdev,
+ 	    !(pci_resource_flags(pdev, 1) &amp; IORESOURCE_MEM)) {
+ 		dev_err(&amp;pdev-&gt;dev, "PCI BAR region not MMIO\n");
+ 		ret = -ENOMEM;
+-		goto err_free_device;
++		goto err_disable_pdev;
+ 	}
+ 
+ 	ret = pci_request_regions(pdev, DRV_NAME);</pre><hr><pre>commit 44734a594196bf1d474212f38fe3a0d37a73278b
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Fri May 22 23:06:25 2020 -0500
+
+    usb: gadget: fix potential double-free in m66592_probe.
+    
+    m66592_free_request() is called under label "err_add_udc"
+    and "clean_up", and m66592-&gt;ep0_req is not set to NULL after
+    first free, leading to a double-free. Fix this issue by
+    setting m66592-&gt;ep0_req to NULL after the first free.
+    
+    Fixes: 0f91349b89f3 ("usb: gadget: convert all users to the new udc infrastructure")
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Signed-off-by: Felipe Balbi &lt;balbi@kernel.org&gt;
+
+diff --git a/drivers/usb/gadget/udc/m66592-udc.c b/drivers/usb/gadget/udc/m66592-udc.c
+index 75d16a8902e6..931e6362a13d 100644
+--- a/drivers/usb/gadget/udc/m66592-udc.c
++++ b/drivers/usb/gadget/udc/m66592-udc.c
+@@ -1667,7 +1667,7 @@ static int m66592_probe(struct platform_device *pdev)
+ 
+ err_add_udc:
+ 	m66592_free_request(&amp;m66592-&gt;ep[0].ep, m66592-&gt;ep0_req);
+-
++	m66592-&gt;ep0_req = NULL;
+ clean_up3:
+ 	if (m66592-&gt;pdata-&gt;on_chip) {
+ 		clk_disable(m66592-&gt;clk);</pre>
+    <div class="pagination">
+        <a href='7_6.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><span>[7]</span><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><a href='7_28.html'>28</a><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_8.html'>Next&gt;&gt;</a>
+    <div>
+</body>

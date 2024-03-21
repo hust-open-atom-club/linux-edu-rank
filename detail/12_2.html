@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Science and Technology of China</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Science and Technology of China</h1>
+    <div class="pagination">
+        <a href='12.html'>&lt;&lt;Prev</a><a href='12.html'>1</a><span>[2]</span><a href='12_3.html'>3</a><a href='12_4.html'>4</a><a href='12_5.html'>5</a><a href='12_6.html'>6</a><a href='12_7.html'>7</a><a href='12_8.html'>8</a><a href='12_9.html'>9</a><a href='12_3.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 115726c5d312b462c9d9931ea42becdfa838a076
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Apr 26 06:43:46 2021 -0700
+
+    habanalabs/gaudi: Fix a potential use after free in gaudi_memset_device_memory
+    
+    Our code analyzer reported a uaf.
+    
+    In gaudi_memset_device_memory, cb is get via hl_cb_kernel_create()
+    with 2 refcount.
+    If hl_cs_allocate_job() failed, the execution runs into release_cb
+    branch. One ref of cb is dropped by hl_cb_put(cb) and could be freed
+    if other thread also drops one ref. Then cb is used by cb-&gt;id later,
+    which is a potential uaf.
+    
+    My patch add a variable 'id' to accept the value of cb-&gt;id before the
+    hl_cb_put(cb) is called, to avoid the potential uaf.
+    
+    Fixes: 423815bf02e25 ("habanalabs/gaudi: remove PCI access to SM block")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Reviewed-by: Oded Gabbay &lt;ogabbay@kernel.org&gt;
+    Signed-off-by: Oded Gabbay &lt;ogabbay@kernel.org&gt;
+
+diff --git a/drivers/misc/habanalabs/gaudi/gaudi.c b/drivers/misc/habanalabs/gaudi/gaudi.c
+index 81155f06c126..9e4a6bb3acd1 100644
+--- a/drivers/misc/habanalabs/gaudi/gaudi.c
++++ b/drivers/misc/habanalabs/gaudi/gaudi.c
+@@ -5579,6 +5579,7 @@ static int gaudi_memset_device_memory(struct hl_device *hdev, u64 addr,
+ 	struct hl_cs_job *job;
+ 	u32 cb_size, ctl, err_cause;
+ 	struct hl_cb *cb;
++	u64 id;
+ 	int rc;
+ 
+ 	cb = hl_cb_kernel_create(hdev, PAGE_SIZE, false);
+@@ -5645,8 +5646,9 @@ static int gaudi_memset_device_memory(struct hl_device *hdev, u64 addr,
+ 	}
+ 
+ release_cb:
++	id = cb-&gt;id;
+ 	hl_cb_put(cb);
+-	hl_cb_destroy(hdev, &amp;hdev-&gt;kernel_cb_mgr, cb-&gt;id &lt;&lt; PAGE_SHIFT);
++	hl_cb_destroy(hdev, &amp;hdev-&gt;kernel_cb_mgr, id &lt;&lt; PAGE_SHIFT);
+ 
+ 	return rc;
+ }</pre><hr><pre>commit 643001b47adc844ae33510c4bb93c236667008a3
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Sun May 2 04:58:18 2021 -0700
+
+    ethernet:enic: Fix a use after free bug in enic_hard_start_xmit
+    
+    In enic_hard_start_xmit, it calls enic_queue_wq_skb(). Inside
+    enic_queue_wq_skb, if some error happens, the skb will be freed
+    by dev_kfree_skb(skb). But the freed skb is still used in
+    skb_tx_timestamp(skb).
+    
+    My patch makes enic_queue_wq_skb() return error and goto spin_unlock()
+    incase of error. The solution is provided by Govind.
+    See https://lkml.org/lkml/2021/4/30/961.
+    
+    Fixes: fb7516d42478e ("enic: add sw timestamp support")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Acked-by: Govindarajulu Varadarajan &lt;gvaradar@cisco.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/cisco/enic/enic_main.c b/drivers/net/ethernet/cisco/enic/enic_main.c
+index f48957a17c3a..d0a8f7106958 100644
+--- a/drivers/net/ethernet/cisco/enic/enic_main.c
++++ b/drivers/net/ethernet/cisco/enic/enic_main.c
+@@ -768,7 +768,7 @@ static inline int enic_queue_wq_skb_encap(struct enic *enic, struct vnic_wq *wq,
+ 	return err;
+ }
+ 
+-static inline void enic_queue_wq_skb(struct enic *enic,
++static inline int enic_queue_wq_skb(struct enic *enic,
+ 	struct vnic_wq *wq, struct sk_buff *skb)
+ {
+ 	unsigned int mss = skb_shinfo(skb)-&gt;gso_size;
+@@ -814,6 +814,7 @@ static inline void enic_queue_wq_skb(struct enic *enic,
+ 		wq-&gt;to_use = buf-&gt;next;
+ 		dev_kfree_skb(skb);
+ 	}
++	return err;
+ }
+ 
+ /* netif_tx_lock held, process context with BHs disabled, or BH */
+@@ -857,7 +858,8 @@ static netdev_tx_t enic_hard_start_xmit(struct sk_buff *skb,
+ 		return NETDEV_TX_BUSY;
+ 	}
+ 
+-	enic_queue_wq_skb(enic, wq, skb);
++	if (enic_queue_wq_skb(enic, wq, skb))
++		goto error;
+ 
+ 	if (vnic_wq_desc_avail(wq) &lt; MAX_SKB_FRAGS + ENIC_DESC_MAX_SPLITS)
+ 		netif_tx_stop_queue(txq);
+@@ -865,6 +867,7 @@ static netdev_tx_t enic_hard_start_xmit(struct sk_buff *skb,
+ 	if (!netdev_xmit_more() || netif_xmit_stopped(txq))
+ 		vnic_wq_doorbell(wq);
+ 
++error:
+ 	spin_unlock(&amp;enic-&gt;wq_lock[txq_map]);
+ 
+ 	return NETDEV_TX_OK;</pre><hr><pre>commit 75258586793efc521e5dd52a5bf6c7a4cf7002be
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Tue Apr 27 09:22:58 2021 -0700
+
+    net:nfc:digital: Fix a double free in digital_tg_recv_dep_req
+    
+    In digital_tg_recv_dep_req, it calls nfc_tm_data_received(..,resp).
+    If nfc_tm_data_received() failed, the callee will free the resp via
+    kfree_skb() and return error. But in the exit branch, the resp
+    will be freed again.
+    
+    My patch sets resp to NULL if nfc_tm_data_received() failed, to
+    avoid the double free.
+    
+    Fixes: 1c7a4c24fbfd9 ("NFC Digital: Add target NFC-DEP support")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/nfc/digital_dep.c b/net/nfc/digital_dep.c
+index 1150731126e2..3982fa084737 100644
+--- a/net/nfc/digital_dep.c
++++ b/net/nfc/digital_dep.c
+@@ -1273,6 +1273,8 @@ static void digital_tg_recv_dep_req(struct nfc_digital_dev *ddev, void *arg,
+ 	}
+ 
+ 	rc = nfc_tm_data_received(ddev-&gt;nfc_dev, resp);
++	if (rc)
++		resp = NULL;
+ 
+ exit:
+ 	kfree_skb(ddev-&gt;chaining_skb);</pre><hr><pre>commit 34b39efa5ae82fc0ad0acc27653c12a56328dbbe
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Apr 26 07:06:14 2021 -0700
+
+    RDMA/bnxt_re: Fix a double free in bnxt_qplib_alloc_res
+    
+    In bnxt_qplib_alloc_res, it calls bnxt_qplib_alloc_dpi_tbl().  Inside
+    bnxt_qplib_alloc_dpi_tbl, dpit-&gt;dbr_bar_reg_iomem is freed via
+    pci_iounmap() in unmap_io error branch. After the callee returns err code,
+    bnxt_qplib_alloc_res calls
+    bnxt_qplib_free_res()-&gt;bnxt_qplib_free_dpi_tbl() in the fail branch. Then
+    dpit-&gt;dbr_bar_reg_iomem is freed in the second time by pci_iounmap().
+    
+    My patch set dpit-&gt;dbr_bar_reg_iomem to NULL after it is freed by
+    pci_iounmap() in the first time, to avoid the double free.
+    
+    Fixes: 1ac5a4047975 ("RDMA/bnxt_re: Add bnxt_re RoCE driver")
+    Link: https://lore.kernel.org/r/20210426140614.6722-1-lyl2019@mail.ustc.edu.cn
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Reviewed-by: Leon Romanovsky &lt;leonro@nvidia.com&gt;
+    Acked-by: Devesh Sharma &lt;devesh.sharma@broadcom.com&gt;
+    Signed-off-by: Jason Gunthorpe &lt;jgg@nvidia.com&gt;
+
+diff --git a/drivers/infiniband/hw/bnxt_re/qplib_res.c b/drivers/infiniband/hw/bnxt_re/qplib_res.c
+index fa7878336100..3ca47004b752 100644
+--- a/drivers/infiniband/hw/bnxt_re/qplib_res.c
++++ b/drivers/infiniband/hw/bnxt_re/qplib_res.c
+@@ -854,6 +854,7 @@ static int bnxt_qplib_alloc_dpi_tbl(struct bnxt_qplib_res     *res,
+ 
+ unmap_io:
+ 	pci_iounmap(res-&gt;pdev, dpit-&gt;dbr_bar_reg_iomem);
++	dpit-&gt;dbr_bar_reg_iomem = NULL;
+ 	return -ENOMEM;
+ }
+ </pre><hr><pre>commit 3093ee182f01689b89e9f8797b321603e5de4f63
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Sun Apr 25 18:16:47 2021 -0700
+
+    RDMA/siw: Fix a use after free in siw_alloc_mr
+    
+    Our code analyzer reported a UAF.
+    
+    In siw_alloc_mr(), it calls siw_mr_add_mem(mr,..). In the implementation of
+    siw_mr_add_mem(), mem is assigned to mr-&gt;mem and then mem is freed via
+    kfree(mem) if xa_alloc_cyclic() failed. Here, mr-&gt;mem still point to a
+    freed object. After, the execution continue up to the err_out branch of
+    siw_alloc_mr, and the freed mr-&gt;mem is used in siw_mr_drop_mem(mr).
+    
+    My patch moves "mr-&gt;mem = mem" behind the if (xa_alloc_cyclic(..)&lt;0) {}
+    section, to avoid the uaf.
+    
+    Fixes: 2251334dcac9 ("rdma/siw: application buffer management")
+    Link: https://lore.kernel.org/r/20210426011647.3561-1-lyl2019@mail.ustc.edu.cn
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Reviewed-by: Bernard Metzler &lt;bmt@zurich.ihm.com&gt;
+    Signed-off-by: Jason Gunthorpe &lt;jgg@nvidia.com&gt;
+
+diff --git a/drivers/infiniband/sw/siw/siw_mem.c b/drivers/infiniband/sw/siw/siw_mem.c
+index 34a910cf0edb..61c17db70d65 100644
+--- a/drivers/infiniband/sw/siw/siw_mem.c
++++ b/drivers/infiniband/sw/siw/siw_mem.c
+@@ -106,8 +106,6 @@ int siw_mr_add_mem(struct siw_mr *mr, struct ib_pd *pd, void *mem_obj,
+ 	mem-&gt;perms = rights &amp; IWARP_ACCESS_MASK;
+ 	kref_init(&amp;mem-&gt;ref);
+ 
+-	mr-&gt;mem = mem;
+-
+ 	get_random_bytes(&amp;next, 4);
+ 	next &amp;= 0x00ffffff;
+ 
+@@ -116,6 +114,8 @@ int siw_mr_add_mem(struct siw_mr *mr, struct ib_pd *pd, void *mem_obj,
+ 		kfree(mem);
+ 		return -ENOMEM;
+ 	}
++
++	mr-&gt;mem = mem;
+ 	/* Set the STag index part */
+ 	mem-&gt;stag = id &lt;&lt; 8;
+ 	mr-&gt;base_mr.lkey = mr-&gt;base_mr.rkey = mem-&gt;stag;</pre><hr><pre>commit ac69496fe65cca0611d5917b7d232730ff605bc7
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Apr 26 05:43:40 2021 -0700
+
+    drm/i915/gt: Fix a double free in gen8_preallocate_top_level_pdp
+    
+    Our code analyzer reported a double free bug.
+    
+    In gen8_preallocate_top_level_pdp, pde and pde-&gt;pt.base are allocated
+    via alloc_pd(vm) with one reference. If pin_pt_dma() failed, pde-&gt;pt.base
+    is freed by i915_gem_object_put() with a reference dropped. Then free_pd
+    calls free_px() defined in intel_ppgtt.c, which calls i915_gem_object_put()
+    to put pde-&gt;pt.base again.
+    
+    As pde-&gt;pt.base is protected by refcount, so the second put will not free
+    pde-&gt;pt.base actually. But, maybe it is better to remove the first put?
+    
+    Fixes: 82adf901138cc ("drm/i915/gt: Shrink i915_page_directory's slab bucket")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Reviewed-by: Matthew Auld &lt;matthew.auld@intel.com&gt;
+    Signed-off-by: Matthew Auld &lt;matthew.auld@intel.com&gt;
+    Link: https://patchwork.freedesktop.org/patch/msgid/20210426124340.4238-1-lyl2019@mail.ustc.edu.cn
+
+diff --git a/drivers/gpu/drm/i915/gt/gen8_ppgtt.c b/drivers/gpu/drm/i915/gt/gen8_ppgtt.c
+index 176c19633412..74bf6fc8461f 100644
+--- a/drivers/gpu/drm/i915/gt/gen8_ppgtt.c
++++ b/drivers/gpu/drm/i915/gt/gen8_ppgtt.c
+@@ -641,7 +641,6 @@ static int gen8_preallocate_top_level_pdp(struct i915_ppgtt *ppgtt)
+ 
+ 		err = pin_pt_dma(vm, pde-&gt;pt.base);
+ 		if (err) {
+-			i915_gem_object_put(pde-&gt;pt.base);
+ 			free_pd(vm, pde);
+ 			return err;
+ 		}</pre><hr><pre>commit 6d72e7c767acbbdd44ebc7d89c6690b405b32b57
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Apr 26 09:06:25 2021 -0700
+
+    net:emac/emac-mac: Fix a use after free in emac_mac_tx_buf_send
+    
+    In emac_mac_tx_buf_send, it calls emac_tx_fill_tpd(..,skb,..).
+    If some error happens in emac_tx_fill_tpd(), the skb will be freed via
+    dev_kfree_skb(skb) in error branch of emac_tx_fill_tpd().
+    But the freed skb is still used via skb-&gt;len by netdev_sent_queue(,skb-&gt;len).
+    
+    As i observed that emac_tx_fill_tpd() haven't modified the value of skb-&gt;len,
+    thus my patch assigns skb-&gt;len to 'len' before the possible free and
+    use 'len' instead of skb-&gt;len later.
+    
+    Fixes: b9b17debc69d2 ("net: emac: emac gigabit ethernet controller driver")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/qualcomm/emac/emac-mac.c b/drivers/net/ethernet/qualcomm/emac/emac-mac.c
+index 117188e3c7de..87b8c032195d 100644
+--- a/drivers/net/ethernet/qualcomm/emac/emac-mac.c
++++ b/drivers/net/ethernet/qualcomm/emac/emac-mac.c
+@@ -1437,6 +1437,7 @@ netdev_tx_t emac_mac_tx_buf_send(struct emac_adapter *adpt,
+ {
+ 	struct emac_tpd tpd;
+ 	u32 prod_idx;
++	int len;
+ 
+ 	memset(&amp;tpd, 0, sizeof(tpd));
+ 
+@@ -1456,9 +1457,10 @@ netdev_tx_t emac_mac_tx_buf_send(struct emac_adapter *adpt,
+ 	if (skb_network_offset(skb) != ETH_HLEN)
+ 		TPD_TYP_SET(&amp;tpd, 1);
+ 
++	len = skb-&gt;len;
+ 	emac_tx_fill_tpd(adpt, tx_q, skb, &amp;tpd);
+ 
+-	netdev_sent_queue(adpt-&gt;netdev, skb-&gt;len);
++	netdev_sent_queue(adpt-&gt;netdev, len);
+ 
+ 	/* Make sure the are enough free descriptors to hold one
+ 	 * maximum-sized SKB.  We need one desc for each fragment,</pre><hr><pre>commit 4fb44dd2c1dda18606348acdfdb97e8759dde9df
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Apr 26 07:55:41 2021 -0700
+
+    ALSA: sb: Fix two use after free in snd_sb_qsound_build
+    
+    In snd_sb_qsound_build, snd_ctl_add(..,p-&gt;qsound_switch...) and
+    snd_ctl_add(..,p-&gt;qsound_space..) are called. But the second
+    arguments of snd_ctl_add() could be freed via snd_ctl_add_replace()
+    -&gt;snd_ctl_free_one(). After the error code is returned,
+    snd_sb_qsound_destroy(p) is called in __error branch.
+    
+    But in snd_sb_qsound_destroy(), the freed p-&gt;qsound_switch and
+    p-&gt;qsound_space are still used by snd_ctl_remove().
+    
+    My patch set p-&gt;qsound_switch and p-&gt;qsound_space to NULL if
+    snd_ctl_add() failed to avoid the uaf bugs. But these codes need
+    to further be improved with the code style.
+    
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Link: https://lore.kernel.org/r/20210426145541.8070-1-lyl2019@mail.ustc.edu.cn
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/isa/sb/sb16_csp.c b/sound/isa/sb/sb16_csp.c
+index 8635a2b6b36b..4789345a8fdd 100644
+--- a/sound/isa/sb/sb16_csp.c
++++ b/sound/isa/sb/sb16_csp.c
+@@ -1045,10 +1045,14 @@ static int snd_sb_qsound_build(struct snd_sb_csp * p)
+ 
+ 	spin_lock_init(&amp;p-&gt;q_lock);
+ 
+-	if ((err = snd_ctl_add(card, p-&gt;qsound_switch = snd_ctl_new1(&amp;snd_sb_qsound_switch, p))) &lt; 0)
++	if ((err = snd_ctl_add(card, p-&gt;qsound_switch = snd_ctl_new1(&amp;snd_sb_qsound_switch, p))) &lt; 0) {
++		p-&gt;qsound_switch = NULL;
+ 		goto __error;
+-	if ((err = snd_ctl_add(card, p-&gt;qsound_space = snd_ctl_new1(&amp;snd_sb_qsound_space, p))) &lt; 0)
++	}
++	if ((err = snd_ctl_add(card, p-&gt;qsound_space = snd_ctl_new1(&amp;snd_sb_qsound_space, p))) &lt; 0) {
++		p-&gt;qsound_space = NULL;
+ 		goto __error;
++	}
+ 
+ 	return 0;
+ </pre><hr><pre>commit 72ce11ddfa4e9e1879103581a60b7e34547eaa0a
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Apr 26 07:32:29 2021 -0700
+
+    drivers/block/null_blk/main: Fix a double free in null_init.
+    
+    In null_init, null_add_dev(dev) is called.
+    In null_add_dev, it calls null_free_zoned_dev(dev) to free dev-&gt;zones
+    via kvfree(dev-&gt;zones) in out_cleanup_zone branch and returns err.
+    Then null_init accept the err code and then calls null_free_dev(dev).
+    
+    But in null_free_dev(dev), dev-&gt;zones is freed again by
+    null_free_zoned_dev().
+    
+    My patch set dev-&gt;zones to NULL in null_free_zoned_dev() after
+    kvfree(dev-&gt;zones) is called, to avoid the double free.
+    
+    Fixes: 2984c8684f962 ("nullb: factor disk parameters")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20210426143229.7374-1-lyl2019@mail.ustc.edu.cn
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/drivers/block/null_blk/zoned.c b/drivers/block/null_blk/zoned.c
+index bfcab1c782b5..dae54dd1aeac 100644
+--- a/drivers/block/null_blk/zoned.c
++++ b/drivers/block/null_blk/zoned.c
+@@ -180,6 +180,7 @@ int null_register_zoned_dev(struct nullb *nullb)
+ void null_free_zoned_dev(struct nullb_device *dev)
+ {
+ 	kvfree(dev-&gt;zones);
++	dev-&gt;zones = NULL;
+ }
+ 
+ int null_report_zones(struct gendisk *disk, sector_t sector,</pre><hr><pre>commit 1c98f574403dbcf2eb832d5535a10d967333ef2d
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Apr 26 06:11:29 2021 -0700
+
+    ALSA: emu8000: Fix a use after free in snd_emu8000_create_mixer
+    
+    Our code analyzer reported a uaf.
+    
+    In snd_emu8000_create_mixer, the callee snd_ctl_add(..,emu-&gt;controls[i])
+    calls snd_ctl_add_replace(.., kcontrol,..). Inside snd_ctl_add_replace(),
+    if error happens, kcontrol will be freed by snd_ctl_free_one(kcontrol).
+    Then emu-&gt;controls[i] points to a freed memory, and the execution comes
+    to __error branch of snd_emu8000_create_mixer. The freed emu-&gt;controls[i]
+    is used in snd_ctl_remove(card, emu-&gt;controls[i]).
+    
+    My patch set emu-&gt;controls[i] to NULL if snd_ctl_add() failed to avoid
+    the uaf.
+    
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Link: https://lore.kernel.org/r/20210426131129.4796-1-lyl2019@mail.ustc.edu.cn
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/isa/sb/emu8000.c b/sound/isa/sb/emu8000.c
+index 0aa545ac6e60..1c90421a88dc 100644
+--- a/sound/isa/sb/emu8000.c
++++ b/sound/isa/sb/emu8000.c
+@@ -1029,8 +1029,10 @@ snd_emu8000_create_mixer(struct snd_card *card, struct snd_emu8000 *emu)
+ 
+ 	memset(emu-&gt;controls, 0, sizeof(emu-&gt;controls));
+ 	for (i = 0; i &lt; EMU8000_NUM_CONTROLS; i++) {
+-		if ((err = snd_ctl_add(card, emu-&gt;controls[i] = snd_ctl_new1(mixer_defs[i], emu))) &lt; 0)
++		if ((err = snd_ctl_add(card, emu-&gt;controls[i] = snd_ctl_new1(mixer_defs[i], emu))) &lt; 0) {
++			emu-&gt;controls[i] = NULL;
+ 			goto __error;
++		}
+ 	}
+ 	return 0;
+ </pre>
+    <div class="pagination">
+        <a href='12.html'>&lt;&lt;Prev</a><a href='12.html'>1</a><span>[2]</span><a href='12_3.html'>3</a><a href='12_4.html'>4</a><a href='12_5.html'>5</a><a href='12_6.html'>6</a><a href='12_7.html'>7</a><a href='12_8.html'>8</a><a href='12_9.html'>9</a><a href='12_3.html'>Next&gt;&gt;</a>
+    <div>
+</body>

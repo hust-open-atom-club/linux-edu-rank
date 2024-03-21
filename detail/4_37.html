@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_36.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><span>[37]</span><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_38.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit b533184fc353d4a2d07929b4ac424a6f1bf5a3b9
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri Oct 26 18:05:40 2007 -0400
+
+    locks: clarify posix_locks_deadlock
+    
+    For such a short function (with such a long comment),
+    posix_locks_deadlock() seems to cause a lot of confusion.  Attempt to
+    make it a bit clearer:
+    
+            - Remove the initial posix_same_owner() check, which can never
+              pass (since this is only called in the case that block_fl and
+              caller_fl conflict)
+            - Use an explicit loop (and a helper function) instead of a goto.
+            - Rewrite the comment, attempting a clearer explanation, and
+              removing some uninteresting historical detail.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/locks.c b/fs/locks.c
+index 8b8388eca05e..c3eecb895acf 100644
+--- a/fs/locks.c
++++ b/fs/locks.c
+@@ -683,45 +683,55 @@ posix_test_lock(struct file *filp, struct file_lock *fl)
+ 
+ EXPORT_SYMBOL(posix_test_lock);
+ 
+-/* This function tests for deadlock condition before putting a process to
+- * sleep. The detection scheme is no longer recursive. Recursive was neat,
+- * but dangerous - we risked stack corruption if the lock data was bad, or
+- * if the recursion was too deep for any other reason.
+- *
+- * We rely on the fact that a task can only be on one lock's wait queue
+- * at a time. When we find blocked_task on a wait queue we can re-search
+- * with blocked_task equal to that queue's owner, until either blocked_task
+- * isn't found, or blocked_task is found on a queue owned by my_task.
+- *
+- * Note: the above assumption may not be true when handling lock requests
+- * from a broken NFS client. But broken NFS clients have a lot more to
+- * worry about than proper deadlock detection anyway... --okir
+- *
+- * However, the failure of this assumption (also possible in the case of
+- * multiple tasks sharing the same open file table) also means there's no
+- * guarantee that the loop below will terminate.  As a hack, we give up
+- * after a few iterations.
++/*
++ * Deadlock detection:
++ *
++ * We attempt to detect deadlocks that are due purely to posix file
++ * locks.
++ *
++ * We assume that a task can be waiting for at most one lock at a time.
++ * So for any acquired lock, the process holding that lock may be
++ * waiting on at most one other lock.  That lock in turns may be held by
++ * someone waiting for at most one other lock.  Given a requested lock
++ * caller_fl which is about to wait for a conflicting lock block_fl, we
++ * follow this chain of waiters to ensure we are not about to create a
++ * cycle.
++ *
++ * Since we do this before we ever put a process to sleep on a lock, we
++ * are ensured that there is never a cycle; that is what guarantees that
++ * the while() loop in posix_locks_deadlock() eventually completes.
++ *
++ * Note: the above assumption may not be true when handling lock
++ * requests from a broken NFS client. It may also fail in the presence
++ * of tasks (such as posix threads) sharing the same open file table.
++ *
++ * To handle those cases, we just bail out after a few iterations.
+  */
+ 
+ #define MAX_DEADLK_ITERATIONS 10
+ 
++/* Find a lock that the owner of the given block_fl is blocking on. */
++static struct file_lock *what_owner_is_waiting_for(struct file_lock *block_fl)
++{
++	struct file_lock *fl;
++
++	list_for_each_entry(fl, &amp;blocked_list, fl_link) {
++		if (posix_same_owner(fl, block_fl))
++			return fl-&gt;fl_next;
++	}
++	return NULL;
++}
++
+ static int posix_locks_deadlock(struct file_lock *caller_fl,
+ 				struct file_lock *block_fl)
+ {
+-	struct file_lock *fl;
+ 	int i = 0;
+ 
+-next_task:
+-	if (posix_same_owner(caller_fl, block_fl))
+-		return 1;
+-	list_for_each_entry(fl, &amp;blocked_list, fl_link) {
+-		if (posix_same_owner(fl, block_fl)) {
+-			if (i++ &gt; MAX_DEADLK_ITERATIONS)
+-				return 0;
+-			fl = fl-&gt;fl_next;
+-			block_fl = fl;
+-			goto next_task;
+-		}
++	while ((block_fl = what_owner_is_waiting_for(block_fl))) {
++		if (i++ &gt; MAX_DEADLK_ITERATIONS)
++			return 0;
++		if (posix_same_owner(caller_fl, block_fl))
++			return 1;
+ 	}
+ 	return 0;
+ }</pre><hr><pre>commit 87d26ea7771ad637035e6bd5a2700d81ee9162da
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jan 22 17:40:42 2008 -0500
+
+    nfsd: more careful input validation in nfsctl write methods
+    
+    Neil Brown points out that we're checking buf[size-1] in a couple places
+    without first checking whether size is zero.
+    
+    Actually, given the implementation of simple_transaction_get(), buf[-1]
+    is zero, so in both of these cases the subsequent check of the value of
+    buf[size-1] will catch this case.
+    
+    But it seems fragile to depend on that, so add explicit checks for this
+    case.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Acked-by: NeilBrown &lt;neilb@suse.de&gt;
+
+diff --git a/fs/nfsd/nfsctl.c b/fs/nfsd/nfsctl.c
+index bc22e0b0343a..8516137cdbb0 100644
+--- a/fs/nfsd/nfsctl.c
++++ b/fs/nfsd/nfsctl.c
+@@ -304,6 +304,9 @@ static ssize_t write_filehandle(struct file *file, char *buf, size_t size)
+ 	struct auth_domain *dom;
+ 	struct knfsd_fh fh;
+ 
++	if (size == 0)
++		return -EINVAL;
++
+ 	if (buf[size-1] != '\n')
+ 		return -EINVAL;
+ 	buf[size-1] = 0;
+@@ -663,7 +666,7 @@ static ssize_t write_recoverydir(struct file *file, char *buf, size_t size)
+ 	char *recdir;
+ 	int len, status;
+ 
+-	if (size &gt; PATH_MAX || buf[size-1] != '\n')
++	if (size == 0 || size &gt; PATH_MAX || buf[size-1] != '\n')
+ 		return -EINVAL;
+ 	buf[size-1] = 0;
+ </pre><hr><pre>commit 50431d94e732ba71b66a83c5435890728e313095
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri Aug 31 17:09:33 2007 -0400
+
+    lockd: minor log message fix
+    
+    Wendy Cheng noticed that function name doesn't agree here.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Wendy Cheng &lt;wcheng@redhat.com&gt;
+
+diff --git a/fs/lockd/svcsubs.c b/fs/lockd/svcsubs.c
+index 84ebba33b98d..dbbefbcd6712 100644
+--- a/fs/lockd/svcsubs.c
++++ b/fs/lockd/svcsubs.c
+@@ -87,7 +87,7 @@ nlm_lookup_file(struct svc_rqst *rqstp, struct nlm_file **result,
+ 	unsigned int	hash;
+ 	__be32		nfserr;
+ 
+-	nlm_debug_print_fh("nlm_file_lookup", f);
++	nlm_debug_print_fh("nlm_lookup_file", f);
+ 
+ 	hash = file_hash(f);
+ </pre><hr><pre>commit f7b8066f9ff68016489ff6f9fb358aa59bd14e1b
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Jan 21 12:20:45 2008 -0500
+
+    knfsd: don't bother mapping putrootfh enoent to eperm
+    
+    Neither EPERM and ENOENT map to valid errors for PUTROOTFH according to
+    rfc 3530, and, if anything, ENOENT is likely to be slightly more
+    informative; so don't bother mapping ENOENT to EPERM.  (Probably this
+    was originally done because one likely cause was that there is an fsid=0
+    export but that it isn't permitted to this particular client.  Now that
+    we allow WRONGSEC returns, this is somewhat less likely.)
+    
+    In the long term we should work to make this situation less likely,
+    perhaps by turning off nfsv4 service entirely in the absence of the
+    pseudofs root, or constructing a pseudofilesystem root ourselves in the
+    kernel as necessary.
+    
+    Thanks to Benny Halevy &lt;bhalevy@panasas.com&gt; for pointing out this
+    problem.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Benny Halevy &lt;bhalevy@panasas.com&gt;
+
+diff --git a/fs/nfsd/export.c b/fs/nfsd/export.c
+index cbbc594ef592..79b4bf812960 100644
+--- a/fs/nfsd/export.c
++++ b/fs/nfsd/export.c
+@@ -1357,8 +1357,6 @@ exp_pseudoroot(struct svc_rqst *rqstp, struct svc_fh *fhp)
+ 	mk_fsid(FSID_NUM, fsidv, 0, 0, 0, NULL);
+ 
+ 	exp = rqst_exp_find(rqstp, FSID_NUM, fsidv);
+-	if (PTR_ERR(exp) == -ENOENT)
+-		return nfserr_perm;
+ 	if (IS_ERR(exp))
+ 		return nfserrno(PTR_ERR(exp));
+ 	rv = fh_compose(fhp, exp, exp-&gt;ex_dentry, NULL);</pre><hr><pre>commit cb5c7d668e1af269a9409721268f027b86abf29c
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Jan 14 16:05:07 2008 -0500
+
+    svcrpc: ensure gss DESTROY tokens free contexts from cache
+    
+    If we don't do this then we'll end up with a pointless unusable context
+    sitting in the cache until the time the original context would have
+    expired.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
+index e8ed848ecd67..481f984e9a22 100644
+--- a/net/sunrpc/auth_gss/svcauth_gss.c
++++ b/net/sunrpc/auth_gss/svcauth_gss.c
+@@ -1126,6 +1126,7 @@ svcauth_gss_accept(struct svc_rqst *rqstp, __be32 *authp)
+ 	case RPC_GSS_PROC_DESTROY:
+ 		if (gss_write_verf(rqstp, rsci-&gt;mechctx, gc-&gt;gc_seq))
+ 			goto auth_err;
++		rsci-&gt;h.expiry_time = get_seconds();
+ 		set_bit(CACHE_NEGATIVE, &amp;rsci-&gt;h.flags);
+ 		if (resv-&gt;iov_len + 4 &gt; PAGE_SIZE)
+ 			goto drop;</pre><hr><pre>commit 8838dc43d6544570e8969a74ddc4a0d21abffde6
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Jan 14 13:12:19 2008 -0500
+
+    nfsd4: clean up access_valid, deny_valid checks.
+    
+    Document these checks a little better and inline, as suggested by Neil
+    Brown (note both functions have two callers).  Remove an obviously bogus
+    check while we're there (checking whether unsigned value is negative).
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Neil Brown &lt;neilb@suse.de&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index c4b10a1e6c30..f6744bc03dae 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -1157,14 +1157,19 @@ find_file(struct inode *ino)
+ 	return NULL;
+ }
+ 
+-static int access_valid(u32 x)
++static inline int access_valid(u32 x)
+ {
+-	return (x &gt; 0 &amp;&amp; x &lt; 4);
++	if (x &lt; NFS4_SHARE_ACCESS_READ)
++		return 0;
++	if (x &gt; NFS4_SHARE_ACCESS_BOTH)
++		return 0;
++	return 1;
+ }
+ 
+-static int deny_valid(u32 x)
++static inline int deny_valid(u32 x)
+ {
+-	return (x &gt;= 0 &amp;&amp; x &lt; 5);
++	/* Note: unlike access bits, deny bits may be zero. */
++	return x &lt;= NFS4_SHARE_DENY_BOTH;
+ }
+ 
+ static void</pre><hr><pre>commit b39c18fce003bb2d5a51a4734d8fdd2c81fa1a78
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Jan 6 21:32:37 2008 -0500
+
+    sunrpc: gss: simplify rsi_parse logic
+    
+    Make an obvious simplification that removes a few lines and some
+    unnecessary indentation; no change in behavior.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
+index 688cc31040f3..e8ed848ecd67 100644
+--- a/net/sunrpc/auth_gss/svcauth_gss.c
++++ b/net/sunrpc/auth_gss/svcauth_gss.c
+@@ -224,38 +224,34 @@ static int rsi_parse(struct cache_detail *cd,
+ 
+ 	/* major/minor */
+ 	len = qword_get(&amp;mesg, buf, mlen);
+-	if (len &lt; 0)
++	if (len &lt;= 0)
+ 		goto out;
+-	if (len == 0) {
++	rsii.major_status = simple_strtoul(buf, &amp;ep, 10);
++	if (*ep)
++		goto out;
++	len = qword_get(&amp;mesg, buf, mlen);
++	if (len &lt;= 0)
++		goto out;
++	rsii.minor_status = simple_strtoul(buf, &amp;ep, 10);
++	if (*ep)
+ 		goto out;
+-	} else {
+-		rsii.major_status = simple_strtoul(buf, &amp;ep, 10);
+-		if (*ep)
+-			goto out;
+-		len = qword_get(&amp;mesg, buf, mlen);
+-		if (len &lt;= 0)
+-			goto out;
+-		rsii.minor_status = simple_strtoul(buf, &amp;ep, 10);
+-		if (*ep)
+-			goto out;
+ 
+-		/* out_handle */
+-		len = qword_get(&amp;mesg, buf, mlen);
+-		if (len &lt; 0)
+-			goto out;
+-		status = -ENOMEM;
+-		if (dup_to_netobj(&amp;rsii.out_handle, buf, len))
+-			goto out;
++	/* out_handle */
++	len = qword_get(&amp;mesg, buf, mlen);
++	if (len &lt; 0)
++		goto out;
++	status = -ENOMEM;
++	if (dup_to_netobj(&amp;rsii.out_handle, buf, len))
++		goto out;
+ 
+-		/* out_token */
+-		len = qword_get(&amp;mesg, buf, mlen);
+-		status = -EINVAL;
+-		if (len &lt; 0)
+-			goto out;
+-		status = -ENOMEM;
+-		if (dup_to_netobj(&amp;rsii.out_token, buf, len))
+-			goto out;
+-	}
++	/* out_token */
++	len = qword_get(&amp;mesg, buf, mlen);
++	status = -EINVAL;
++	if (len &lt; 0)
++		goto out;
++	status = -ENOMEM;
++	if (dup_to_netobj(&amp;rsii.out_token, buf, len))
++		goto out;
+ 	rsii.h.expiry_time = expiry;
+ 	rsip = rsi_update(&amp;rsii, rsip);
+ 	status = 0;</pre><hr><pre>commit 980e5a40a44400edc3f75b7931b8e75fcc3c21a3
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Dec 12 18:21:17 2007 -0500
+
+    nfsd: fix rsi_cache reference count leak
+    
+    For some reason we haven't been put()'ing the reference count here.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
+index aa790bb4f7a1..688cc31040f3 100644
+--- a/net/sunrpc/auth_gss/svcauth_gss.c
++++ b/net/sunrpc/auth_gss/svcauth_gss.c
+@@ -975,6 +975,7 @@ static int svcauth_gss_handle_init(struct svc_rqst *rqstp,
+ 	struct kvec *resv = &amp;rqstp-&gt;rq_res.head[0];
+ 	struct xdr_netobj tmpobj;
+ 	struct rsi *rsip, rsikey;
++	int ret;
+ 
+ 	/* Read the verifier; should be NULL: */
+ 	*authp = rpc_autherr_badverf;
+@@ -1014,23 +1015,27 @@ static int svcauth_gss_handle_init(struct svc_rqst *rqstp,
+ 		/* No upcall result: */
+ 		return SVC_DROP;
+ 	case 0:
++		ret = SVC_DROP;
+ 		/* Got an answer to the upcall; use it: */
+ 		if (gss_write_init_verf(rqstp, rsip))
+-			return SVC_DROP;
++			goto out;
+ 		if (resv-&gt;iov_len + 4 &gt; PAGE_SIZE)
+-			return SVC_DROP;
++			goto out;
+ 		svc_putnl(resv, RPC_SUCCESS);
+ 		if (svc_safe_putnetobj(resv, &amp;rsip-&gt;out_handle))
+-			return SVC_DROP;
++			goto out;
+ 		if (resv-&gt;iov_len + 3 * 4 &gt; PAGE_SIZE)
+-			return SVC_DROP;
++			goto out;
+ 		svc_putnl(resv, rsip-&gt;major_status);
+ 		svc_putnl(resv, rsip-&gt;minor_status);
+ 		svc_putnl(resv, GSS_SEQ_WIN);
+ 		if (svc_safe_putnetobj(resv, &amp;rsip-&gt;out_token))
+-			return SVC_DROP;
++			goto out;
+ 	}
+-	return SVC_COMPLETE;
++	ret = SVC_COMPLETE;
++out:
++	cache_put(&amp;rsip-&gt;h, &amp;rsi_cache);
++	return ret;
+ }
+ 
+ /*</pre><hr><pre>commit 5c002b3bb294a637312cab7ad92a0deafa05a758
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri Nov 30 16:55:23 2007 -0500
+
+    nfsd: allow root to set uid and gid on create
+    
+    The server silently ignores attempts to set the uid and gid on create.
+    Based on the comment, this appears to have been done to prevent some
+    overly-clever IRIX client from causing itself problems.
+    
+    Perhaps we should remove that hack completely.  For now, at least, it
+    makes sense to allow root (when no_root_squash is set) to set uid and
+    gid.
+    
+    While we're there, since nfsd_create and nfsd_create_v3 share the same
+    logic, pull that out into a separate function.  And spell out the
+    individual modifications of ia_valid instead of doing them both at once
+    inside a conditional.
+    
+    Thanks to Roger Willcocks &lt;roger@filmlight.ltd.uk&gt; for the bug report
+    and original patch on which this is based.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 755ba43c13e1..cc75e4fcd02b 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -1151,6 +1151,26 @@ nfsd_commit(struct svc_rqst *rqstp, struct svc_fh *fhp,
+ }
+ #endif /* CONFIG_NFSD_V3 */
+ 
++__be32
++nfsd_create_setattr(struct svc_rqst *rqstp, struct svc_fh *resfhp,
++			struct iattr *iap)
++{
++	/*
++	 * Mode has already been set earlier in create:
++	 */
++	iap-&gt;ia_valid &amp;= ~ATTR_MODE;
++	/*
++	 * Setting uid/gid works only for root.  Irix appears to
++	 * send along the gid on create when it tries to implement
++	 * setgid directories via NFS:
++	 */
++	if (current-&gt;fsuid != 0)
++		iap-&gt;ia_valid &amp;= ~(ATTR_UID|ATTR_GID);
++	if (iap-&gt;ia_valid)
++		return nfsd_setattr(rqstp, resfhp, iap, 0, (time_t)0);
++	return 0;
++}
++
+ /*
+  * Create a file (regular, directory, device, fifo); UNIX sockets 
+  * not yet implemented.
+@@ -1167,6 +1187,7 @@ nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
+ 	struct dentry	*dentry, *dchild = NULL;
+ 	struct inode	*dirp;
+ 	__be32		err;
++	__be32		err2;
+ 	int		host_err;
+ 
+ 	err = nfserr_perm;
+@@ -1257,16 +1278,9 @@ nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
+ 	}
+ 
+ 
+-	/* Set file attributes. Mode has already been set and
+-	 * setting uid/gid works only for root. Irix appears to
+-	 * send along the gid when it tries to implement setgid
+-	 * directories via NFS.
+-	 */
+-	if ((iap-&gt;ia_valid &amp;= ~(ATTR_UID|ATTR_GID|ATTR_MODE)) != 0) {
+-		__be32 err2 = nfsd_setattr(rqstp, resfhp, iap, 0, (time_t)0);
+-		if (err2)
+-			err = err2;
+-	}
++	err2 = nfsd_create_setattr(rqstp, resfhp, iap);
++	if (err2)
++		err = err2;
+ 	/*
+ 	 * Update the file handle to get the new inode info.
+ 	 */
+@@ -1295,6 +1309,7 @@ nfsd_create_v3(struct svc_rqst *rqstp, struct svc_fh *fhp,
+ 	struct dentry	*dentry, *dchild = NULL;
+ 	struct inode	*dirp;
+ 	__be32		err;
++	__be32		err2;
+ 	int		host_err;
+ 	__u32		v_mtime=0, v_atime=0;
+ 
+@@ -1399,16 +1414,10 @@ nfsd_create_v3(struct svc_rqst *rqstp, struct svc_fh *fhp,
+ 		iap-&gt;ia_atime.tv_nsec = 0;
+ 	}
+ 
+-	/* Set file attributes.
+-	 * Irix appears to send along the gid when it tries to
+-	 * implement setgid directories via NFS. Clear out all that cruft.
+-	 */
+  set_attr:
+-	if ((iap-&gt;ia_valid &amp;= ~(ATTR_UID|ATTR_GID|ATTR_MODE)) != 0) {
+- 		__be32 err2 = nfsd_setattr(rqstp, resfhp, iap, 0, (time_t)0);
+-		if (err2)
+-			err = err2;
+-	}
++	err2 = nfsd_create_setattr(rqstp, resfhp, iap);
++	if (err2)
++		err = err2;
+ 
+ 	/*
+ 	 * Update the filehandle to get the new inode info.</pre><hr><pre>commit 39325bd03fc16d903f1e0f51104436d939899c8c
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Nov 26 17:06:39 2007 -0500
+
+    nfsd4: fix bad seqid on lock request incompatible with open mode
+    
+    The failure to return a stateowner from nfs4_preprocess_seqid_op() means
+    in the case where a lock request is of a type incompatible with an open
+    (due to, e.g., an application attempting a write lock on a file open for
+    read), means that fs/nfsd/nfs4xdr.c:ENCODE_SEQID_OP_TAIL() never bumps
+    the seqid as it should.  The client, attempting to close the file
+    afterwards, then gets an (incorrect) bad sequence id error.  Worse, this
+    prevents the open file from ever being closed, so we leak state.
+    
+    Thanks to Benny Halevy and Trond Myklebust for analysis, and to Steven
+    Wilton for the report and extensive data-gathering.
+    
+    Cc: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Cc: Steven Wilton &lt;steven.wilton@team.eftel.com.au&gt;
+    Cc: Trond Myklebust &lt;trond.myklebust@fys.uio.no&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 11aa4b6b4fa2..c4b10a1e6c30 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -2093,8 +2093,10 @@ nfs4_preprocess_seqid_op(struct svc_fh *current_fh, u32 seqid, stateid_t *statei
+ 		goto check_replay;
+ 	}
+ 
++	*stpp = stp;
++	*sopp = sop = stp-&gt;st_stateowner;
++
+ 	if (lock) {
+-		struct nfs4_stateowner *sop = stp-&gt;st_stateowner;
+ 		clientid_t *lockclid = &amp;lock-&gt;v.new.clientid;
+ 		struct nfs4_client *clp = sop-&gt;so_client;
+ 		int lkflg = 0;
+@@ -2124,9 +2126,6 @@ nfs4_preprocess_seqid_op(struct svc_fh *current_fh, u32 seqid, stateid_t *statei
+ 		return nfserr_bad_stateid;
+ 	}
+ 
+-	*stpp = stp;
+-	*sopp = sop = stp-&gt;st_stateowner;
+-
+ 	/*
+ 	*  We now validate the seqid and stateid generation numbers.
+ 	*  For the moment, we ignore the possibility of </pre>
+    <div class="pagination">
+        <a href='4_36.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><span>[37]</span><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_38.html'>Next&gt;&gt;</a>
+    <div>
+</body>
