@@ -1,0 +1,1406 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6_13.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><span>[14]</span><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_15.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit afe7116f6d3b888778ed6d95e3cf724767b9aedf
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Mon Aug 8 11:42:24 2022 +0800
+
+    ieee802154/adf7242: defer destroy_workqueue call
+    
+    There is a possible race condition (use-after-free) like below
+    
+      (FREE)                     |  (USE)
+      adf7242_remove             |  adf7242_channel
+       cancel_delayed_work_sync  |
+        destroy_workqueue (1)    |   adf7242_cmd_rx
+                                 |    mod_delayed_work (2)
+                                 |
+    
+    The root cause for this race is that the upper layer (ieee802154) is
+    unaware of this detaching event and the function adf7242_channel can
+    be called without any checks.
+    
+    To fix this, we can add a flag write at the beginning of adf7242_remove
+    and add flag check in adf7242_channel. Or we can just defer the
+    destructive operation like other commit 3e0588c291d6 ("hamradio: defer
+    ax25 kfree after unregister_netdev") which let the
+    ieee802154_unregister_hw() to handle the synchronization. This patch
+    takes the second option.
+    
+    Fixes: 58e9683d1475 ("net: ieee802154: adf7242: Fix OCL calibration
+    runs")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Acked-by: Michael Hennerich &lt;michael.hennerich@analog.com&gt;
+    Link: https://lore.kernel.org/r/20220808034224.12642-1-linma@zju.edu.cn
+    Signed-off-by: Stefan Schmidt &lt;stefan@datenfreihafen.org&gt;
+
+diff --git a/drivers/net/ieee802154/adf7242.c b/drivers/net/ieee802154/adf7242.c
+index 6afdf1622944..5cf218c674a5 100644
+--- a/drivers/net/ieee802154/adf7242.c
++++ b/drivers/net/ieee802154/adf7242.c
+@@ -1310,10 +1310,11 @@ static void adf7242_remove(struct spi_device *spi)
+ 
+ 	debugfs_remove_recursive(lp-&gt;debugfs_root);
+ 
++	ieee802154_unregister_hw(lp-&gt;hw);
++
+ 	cancel_delayed_work_sync(&amp;lp-&gt;work);
+ 	destroy_workqueue(lp-&gt;wqueue);
+ 
+-	ieee802154_unregister_hw(lp-&gt;hw);
+ 	mutex_destroy(&amp;lp-&gt;bmux);
+ 	ieee802154_free_hw(lp-&gt;hw);
+ }</pre><hr><pre>commit f1e941dbf80a9b8bab0bffbc4cbe41cc7f4c6fb6
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Thu Aug 18 17:06:21 2022 +0800
+
+    nfc: pn533: Fix use-after-free bugs caused by pn532_cmd_timeout
+    
+    When the pn532 uart device is detaching, the pn532_uart_remove()
+    is called. But there are no functions in pn532_uart_remove() that
+    could delete the cmd_timeout timer, which will cause use-after-free
+    bugs. The process is shown below:
+    
+        (thread 1)                  |        (thread 2)
+                                    |  pn532_uart_send_frame
+    pn532_uart_remove               |    mod_timer(&amp;pn532-&gt;cmd_timeout,...)
+      ...                           |    (wait a time)
+      kfree(pn532) //FREE           |    pn532_cmd_timeout
+                                    |      pn532_uart_send_frame
+                                    |        pn532-&gt;... //USE
+    
+    This patch adds del_timer_sync() in pn532_uart_remove() in order to
+    prevent the use-after-free bugs. What's more, the pn53x_unregister_nfc()
+    is well synchronized, it sets nfc_dev-&gt;shutting_down to true and there
+    are no syscalls could restart the cmd_timeout timer.
+    
+    Fixes: c656aa4c27b1 ("nfc: pn533: add UART phy driver")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/nfc/pn533/uart.c b/drivers/nfc/pn533/uart.c
+index 2caf997f9bc9..07596bf5f7d6 100644
+--- a/drivers/nfc/pn533/uart.c
++++ b/drivers/nfc/pn533/uart.c
+@@ -310,6 +310,7 @@ static void pn532_uart_remove(struct serdev_device *serdev)
+ 	pn53x_unregister_nfc(pn532-&gt;priv);
+ 	serdev_device_close(serdev);
+ 	pn53x_common_clean(pn532-&gt;priv);
++	del_timer_sync(&amp;pn532-&gt;cmd_timeout);
+ 	kfree_skb(pn532-&gt;recv_skb);
+ 	kfree(pn532);
+ }</pre><hr><pre>commit 6faee3d4ee8be0f0367d0c3d826afb3571b7a5e0
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Wed Aug 17 11:49:21 2022 -0700
+
+    igb: Add lock to avoid data race
+    
+    The commit c23d92b80e0b ("igb: Teardown SR-IOV before
+    unregister_netdev()") places the unregister_netdev() call after the
+    igb_disable_sriov() call to avoid functionality issue.
+    
+    However, it introduces several race conditions when detaching a device.
+    For example, when .remove() is called, the below interleaving leads to
+    use-after-free.
+    
+     (FREE from device detaching)      |   (USE from netdev core)
+    igb_remove                         |  igb_ndo_get_vf_config
+     igb_disable_sriov                 |  vf &gt;= adapter-&gt;vfs_allocated_count?
+      kfree(adapter-&gt;vf_data)          |
+      adapter-&gt;vfs_allocated_count = 0 |
+                                       |    memcpy(... adapter-&gt;vf_data[vf]
+    
+    Moreover, the igb_disable_sriov() also suffers from data race with the
+    requests from VF driver.
+    
+     (FREE from device detaching)      |   (USE from requests)
+    igb_remove                         |  igb_msix_other
+     igb_disable_sriov                 |   igb_msg_task
+      kfree(adapter-&gt;vf_data)          |    vf &lt; adapter-&gt;vfs_allocated_count
+      adapter-&gt;vfs_allocated_count = 0 |
+    
+    To this end, this commit first eliminates the data races from netdev
+    core by using rtnl_lock (similar to commit 719479230893 ("dpaa2-eth: add
+    MAC/PHY support through phylink")). And then adds a spinlock to
+    eliminate races from driver requests. (similar to commit 1e53834ce541
+    ("ixgbe: Add locking to prevent panic when setting sriov_numvfs to zero")
+    
+    Fixes: c23d92b80e0b ("igb: Teardown SR-IOV before unregister_netdev()")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Tested-by: Konrad Jankowski &lt;konrad0.jankowski@intel.com&gt;
+    Signed-off-by: Tony Nguyen &lt;anthony.l.nguyen@intel.com&gt;
+    Link: https://lore.kernel.org/r/20220817184921.735244-1-anthony.l.nguyen@intel.com
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/drivers/net/ethernet/intel/igb/igb.h b/drivers/net/ethernet/intel/igb/igb.h
+index 2d3daf022651..015b78144114 100644
+--- a/drivers/net/ethernet/intel/igb/igb.h
++++ b/drivers/net/ethernet/intel/igb/igb.h
+@@ -664,6 +664,8 @@ struct igb_adapter {
+ 	struct igb_mac_addr *mac_table;
+ 	struct vf_mac_filter vf_macs;
+ 	struct vf_mac_filter *vf_mac_list;
++	/* lock for VF resources */
++	spinlock_t vfs_lock;
+ };
+ 
+ /* flags controlling PTP/1588 function */
+diff --git a/drivers/net/ethernet/intel/igb/igb_main.c b/drivers/net/ethernet/intel/igb/igb_main.c
+index d8b836a85cc3..2796e81d2726 100644
+--- a/drivers/net/ethernet/intel/igb/igb_main.c
++++ b/drivers/net/ethernet/intel/igb/igb_main.c
+@@ -3637,6 +3637,7 @@ static int igb_disable_sriov(struct pci_dev *pdev)
+ 	struct net_device *netdev = pci_get_drvdata(pdev);
+ 	struct igb_adapter *adapter = netdev_priv(netdev);
+ 	struct e1000_hw *hw = &amp;adapter-&gt;hw;
++	unsigned long flags;
+ 
+ 	/* reclaim resources allocated to VFs */
+ 	if (adapter-&gt;vf_data) {
+@@ -3649,12 +3650,13 @@ static int igb_disable_sriov(struct pci_dev *pdev)
+ 			pci_disable_sriov(pdev);
+ 			msleep(500);
+ 		}
+-
++		spin_lock_irqsave(&amp;adapter-&gt;vfs_lock, flags);
+ 		kfree(adapter-&gt;vf_mac_list);
+ 		adapter-&gt;vf_mac_list = NULL;
+ 		kfree(adapter-&gt;vf_data);
+ 		adapter-&gt;vf_data = NULL;
+ 		adapter-&gt;vfs_allocated_count = 0;
++		spin_unlock_irqrestore(&amp;adapter-&gt;vfs_lock, flags);
+ 		wr32(E1000_IOVCTL, E1000_IOVCTL_REUSE_VFQ);
+ 		wrfl();
+ 		msleep(100);
+@@ -3814,7 +3816,9 @@ static void igb_remove(struct pci_dev *pdev)
+ 	igb_release_hw_control(adapter);
+ 
+ #ifdef CONFIG_PCI_IOV
++	rtnl_lock();
+ 	igb_disable_sriov(pdev);
++	rtnl_unlock();
+ #endif
+ 
+ 	unregister_netdev(netdev);
+@@ -3974,6 +3978,9 @@ static int igb_sw_init(struct igb_adapter *adapter)
+ 
+ 	spin_lock_init(&amp;adapter-&gt;nfc_lock);
+ 	spin_lock_init(&amp;adapter-&gt;stats64_lock);
++
++	/* init spinlock to avoid concurrency of VF resources */
++	spin_lock_init(&amp;adapter-&gt;vfs_lock);
+ #ifdef CONFIG_PCI_IOV
+ 	switch (hw-&gt;mac.type) {
+ 	case e1000_82576:
+@@ -7958,8 +7965,10 @@ static void igb_rcv_msg_from_vf(struct igb_adapter *adapter, u32 vf)
+ static void igb_msg_task(struct igb_adapter *adapter)
+ {
+ 	struct e1000_hw *hw = &amp;adapter-&gt;hw;
++	unsigned long flags;
+ 	u32 vf;
+ 
++	spin_lock_irqsave(&amp;adapter-&gt;vfs_lock, flags);
+ 	for (vf = 0; vf &lt; adapter-&gt;vfs_allocated_count; vf++) {
+ 		/* process any reset requests */
+ 		if (!igb_check_for_rst(hw, vf))
+@@ -7973,6 +7982,7 @@ static void igb_msg_task(struct igb_adapter *adapter)
+ 		if (!igb_check_for_ack(hw, vf))
+ 			igb_rcv_ack_from_vf(adapter, vf);
+ 	}
++	spin_unlock_irqrestore(&amp;adapter-&gt;vfs_lock, flags);
+ }
+ 
+ /**</pre><hr><pre>commit 3f4093e2bf4673f218c0bf17d8362337c400e77b
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Fri Aug 5 15:00:08 2022 +0800
+
+    atm: idt77252: fix use-after-free bugs caused by tst_timer
+    
+    There are use-after-free bugs caused by tst_timer. The root cause
+    is that there are no functions to stop tst_timer in idt77252_exit().
+    One of the possible race conditions is shown below:
+    
+        (thread 1)          |        (thread 2)
+                            |  idt77252_init_one
+                            |    init_card
+                            |      fill_tst
+                            |        mod_timer(&amp;card-&gt;tst_timer, ...)
+    idt77252_exit           |  (wait a time)
+                            |  tst_timer
+                            |
+                            |    ...
+      kfree(card) // FREE   |
+                            |    card-&gt;soft_tst[e] // USE
+    
+    The idt77252_dev is deallocated in idt77252_exit() and used in
+    timer handler.
+    
+    This patch adds del_timer_sync() in idt77252_exit() in order that
+    the timer handler could be stopped before the idt77252_dev is
+    deallocated.
+    
+    Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220805070008.18007-1-duoming@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/drivers/atm/idt77252.c b/drivers/atm/idt77252.c
+index 81ce81a75fc6..681cb3786794 100644
+--- a/drivers/atm/idt77252.c
++++ b/drivers/atm/idt77252.c
+@@ -3752,6 +3752,7 @@ static void __exit idt77252_exit(void)
+ 		card = idt77252_chain;
+ 		dev = card-&gt;atmdev;
+ 		idt77252_chain = card-&gt;next;
++		del_timer_sync(&amp;card-&gt;tst_timer);
+ 
+ 		if (dev-&gt;phy-&gt;stop)
+ 			dev-&gt;phy-&gt;stop(dev);</pre><hr><pre>commit b89fc26f741d9f9efb51cba3e9b241cf1380ec5a
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sat Jul 23 09:58:09 2022 +0800
+
+    sctp: fix sleep in atomic context bug in timer handlers
+    
+    There are sleep in atomic context bugs in timer handlers of sctp
+    such as sctp_generate_t3_rtx_event(), sctp_generate_probe_event(),
+    sctp_generate_t1_init_event(), sctp_generate_timeout_event(),
+    sctp_generate_t3_rtx_event() and so on.
+    
+    The root cause is sctp_sched_prio_init_sid() with GFP_KERNEL parameter
+    that may sleep could be called by different timer handlers which is in
+    interrupt context.
+    
+    One of the call paths that could trigger bug is shown below:
+    
+          (interrupt context)
+    sctp_generate_probe_event
+      sctp_do_sm
+        sctp_side_effects
+          sctp_cmd_interpreter
+            sctp_outq_teardown
+              sctp_outq_init
+                sctp_sched_set_sched
+                  n-&gt;init_sid(..,GFP_KERNEL)
+                    sctp_sched_prio_init_sid //may sleep
+    
+    This patch changes gfp_t parameter of init_sid in sctp_sched_set_sched()
+    from GFP_KERNEL to GFP_ATOMIC in order to prevent sleep in atomic
+    context bugs.
+    
+    Fixes: 5bbbbe32a431 ("sctp: introduce stream scheduler foundations")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Acked-by: Marcelo Ricardo Leitner &lt;marcelo.leitner@gmail.com&gt;
+    Link: https://lore.kernel.org/r/20220723015809.11553-1-duoming@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/sctp/stream_sched.c b/net/sctp/stream_sched.c
+index 518b1b9bf89d..1ad565ed5627 100644
+--- a/net/sctp/stream_sched.c
++++ b/net/sctp/stream_sched.c
+@@ -160,7 +160,7 @@ int sctp_sched_set_sched(struct sctp_association *asoc,
+ 		if (!SCTP_SO(&amp;asoc-&gt;stream, i)-&gt;ext)
+ 			continue;
+ 
+-		ret = n-&gt;init_sid(&amp;asoc-&gt;stream, i, GFP_KERNEL);
++		ret = n-&gt;init_sid(&amp;asoc-&gt;stream, i, GFP_ATOMIC);
+ 		if (ret)
+ 			goto err;
+ 	}</pre><hr><pre>commit 6a0c054930d554ad8f8044ef1fc856d9da391c81
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sun Jul 10 18:30:02 2022 +0800
+
+    staging: rtl8192u: Fix sleep in atomic context bug in dm_fsync_timer_callback
+    
+    There are sleep in atomic context bugs when dm_fsync_timer_callback is
+    executing. The root cause is that the memory allocation functions with
+    GFP_KERNEL or GFP_NOIO parameters are called in dm_fsync_timer_callback
+    which is a timer handler. The call paths that could trigger bugs are
+    shown below:
+    
+        (interrupt context)
+    dm_fsync_timer_callback
+      write_nic_byte
+        kzalloc(sizeof(data), GFP_KERNEL); //may sleep
+        usb_control_msg
+          kmalloc(.., GFP_NOIO); //may sleep
+      write_nic_dword
+        kzalloc(sizeof(data), GFP_KERNEL); //may sleep
+        usb_control_msg
+          kmalloc(.., GFP_NOIO); //may sleep
+    
+    This patch uses delayed work to replace timer and moves the operations
+    that may sleep into the delayed work in order to mitigate bugs.
+    
+    Fixes: 8fc8598e61f6 ("Staging: Added Realtek rtl8192u driver to staging")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220710103002.63283-1-duoming@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/rtl8192u/r8192U.h b/drivers/staging/rtl8192u/r8192U.h
+index 14ca00a2789b..1942cb849374 100644
+--- a/drivers/staging/rtl8192u/r8192U.h
++++ b/drivers/staging/rtl8192u/r8192U.h
+@@ -1013,7 +1013,7 @@ typedef struct r8192_priv {
+ 	bool		bis_any_nonbepkts;
+ 	bool		bcurrent_turbo_EDCA;
+ 	bool		bis_cur_rdlstate;
+-	struct timer_list fsync_timer;
++	struct delayed_work fsync_work;
+ 	bool bfsync_processing;	/* 500ms Fsync timer is active or not */
+ 	u32	rate_record;
+ 	u32	rateCountDiffRecord;
+diff --git a/drivers/staging/rtl8192u/r8192U_dm.c b/drivers/staging/rtl8192u/r8192U_dm.c
+index 916618ddc4b7..00fc8fd344db 100644
+--- a/drivers/staging/rtl8192u/r8192U_dm.c
++++ b/drivers/staging/rtl8192u/r8192U_dm.c
+@@ -2578,19 +2578,20 @@ static void dm_init_fsync(struct net_device *dev)
+ 	priv-&gt;ieee80211-&gt;fsync_seconddiff_ratethreshold = 200;
+ 	priv-&gt;ieee80211-&gt;fsync_state = Default_Fsync;
+ 	priv-&gt;framesyncMonitor = 1;	/* current default 0xc38 monitor on */
+-	timer_setup(&amp;priv-&gt;fsync_timer, dm_fsync_timer_callback, 0);
++	INIT_DELAYED_WORK(&amp;priv-&gt;fsync_work, dm_fsync_work_callback);
+ }
+ 
+ static void dm_deInit_fsync(struct net_device *dev)
+ {
+ 	struct r8192_priv *priv = ieee80211_priv(dev);
+ 
+-	del_timer_sync(&amp;priv-&gt;fsync_timer);
++	cancel_delayed_work_sync(&amp;priv-&gt;fsync_work);
+ }
+ 
+-void dm_fsync_timer_callback(struct timer_list *t)
++void dm_fsync_work_callback(struct work_struct *work)
+ {
+-	struct r8192_priv *priv = from_timer(priv, t, fsync_timer);
++	struct r8192_priv *priv =
++	    container_of(work, struct r8192_priv, fsync_work.work);
+ 	struct net_device *dev = priv-&gt;ieee80211-&gt;dev;
+ 	u32 rate_index, rate_count = 0, rate_count_diff = 0;
+ 	bool		bSwitchFromCountDiff = false;
+@@ -2657,17 +2658,16 @@ void dm_fsync_timer_callback(struct timer_list *t)
+ 			}
+ 		}
+ 		if (bDoubleTimeInterval) {
+-			if (timer_pending(&amp;priv-&gt;fsync_timer))
+-				del_timer_sync(&amp;priv-&gt;fsync_timer);
+-			priv-&gt;fsync_timer.expires = jiffies +
+-				msecs_to_jiffies(priv-&gt;ieee80211-&gt;fsync_time_interval*priv-&gt;ieee80211-&gt;fsync_multiple_timeinterval);
+-			add_timer(&amp;priv-&gt;fsync_timer);
++			cancel_delayed_work_sync(&amp;priv-&gt;fsync_work);
++			schedule_delayed_work(&amp;priv-&gt;fsync_work,
++					      msecs_to_jiffies(priv
++					      -&gt;ieee80211-&gt;fsync_time_interval *
++					      priv-&gt;ieee80211-&gt;fsync_multiple_timeinterval));
+ 		} else {
+-			if (timer_pending(&amp;priv-&gt;fsync_timer))
+-				del_timer_sync(&amp;priv-&gt;fsync_timer);
+-			priv-&gt;fsync_timer.expires = jiffies +
+-				msecs_to_jiffies(priv-&gt;ieee80211-&gt;fsync_time_interval);
+-			add_timer(&amp;priv-&gt;fsync_timer);
++			cancel_delayed_work_sync(&amp;priv-&gt;fsync_work);
++			schedule_delayed_work(&amp;priv-&gt;fsync_work,
++					      msecs_to_jiffies(priv
++					      -&gt;ieee80211-&gt;fsync_time_interval));
+ 		}
+ 	} else {
+ 		/* Let Register return to default value; */
+@@ -2695,7 +2695,7 @@ static void dm_EndSWFsync(struct net_device *dev)
+ 	struct r8192_priv *priv = ieee80211_priv(dev);
+ 
+ 	RT_TRACE(COMP_HALDM, "%s\n", __func__);
+-	del_timer_sync(&amp;(priv-&gt;fsync_timer));
++	cancel_delayed_work_sync(&amp;priv-&gt;fsync_work);
+ 
+ 	/* Let Register return to default value; */
+ 	if (priv-&gt;bswitch_fsync) {
+@@ -2736,11 +2736,9 @@ static void dm_StartSWFsync(struct net_device *dev)
+ 		if (priv-&gt;ieee80211-&gt;fsync_rate_bitmap &amp;  rateBitmap)
+ 			priv-&gt;rate_record += priv-&gt;stats.received_rate_histogram[1][rateIndex];
+ 	}
+-	if (timer_pending(&amp;priv-&gt;fsync_timer))
+-		del_timer_sync(&amp;priv-&gt;fsync_timer);
+-	priv-&gt;fsync_timer.expires = jiffies +
+-			msecs_to_jiffies(priv-&gt;ieee80211-&gt;fsync_time_interval);
+-	add_timer(&amp;priv-&gt;fsync_timer);
++	cancel_delayed_work_sync(&amp;priv-&gt;fsync_work);
++	schedule_delayed_work(&amp;priv-&gt;fsync_work,
++			      msecs_to_jiffies(priv-&gt;ieee80211-&gt;fsync_time_interval));
+ 
+ 	write_nic_dword(dev, rOFDM0_RxDetector2, 0x465c12cd);
+ }
+diff --git a/drivers/staging/rtl8192u/r8192U_dm.h b/drivers/staging/rtl8192u/r8192U_dm.h
+index 0b2a1c688597..2159018b4e38 100644
+--- a/drivers/staging/rtl8192u/r8192U_dm.h
++++ b/drivers/staging/rtl8192u/r8192U_dm.h
+@@ -166,7 +166,7 @@ void dm_force_tx_fw_info(struct net_device *dev,
+ void dm_init_edca_turbo(struct net_device *dev);
+ void dm_rf_operation_test_callback(unsigned long data);
+ void dm_rf_pathcheck_workitemcallback(struct work_struct *work);
+-void dm_fsync_timer_callback(struct timer_list *t);
++void dm_fsync_work_callback(struct work_struct *work);
+ void dm_cck_txpower_adjust(struct net_device *dev, bool  binch14);
+ void dm_shadow_init(struct net_device *dev);
+ void dm_initialize_txpower_tracking(struct net_device *dev);</pre><hr><pre>commit 148ca04518070910739dfc4eeda765057856403d
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue Jul 5 20:56:10 2022 +0800
+
+    net: rose: fix UAF bug caused by rose_t0timer_expiry
+    
+    There are UAF bugs caused by rose_t0timer_expiry(). The
+    root cause is that del_timer() could not stop the timer
+    handler that is running and there is no synchronization.
+    One of the race conditions is shown below:
+    
+        (thread 1)             |        (thread 2)
+                               | rose_device_event
+                               |   rose_rt_device_down
+                               |     rose_remove_neigh
+    rose_t0timer_expiry        |       rose_stop_t0timer(rose_neigh)
+      ...                      |         del_timer(&amp;neigh-&gt;t0timer)
+                               |         kfree(rose_neigh) //[1]FREE
+      neigh-&gt;dce_mode //[2]USE |
+    
+    The rose_neigh is deallocated in position [1] and use in
+    position [2].
+    
+    The crash trace triggered by POC is like below:
+    
+    BUG: KASAN: use-after-free in expire_timers+0x144/0x320
+    Write of size 8 at addr ffff888009b19658 by task swapper/0/0
+    ...
+    Call Trace:
+     &lt;IRQ&gt;
+     dump_stack_lvl+0xbf/0xee
+     print_address_description+0x7b/0x440
+     print_report+0x101/0x230
+     ? expire_timers+0x144/0x320
+     kasan_report+0xed/0x120
+     ? expire_timers+0x144/0x320
+     expire_timers+0x144/0x320
+     __run_timers+0x3ff/0x4d0
+     run_timer_softirq+0x41/0x80
+     __do_softirq+0x233/0x544
+     ...
+    
+    This patch changes rose_stop_ftimer() and rose_stop_t0timer()
+    in rose_remove_neigh() to del_timer_sync() in order that the
+    timer handler could be finished before the resources such as
+    rose_neigh and so on are deallocated. As a result, the UAF
+    bugs could be mitigated.
+    
+    Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220705125610.77971-1-duoming@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/rose/rose_route.c b/net/rose/rose_route.c
+index fee6409c2bb3..eb0b8197ac82 100644
+--- a/net/rose/rose_route.c
++++ b/net/rose/rose_route.c
+@@ -227,8 +227,8 @@ static void rose_remove_neigh(struct rose_neigh *rose_neigh)
+ {
+ 	struct rose_neigh *s;
+ 
+-	rose_stop_ftimer(rose_neigh);
+-	rose_stop_t0timer(rose_neigh);
++	del_timer_sync(&amp;rose_neigh-&gt;ftimer);
++	del_timer_sync(&amp;rose_neigh-&gt;t0timer);
+ 
+ 	skb_queue_purge(&amp;rose_neigh-&gt;queue);
+ </pre><hr><pre>commit 9cc02ede696272c5271a401e4f27c262359bc2f6
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Wed Jun 29 08:26:40 2022 +0800
+
+    net: rose: fix UAF bugs caused by timer handler
+    
+    There are UAF bugs in rose_heartbeat_expiry(), rose_timer_expiry()
+    and rose_idletimer_expiry(). The root cause is that del_timer()
+    could not stop the timer handler that is running and the refcount
+    of sock is not managed properly.
+    
+    One of the UAF bugs is shown below:
+    
+        (thread 1)          |        (thread 2)
+                            |  rose_bind
+                            |  rose_connect
+                            |    rose_start_heartbeat
+    rose_release            |    (wait a time)
+      case ROSE_STATE_0     |
+      rose_destroy_socket   |  rose_heartbeat_expiry
+        rose_stop_heartbeat |
+        sock_put(sk)        |    ...
+      sock_put(sk) // FREE  |
+                            |    bh_lock_sock(sk) // USE
+    
+    The sock is deallocated by sock_put() in rose_release() and
+    then used by bh_lock_sock() in rose_heartbeat_expiry().
+    
+    Although rose_destroy_socket() calls rose_stop_heartbeat(),
+    it could not stop the timer that is running.
+    
+    The KASAN report triggered by POC is shown below:
+    
+    BUG: KASAN: use-after-free in _raw_spin_lock+0x5a/0x110
+    Write of size 4 at addr ffff88800ae59098 by task swapper/3/0
+    ...
+    Call Trace:
+     &lt;IRQ&gt;
+     dump_stack_lvl+0xbf/0xee
+     print_address_description+0x7b/0x440
+     print_report+0x101/0x230
+     ? irq_work_single+0xbb/0x140
+     ? _raw_spin_lock+0x5a/0x110
+     kasan_report+0xed/0x120
+     ? _raw_spin_lock+0x5a/0x110
+     kasan_check_range+0x2bd/0x2e0
+     _raw_spin_lock+0x5a/0x110
+     rose_heartbeat_expiry+0x39/0x370
+     ? rose_start_heartbeat+0xb0/0xb0
+     call_timer_fn+0x2d/0x1c0
+     ? rose_start_heartbeat+0xb0/0xb0
+     expire_timers+0x1f3/0x320
+     __run_timers+0x3ff/0x4d0
+     run_timer_softirq+0x41/0x80
+     __do_softirq+0x233/0x544
+     irq_exit_rcu+0x41/0xa0
+     sysvec_apic_timer_interrupt+0x8c/0xb0
+     &lt;/IRQ&gt;
+     &lt;TASK&gt;
+     asm_sysvec_apic_timer_interrupt+0x1b/0x20
+    RIP: 0010:default_idle+0xb/0x10
+    RSP: 0018:ffffc9000012fea0 EFLAGS: 00000202
+    RAX: 000000000000bcae RBX: ffff888006660f00 RCX: 000000000000bcae
+    RDX: 0000000000000001 RSI: ffffffff843a11c0 RDI: ffffffff843a1180
+    RBP: dffffc0000000000 R08: dffffc0000000000 R09: ffffed100da36d46
+    R10: dfffe9100da36d47 R11: ffffffff83cf0950 R12: 0000000000000000
+    R13: 1ffff11000ccc1e0 R14: ffffffff8542af28 R15: dffffc0000000000
+    ...
+    Allocated by task 146:
+     __kasan_kmalloc+0xc4/0xf0
+     sk_prot_alloc+0xdd/0x1a0
+     sk_alloc+0x2d/0x4e0
+     rose_create+0x7b/0x330
+     __sock_create+0x2dd/0x640
+     __sys_socket+0xc7/0x270
+     __x64_sys_socket+0x71/0x80
+     do_syscall_64+0x43/0x90
+     entry_SYSCALL_64_after_hwframe+0x46/0xb0
+    
+    Freed by task 152:
+     kasan_set_track+0x4c/0x70
+     kasan_set_free_info+0x1f/0x40
+     ____kasan_slab_free+0x124/0x190
+     kfree+0xd3/0x270
+     __sk_destruct+0x314/0x460
+     rose_release+0x2fa/0x3b0
+     sock_close+0xcb/0x230
+     __fput+0x2d9/0x650
+     task_work_run+0xd6/0x160
+     exit_to_user_mode_loop+0xc7/0xd0
+     exit_to_user_mode_prepare+0x4e/0x80
+     syscall_exit_to_user_mode+0x20/0x40
+     do_syscall_64+0x4f/0x90
+     entry_SYSCALL_64_after_hwframe+0x46/0xb0
+    
+    This patch adds refcount of sock when we use functions
+    such as rose_start_heartbeat() and so on to start timer,
+    and decreases the refcount of sock when timer is finished
+    or deleted by functions such as rose_stop_heartbeat()
+    and so on. As a result, the UAF bugs could be mitigated.
+    
+    Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Tested-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220629002640.5693-1-duoming@zju.edu.cn
+    Signed-off-by: Paolo Abeni &lt;pabeni@redhat.com&gt;
+
+diff --git a/net/rose/rose_timer.c b/net/rose/rose_timer.c
+index b3138fc2e552..f06ddbed3fed 100644
+--- a/net/rose/rose_timer.c
++++ b/net/rose/rose_timer.c
+@@ -31,89 +31,89 @@ static void rose_idletimer_expiry(struct timer_list *);
+ 
+ void rose_start_heartbeat(struct sock *sk)
+ {
+-	del_timer(&amp;sk-&gt;sk_timer);
++	sk_stop_timer(sk, &amp;sk-&gt;sk_timer);
+ 
+ 	sk-&gt;sk_timer.function = rose_heartbeat_expiry;
+ 	sk-&gt;sk_timer.expires  = jiffies + 5 * HZ;
+ 
+-	add_timer(&amp;sk-&gt;sk_timer);
++	sk_reset_timer(sk, &amp;sk-&gt;sk_timer, sk-&gt;sk_timer.expires);
+ }
+ 
+ void rose_start_t1timer(struct sock *sk)
+ {
+ 	struct rose_sock *rose = rose_sk(sk);
+ 
+-	del_timer(&amp;rose-&gt;timer);
++	sk_stop_timer(sk, &amp;rose-&gt;timer);
+ 
+ 	rose-&gt;timer.function = rose_timer_expiry;
+ 	rose-&gt;timer.expires  = jiffies + rose-&gt;t1;
+ 
+-	add_timer(&amp;rose-&gt;timer);
++	sk_reset_timer(sk, &amp;rose-&gt;timer, rose-&gt;timer.expires);
+ }
+ 
+ void rose_start_t2timer(struct sock *sk)
+ {
+ 	struct rose_sock *rose = rose_sk(sk);
+ 
+-	del_timer(&amp;rose-&gt;timer);
++	sk_stop_timer(sk, &amp;rose-&gt;timer);
+ 
+ 	rose-&gt;timer.function = rose_timer_expiry;
+ 	rose-&gt;timer.expires  = jiffies + rose-&gt;t2;
+ 
+-	add_timer(&amp;rose-&gt;timer);
++	sk_reset_timer(sk, &amp;rose-&gt;timer, rose-&gt;timer.expires);
+ }
+ 
+ void rose_start_t3timer(struct sock *sk)
+ {
+ 	struct rose_sock *rose = rose_sk(sk);
+ 
+-	del_timer(&amp;rose-&gt;timer);
++	sk_stop_timer(sk, &amp;rose-&gt;timer);
+ 
+ 	rose-&gt;timer.function = rose_timer_expiry;
+ 	rose-&gt;timer.expires  = jiffies + rose-&gt;t3;
+ 
+-	add_timer(&amp;rose-&gt;timer);
++	sk_reset_timer(sk, &amp;rose-&gt;timer, rose-&gt;timer.expires);
+ }
+ 
+ void rose_start_hbtimer(struct sock *sk)
+ {
+ 	struct rose_sock *rose = rose_sk(sk);
+ 
+-	del_timer(&amp;rose-&gt;timer);
++	sk_stop_timer(sk, &amp;rose-&gt;timer);
+ 
+ 	rose-&gt;timer.function = rose_timer_expiry;
+ 	rose-&gt;timer.expires  = jiffies + rose-&gt;hb;
+ 
+-	add_timer(&amp;rose-&gt;timer);
++	sk_reset_timer(sk, &amp;rose-&gt;timer, rose-&gt;timer.expires);
+ }
+ 
+ void rose_start_idletimer(struct sock *sk)
+ {
+ 	struct rose_sock *rose = rose_sk(sk);
+ 
+-	del_timer(&amp;rose-&gt;idletimer);
++	sk_stop_timer(sk, &amp;rose-&gt;idletimer);
+ 
+ 	if (rose-&gt;idle &gt; 0) {
+ 		rose-&gt;idletimer.function = rose_idletimer_expiry;
+ 		rose-&gt;idletimer.expires  = jiffies + rose-&gt;idle;
+ 
+-		add_timer(&amp;rose-&gt;idletimer);
++		sk_reset_timer(sk, &amp;rose-&gt;idletimer, rose-&gt;idletimer.expires);
+ 	}
+ }
+ 
+ void rose_stop_heartbeat(struct sock *sk)
+ {
+-	del_timer(&amp;sk-&gt;sk_timer);
++	sk_stop_timer(sk, &amp;sk-&gt;sk_timer);
+ }
+ 
+ void rose_stop_timer(struct sock *sk)
+ {
+-	del_timer(&amp;rose_sk(sk)-&gt;timer);
++	sk_stop_timer(sk, &amp;rose_sk(sk)-&gt;timer);
+ }
+ 
+ void rose_stop_idletimer(struct sock *sk)
+ {
+-	del_timer(&amp;rose_sk(sk)-&gt;idletimer);
++	sk_stop_timer(sk, &amp;rose_sk(sk)-&gt;idletimer);
+ }
+ 
+ static void rose_heartbeat_expiry(struct timer_list *t)
+@@ -130,6 +130,7 @@ static void rose_heartbeat_expiry(struct timer_list *t)
+ 		    (sk-&gt;sk_state == TCP_LISTEN &amp;&amp; sock_flag(sk, SOCK_DEAD))) {
+ 			bh_unlock_sock(sk);
+ 			rose_destroy_socket(sk);
++			sock_put(sk);
+ 			return;
+ 		}
+ 		break;
+@@ -152,6 +153,7 @@ static void rose_heartbeat_expiry(struct timer_list *t)
+ 
+ 	rose_start_heartbeat(sk);
+ 	bh_unlock_sock(sk);
++	sock_put(sk);
+ }
+ 
+ static void rose_timer_expiry(struct timer_list *t)
+@@ -181,6 +183,7 @@ static void rose_timer_expiry(struct timer_list *t)
+ 		break;
+ 	}
+ 	bh_unlock_sock(sk);
++	sock_put(sk);
+ }
+ 
+ static void rose_idletimer_expiry(struct timer_list *t)
+@@ -205,4 +208,5 @@ static void rose_idletimer_expiry(struct timer_list *t)
+ 		sock_set_flag(sk, SOCK_DEAD);
+ 	}
+ 	bh_unlock_sock(sk);
++	sock_put(sk);
+ }</pre><hr><pre>commit a52ed4866d2b90dd5e4ae9dabd453f3ed8fa3cbc
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue Jun 7 11:26:26 2022 +0800
+
+    mwifiex: fix sleep in atomic context bugs caused by dev_coredumpv
+    
+    There are sleep in atomic context bugs when uploading device dump
+    data in mwifiex. The root cause is that dev_coredumpv could not
+    be used in atomic contexts, because it calls dev_set_name which
+    include operations that may sleep. The call tree shows execution
+    paths that could lead to bugs:
+    
+       (Interrupt context)
+    fw_dump_timer_fn
+      mwifiex_upload_device_dump
+        dev_coredumpv(..., GFP_KERNEL)
+          dev_coredumpm()
+            kzalloc(sizeof(*devcd), gfp); //may sleep
+            dev_set_name
+              kobject_set_name_vargs
+                kvasprintf_const(GFP_KERNEL, ...); //may sleep
+                kstrdup(s, GFP_KERNEL); //may sleep
+    
+    The corresponding fail log is shown below:
+    
+    [  135.275938] usb 1-1: == mwifiex dump information to /sys/class/devcoredump start
+    [  135.281029] BUG: sleeping function called from invalid context at include/linux/sched/mm.h:265
+    ...
+    [  135.293613] Call Trace:
+    [  135.293613]  &lt;IRQ&gt;
+    [  135.293613]  dump_stack_lvl+0x57/0x7d
+    [  135.293613]  __might_resched.cold+0x138/0x173
+    [  135.293613]  ? dev_coredumpm+0xca/0x2e0
+    [  135.293613]  kmem_cache_alloc_trace+0x189/0x1f0
+    [  135.293613]  ? devcd_match_failing+0x30/0x30
+    [  135.293613]  dev_coredumpm+0xca/0x2e0
+    [  135.293613]  ? devcd_freev+0x10/0x10
+    [  135.293613]  dev_coredumpv+0x1c/0x20
+    [  135.293613]  ? devcd_match_failing+0x30/0x30
+    [  135.293613]  mwifiex_upload_device_dump+0x65/0xb0
+    [  135.293613]  ? mwifiex_dnld_fw+0x1b0/0x1b0
+    [  135.293613]  call_timer_fn+0x122/0x3d0
+    [  135.293613]  ? msleep_interruptible+0xb0/0xb0
+    [  135.293613]  ? lock_downgrade+0x3c0/0x3c0
+    [  135.293613]  ? __next_timer_interrupt+0x13c/0x160
+    [  135.293613]  ? lockdep_hardirqs_on_prepare+0xe/0x220
+    [  135.293613]  ? mwifiex_dnld_fw+0x1b0/0x1b0
+    [  135.293613]  __run_timers.part.0+0x3f8/0x540
+    [  135.293613]  ? call_timer_fn+0x3d0/0x3d0
+    [  135.293613]  ? arch_restore_msi_irqs+0x10/0x10
+    [  135.293613]  ? lapic_next_event+0x31/0x40
+    [  135.293613]  run_timer_softirq+0x4f/0xb0
+    [  135.293613]  __do_softirq+0x1c2/0x651
+    ...
+    [  135.293613] RIP: 0010:default_idle+0xb/0x10
+    [  135.293613] RSP: 0018:ffff888006317e68 EFLAGS: 00000246
+    [  135.293613] RAX: ffffffff82ad8d10 RBX: ffff888006301cc0 RCX: ffffffff82ac90e1
+    [  135.293613] RDX: ffffed100d9ff1b4 RSI: ffffffff831ad140 RDI: ffffffff82ad8f20
+    [  135.293613] RBP: 0000000000000003 R08: 0000000000000000 R09: ffff88806cff8d9b
+    [  135.293613] R10: ffffed100d9ff1b3 R11: 0000000000000001 R12: ffffffff84593410
+    [  135.293613] R13: 0000000000000000 R14: 0000000000000000 R15: 1ffff11000c62fd2
+    ...
+    [  135.389205] usb 1-1: == mwifiex dump information to /sys/class/devcoredump end
+    
+    This patch uses delayed work to replace timer and moves the operations
+    that may sleep into a delayed work in order to mitigate bugs, it was
+    tested on Marvell 88W8801 chip whose port is usb and the firmware is
+    usb8801_uapsta.bin. The following is the result after using delayed
+    work to replace timer.
+    
+    [  134.936453] usb 1-1: == mwifiex dump information to /sys/class/devcoredump start
+    [  135.043344] usb 1-1: == mwifiex dump information to /sys/class/devcoredump end
+    
+    As we can see, there is no bug now.
+    
+    Fixes: f5ecd02a8b20 ("mwifiex: device dump support for usb interface")
+    Reviewed-by: Brian Norris &lt;briannorris@chromium.org&gt;
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/b63b77fc84ed3e8a6bef02378e17c7c71a0bc3be.1654569290.git.duoming@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/net/wireless/marvell/mwifiex/init.c b/drivers/net/wireless/marvell/mwifiex/init.c
+index 88c72d1827a0..fca3ab948f6c 100644
+--- a/drivers/net/wireless/marvell/mwifiex/init.c
++++ b/drivers/net/wireless/marvell/mwifiex/init.c
+@@ -63,9 +63,10 @@ static void wakeup_timer_fn(struct timer_list *t)
+ 		adapter-&gt;if_ops.card_reset(adapter);
+ }
+ 
+-static void fw_dump_timer_fn(struct timer_list *t)
++static void fw_dump_work(struct work_struct *work)
+ {
+-	struct mwifiex_adapter *adapter = from_timer(adapter, t, devdump_timer);
++	struct mwifiex_adapter *adapter =
++		container_of(work, struct mwifiex_adapter, devdump_work.work);
+ 
+ 	mwifiex_upload_device_dump(adapter);
+ }
+@@ -321,7 +322,7 @@ static void mwifiex_init_adapter(struct mwifiex_adapter *adapter)
+ 	adapter-&gt;active_scan_triggered = false;
+ 	timer_setup(&amp;adapter-&gt;wakeup_timer, wakeup_timer_fn, 0);
+ 	adapter-&gt;devdump_len = 0;
+-	timer_setup(&amp;adapter-&gt;devdump_timer, fw_dump_timer_fn, 0);
++	INIT_DELAYED_WORK(&amp;adapter-&gt;devdump_work, fw_dump_work);
+ }
+ 
+ /*
+@@ -400,7 +401,7 @@ static void
+ mwifiex_adapter_cleanup(struct mwifiex_adapter *adapter)
+ {
+ 	del_timer(&amp;adapter-&gt;wakeup_timer);
+-	del_timer_sync(&amp;adapter-&gt;devdump_timer);
++	cancel_delayed_work_sync(&amp;adapter-&gt;devdump_work);
+ 	mwifiex_cancel_all_pending_cmd(adapter);
+ 	wake_up_interruptible(&amp;adapter-&gt;cmd_wait_q.wait);
+ 	wake_up_interruptible(&amp;adapter-&gt;hs_activate_wait_q);
+diff --git a/drivers/net/wireless/marvell/mwifiex/main.h b/drivers/net/wireless/marvell/mwifiex/main.h
+index 332dd1c8db35..5d8646f16162 100644
+--- a/drivers/net/wireless/marvell/mwifiex/main.h
++++ b/drivers/net/wireless/marvell/mwifiex/main.h
+@@ -49,6 +49,7 @@
+ #include &lt;linux/pm_runtime.h&gt;
+ #include &lt;linux/slab.h&gt;
+ #include &lt;linux/of_irq.h&gt;
++#include &lt;linux/workqueue.h&gt;
+ 
+ #include "decl.h"
+ #include "ioctl.h"
+@@ -1055,7 +1056,7 @@ struct mwifiex_adapter {
+ 	/* Device dump data/length */
+ 	void *devdump_data;
+ 	int devdump_len;
+-	struct timer_list devdump_timer;
++	struct delayed_work devdump_work;
+ 
+ 	bool ignore_btcoex_events;
+ };
+diff --git a/drivers/net/wireless/marvell/mwifiex/sta_event.c b/drivers/net/wireless/marvell/mwifiex/sta_event.c
+index 7d42c5d2dbf6..4d93386494c5 100644
+--- a/drivers/net/wireless/marvell/mwifiex/sta_event.c
++++ b/drivers/net/wireless/marvell/mwifiex/sta_event.c
+@@ -623,8 +623,8 @@ mwifiex_fw_dump_info_event(struct mwifiex_private *priv,
+ 		 * transmission event get lost, in this cornel case,
+ 		 * user would still get partial of the dump.
+ 		 */
+-		mod_timer(&amp;adapter-&gt;devdump_timer,
+-			  jiffies + msecs_to_jiffies(MWIFIEX_TIMER_10S));
++		schedule_delayed_work(&amp;adapter-&gt;devdump_work,
++				      msecs_to_jiffies(MWIFIEX_TIMER_10S));
+ 	}
+ 
+ 	/* Overflow check */
+@@ -643,7 +643,7 @@ mwifiex_fw_dump_info_event(struct mwifiex_private *priv,
+ 	return;
+ 
+ upload_dump:
+-	del_timer_sync(&amp;adapter-&gt;devdump_timer);
++	cancel_delayed_work_sync(&amp;adapter-&gt;devdump_work);
+ 	mwifiex_upload_device_dump(adapter);
+ }
+ </pre><hr><pre>commit 77515ebaf01920e2db49e04672ef669a7c2907f2
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue Jun 7 11:26:25 2022 +0800
+
+    devcoredump: remove the useless gfp_t parameter in dev_coredumpv and dev_coredumpm
+    
+    The dev_coredumpv() and dev_coredumpm() could not be used in atomic
+    context, because they call kvasprintf_const() and kstrdup() with
+    GFP_KERNEL parameter. The process is shown below:
+    
+    dev_coredumpv(.., gfp_t gfp)
+      dev_coredumpm(.., gfp_t gfp)
+        dev_set_name
+          kobject_set_name_vargs
+            kvasprintf_const(GFP_KERNEL, ...); //may sleep
+              kstrdup(s, GFP_KERNEL); //may sleep
+    
+    This patch removes gfp_t parameter of dev_coredumpv() and dev_coredumpm()
+    and changes the gfp_t parameter of kzalloc() in dev_coredumpm() to
+    GFP_KERNEL in order to show they could not be used in atomic context.
+    
+    Fixes: 833c95456a70 ("device coredump: add new device coredump class")
+    Reviewed-by: Brian Norris &lt;briannorris@chromium.org&gt;
+    Reviewed-by: Johannes Berg &lt;johannes@sipsolutions.net&gt;
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/df72af3b1862bac7d8e793d1f3931857d3779dfd.1654569290.git.duoming@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/base/devcoredump.c b/drivers/base/devcoredump.c
+index f4d794d6bb85..8535f0bd5dfb 100644
+--- a/drivers/base/devcoredump.c
++++ b/drivers/base/devcoredump.c
+@@ -173,15 +173,13 @@ static void devcd_freev(void *data)
+  * @dev: the struct device for the crashed device
+  * @data: vmalloc data containing the device coredump
+  * @datalen: length of the data
+- * @gfp: allocation flags
+  *
+  * This function takes ownership of the vmalloc'ed data and will free
+  * it when it is no longer used. See dev_coredumpm() for more information.
+  */
+-void dev_coredumpv(struct device *dev, void *data, size_t datalen,
+-		   gfp_t gfp)
++void dev_coredumpv(struct device *dev, void *data, size_t datalen)
+ {
+-	dev_coredumpm(dev, NULL, data, datalen, gfp, devcd_readv, devcd_freev);
++	dev_coredumpm(dev, NULL, data, datalen, devcd_readv, devcd_freev);
+ }
+ EXPORT_SYMBOL_GPL(dev_coredumpv);
+ 
+@@ -236,7 +234,6 @@ static ssize_t devcd_read_from_sgtable(char *buffer, loff_t offset,
+  * @owner: the module that contains the read/free functions, use %THIS_MODULE
+  * @data: data cookie for the @read/@free functions
+  * @datalen: length of the data
+- * @gfp: allocation flags
+  * @read: function to read from the given buffer
+  * @free: function to free the given buffer
+  *
+@@ -246,7 +243,7 @@ static ssize_t devcd_read_from_sgtable(char *buffer, loff_t offset,
+  * function will be called to free the data.
+  */
+ void dev_coredumpm(struct device *dev, struct module *owner,
+-		   void *data, size_t datalen, gfp_t gfp,
++		   void *data, size_t datalen,
+ 		   ssize_t (*read)(char *buffer, loff_t offset, size_t count,
+ 				   void *data, size_t datalen),
+ 		   void (*free)(void *data))
+@@ -268,7 +265,7 @@ void dev_coredumpm(struct device *dev, struct module *owner,
+ 	if (!try_module_get(owner))
+ 		goto free;
+ 
+-	devcd = kzalloc(sizeof(*devcd), gfp);
++	devcd = kzalloc(sizeof(*devcd), GFP_KERNEL);
+ 	if (!devcd)
+ 		goto put_module;
+ 
+@@ -318,7 +315,6 @@ EXPORT_SYMBOL_GPL(dev_coredumpm);
+  * @dev: the struct device for the crashed device
+  * @table: the dump data
+  * @datalen: length of the data
+- * @gfp: allocation flags
+  *
+  * Creates a new device coredump for the given device. If a previous one hasn't
+  * been read yet, the new coredump is discarded. The data lifetime is determined
+@@ -326,9 +322,9 @@ EXPORT_SYMBOL_GPL(dev_coredumpm);
+  * it will free the data.
+  */
+ void dev_coredumpsg(struct device *dev, struct scatterlist *table,
+-		    size_t datalen, gfp_t gfp)
++		    size_t datalen)
+ {
+-	dev_coredumpm(dev, NULL, table, datalen, gfp, devcd_read_from_sgtable,
++	dev_coredumpm(dev, NULL, table, datalen, devcd_read_from_sgtable,
+ 		      devcd_free_sgtable);
+ }
+ EXPORT_SYMBOL_GPL(dev_coredumpsg);
+diff --git a/drivers/bluetooth/btmrvl_sdio.c b/drivers/bluetooth/btmrvl_sdio.c
+index b8ef66f89fc1..9b9728719db2 100644
+--- a/drivers/bluetooth/btmrvl_sdio.c
++++ b/drivers/bluetooth/btmrvl_sdio.c
+@@ -1515,7 +1515,7 @@ static void btmrvl_sdio_coredump(struct device *dev)
+ 	/* fw_dump_data will be free in device coredump release function
+ 	 * after 5 min
+ 	 */
+-	dev_coredumpv(&amp;card-&gt;func-&gt;dev, fw_dump_data, fw_dump_len, GFP_KERNEL);
++	dev_coredumpv(&amp;card-&gt;func-&gt;dev, fw_dump_data, fw_dump_len);
+ 	BT_INFO("== btmrvl firmware dump to /sys/class/devcoredump end");
+ }
+ 
+diff --git a/drivers/bluetooth/hci_qca.c b/drivers/bluetooth/hci_qca.c
+index eab34e24d944..2e4074211ae9 100644
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -1120,7 +1120,7 @@ static void qca_controller_memdump(struct work_struct *work)
+ 				    qca_memdump-&gt;ram_dump_size);
+ 			memdump_buf = qca_memdump-&gt;memdump_buf_head;
+ 			dev_coredumpv(&amp;hu-&gt;serdev-&gt;dev, memdump_buf,
+-				      qca_memdump-&gt;received_dump, GFP_KERNEL);
++				      qca_memdump-&gt;received_dump);
+ 			cancel_delayed_work(&amp;qca-&gt;ctrl_memdump_timeout);
+ 			kfree(qca-&gt;qca_memdump);
+ 			qca-&gt;qca_memdump = NULL;
+diff --git a/drivers/gpu/drm/etnaviv/etnaviv_dump.c b/drivers/gpu/drm/etnaviv/etnaviv_dump.c
+index f418e0b75772..519fcb234b3e 100644
+--- a/drivers/gpu/drm/etnaviv/etnaviv_dump.c
++++ b/drivers/gpu/drm/etnaviv/etnaviv_dump.c
+@@ -225,5 +225,5 @@ void etnaviv_core_dump(struct etnaviv_gem_submit *submit)
+ 
+ 	etnaviv_core_dump_header(&amp;iter, ETDUMP_BUF_END, iter.data);
+ 
+-	dev_coredumpv(gpu-&gt;dev, iter.start, iter.data - iter.start, GFP_KERNEL);
++	dev_coredumpv(gpu-&gt;dev, iter.start, iter.data - iter.start);
+ }
+diff --git a/drivers/gpu/drm/msm/disp/msm_disp_snapshot.c b/drivers/gpu/drm/msm/disp/msm_disp_snapshot.c
+index e75b97127c0d..f057d294c30b 100644
+--- a/drivers/gpu/drm/msm/disp/msm_disp_snapshot.c
++++ b/drivers/gpu/drm/msm/disp/msm_disp_snapshot.c
+@@ -74,8 +74,8 @@ static void _msm_disp_snapshot_work(struct kthread_work *work)
+ 	 * If there is a codedump pending for the device, the dev_coredumpm()
+ 	 * will also free new coredump state.
+ 	 */
+-	dev_coredumpm(disp_state-&gt;dev, THIS_MODULE, disp_state, 0, GFP_KERNEL,
+-			disp_devcoredump_read, msm_disp_state_free);
++	dev_coredumpm(disp_state-&gt;dev, THIS_MODULE, disp_state, 0,
++		      disp_devcoredump_read, msm_disp_state_free);
+ }
+ 
+ void msm_disp_snapshot_state(struct drm_device *drm_dev)
+diff --git a/drivers/gpu/drm/msm/msm_gpu.c b/drivers/gpu/drm/msm/msm_gpu.c
+index eb8a6663f309..30576ced0a0a 100644
+--- a/drivers/gpu/drm/msm/msm_gpu.c
++++ b/drivers/gpu/drm/msm/msm_gpu.c
+@@ -317,8 +317,8 @@ static void msm_gpu_crashstate_capture(struct msm_gpu *gpu,
+ 	gpu-&gt;crashstate = state;
+ 
+ 	/* FIXME: Release the crashstate if this errors out? */
+-	dev_coredumpm(gpu-&gt;dev-&gt;dev, THIS_MODULE, gpu, 0, GFP_KERNEL,
+-		msm_gpu_devcoredump_read, msm_gpu_devcoredump_free);
++	dev_coredumpm(gpu-&gt;dev-&gt;dev, THIS_MODULE, gpu, 0,
++		      msm_gpu_devcoredump_read, msm_gpu_devcoredump_free);
+ }
+ #else
+ static void msm_gpu_crashstate_capture(struct msm_gpu *gpu,
+diff --git a/drivers/media/platform/qcom/venus/core.c b/drivers/media/platform/qcom/venus/core.c
+index 877eca125803..db84dfb3fb11 100644
+--- a/drivers/media/platform/qcom/venus/core.c
++++ b/drivers/media/platform/qcom/venus/core.c
+@@ -49,7 +49,7 @@ static void venus_coredump(struct venus_core *core)
+ 
+ 	memcpy(data, mem_va, mem_size);
+ 	memunmap(mem_va);
+-	dev_coredumpv(dev, data, mem_size, GFP_KERNEL);
++	dev_coredumpv(dev, data, mem_size);
+ }
+ 
+ static void venus_event_notify(struct venus_core *core, u32 event)
+diff --git a/drivers/net/can/spi/mcp251xfd/mcp251xfd-dump.c b/drivers/net/can/spi/mcp251xfd/mcp251xfd-dump.c
+index c991b30bc9f0..fa520ab7c960 100644
+--- a/drivers/net/can/spi/mcp251xfd/mcp251xfd-dump.c
++++ b/drivers/net/can/spi/mcp251xfd/mcp251xfd-dump.c
+@@ -281,5 +281,5 @@ void mcp251xfd_dump(const struct mcp251xfd_priv *priv)
+ 	mcp251xfd_dump_end(priv, &amp;iter);
+ 
+ 	dev_coredumpv(&amp;priv-&gt;spi-&gt;dev, iter.start,
+-		      iter.data - iter.start, GFP_KERNEL);
++		      iter.data - iter.start);
+ }
+diff --git a/drivers/net/wireless/ath/ath10k/coredump.c b/drivers/net/wireless/ath/ath10k/coredump.c
+index fe6b6f97a916..dc9237069921 100644
+--- a/drivers/net/wireless/ath/ath10k/coredump.c
++++ b/drivers/net/wireless/ath/ath10k/coredump.c
+@@ -1607,7 +1607,7 @@ int ath10k_coredump_submit(struct ath10k *ar)
+ 		return -ENODATA;
+ 	}
+ 
+-	dev_coredumpv(ar-&gt;dev, dump, le32_to_cpu(dump-&gt;len), GFP_KERNEL);
++	dev_coredumpv(ar-&gt;dev, dump, le32_to_cpu(dump-&gt;len));
+ 
+ 	return 0;
+ }
+diff --git a/drivers/net/wireless/ath/wil6210/wil_crash_dump.c b/drivers/net/wireless/ath/wil6210/wil_crash_dump.c
+index 89c12cb2aaab..79299609dd62 100644
+--- a/drivers/net/wireless/ath/wil6210/wil_crash_dump.c
++++ b/drivers/net/wireless/ath/wil6210/wil_crash_dump.c
+@@ -117,6 +117,6 @@ void wil_fw_core_dump(struct wil6210_priv *wil)
+ 	/* fw_dump_data will be free in device coredump release function
+ 	 * after 5 min
+ 	 */
+-	dev_coredumpv(wil_to_dev(wil), fw_dump_data, fw_dump_size, GFP_KERNEL);
++	dev_coredumpv(wil_to_dev(wil), fw_dump_data, fw_dump_size);
+ 	wil_info(wil, "fw core dumped, size %d bytes\n", fw_dump_size);
+ }
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/debug.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/debug.c
+index eecf8a38d94a..87f3652ef3bd 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/debug.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/debug.c
+@@ -37,7 +37,7 @@ int brcmf_debug_create_memdump(struct brcmf_bus *bus, const void *data,
+ 		return err;
+ 	}
+ 
+-	dev_coredumpv(bus-&gt;dev, dump, len + ramsize, GFP_KERNEL);
++	dev_coredumpv(bus-&gt;dev, dump, len + ramsize);
+ 
+ 	return 0;
+ }
+diff --git a/drivers/net/wireless/intel/iwlwifi/fw/dbg.c b/drivers/net/wireless/intel/iwlwifi/fw/dbg.c
+index abf49022edbe..f2f7cf494a8c 100644
+--- a/drivers/net/wireless/intel/iwlwifi/fw/dbg.c
++++ b/drivers/net/wireless/intel/iwlwifi/fw/dbg.c
+@@ -2601,8 +2601,7 @@ static void iwl_fw_error_dump(struct iwl_fw_runtime *fwrt,
+ 					     fw_error_dump.trans_ptr-&gt;data,
+ 					     fw_error_dump.trans_ptr-&gt;len,
+ 					     fw_error_dump.fwrt_len);
+-		dev_coredumpsg(fwrt-&gt;trans-&gt;dev, sg_dump_data, file_len,
+-			       GFP_KERNEL);
++		dev_coredumpsg(fwrt-&gt;trans-&gt;dev, sg_dump_data, file_len);
+ 	}
+ 	vfree(fw_error_dump.fwrt_ptr);
+ 	vfree(fw_error_dump.trans_ptr);
+@@ -2647,8 +2646,7 @@ static void iwl_fw_error_ini_dump(struct iwl_fw_runtime *fwrt,
+ 					     entry-&gt;data, entry-&gt;size, offs);
+ 			offs += entry-&gt;size;
+ 		}
+-		dev_coredumpsg(fwrt-&gt;trans-&gt;dev, sg_dump_data, file_len,
+-			       GFP_KERNEL);
++		dev_coredumpsg(fwrt-&gt;trans-&gt;dev, sg_dump_data, file_len);
+ 	}
+ 	iwl_dump_ini_list_free(&amp;dump_list);
+ }
+diff --git a/drivers/net/wireless/marvell/mwifiex/main.c b/drivers/net/wireless/marvell/mwifiex/main.c
+index ace7371c4773..26fef0ab1b0d 100644
+--- a/drivers/net/wireless/marvell/mwifiex/main.c
++++ b/drivers/net/wireless/marvell/mwifiex/main.c
+@@ -1115,8 +1115,7 @@ void mwifiex_upload_device_dump(struct mwifiex_adapter *adapter)
+ 	 */
+ 	mwifiex_dbg(adapter, MSG,
+ 		    "== mwifiex dump information to /sys/class/devcoredump start\n");
+-	dev_coredumpv(adapter-&gt;dev, adapter-&gt;devdump_data, adapter-&gt;devdump_len,
+-		      GFP_KERNEL);
++	dev_coredumpv(adapter-&gt;dev, adapter-&gt;devdump_data, adapter-&gt;devdump_len);
+ 	mwifiex_dbg(adapter, MSG,
+ 		    "== mwifiex dump information to /sys/class/devcoredump end\n");
+ 
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7615/mac.c b/drivers/net/wireless/mediatek/mt76/mt7615/mac.c
+index bd687f7de628..5336fe8c668d 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt7615/mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7615/mac.c
+@@ -2421,6 +2421,5 @@ void mt7615_coredump_work(struct work_struct *work)
+ 
+ 		dev_kfree_skb(skb);
+ 	}
+-	dev_coredumpv(dev-&gt;mt76.dev, dump, MT76_CONNAC_COREDUMP_SZ,
+-		      GFP_KERNEL);
++	dev_coredumpv(dev-&gt;mt76.dev, dump, MT76_CONNAC_COREDUMP_SZ);
+ }
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7921/mac.c b/drivers/net/wireless/mediatek/mt76/mt7921/mac.c
+index a630ddbf19e5..cac284f95ce0 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt7921/mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7921/mac.c
+@@ -1630,8 +1630,7 @@ void mt7921_coredump_work(struct work_struct *work)
+ 	}
+ 
+ 	if (dump)
+-		dev_coredumpv(dev-&gt;mt76.dev, dump, MT76_CONNAC_COREDUMP_SZ,
+-			      GFP_KERNEL);
++		dev_coredumpv(dev-&gt;mt76.dev, dump, MT76_CONNAC_COREDUMP_SZ);
+ 
+ 	mt7921_reset(&amp;dev-&gt;mt76);
+ }
+diff --git a/drivers/net/wireless/realtek/rtw88/main.c b/drivers/net/wireless/realtek/rtw88/main.c
+index efabd5b1bf5b..a276544cecdd 100644
+--- a/drivers/net/wireless/realtek/rtw88/main.c
++++ b/drivers/net/wireless/realtek/rtw88/main.c
+@@ -414,7 +414,7 @@ static void rtw_fwcd_dump(struct rtw_dev *rtwdev)
+ 	 * framework. Note that a new dump will be discarded if a previous one
+ 	 * hasn't been released yet.
+ 	 */
+-	dev_coredumpv(rtwdev-&gt;dev, desc-&gt;data, desc-&gt;size, GFP_KERNEL);
++	dev_coredumpv(rtwdev-&gt;dev, desc-&gt;data, desc-&gt;size);
+ }
+ 
+ static void rtw_fwcd_free(struct rtw_dev *rtwdev, bool free_self)
+diff --git a/drivers/net/wireless/realtek/rtw89/ser.c b/drivers/net/wireless/realtek/rtw89/ser.c
+index 9e95ed972710..d28fe01ad729 100644
+--- a/drivers/net/wireless/realtek/rtw89/ser.c
++++ b/drivers/net/wireless/realtek/rtw89/ser.c
+@@ -127,7 +127,7 @@ static void rtw89_ser_cd_send(struct rtw89_dev *rtwdev,
+ 	 * will be discarded if a previous one hasn't been released by
+ 	 * framework yet.
+ 	 */
+-	dev_coredumpv(rtwdev-&gt;dev, buf, sizeof(*buf), GFP_KERNEL);
++	dev_coredumpv(rtwdev-&gt;dev, buf, sizeof(*buf));
+ }
+ 
+ static void rtw89_ser_cd_free(struct rtw89_dev *rtwdev,
+diff --git a/drivers/remoteproc/qcom_q6v5_mss.c b/drivers/remoteproc/qcom_q6v5_mss.c
+index af217de75e4d..813d87faef6c 100644
+--- a/drivers/remoteproc/qcom_q6v5_mss.c
++++ b/drivers/remoteproc/qcom_q6v5_mss.c
+@@ -597,7 +597,7 @@ static void q6v5_dump_mba_logs(struct q6v5 *qproc)
+ 	data = vmalloc(MBA_LOG_SIZE);
+ 	if (data) {
+ 		memcpy(data, mba_region, MBA_LOG_SIZE);
+-		dev_coredumpv(&amp;rproc-&gt;dev, data, MBA_LOG_SIZE, GFP_KERNEL);
++		dev_coredumpv(&amp;rproc-&gt;dev, data, MBA_LOG_SIZE);
+ 	}
+ 	memunmap(mba_region);
+ }
+diff --git a/drivers/remoteproc/remoteproc_coredump.c b/drivers/remoteproc/remoteproc_coredump.c
+index 4b093420d98a..cd55c2abd227 100644
+--- a/drivers/remoteproc/remoteproc_coredump.c
++++ b/drivers/remoteproc/remoteproc_coredump.c
+@@ -309,7 +309,7 @@ void rproc_coredump(struct rproc *rproc)
+ 		phdr += elf_size_of_phdr(class);
+ 	}
+ 	if (dump_conf == RPROC_COREDUMP_ENABLED) {
+-		dev_coredumpv(&amp;rproc-&gt;dev, data, data_size, GFP_KERNEL);
++		dev_coredumpv(&amp;rproc-&gt;dev, data, data_size);
+ 		return;
+ 	}
+ 
+@@ -318,7 +318,7 @@ void rproc_coredump(struct rproc *rproc)
+ 	dump_state.header = data;
+ 	init_completion(&amp;dump_state.dump_done);
+ 
+-	dev_coredumpm(&amp;rproc-&gt;dev, NULL, &amp;dump_state, data_size, GFP_KERNEL,
++	dev_coredumpm(&amp;rproc-&gt;dev, NULL, &amp;dump_state, data_size,
+ 		      rproc_coredump_read, rproc_coredump_free);
+ 
+ 	/*
+@@ -449,7 +449,7 @@ void rproc_coredump_using_sections(struct rproc *rproc)
+ 	}
+ 
+ 	if (dump_conf == RPROC_COREDUMP_ENABLED) {
+-		dev_coredumpv(&amp;rproc-&gt;dev, data, data_size, GFP_KERNEL);
++		dev_coredumpv(&amp;rproc-&gt;dev, data, data_size);
+ 		return;
+ 	}
+ 
+@@ -458,7 +458,7 @@ void rproc_coredump_using_sections(struct rproc *rproc)
+ 	dump_state.header = data;
+ 	init_completion(&amp;dump_state.dump_done);
+ 
+-	dev_coredumpm(&amp;rproc-&gt;dev, NULL, &amp;dump_state, data_size, GFP_KERNEL,
++	dev_coredumpm(&amp;rproc-&gt;dev, NULL, &amp;dump_state, data_size,
+ 		      rproc_coredump_read, rproc_coredump_free);
+ 
+ 	/* Wait until the dump is read and free is called. Data is freed
+diff --git a/include/drm/drm_print.h b/include/drm/drm_print.h
+index 22fabdeed297..b41850366bcc 100644
+--- a/include/drm/drm_print.h
++++ b/include/drm/drm_print.h
+@@ -162,7 +162,7 @@ struct drm_print_iterator {
+  *	void makecoredump(...)
+  *	{
+  *		...
+- *		dev_coredumpm(dev, THIS_MODULE, data, 0, GFP_KERNEL,
++ *		dev_coredumpm(dev, THIS_MODULE, data, 0,
+  *			coredump_read, ...)
+  *	}
+  *
+diff --git a/include/linux/devcoredump.h b/include/linux/devcoredump.h
+index c008169ed2c6..c7d840d824c3 100644
+--- a/include/linux/devcoredump.h
++++ b/include/linux/devcoredump.h
+@@ -52,27 +52,26 @@ static inline void _devcd_free_sgtable(struct scatterlist *table)
+ 
+ 
+ #ifdef CONFIG_DEV_COREDUMP
+-void dev_coredumpv(struct device *dev, void *data, size_t datalen,
+-		   gfp_t gfp);
++void dev_coredumpv(struct device *dev, void *data, size_t datalen);
+ 
+ void dev_coredumpm(struct device *dev, struct module *owner,
+-		   void *data, size_t datalen, gfp_t gfp,
++		   void *data, size_t datalen,
+ 		   ssize_t (*read)(char *buffer, loff_t offset, size_t count,
+ 				   void *data, size_t datalen),
+ 		   void (*free)(void *data));
+ 
+ void dev_coredumpsg(struct device *dev, struct scatterlist *table,
+-		    size_t datalen, gfp_t gfp);
++		    size_t datalen);
+ #else
+ static inline void dev_coredumpv(struct device *dev, void *data,
+-				 size_t datalen, gfp_t gfp)
++				 size_t datalen)
+ {
+ 	vfree(data);
+ }
+ 
+ static inline void
+ dev_coredumpm(struct device *dev, struct module *owner,
+-	      void *data, size_t datalen, gfp_t gfp,
++	      void *data, size_t datalen,
+ 	      ssize_t (*read)(char *buffer, loff_t offset, size_t count,
+ 			      void *data, size_t datalen),
+ 	      void (*free)(void *data))
+@@ -81,7 +80,7 @@ dev_coredumpm(struct device *dev, struct module *owner,
+ }
+ 
+ static inline void dev_coredumpsg(struct device *dev, struct scatterlist *table,
+-				  size_t datalen, gfp_t gfp)
++				  size_t datalen)
+ {
+ 	_devcd_free_sgtable(table);
+ }
+diff --git a/sound/soc/intel/avs/apl.c b/sound/soc/intel/avs/apl.c
+index b8e2b23c9f64..1ff57f1a483d 100644
+--- a/sound/soc/intel/avs/apl.c
++++ b/sound/soc/intel/avs/apl.c
+@@ -164,7 +164,7 @@ static int apl_coredump(struct avs_dev *adev, union avs_notify_msg *msg)
+ 	} while (offset &lt; msg-&gt;ext.coredump.stack_dump_size);
+ 
+ exit:
+-	dev_coredumpv(adev-&gt;dev, dump, dump_size, GFP_KERNEL);
++	dev_coredumpv(adev-&gt;dev, dump, dump_size);
+ 
+ 	return 0;
+ }
+diff --git a/sound/soc/intel/avs/skl.c b/sound/soc/intel/avs/skl.c
+index bda5ec7510fe..3413162768dc 100644
+--- a/sound/soc/intel/avs/skl.c
++++ b/sound/soc/intel/avs/skl.c
+@@ -88,7 +88,7 @@ static int skl_coredump(struct avs_dev *adev, union avs_notify_msg *msg)
+ 		return -ENOMEM;
+ 
+ 	memcpy_fromio(dump, avs_sram_addr(adev, AVS_FW_REGS_WINDOW), AVS_FW_REGS_SIZE);
+-	dev_coredumpv(adev-&gt;dev, dump, AVS_FW_REGS_SIZE, GFP_KERNEL);
++	dev_coredumpv(adev-&gt;dev, dump, AVS_FW_REGS_SIZE);
+ 
+ 	return 0;
+ }
+diff --git a/sound/soc/intel/catpt/dsp.c b/sound/soc/intel/catpt/dsp.c
+index 346bec000306..d2afe9ff1e3a 100644
+--- a/sound/soc/intel/catpt/dsp.c
++++ b/sound/soc/intel/catpt/dsp.c
+@@ -539,7 +539,7 @@ int catpt_coredump(struct catpt_dev *cdev)
+ 		pos += CATPT_DMA_REGS_SIZE;
+ 	}
+ 
+-	dev_coredumpv(cdev-&gt;dev, dump, dump_size, GFP_KERNEL);
++	dev_coredumpv(cdev-&gt;dev, dump, dump_size);
+ 
+ 	return 0;
+ }</pre>
+    <div class="pagination">
+        <a href='6_13.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><span>[14]</span><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_15.html'>Next&gt;&gt;</a>
+    <div>
+</body>

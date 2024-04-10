@@ -1,0 +1,1378 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_45.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><span>[46]</span><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_47.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 4796f45740bc6f2e3e6cc14e7ed481b38bd0bd39
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jul 17 04:04:51 2007 -0700
+
+    knfsd: nfsd4: secinfo handling without secinfo= option
+    
+    We could return some sort of error in the case where someone asks for secinfo
+    on an export without the secinfo= option set--that'd be no worse than what
+    we've been doing.  But it's not really correct.  So, hack up an approximate
+    secinfo response in that case--it may not be complete, but it'll tell the
+    client at least one acceptable security flavor.
+    
+    Signed-off-by: "J. Bruce Fields" &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index 864498f8f2d9..b3d55c6747fd 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -57,6 +57,7 @@
+ #include &lt;linux/nfs4.h&gt;
+ #include &lt;linux/nfs4_acl.h&gt;
+ #include &lt;linux/sunrpc/gss_api.h&gt;
++#include &lt;linux/sunrpc/svcauth_gss.h&gt;
+ 
+ #define NFSDDBG_FACILITY		NFSDDBG_XDR
+ 
+@@ -2454,15 +2455,38 @@ nfsd4_encode_secinfo(struct nfsd4_compoundres *resp, int nfserr,
+ {
+ 	int i = 0;
+ 	struct svc_export *exp = secinfo-&gt;si_exp;
++	u32 nflavs;
++	struct exp_flavor_info *flavs;
++	struct exp_flavor_info def_flavs[2];
+ 	ENCODE_HEAD;
+ 
+ 	if (nfserr)
+ 		goto out;
++	if (exp-&gt;ex_nflavors) {
++		flavs = exp-&gt;ex_flavors;
++		nflavs = exp-&gt;ex_nflavors;
++	} else { /* Handling of some defaults in absence of real secinfo: */
++		flavs = def_flavs;
++		if (exp-&gt;ex_client-&gt;flavour-&gt;flavour == RPC_AUTH_UNIX) {
++			nflavs = 2;
++			flavs[0].pseudoflavor = RPC_AUTH_UNIX;
++			flavs[1].pseudoflavor = RPC_AUTH_NULL;
++		} else if (exp-&gt;ex_client-&gt;flavour-&gt;flavour == RPC_AUTH_GSS) {
++			nflavs = 1;
++			flavs[0].pseudoflavor
++					= svcauth_gss_flavor(exp-&gt;ex_client);
++		} else {
++			nflavs = 1;
++			flavs[0].pseudoflavor
++					= exp-&gt;ex_client-&gt;flavour-&gt;flavour;
++		}
++	}
++
+ 	RESERVE_SPACE(4);
+-	WRITE32(exp-&gt;ex_nflavors);
++	WRITE32(nflavs);
+ 	ADJUST_ARGS();
+-	for (i = 0; i &lt; exp-&gt;ex_nflavors; i++) {
+-		u32 flav = exp-&gt;ex_flavors[i].pseudoflavor;
++	for (i = 0; i &lt; nflavs; i++) {
++		u32 flav = flavs[i].pseudoflavor;
+ 		struct gss_api_mech *gm = gss_mech_get_by_pseudoflavor(flav);
+ 
+ 		if (gm) {
+diff --git a/include/linux/sunrpc/svcauth_gss.h b/include/linux/sunrpc/svcauth_gss.h
+index 5a5db16ab660..417a1def56db 100644
+--- a/include/linux/sunrpc/svcauth_gss.h
++++ b/include/linux/sunrpc/svcauth_gss.h
+@@ -22,6 +22,7 @@
+ int gss_svc_init(void);
+ void gss_svc_shutdown(void);
+ int svcauth_gss_register_pseudoflavor(u32 pseudoflavor, char * name);
++u32 svcauth_gss_flavor(struct auth_domain *dom);
+ 
+ #endif /* __KERNEL__ */
+ #endif /* _LINUX_SUNRPC_SVCAUTH_GSS_H */
+diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
+index e4b3de08b040..490697542fc2 100644
+--- a/net/sunrpc/auth_gss/svcauth_gss.c
++++ b/net/sunrpc/auth_gss/svcauth_gss.c
+@@ -743,6 +743,15 @@ find_gss_auth_domain(struct gss_ctx *ctx, u32 svc)
+ 
+ static struct auth_ops svcauthops_gss;
+ 
++u32 svcauth_gss_flavor(struct auth_domain *dom)
++{
++	struct gss_domain *gd = container_of(dom, struct gss_domain, h);
++
++	return gd-&gt;pseudoflavor;
++}
++
++EXPORT_SYMBOL(svcauth_gss_flavor);
++
+ int
+ svcauth_gss_register_pseudoflavor(u32 pseudoflavor, char * name)
+ {</pre><hr><pre>commit dcb488a3b7ac3987e21148f44f641c9b2e734232
+Author: Andy Adamson &lt;andros@citi.umich.edu&gt;
+Date:   Tue Jul 17 04:04:51 2007 -0700
+
+    knfsd: nfsd4: implement secinfo
+    
+    Implement the secinfo operation.
+    
+    (Thanks to Usha Ketineni wrote an earlier version of this support.)
+    
+    Cc: Usha Ketineni &lt;uketinen@us.ibm.com&gt;
+    Signed-off-by: Andy Adamson &lt;andros@citi.umich.edu&gt;
+    Signed-off-by: "J. Bruce Fields" &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/nfs4proc.c b/fs/nfsd/nfs4proc.c
+index a106e3be7c13..3c627128e205 100644
+--- a/fs/nfsd/nfs4proc.c
++++ b/fs/nfsd/nfs4proc.c
+@@ -47,6 +47,7 @@
+ #include &lt;linux/nfsd/state.h&gt;
+ #include &lt;linux/nfsd/xdr4.h&gt;
+ #include &lt;linux/nfs4_acl.h&gt;
++#include &lt;linux/sunrpc/gss_api.h&gt;
+ 
+ #define NFSDDBG_FACILITY		NFSDDBG_PROC
+ 
+@@ -609,6 +610,30 @@ nfsd4_rename(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	return status;
+ }
+ 
++static __be32
++nfsd4_secinfo(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
++	      struct nfsd4_secinfo *secinfo)
++{
++	struct svc_fh resfh;
++	struct svc_export *exp;
++	struct dentry *dentry;
++	__be32 err;
++
++	fh_init(&amp;resfh, NFS4_FHSIZE);
++	err = nfsd_lookup_dentry(rqstp, &amp;cstate-&gt;current_fh,
++				    secinfo-&gt;si_name, secinfo-&gt;si_namelen,
++				    &amp;exp, &amp;dentry);
++	if (err)
++		return err;
++	if (dentry-&gt;d_inode == NULL) {
++		exp_put(exp);
++		err = nfserr_noent;
++	} else
++		secinfo-&gt;si_exp = exp;
++	dput(dentry);
++	return err;
++}
++
+ static __be32
+ nfsd4_setattr(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	      struct nfsd4_setattr *setattr)
+@@ -1008,6 +1033,9 @@ static struct nfsd4_operation nfsd4_ops[OP_RELEASE_LOCKOWNER+1] = {
+ 	[OP_SAVEFH] = {
+ 		.op_func = (nfsd4op_func)nfsd4_savefh,
+ 	},
++	[OP_SECINFO] = {
++		.op_func = (nfsd4op_func)nfsd4_secinfo,
++	},
+ 	[OP_SETATTR] = {
+ 		.op_func = (nfsd4op_func)nfsd4_setattr,
+ 	},
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index b0bfbda375e1..864498f8f2d9 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -56,6 +56,7 @@
+ #include &lt;linux/nfsd_idmap.h&gt;
+ #include &lt;linux/nfs4.h&gt;
+ #include &lt;linux/nfs4_acl.h&gt;
++#include &lt;linux/sunrpc/gss_api.h&gt;
+ 
+ #define NFSDDBG_FACILITY		NFSDDBG_XDR
+ 
+@@ -818,6 +819,23 @@ nfsd4_decode_renew(struct nfsd4_compoundargs *argp, clientid_t *clientid)
+ 	DECODE_TAIL;
+ }
+ 
++static __be32
++nfsd4_decode_secinfo(struct nfsd4_compoundargs *argp,
++		     struct nfsd4_secinfo *secinfo)
++{
++	DECODE_HEAD;
++
++	READ_BUF(4);
++	READ32(secinfo-&gt;si_namelen);
++	READ_BUF(secinfo-&gt;si_namelen);
++	SAVEMEM(secinfo-&gt;si_name, secinfo-&gt;si_namelen);
++	status = check_filename(secinfo-&gt;si_name, secinfo-&gt;si_namelen,
++								nfserr_noent);
++	if (status)
++		return status;
++	DECODE_TAIL;
++}
++
+ static __be32
+ nfsd4_decode_setattr(struct nfsd4_compoundargs *argp, struct nfsd4_setattr *setattr)
+ {
+@@ -1131,6 +1149,9 @@ nfsd4_decode_compound(struct nfsd4_compoundargs *argp)
+ 		case OP_SAVEFH:
+ 			op-&gt;status = nfs_ok;
+ 			break;
++		case OP_SECINFO:
++			op-&gt;status = nfsd4_decode_secinfo(argp, &amp;op-&gt;u.secinfo);
++			break;
+ 		case OP_SETATTR:
+ 			op-&gt;status = nfsd4_decode_setattr(argp, &amp;op-&gt;u.setattr);
+ 			break;
+@@ -1847,11 +1868,19 @@ nfsd4_encode_dirent_fattr(struct nfsd4_readdir *cd,
+ 	if (d_mountpoint(dentry)) {
+ 		int err;
+ 
++		/*
++		 * Why the heck aren't we just using nfsd_lookup??
++		 * Different "."/".." handling?  Something else?
++		 * At least, add a comment here to explain....
++		 */
+ 		err = nfsd_cross_mnt(cd-&gt;rd_rqstp, &amp;dentry, &amp;exp);
+ 		if (err) {
+ 			nfserr = nfserrno(err);
+ 			goto out_put;
+ 		}
++		nfserr = check_nfsd_access(exp, cd-&gt;rd_rqstp);
++		if (nfserr)
++			goto out_put;
+ 
+ 	}
+ 	nfserr = nfsd4_encode_fattr(NULL, exp, dentry, p, buflen, cd-&gt;rd_bmval,
+@@ -2419,6 +2448,49 @@ nfsd4_encode_rename(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_
+ 	}
+ }
+ 
++static void
++nfsd4_encode_secinfo(struct nfsd4_compoundres *resp, int nfserr,
++		     struct nfsd4_secinfo *secinfo)
++{
++	int i = 0;
++	struct svc_export *exp = secinfo-&gt;si_exp;
++	ENCODE_HEAD;
++
++	if (nfserr)
++		goto out;
++	RESERVE_SPACE(4);
++	WRITE32(exp-&gt;ex_nflavors);
++	ADJUST_ARGS();
++	for (i = 0; i &lt; exp-&gt;ex_nflavors; i++) {
++		u32 flav = exp-&gt;ex_flavors[i].pseudoflavor;
++		struct gss_api_mech *gm = gss_mech_get_by_pseudoflavor(flav);
++
++		if (gm) {
++			RESERVE_SPACE(4);
++			WRITE32(RPC_AUTH_GSS);
++			ADJUST_ARGS();
++			RESERVE_SPACE(4 + gm-&gt;gm_oid.len);
++			WRITE32(gm-&gt;gm_oid.len);
++			WRITEMEM(gm-&gt;gm_oid.data, gm-&gt;gm_oid.len);
++			ADJUST_ARGS();
++			RESERVE_SPACE(4);
++			WRITE32(0); /* qop */
++			ADJUST_ARGS();
++			RESERVE_SPACE(4);
++			WRITE32(gss_pseudoflavor_to_service(gm, flav));
++			ADJUST_ARGS();
++			gss_mech_put(gm);
++		} else {
++			RESERVE_SPACE(4);
++			WRITE32(flav);
++			ADJUST_ARGS();
++		}
++	}
++out:
++	if (exp)
++		exp_put(exp);
++}
++
+ /*
+  * The SETATTR encode routine is special -- it always encodes a bitmap,
+  * regardless of the error status.
+@@ -2559,6 +2631,9 @@ nfsd4_encode_operation(struct nfsd4_compoundres *resp, struct nfsd4_op *op)
+ 		break;
+ 	case OP_SAVEFH:
+ 		break;
++	case OP_SECINFO:
++		nfsd4_encode_secinfo(resp, op-&gt;status, &amp;op-&gt;u.secinfo);
++		break;
+ 	case OP_SETATTR:
+ 		nfsd4_encode_setattr(resp, op-&gt;status, &amp;op-&gt;u.setattr);
+ 		break;
+diff --git a/include/linux/nfsd/nfsd.h b/include/linux/nfsd/nfsd.h
+index 54ef1a18a56c..e452256d3f72 100644
+--- a/include/linux/nfsd/nfsd.h
++++ b/include/linux/nfsd/nfsd.h
+@@ -71,6 +71,9 @@ int		nfsd_cross_mnt(struct svc_rqst *rqstp, struct dentry **dpp,
+ 		                struct svc_export **expp);
+ __be32		nfsd_lookup(struct svc_rqst *, struct svc_fh *,
+ 				const char *, int, struct svc_fh *);
++__be32		 nfsd_lookup_dentry(struct svc_rqst *, struct svc_fh *,
++				const char *, int,
++				struct svc_export **, struct dentry **);
+ __be32		nfsd_setattr(struct svc_rqst *, struct svc_fh *,
+ 				struct iattr *, int, time_t);
+ #ifdef CONFIG_NFSD_V4
+diff --git a/include/linux/nfsd/xdr4.h b/include/linux/nfsd/xdr4.h
+index 09799bcee0ac..1b653267133a 100644
+--- a/include/linux/nfsd/xdr4.h
++++ b/include/linux/nfsd/xdr4.h
+@@ -293,6 +293,12 @@ struct nfsd4_rename {
+ 	struct nfsd4_change_info  rn_tinfo; /* response */
+ };
+ 
++struct nfsd4_secinfo {
++	u32 si_namelen;					/* request */
++	char *si_name;					/* request */
++	struct svc_export *si_exp;			/* response */
++};
++
+ struct nfsd4_setattr {
+ 	stateid_t	sa_stateid;         /* request */
+ 	u32		sa_bmval[2];        /* request */
+@@ -365,6 +371,7 @@ struct nfsd4_op {
+ 		struct nfsd4_remove		remove;
+ 		struct nfsd4_rename		rename;
+ 		clientid_t			renew;
++		struct nfsd4_secinfo		secinfo;
+ 		struct nfsd4_setattr		setattr;
+ 		struct nfsd4_setclientid	setclientid;
+ 		struct nfsd4_setclientid_confirm setclientid_confirm;</pre><hr><pre>commit 91fe39d35ebd6adaece4e090f6b1a3e4b6a59c97
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jul 17 04:04:49 2007 -0700
+
+    knfsd: nfsd: display export secinfo information
+    
+    Add secinfo information to the display in proc/net/sunrpc/nfsd.export/content.
+    
+    Signed-off-by: "J. Bruce Fields" &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/export.c b/fs/nfsd/export.c
+index 06d5cd4a52c4..c7bbf460b009 100644
+--- a/fs/nfsd/export.c
++++ b/fs/nfsd/export.c
+@@ -641,6 +641,7 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
+ 
+ static void exp_flags(struct seq_file *m, int flag, int fsid,
+ 		uid_t anonu, uid_t anong, struct nfsd4_fs_locations *fslocs);
++static void show_secinfo(struct seq_file *m, struct svc_export *exp);
+ 
+ static int svc_export_show(struct seq_file *m,
+ 			   struct cache_detail *cd,
+@@ -670,6 +671,7 @@ static int svc_export_show(struct seq_file *m,
+ 				seq_printf(m, "%02x", exp-&gt;ex_uuid[i]);
+ 			}
+ 		}
++		show_secinfo(m, exp);
+ 	}
+ 	seq_puts(m, ")\n");
+ 	return 0;
+@@ -1467,6 +1469,33 @@ static void show_expflags(struct seq_file *m, int flags, int mask)
+ 	}
+ }
+ 
++static void show_secinfo_flags(struct seq_file *m, int flags)
++{
++	seq_printf(m, ",");
++	show_expflags(m, flags, NFSEXP_SECINFO_FLAGS);
++}
++
++static void show_secinfo(struct seq_file *m, struct svc_export *exp)
++{
++	struct exp_flavor_info *f;
++	struct exp_flavor_info *end = exp-&gt;ex_flavors + exp-&gt;ex_nflavors;
++	int lastflags = 0, first = 0;
++
++	if (exp-&gt;ex_nflavors == 0)
++		return;
++	for (f = exp-&gt;ex_flavors; f &lt; end; f++) {
++		if (first || f-&gt;flags != lastflags) {
++			if (!first)
++				show_secinfo_flags(m, lastflags);
++			seq_printf(m, ",sec=%d", f-&gt;pseudoflavor);
++			lastflags = f-&gt;flags;
++		} else {
++			seq_printf(m, ":%d", f-&gt;pseudoflavor);
++		}
++	}
++	show_secinfo_flags(m, lastflags);
++}
++
+ static void exp_flags(struct seq_file *m, int flag, int fsid,
+ 		uid_t anonu, uid_t anong, struct nfsd4_fs_locations *fsloc)
+ {</pre><hr><pre>commit ac34cdb03dfdb8cdc824f41f577434c5c2521155
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jul 17 04:04:49 2007 -0700
+
+    knfsd: nfsd: factor out code from show_expflags
+    
+    Factor out some code to be shared by secinfo display code.  Remove some
+    unnecessary conditional printing of commas where we know the condition is
+    true.
+    
+    Signed-off-by: "J. Bruce Fields" &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/export.c b/fs/nfsd/export.c
+index 323cbdcc9bfd..06d5cd4a52c4 100644
+--- a/fs/nfsd/export.c
++++ b/fs/nfsd/export.c
+@@ -1453,28 +1453,35 @@ static struct flags {
+ 	{ 0, {"", ""}}
+ };
+ 
+-static void exp_flags(struct seq_file *m, int flag, int fsid,
+-		uid_t anonu, uid_t anong, struct nfsd4_fs_locations *fsloc)
++static void show_expflags(struct seq_file *m, int flags, int mask)
+ {
+-	int first = 0;
+ 	struct flags *flg;
++	int state, first = 0;
+ 
+ 	for (flg = expflags; flg-&gt;flag; flg++) {
+-		int state = (flg-&gt;flag &amp; flag)?0:1;
++		if (flg-&gt;flag &amp; ~mask)
++			continue;
++		state = (flg-&gt;flag &amp; flags) ? 0 : 1;
+ 		if (*flg-&gt;name[state])
+ 			seq_printf(m, "%s%s", first++?",":"", flg-&gt;name[state]);
+ 	}
++}
++
++static void exp_flags(struct seq_file *m, int flag, int fsid,
++		uid_t anonu, uid_t anong, struct nfsd4_fs_locations *fsloc)
++{
++	show_expflags(m, flag, NFSEXP_ALLFLAGS);
+ 	if (flag &amp; NFSEXP_FSID)
+-		seq_printf(m, "%sfsid=%d", first++?",":"", fsid);
++		seq_printf(m, ",fsid=%d", fsid);
+ 	if (anonu != (uid_t)-2 &amp;&amp; anonu != (0x10000-2))
+-		seq_printf(m, "%sanonuid=%d", first++?",":"", anonu);
++		seq_printf(m, ",sanonuid=%d", anonu);
+ 	if (anong != (gid_t)-2 &amp;&amp; anong != (0x10000-2))
+-		seq_printf(m, "%sanongid=%d", first++?",":"", anong);
++		seq_printf(m, ",sanongid=%d", anong);
+ 	if (fsloc &amp;&amp; fsloc-&gt;locations_count &gt; 0) {
+ 		char *loctype = (fsloc-&gt;migrated) ? "refer" : "replicas";
+ 		int i;
+ 
+-		seq_printf(m, "%s%s=", first++?",":"", loctype);
++		seq_printf(m, ",%s=", loctype);
+ 		seq_escape(m, fsloc-&gt;locations[0].path, ",;@ \t\n\\");
+ 		seq_putc(m, '@');
+ 		seq_escape(m, fsloc-&gt;locations[0].hosts, ",;@ \t\n\\");</pre><hr><pre>commit 0ec757df9743025f14190d6034d8bd2bf37c2dd1
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jul 17 04:04:48 2007 -0700
+
+    knfsd: nfsd4: make readonly access depend on pseudoflavor
+    
+    Allow readonly access to vary depending on the pseudoflavor, using the flag
+    passed with each pseudoflavor in the export downcall.  The rest of the flags
+    are ignored for now, though some day we might also allow id squashing to vary
+    based on the flavor.
+    
+    Signed-off-by: "J. Bruce Fields" &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/nfsfh.c b/fs/nfsd/nfsfh.c
+index d5fe392b14fb..8d2b49914843 100644
+--- a/fs/nfsd/nfsfh.c
++++ b/fs/nfsd/nfsfh.c
+@@ -255,7 +255,7 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 		goto out;
+ 
+ 	/* Finally, check access permissions. */
+-	error = nfsd_permission(exp, dentry, access);
++	error = nfsd_permission(rqstp, exp, dentry, access);
+ 
+ 	if (error) {
+ 		dprintk("fh_verify: %s/%s permission failure, "
+diff --git a/fs/nfsd/nfsproc.c b/fs/nfsd/nfsproc.c
+index b2c7147aa921..977a71f64e19 100644
+--- a/fs/nfsd/nfsproc.c
++++ b/fs/nfsd/nfsproc.c
+@@ -278,7 +278,8 @@ nfsd_proc_create(struct svc_rqst *rqstp, struct nfsd_createargs *argp,
+ 					 *   echo thing &gt; device-special-file-or-pipe
+ 					 * by doing a CREATE with type==0
+ 					 */
+-					nfserr = nfsd_permission(newfhp-&gt;fh_export,
++					nfserr = nfsd_permission(rqstp,
++								 newfhp-&gt;fh_export,
+ 								 newfhp-&gt;fh_dentry,
+ 								 MAY_WRITE|MAY_LOCAL_ACCESS);
+ 					if (nfserr &amp;&amp; nfserr != nfserr_rofs)
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 8e109e586a74..e90f4a8a1d01 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -328,7 +328,7 @@ nfsd_setattr(struct svc_rqst *rqstp, struct svc_fh *fhp, struct iattr *iap,
+ 	/* The size case is special. It changes the file as well as the attributes.  */
+ 	if (iap-&gt;ia_valid &amp; ATTR_SIZE) {
+ 		if (iap-&gt;ia_size &lt; inode-&gt;i_size) {
+-			err = nfsd_permission(fhp-&gt;fh_export, dentry, MAY_TRUNC|MAY_OWNER_OVERRIDE);
++			err = nfsd_permission(rqstp, fhp-&gt;fh_export, dentry, MAY_TRUNC|MAY_OWNER_OVERRIDE);
+ 			if (err)
+ 				goto out;
+ 		}
+@@ -616,7 +616,7 @@ nfsd_access(struct svc_rqst *rqstp, struct svc_fh *fhp, u32 *access, u32 *suppor
+ 
+ 			sresult |= map-&gt;access;
+ 
+-			err2 = nfsd_permission(export, dentry, map-&gt;how);
++			err2 = nfsd_permission(rqstp, export, dentry, map-&gt;how);
+ 			switch (err2) {
+ 			case nfs_ok:
+ 				result |= map-&gt;access;
+@@ -1043,7 +1043,7 @@ nfsd_read(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
+ 	__be32		err;
+ 
+ 	if (file) {
+-		err = nfsd_permission(fhp-&gt;fh_export, fhp-&gt;fh_dentry,
++		err = nfsd_permission(rqstp, fhp-&gt;fh_export, fhp-&gt;fh_dentry,
+ 				MAY_READ|MAY_OWNER_OVERRIDE);
+ 		if (err)
+ 			goto out;
+@@ -1072,7 +1072,7 @@ nfsd_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
+ 	__be32			err = 0;
+ 
+ 	if (file) {
+-		err = nfsd_permission(fhp-&gt;fh_export, fhp-&gt;fh_dentry,
++		err = nfsd_permission(rqstp, fhp-&gt;fh_export, fhp-&gt;fh_dentry,
+ 				MAY_WRITE|MAY_OWNER_OVERRIDE);
+ 		if (err)
+ 			goto out;
+@@ -1801,7 +1801,8 @@ nfsd_statfs(struct svc_rqst *rqstp, struct svc_fh *fhp, struct kstatfs *stat)
+  * Check for a user's access permissions to this inode.
+  */
+ __be32
+-nfsd_permission(struct svc_export *exp, struct dentry *dentry, int acc)
++nfsd_permission(struct svc_rqst *rqstp, struct svc_export *exp,
++					struct dentry *dentry, int acc)
+ {
+ 	struct inode	*inode = dentry-&gt;d_inode;
+ 	int		err;
+@@ -1832,7 +1833,7 @@ nfsd_permission(struct svc_export *exp, struct dentry *dentry, int acc)
+ 	 */
+ 	if (!(acc &amp; MAY_LOCAL_ACCESS))
+ 		if (acc &amp; (MAY_WRITE | MAY_SATTR | MAY_TRUNC)) {
+-			if (EX_RDONLY(exp) || IS_RDONLY(inode))
++			if (EX_RDONLY(exp, rqstp) || IS_RDONLY(inode))
+ 				return nfserr_rofs;
+ 			if (/* (acc &amp; MAY_WRITE) &amp;&amp; */ IS_IMMUTABLE(inode))
+ 				return nfserr_perm;
+diff --git a/include/linux/nfsd/export.h b/include/linux/nfsd/export.h
+index 424be41130ba..a01f775cb944 100644
+--- a/include/linux/nfsd/export.h
++++ b/include/linux/nfsd/export.h
+@@ -112,10 +112,21 @@ struct svc_expkey {
+ 
+ #define EX_SECURE(exp)		(!((exp)-&gt;ex_flags &amp; NFSEXP_INSECURE_PORT))
+ #define EX_ISSYNC(exp)		(!((exp)-&gt;ex_flags &amp; NFSEXP_ASYNC))
+-#define EX_RDONLY(exp)		((exp)-&gt;ex_flags &amp; NFSEXP_READONLY)
+ #define EX_NOHIDE(exp)		((exp)-&gt;ex_flags &amp; NFSEXP_NOHIDE)
+ #define EX_WGATHER(exp)		((exp)-&gt;ex_flags &amp; NFSEXP_GATHERED_WRITES)
+ 
++static inline int EX_RDONLY(struct svc_export *exp, struct svc_rqst *rqstp)
++{
++	struct exp_flavor_info *f;
++	struct exp_flavor_info *end = exp-&gt;ex_flavors + exp-&gt;ex_nflavors;
++
++	for (f = exp-&gt;ex_flavors; f &lt; end; f++) {
++		if (f-&gt;pseudoflavor == rqstp-&gt;rq_flavor)
++			return f-&gt;flags &amp; NFSEXP_READONLY;
++	}
++	return exp-&gt;ex_flags &amp; NFSEXP_READONLY;
++}
++
+ __be32 check_nfsd_access(struct svc_export *exp, struct svc_rqst *rqstp);
+ 
+ /*
+diff --git a/include/linux/nfsd/nfsd.h b/include/linux/nfsd/nfsd.h
+index 62499c2f0918..54ef1a18a56c 100644
+--- a/include/linux/nfsd/nfsd.h
++++ b/include/linux/nfsd/nfsd.h
+@@ -119,7 +119,8 @@ __be32		nfsd_statfs(struct svc_rqst *, struct svc_fh *,
+ 				struct kstatfs *);
+ 
+ int		nfsd_notify_change(struct inode *, struct iattr *);
+-__be32		nfsd_permission(struct svc_export *, struct dentry *, int);
++__be32		nfsd_permission(struct svc_rqst *, struct svc_export *,
++				struct dentry *, int);
+ int		nfsd_sync_dir(struct dentry *dp);
+ 
+ #if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)</pre><hr><pre>commit 32c1eb0cd7ee00b5eb7b6f7059c635fbc1052966
+Author: Andy Adamson &lt;andros@citi.umich.edu&gt;
+Date:   Tue Jul 17 04:04:48 2007 -0700
+
+    knfsd: nfsd4: return nfserr_wrongsec
+    
+    Make the first actual use of the secinfo information by using it to return
+    nfserr_wrongsec when an export is found that doesn't allow the flavor used on
+    this request.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Andy Adamson &lt;andros@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/export.c b/fs/nfsd/export.c
+index 4537a8f5cb9a..323cbdcc9bfd 100644
+--- a/fs/nfsd/export.c
++++ b/fs/nfsd/export.c
+@@ -1228,6 +1228,28 @@ exp_find(struct auth_domain *clp, int fsid_type, u32 *fsidv,
+ 	return exp;
+ }
+ 
++__be32 check_nfsd_access(struct svc_export *exp, struct svc_rqst *rqstp)
++{
++	struct exp_flavor_info *f;
++	struct exp_flavor_info *end = exp-&gt;ex_flavors + exp-&gt;ex_nflavors;
++
++	/* legacy gss-only clients are always OK: */
++	if (exp-&gt;ex_client == rqstp-&gt;rq_gssclient)
++		return 0;
++	/* ip-address based client; check sec= export option: */
++	for (f = exp-&gt;ex_flavors; f &lt; end; f++) {
++		if (f-&gt;pseudoflavor == rqstp-&gt;rq_flavor)
++			return 0;
++	}
++	/* defaults in absence of sec= options: */
++	if (exp-&gt;ex_nflavors == 0) {
++		if (rqstp-&gt;rq_flavor == RPC_AUTH_NULL ||
++		    rqstp-&gt;rq_flavor == RPC_AUTH_UNIX)
++			return 0;
++	}
++	return nfserr_wrongsec;
++}
++
+ /*
+  * Uses rq_client and rq_gssclient to find an export; uses rq_client (an
+  * auth_unix client) if it's available and has secinfo information;
+@@ -1340,6 +1362,10 @@ exp_pseudoroot(struct svc_rqst *rqstp, struct svc_fh *fhp)
+ 	if (IS_ERR(exp))
+ 		return nfserrno(PTR_ERR(exp));
+ 	rv = fh_compose(fhp, exp, exp-&gt;ex_dentry, NULL);
++	if (rv)
++		goto out;
++	rv = check_nfsd_access(exp, rqstp);
++out:
+ 	exp_put(exp);
+ 	return rv;
+ }
+diff --git a/fs/nfsd/nfsfh.c b/fs/nfsd/nfsfh.c
+index 22cb5be79ad0..d5fe392b14fb 100644
+--- a/fs/nfsd/nfsfh.c
++++ b/fs/nfsd/nfsfh.c
+@@ -20,6 +20,7 @@
+ 
+ #include &lt;linux/sunrpc/clnt.h&gt;
+ #include &lt;linux/sunrpc/svc.h&gt;
++#include &lt;linux/sunrpc/svcauth_gss.h&gt;
+ #include &lt;linux/nfsd/nfsd.h&gt;
+ 
+ #define NFSDDBG_FACILITY		NFSDDBG_FH
+@@ -248,6 +249,11 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 	if (error)
+ 		goto out;
+ 
++	/* Check security flavor */
++	error = check_nfsd_access(exp, rqstp);
++	if (error)
++		goto out;
++
+ 	/* Finally, check access permissions. */
+ 	error = nfsd_permission(exp, dentry, access);
+ 
+diff --git a/fs/nfsd/nfssvc.c b/fs/nfsd/nfssvc.c
+index 5c8192bcbced..a8c89ae4c743 100644
+--- a/fs/nfsd/nfssvc.c
++++ b/fs/nfsd/nfssvc.c
+@@ -494,6 +494,15 @@ nfsd(struct svc_rqst *rqstp)
+ 	module_put_and_exit(0);
+ }
+ 
++static __be32 map_new_errors(u32 vers, __be32 nfserr)
++{
++	if (nfserr == nfserr_jukebox &amp;&amp; vers == 2)
++		return nfserr_dropit;
++	if (nfserr == nfserr_wrongsec &amp;&amp; vers &lt; 4)
++		return nfserr_acces;
++	return nfserr;
++}
++
+ int
+ nfsd_dispatch(struct svc_rqst *rqstp, __be32 *statp)
+ {
+@@ -536,6 +545,7 @@ nfsd_dispatch(struct svc_rqst *rqstp, __be32 *statp)
+ 
+ 	/* Now call the procedure handler, and encode NFS status. */
+ 	nfserr = proc-&gt;pc_func(rqstp, rqstp-&gt;rq_argp, rqstp-&gt;rq_resp);
++	nfserr = map_new_errors(rqstp-&gt;rq_vers, nfserr);
+ 	if (nfserr == nfserr_jukebox &amp;&amp; rqstp-&gt;rq_vers == 2)
+ 		nfserr = nfserr_dropit;
+ 	if (nfserr == nfserr_dropit) {
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 627f460a4007..8e109e586a74 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -240,6 +240,9 @@ nfsd_lookup(struct svc_rqst *rqstp, struct svc_fh *fhp, const char *name,
+ 	err = nfsd_lookup_dentry(rqstp, fhp, name, len, &amp;exp, &amp;dentry);
+ 	if (err)
+ 		return err;
++	err = check_nfsd_access(exp, rqstp);
++	if (err)
++		goto out;
+ 	/*
+ 	 * Note: we compose the file handle now, but as the
+ 	 * dentry may be negative, it may need to be updated.
+@@ -247,6 +250,7 @@ nfsd_lookup(struct svc_rqst *rqstp, struct svc_fh *fhp, const char *name,
+ 	err = fh_compose(resfh, exp, dentry, fhp);
+ 	if (!err &amp;&amp; !dentry-&gt;d_inode)
+ 		err = nfserr_noent;
++out:
+ 	dput(dentry);
+ 	exp_put(exp);
+ 	return err;
+diff --git a/include/linux/nfsd/export.h b/include/linux/nfsd/export.h
+index 1ba53e524749..424be41130ba 100644
+--- a/include/linux/nfsd/export.h
++++ b/include/linux/nfsd/export.h
+@@ -116,6 +116,7 @@ struct svc_expkey {
+ #define EX_NOHIDE(exp)		((exp)-&gt;ex_flags &amp; NFSEXP_NOHIDE)
+ #define EX_WGATHER(exp)		((exp)-&gt;ex_flags &amp; NFSEXP_GATHERED_WRITES)
+ 
++__be32 check_nfsd_access(struct svc_export *exp, struct svc_rqst *rqstp);
+ 
+ /*
+  * Function declarations
+diff --git a/include/linux/nfsd/nfsd.h b/include/linux/nfsd/nfsd.h
+index ce5e345a9bce..62499c2f0918 100644
+--- a/include/linux/nfsd/nfsd.h
++++ b/include/linux/nfsd/nfsd.h
+@@ -236,6 +236,7 @@ void		nfsd_lockd_shutdown(void);
+ #define	nfserr_badname		__constant_htonl(NFSERR_BADNAME)
+ #define	nfserr_cb_path_down	__constant_htonl(NFSERR_CB_PATH_DOWN)
+ #define	nfserr_locked		__constant_htonl(NFSERR_LOCKED)
++#define	nfserr_wrongsec		__constant_htonl(NFSERR_WRONGSEC)
+ #define	nfserr_replay_me	__constant_htonl(NFSERR_REPLAY_ME)
+ 
+ /* error codes for internal use */</pre><hr><pre>commit 6c0a654dceaa4342270306de77eadb0173dfb58a
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jul 17 04:04:47 2007 -0700
+
+    knfsd: nfsd: factor nfsd_lookup into 2 pieces
+    
+    Factor nfsd_lookup into nfsd_lookup_dentry, which finds the right dentry and
+    export, and a second part which composes the filehandle (and which will later
+    check the security flavor on the new export).
+    
+    No change in behavior.
+    
+    Signed-off-by: "J. Bruce Fields" &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 65043af232ee..627f460a4007 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -135,21 +135,10 @@ nfsd_cross_mnt(struct svc_rqst *rqstp, struct dentry **dpp,
+ 	return err;
+ }
+ 
+-/*
+- * Look up one component of a pathname.
+- * N.B. After this call _both_ fhp and resfh need an fh_put
+- *
+- * If the lookup would cross a mountpoint, and the mounted filesystem
+- * is exported to the client with NFSEXP_NOHIDE, then the lookup is
+- * accepted as it stands and the mounted directory is
+- * returned. Otherwise the covered directory is returned.
+- * NOTE: this mountpoint crossing is not supported properly by all
+- *   clients and is explicitly disallowed for NFSv3
+- *      NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+- */
+ __be32
+-nfsd_lookup(struct svc_rqst *rqstp, struct svc_fh *fhp, const char *name,
+-					int len, struct svc_fh *resfh)
++nfsd_lookup_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp,
++		   const char *name, int len,
++		   struct svc_export **exp_ret, struct dentry **dentry_ret)
+ {
+ 	struct svc_export	*exp;
+ 	struct dentry		*dparent;
+@@ -219,6 +208,38 @@ nfsd_lookup(struct svc_rqst *rqstp, struct svc_fh *fhp, const char *name,
+ 			}
+ 		}
+ 	}
++	*dentry_ret = dentry;
++	*exp_ret = exp;
++	return 0;
++
++out_nfserr:
++	exp_put(exp);
++	return nfserrno(host_err);
++}
++
++/*
++ * Look up one component of a pathname.
++ * N.B. After this call _both_ fhp and resfh need an fh_put
++ *
++ * If the lookup would cross a mountpoint, and the mounted filesystem
++ * is exported to the client with NFSEXP_NOHIDE, then the lookup is
++ * accepted as it stands and the mounted directory is
++ * returned. Otherwise the covered directory is returned.
++ * NOTE: this mountpoint crossing is not supported properly by all
++ *   clients and is explicitly disallowed for NFSv3
++ *      NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
++ */
++__be32
++nfsd_lookup(struct svc_rqst *rqstp, struct svc_fh *fhp, const char *name,
++					int len, struct svc_fh *resfh)
++{
++	struct svc_export	*exp;
++	struct dentry		*dentry;
++	__be32 err;
++
++	err = nfsd_lookup_dentry(rqstp, fhp, name, len, &amp;exp, &amp;dentry);
++	if (err)
++		return err;
+ 	/*
+ 	 * Note: we compose the file handle now, but as the
+ 	 * dentry may be negative, it may need to be updated.
+@@ -227,15 +248,11 @@ nfsd_lookup(struct svc_rqst *rqstp, struct svc_fh *fhp, const char *name,
+ 	if (!err &amp;&amp; !dentry-&gt;d_inode)
+ 		err = nfserr_noent;
+ 	dput(dentry);
+-out:
+ 	exp_put(exp);
+ 	return err;
+-
+-out_nfserr:
+-	err = nfserrno(host_err);
+-	goto out;
+ }
+ 
++
+ /*
+  * Set various file attributes.
+  * N.B. After this call fhp needs an fh_put</pre><hr><pre>commit 2ea2209f073dc7049bd285b4f5dbc0aa273f9746
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jul 17 04:04:46 2007 -0700
+
+    knfsd: nfsd: use ip-address-based domain in secinfo case
+    
+    With this patch, we fall back on using the gss/pseudoflavor only if we fail to
+    find a matching auth_unix export that has a secinfo list.
+    
+    As long as sec= options aren't used, there's still no change in behavior here
+    (except possibly for some additional auth_unix cache lookups, whose results
+    will be ignored).
+    
+    The sec= option, however, is not actually enforced yet; later patches will add
+    the necessary checks.
+    
+    Signed-off-by: "J. Bruce Fields" &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/export.c b/fs/nfsd/export.c
+index ac225a79376c..4537a8f5cb9a 100644
+--- a/fs/nfsd/export.c
++++ b/fs/nfsd/export.c
+@@ -1229,6 +1229,10 @@ exp_find(struct auth_domain *clp, int fsid_type, u32 *fsidv,
+ }
+ 
+ /*
++ * Uses rq_client and rq_gssclient to find an export; uses rq_client (an
++ * auth_unix client) if it's available and has secinfo information;
++ * otherwise, will try to use rq_gssclient.
++ *
+  * Called from functions that handle requests; functions that do work on
+  * behalf of mountd are passed a single client name to use, and should
+  * use exp_get_by_name() or exp_find().
+@@ -1237,29 +1241,83 @@ struct svc_export *
+ rqst_exp_get_by_name(struct svc_rqst *rqstp, struct vfsmount *mnt,
+ 		struct dentry *dentry)
+ {
+-	struct auth_domain *clp;
++	struct svc_export *gssexp, *exp = NULL;
++
++	if (rqstp-&gt;rq_client == NULL)
++		goto gss;
+ 
+-	clp = rqstp-&gt;rq_gssclient ? rqstp-&gt;rq_gssclient : rqstp-&gt;rq_client;
+-	return exp_get_by_name(clp, mnt, dentry, &amp;rqstp-&gt;rq_chandle);
++	/* First try the auth_unix client: */
++	exp = exp_get_by_name(rqstp-&gt;rq_client, mnt, dentry,
++						&amp;rqstp-&gt;rq_chandle);
++	if (PTR_ERR(exp) == -ENOENT)
++		goto gss;
++	if (IS_ERR(exp))
++		return exp;
++	/* If it has secinfo, assume there are no gss/... clients */
++	if (exp-&gt;ex_nflavors &gt; 0)
++		return exp;
++gss:
++	/* Otherwise, try falling back on gss client */
++	if (rqstp-&gt;rq_gssclient == NULL)
++		return exp;
++	gssexp = exp_get_by_name(rqstp-&gt;rq_gssclient, mnt, dentry,
++						&amp;rqstp-&gt;rq_chandle);
++	if (PTR_ERR(gssexp) == -ENOENT)
++		return exp;
++	if (exp &amp;&amp; !IS_ERR(exp))
++		exp_put(exp);
++	return gssexp;
+ }
+ 
+ struct svc_export *
+ rqst_exp_find(struct svc_rqst *rqstp, int fsid_type, u32 *fsidv)
+ {
+-	struct auth_domain *clp;
++	struct svc_export *gssexp, *exp = NULL;
++
++	if (rqstp-&gt;rq_client == NULL)
++		goto gss;
+ 
+-	clp = rqstp-&gt;rq_gssclient ? rqstp-&gt;rq_gssclient : rqstp-&gt;rq_client;
+-	return exp_find(clp, fsid_type, fsidv, &amp;rqstp-&gt;rq_chandle);
++	/* First try the auth_unix client: */
++	exp = exp_find(rqstp-&gt;rq_client, fsid_type, fsidv, &amp;rqstp-&gt;rq_chandle);
++	if (PTR_ERR(exp) == -ENOENT)
++		goto gss;
++	if (IS_ERR(exp))
++		return exp;
++	/* If it has secinfo, assume there are no gss/... clients */
++	if (exp-&gt;ex_nflavors &gt; 0)
++		return exp;
++gss:
++	/* Otherwise, try falling back on gss client */
++	if (rqstp-&gt;rq_gssclient == NULL)
++		return exp;
++	gssexp = exp_find(rqstp-&gt;rq_gssclient, fsid_type, fsidv,
++						&amp;rqstp-&gt;rq_chandle);
++	if (PTR_ERR(gssexp) == -ENOENT)
++		return exp;
++	if (exp &amp;&amp; !IS_ERR(exp))
++		exp_put(exp);
++	return gssexp;
+ }
+ 
+ struct svc_export *
+ rqst_exp_parent(struct svc_rqst *rqstp, struct vfsmount *mnt,
+ 		struct dentry *dentry)
+ {
+-	struct auth_domain *clp;
++	struct svc_export *exp;
+ 
+-	clp = rqstp-&gt;rq_gssclient ? rqstp-&gt;rq_gssclient : rqstp-&gt;rq_client;
+-	return exp_parent(rqstp-&gt;rq_client, mnt, dentry, &amp;rqstp-&gt;rq_chandle);
++	dget(dentry);
++	exp = rqst_exp_get_by_name(rqstp, mnt, dentry);
++
++	while (PTR_ERR(exp) == -ENOENT &amp;&amp; !IS_ROOT(dentry)) {
++		struct dentry *parent;
++
++		parent = dget_parent(dentry);
++		dput(dentry);
++		dentry = parent;
++		exp = rqst_exp_get_by_name(rqstp, mnt, dentry);
++	}
++	dput(dentry);
++	return exp;
+ }
+ 
+ /*</pre><hr><pre>commit 3ab4d8b1215d61736e2a9a26bea7cc2e6b029e3d
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jul 17 04:04:46 2007 -0700
+
+    knfsd: nfsd: set rq_client to ip-address-determined-domain
+    
+    We want it to be possible for users to restrict exports both by IP address and
+    by pseudoflavor.  The pseudoflavor information has previously been passed
+    using special auth_domains stored in the rq_client field.  After the preceding
+    patch that stored the pseudoflavor in rq_pflavor, that's now superfluous; so
+    now we use rq_client for the ip information, as auth_null and auth_unix do.
+    
+    However, we keep around the special auth_domain in the rq_gssclient field for
+    backwards compatibility purposes, so we can still do upcalls using the old
+    "gss/pseudoflavor" auth_domain if upcalls using the unix domain to give us an
+    appropriate export.  This allows us to continue supporting old mountd.
+    
+    In fact, for this first patch, we always use the "gss/pseudoflavor"
+    auth_domain (and only it) if it is available; thus rq_client is ignored in the
+    auth_gss case, and this patch on its own makes no change in behavior; that
+    will be left to later patches.
+    
+    Note on idmap: I'm almost tempted to just replace the auth_domain in the idmap
+    upcall by a dummy value--no version of idmapd has ever used it, and it's
+    unlikely anyone really wants to perform idmapping differently depending on the
+    where the client is (they may want to perform *credential* mapping
+    differently, but that's a different matter--the idmapper just handles id's
+    used in getattr and setattr).  But I'm updating the idmapd code anyway, just
+    out of general backwards-compatibility paranoia.
+    
+    Signed-off-by: "J. Bruce Fields" &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/export.c b/fs/nfsd/export.c
+index 9b569af695ab..ac225a79376c 100644
+--- a/fs/nfsd/export.c
++++ b/fs/nfsd/export.c
+@@ -1237,21 +1237,28 @@ struct svc_export *
+ rqst_exp_get_by_name(struct svc_rqst *rqstp, struct vfsmount *mnt,
+ 		struct dentry *dentry)
+ {
+-	return exp_get_by_name(rqstp-&gt;rq_client, mnt, dentry,
+-						&amp;rqstp-&gt;rq_chandle);
++	struct auth_domain *clp;
++
++	clp = rqstp-&gt;rq_gssclient ? rqstp-&gt;rq_gssclient : rqstp-&gt;rq_client;
++	return exp_get_by_name(clp, mnt, dentry, &amp;rqstp-&gt;rq_chandle);
+ }
+ 
+ struct svc_export *
+ rqst_exp_find(struct svc_rqst *rqstp, int fsid_type, u32 *fsidv)
+ {
+-	return exp_find(rqstp-&gt;rq_client, fsid_type, fsidv,
+-						&amp;rqstp-&gt;rq_chandle);
++	struct auth_domain *clp;
++
++	clp = rqstp-&gt;rq_gssclient ? rqstp-&gt;rq_gssclient : rqstp-&gt;rq_client;
++	return exp_find(clp, fsid_type, fsidv, &amp;rqstp-&gt;rq_chandle);
+ }
+ 
+ struct svc_export *
+ rqst_exp_parent(struct svc_rqst *rqstp, struct vfsmount *mnt,
+ 		struct dentry *dentry)
+ {
++	struct auth_domain *clp;
++
++	clp = rqstp-&gt;rq_gssclient ? rqstp-&gt;rq_gssclient : rqstp-&gt;rq_client;
+ 	return exp_parent(rqstp-&gt;rq_client, mnt, dentry, &amp;rqstp-&gt;rq_chandle);
+ }
+ 
+diff --git a/fs/nfsd/nfs4idmap.c b/fs/nfsd/nfs4idmap.c
+index 45aa21ce6784..2cf9a9a2d89c 100644
+--- a/fs/nfsd/nfs4idmap.c
++++ b/fs/nfsd/nfs4idmap.c
+@@ -587,6 +587,15 @@ idmap_lookup(struct svc_rqst *rqstp,
+ 	return ret;
+ }
+ 
++static char *
++rqst_authname(struct svc_rqst *rqstp)
++{
++	struct auth_domain *clp;
++
++	clp = rqstp-&gt;rq_gssclient ? rqstp-&gt;rq_gssclient : rqstp-&gt;rq_client;
++	return clp-&gt;name;
++}
++
+ static int
+ idmap_name_to_id(struct svc_rqst *rqstp, int type, const char *name, u32 namelen,
+ 		uid_t *id)
+@@ -600,7 +609,7 @@ idmap_name_to_id(struct svc_rqst *rqstp, int type, const char *name, u32 namelen
+ 		return -EINVAL;
+ 	memcpy(key.name, name, namelen);
+ 	key.name[namelen] = '\0';
+-	strlcpy(key.authname, rqstp-&gt;rq_client-&gt;name, sizeof(key.authname));
++	strlcpy(key.authname, rqst_authname(rqstp), sizeof(key.authname));
+ 	ret = idmap_lookup(rqstp, nametoid_lookup, &amp;key, &amp;nametoid_cache, &amp;item);
+ 	if (ret == -ENOENT)
+ 		ret = -ESRCH; /* nfserr_badname */
+@@ -620,7 +629,7 @@ idmap_id_to_name(struct svc_rqst *rqstp, int type, uid_t id, char *name)
+ 	};
+ 	int ret;
+ 
+-	strlcpy(key.authname, rqstp-&gt;rq_client-&gt;name, sizeof(key.authname));
++	strlcpy(key.authname, rqst_authname(rqstp), sizeof(key.authname));
+ 	ret = idmap_lookup(rqstp, idtoname_lookup, &amp;key, &amp;idtoname_cache, &amp;item);
+ 	if (ret == -ENOENT)
+ 		return sprintf(name, "%u", id);
+diff --git a/fs/nfsd/nfsfh.c b/fs/nfsd/nfsfh.c
+index 180e068ea064..22cb5be79ad0 100644
+--- a/fs/nfsd/nfsfh.c
++++ b/fs/nfsd/nfsfh.c
+@@ -120,8 +120,6 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 		int data_left = fh-&gt;fh_size/4;
+ 
+ 		error = nfserr_stale;
+-		if (rqstp-&gt;rq_client == NULL)
+-			goto out;
+ 		if (rqstp-&gt;rq_vers &gt; 2)
+ 			error = nfserr_badhandle;
+ 		if (rqstp-&gt;rq_vers == 4 &amp;&amp; fh-&gt;fh_size == 0)
+diff --git a/include/linux/sunrpc/svc.h b/include/linux/sunrpc/svc.h
+index 705a90aa345e..8531a70da73d 100644
+--- a/include/linux/sunrpc/svc.h
++++ b/include/linux/sunrpc/svc.h
+@@ -249,6 +249,7 @@ struct svc_rqst {
+ 						 */
+ 	/* Catering to nfsd */
+ 	struct auth_domain *	rq_client;	/* RPC peer info */
++	struct auth_domain *	rq_gssclient;	/* "gss/"-style peer info */
+ 	struct svc_cacherep *	rq_cacherep;	/* cache info */
+ 	struct knfsd_fh *	rq_reffh;	/* Referrence filehandle, used to
+ 						 * determine what device number
+diff --git a/include/linux/sunrpc/svcauth.h b/include/linux/sunrpc/svcauth.h
+index de92619b0826..22e1ef8e200e 100644
+--- a/include/linux/sunrpc/svcauth.h
++++ b/include/linux/sunrpc/svcauth.h
+@@ -127,6 +127,7 @@ extern struct auth_domain *auth_unix_lookup(struct in_addr addr);
+ extern int auth_unix_forget_old(struct auth_domain *dom);
+ extern void svcauth_unix_purge(void);
+ extern void svcauth_unix_info_release(void *);
++extern int svcauth_unix_set_client(struct svc_rqst *rqstp);
+ 
+ static inline unsigned long hash_str(char *name, int bits)
+ {
+diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
+index 7a3e1758bea1..e4b3de08b040 100644
+--- a/net/sunrpc/auth_gss/svcauth_gss.c
++++ b/net/sunrpc/auth_gss/svcauth_gss.c
+@@ -913,10 +913,23 @@ svcauth_gss_set_client(struct svc_rqst *rqstp)
+ 	struct gss_svc_data *svcdata = rqstp-&gt;rq_auth_data;
+ 	struct rsc *rsci = svcdata-&gt;rsci;
+ 	struct rpc_gss_wire_cred *gc = &amp;svcdata-&gt;clcred;
++	int stat;
+ 
+-	rqstp-&gt;rq_client = find_gss_auth_domain(rsci-&gt;mechctx, gc-&gt;gc_svc);
+-	if (rqstp-&gt;rq_client == NULL)
++	/*
++	 * A gss export can be specified either by:
++	 * 	export	*(sec=krb5,rw)
++	 * or by
++	 * 	export gss/krb5(rw)
++	 * The latter is deprecated; but for backwards compatibility reasons
++	 * the nfsd code will still fall back on trying it if the former
++	 * doesn't work; so we try to make both available to nfsd, below.
++	 */
++	rqstp-&gt;rq_gssclient = find_gss_auth_domain(rsci-&gt;mechctx, gc-&gt;gc_svc);
++	if (rqstp-&gt;rq_gssclient == NULL)
+ 		return SVC_DENIED;
++	stat = svcauth_unix_set_client(rqstp);
++	if (stat == SVC_DROP)
++		return stat;
+ 	return SVC_OK;
+ }
+ 
+@@ -1088,7 +1101,6 @@ svcauth_gss_accept(struct svc_rqst *rqstp, __be32 *authp)
+ 			svc_putnl(resv, GSS_SEQ_WIN);
+ 			if (svc_safe_putnetobj(resv, &amp;rsip-&gt;out_token))
+ 				goto drop;
+-			rqstp-&gt;rq_client = NULL;
+ 		}
+ 		goto complete;
+ 	case RPC_GSS_PROC_DESTROY:
+@@ -1319,6 +1331,9 @@ svcauth_gss_release(struct svc_rqst *rqstp)
+ 	if (rqstp-&gt;rq_client)
+ 		auth_domain_put(rqstp-&gt;rq_client);
+ 	rqstp-&gt;rq_client = NULL;
++	if (rqstp-&gt;rq_gssclient)
++		auth_domain_put(rqstp-&gt;rq_gssclient);
++	rqstp-&gt;rq_gssclient = NULL;
+ 	if (rqstp-&gt;rq_cred.cr_group_info)
+ 		put_group_info(rqstp-&gt;rq_cred.cr_group_info);
+ 	rqstp-&gt;rq_cred.cr_group_info = NULL;
+diff --git a/net/sunrpc/svcauth_unix.c b/net/sunrpc/svcauth_unix.c
+index d9fdf2e4d242..411479411b21 100644
+--- a/net/sunrpc/svcauth_unix.c
++++ b/net/sunrpc/svcauth_unix.c
+@@ -638,7 +638,7 @@ static int unix_gid_find(uid_t uid, struct group_info **gip,
+ 	}
+ }
+ 
+-static int
++int
+ svcauth_unix_set_client(struct svc_rqst *rqstp)
+ {
+ 	struct sockaddr_in *sin = svc_addr_in(rqstp);
+@@ -673,6 +673,8 @@ svcauth_unix_set_client(struct svc_rqst *rqstp)
+ 	return SVC_OK;
+ }
+ 
++EXPORT_SYMBOL(svcauth_unix_set_client);
++
+ static int
+ svcauth_null_accept(struct svc_rqst *rqstp, __be32 *authp)
+ {</pre><hr><pre>commit 0989a7889695831e49e2c53c1884f52645516a90
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jul 17 04:04:44 2007 -0700
+
+    knfsd: nfsd: provide export lookup wrappers which take a svc_rqst
+    
+    Split the callers of exp_get_by_name(), exp_find(), and exp_parent() into
+    those that are processing requests and those that are doing other stuff (like
+    looking up filehandles for mountd).
+    
+    No change in behavior, just a (fairly pointless, on its own) cleanup.
+    
+    (Note this has the effect of making nfsd_cross_mnt() pass rqstp-&gt;rq_client
+    instead of exp-&gt;ex_client into exp_find_by_name().  However, the two should
+    have the same value at this point.)
+    
+    Signed-off-by: "J. Bruce Fields" &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/export.c b/fs/nfsd/export.c
+index af6abb2529c9..9b569af695ab 100644
+--- a/fs/nfsd/export.c
++++ b/fs/nfsd/export.c
+@@ -1228,6 +1228,32 @@ exp_find(struct auth_domain *clp, int fsid_type, u32 *fsidv,
+ 	return exp;
+ }
+ 
++/*
++ * Called from functions that handle requests; functions that do work on
++ * behalf of mountd are passed a single client name to use, and should
++ * use exp_get_by_name() or exp_find().
++ */
++struct svc_export *
++rqst_exp_get_by_name(struct svc_rqst *rqstp, struct vfsmount *mnt,
++		struct dentry *dentry)
++{
++	return exp_get_by_name(rqstp-&gt;rq_client, mnt, dentry,
++						&amp;rqstp-&gt;rq_chandle);
++}
++
++struct svc_export *
++rqst_exp_find(struct svc_rqst *rqstp, int fsid_type, u32 *fsidv)
++{
++	return exp_find(rqstp-&gt;rq_client, fsid_type, fsidv,
++						&amp;rqstp-&gt;rq_chandle);
++}
++
++struct svc_export *
++rqst_exp_parent(struct svc_rqst *rqstp, struct vfsmount *mnt,
++		struct dentry *dentry)
++{
++	return exp_parent(rqstp-&gt;rq_client, mnt, dentry, &amp;rqstp-&gt;rq_chandle);
++}
+ 
+ /*
+  * Called when we need the filehandle for the root of the pseudofs,
+@@ -1243,7 +1269,7 @@ exp_pseudoroot(struct svc_rqst *rqstp, struct svc_fh *fhp)
+ 
+ 	mk_fsid(FSID_NUM, fsidv, 0, 0, 0, NULL);
+ 
+-	exp = exp_find(rqstp-&gt;rq_client, FSID_NUM, fsidv, rqstp-&gt;rq_chandle);
++	exp = rqst_exp_find(rqstp, FSID_NUM, fsidv);
+ 	if (PTR_ERR(exp) == -ENOENT)
+ 		return nfserr_perm;
+ 	if (IS_ERR(exp))
+diff --git a/fs/nfsd/nfsfh.c b/fs/nfsd/nfsfh.c
+index 89f9041a7782..180e068ea064 100644
+--- a/fs/nfsd/nfsfh.c
++++ b/fs/nfsd/nfsfh.c
+@@ -145,7 +145,7 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 				fh-&gt;fh_fsid[1] = fh-&gt;fh_fsid[2];
+ 			}
+ 			if ((data_left -= len)&lt;0) goto out;
+-			exp = exp_find(rqstp-&gt;rq_client, fh-&gt;fh_fsid_type, datap, &amp;rqstp-&gt;rq_chandle);
++			exp = rqst_exp_find(rqstp, fh-&gt;fh_fsid_type, datap);
+ 			datap += len;
+ 		} else {
+ 			dev_t xdev;
+@@ -156,8 +156,7 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 			xdev = old_decode_dev(fh-&gt;ofh_xdev);
+ 			xino = u32_to_ino_t(fh-&gt;ofh_xino);
+ 			mk_fsid(FSID_DEV, tfh, xdev, xino, 0, NULL);
+-			exp = exp_find(rqstp-&gt;rq_client, FSID_DEV, tfh,
+-				       &amp;rqstp-&gt;rq_chandle);
++			exp = rqst_exp_find(rqstp, FSID_DEV, tfh);
+ 		}
+ 
+ 		error = nfserr_stale;
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index ec6aaf8b0e36..65043af232ee 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -113,7 +113,7 @@ nfsd_cross_mnt(struct svc_rqst *rqstp, struct dentry **dpp,
+ 
+ 	while (follow_down(&amp;mnt,&amp;mounts)&amp;&amp;d_mountpoint(mounts));
+ 
+-	exp2 = exp_get_by_name(exp-&gt;ex_client, mnt, mounts, &amp;rqstp-&gt;rq_chandle);
++	exp2 = rqst_exp_get_by_name(rqstp, mnt, mounts);
+ 	if (IS_ERR(exp2)) {
+ 		err = PTR_ERR(exp2);
+ 		dput(mounts);
+@@ -188,8 +188,7 @@ nfsd_lookup(struct svc_rqst *rqstp, struct svc_fh *fhp, const char *name,
+ 			dput(dentry);
+ 			dentry = dp;
+ 
+-			exp2 = exp_parent(exp-&gt;ex_client, mnt, dentry,
+-					  &amp;rqstp-&gt;rq_chandle);
++			exp2 = rqst_exp_parent(rqstp, mnt, dentry);
+ 			if (PTR_ERR(exp2) == -ENOENT) {
+ 				dput(dentry);
+ 				dentry = dget(dparent);
+diff --git a/include/linux/nfsd/export.h b/include/linux/nfsd/export.h
+index 5ed4f277eeac..1ba53e524749 100644
+--- a/include/linux/nfsd/export.h
++++ b/include/linux/nfsd/export.h
+@@ -129,10 +129,16 @@ struct svc_export *	exp_get_by_name(struct auth_domain *clp,
+ 					struct vfsmount *mnt,
+ 					struct dentry *dentry,
+ 					struct cache_req *reqp);
++struct svc_export *	rqst_exp_get_by_name(struct svc_rqst *,
++					     struct vfsmount *,
++					     struct dentry *);
+ struct svc_export *	exp_parent(struct auth_domain *clp,
+ 				   struct vfsmount *mnt,
+ 				   struct dentry *dentry,
+ 				   struct cache_req *reqp);
++struct svc_export *	rqst_exp_parent(struct svc_rqst *,
++					struct vfsmount *mnt,
++					struct dentry *dentry);
+ int			exp_rootfh(struct auth_domain *, 
+ 					char *path, struct knfsd_fh *, int maxsize);
+ __be32			exp_pseudoroot(struct svc_rqst *, struct svc_fh *);
+@@ -152,6 +158,7 @@ static inline void exp_get(struct svc_export *exp)
+ extern struct svc_export *
+ exp_find(struct auth_domain *clp, int fsid_type, u32 *fsidv,
+ 	 struct cache_req *reqp);
++struct svc_export * rqst_exp_find(struct svc_rqst *, int, u32 *);
+ 
+ #endif /* __KERNEL__ */
+ </pre>
+    <div class="pagination">
+        <a href='4_45.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><span>[46]</span><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_47.html'>Next&gt;&gt;</a>
+    <div>
+</body>

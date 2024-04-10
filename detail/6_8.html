@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6_7.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><span>[8]</span><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_9.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 5e2424708da7207087934c5c75211e8584d553a0
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Sun Jul 23 15:41:10 2023 +0800
+
+    xfrm: add forgotten nla_policy for XFRMA_MTIMER_THRESH
+    
+    The previous commit 4e484b3e969b ("xfrm: rate limit SA mapping change
+    message to user space") added one additional attribute named
+    XFRMA_MTIMER_THRESH and described its type at compat_policy
+    (net/xfrm/xfrm_compat.c).
+    
+    However, the author forgot to also describe the nla_policy at
+    xfrma_policy (net/xfrm/xfrm_user.c). Hence, this suppose NLA_U32 (4
+    bytes) value can be faked as empty (0 bytes) by a malicious user, which
+    leads to 4 bytes overflow read and heap information leak when parsing
+    nlattrs.
+    
+    To exploit this, one malicious user can spray the SLUB objects and then
+    leverage this 4 bytes OOB read to leak the heap data into
+    x-&gt;mapping_maxage (see xfrm_update_ae_params(...)), and leak it to
+    userspace via copy_to_user_state_extra(...).
+    
+    The above bug is assigned CVE-2023-3773. To fix it, this commit just
+    completes the nla_policy description for XFRMA_MTIMER_THRESH, which
+    enforces the length check and avoids such OOB read.
+    
+    Fixes: 4e484b3e969b ("xfrm: rate limit SA mapping change message to user space")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Simon Horman &lt;simon.horman@corigine.com&gt;
+    Reviewed-by: Leon Romanovsky &lt;leonro@nvidia.com&gt;
+    Signed-off-by: Steffen Klassert &lt;steffen.klassert@secunet.com&gt;
+
+diff --git a/net/xfrm/xfrm_user.c b/net/xfrm/xfrm_user.c
+index 8f74dde4a55f..f06d6deb58dd 100644
+--- a/net/xfrm/xfrm_user.c
++++ b/net/xfrm/xfrm_user.c
+@@ -3044,6 +3044,7 @@ const struct nla_policy xfrma_policy[XFRMA_MAX+1] = {
+ 	[XFRMA_SET_MARK]	= { .type = NLA_U32 },
+ 	[XFRMA_SET_MARK_MASK]	= { .type = NLA_U32 },
+ 	[XFRMA_IF_ID]		= { .type = NLA_U32 },
++	[XFRMA_MTIMER_THRESH]   = { .type = NLA_U32 },
+ };
+ EXPORT_SYMBOL_GPL(xfrma_policy);
+ </pre><hr><pre>commit 00374d9b6d9f932802b55181be9831aa948e5b7c
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Fri Jul 21 22:51:03 2023 +0800
+
+    xfrm: add NULL check in xfrm_update_ae_params
+    
+    Normally, x-&gt;replay_esn and x-&gt;preplay_esn should be allocated at
+    xfrm_alloc_replay_state_esn(...) in xfrm_state_construct(...), hence the
+    xfrm_update_ae_params(...) is okay to update them. However, the current
+    implementation of xfrm_new_ae(...) allows a malicious user to directly
+    dereference a NULL pointer and crash the kernel like below.
+    
+    BUG: kernel NULL pointer dereference, address: 0000000000000000
+    PGD 8253067 P4D 8253067 PUD 8e0e067 PMD 0
+    Oops: 0002 [#1] PREEMPT SMP KASAN NOPTI
+    CPU: 0 PID: 98 Comm: poc.npd Not tainted 6.4.0-rc7-00072-gdad9774deaf1 #8
+    Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS rel-1.16.0-0-gd239552ce722-prebuilt.qemu.o4
+    RIP: 0010:memcpy_orig+0xad/0x140
+    Code: e8 4c 89 5f e0 48 8d 7f e0 73 d2 83 c2 20 48 29 d6 48 29 d7 83 fa 10 72 34 4c 8b 06 4c 8b 4e 08 c
+    RSP: 0018:ffff888008f57658 EFLAGS: 00000202
+    RAX: 0000000000000000 RBX: ffff888008bd0000 RCX: ffffffff8238e571
+    RDX: 0000000000000018 RSI: ffff888007f64844 RDI: 0000000000000000
+    RBP: 0000000000000000 R08: 0000000000000000 R09: 0000000000000000
+    R10: 0000000000000000 R11: 0000000000000000 R12: ffff888008f57818
+    R13: ffff888007f64aa4 R14: 0000000000000000 R15: 0000000000000000
+    FS:  00000000014013c0(0000) GS:ffff88806d600000(0000) knlGS:0000000000000000
+    CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+    CR2: 0000000000000000 CR3: 00000000054d8000 CR4: 00000000000006f0
+    Call Trace:
+     &lt;TASK&gt;
+     ? __die+0x1f/0x70
+     ? page_fault_oops+0x1e8/0x500
+     ? __pfx_is_prefetch.constprop.0+0x10/0x10
+     ? __pfx_page_fault_oops+0x10/0x10
+     ? _raw_spin_unlock_irqrestore+0x11/0x40
+     ? fixup_exception+0x36/0x460
+     ? _raw_spin_unlock_irqrestore+0x11/0x40
+     ? exc_page_fault+0x5e/0xc0
+     ? asm_exc_page_fault+0x26/0x30
+     ? xfrm_update_ae_params+0xd1/0x260
+     ? memcpy_orig+0xad/0x140
+     ? __pfx__raw_spin_lock_bh+0x10/0x10
+     xfrm_update_ae_params+0xe7/0x260
+     xfrm_new_ae+0x298/0x4e0
+     ? __pfx_xfrm_new_ae+0x10/0x10
+     ? __pfx_xfrm_new_ae+0x10/0x10
+     xfrm_user_rcv_msg+0x25a/0x410
+     ? __pfx_xfrm_user_rcv_msg+0x10/0x10
+     ? __alloc_skb+0xcf/0x210
+     ? stack_trace_save+0x90/0xd0
+     ? filter_irq_stacks+0x1c/0x70
+     ? __stack_depot_save+0x39/0x4e0
+     ? __kasan_slab_free+0x10a/0x190
+     ? kmem_cache_free+0x9c/0x340
+     ? netlink_recvmsg+0x23c/0x660
+     ? sock_recvmsg+0xeb/0xf0
+     ? __sys_recvfrom+0x13c/0x1f0
+     ? __x64_sys_recvfrom+0x71/0x90
+     ? do_syscall_64+0x3f/0x90
+     ? entry_SYSCALL_64_after_hwframe+0x72/0xdc
+     ? copyout+0x3e/0x50
+     netlink_rcv_skb+0xd6/0x210
+     ? __pfx_xfrm_user_rcv_msg+0x10/0x10
+     ? __pfx_netlink_rcv_skb+0x10/0x10
+     ? __pfx_sock_has_perm+0x10/0x10
+     ? mutex_lock+0x8d/0xe0
+     ? __pfx_mutex_lock+0x10/0x10
+     xfrm_netlink_rcv+0x44/0x50
+     netlink_unicast+0x36f/0x4c0
+     ? __pfx_netlink_unicast+0x10/0x10
+     ? netlink_recvmsg+0x500/0x660
+     netlink_sendmsg+0x3b7/0x700
+    
+    This Null-ptr-deref bug is assigned CVE-2023-3772. And this commit
+    adds additional NULL check in xfrm_update_ae_params to fix the NPD.
+    
+    Fixes: d8647b79c3b7 ("xfrm: Add user interface for esn and big anti-replay windows")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Leon Romanovsky &lt;leonro@nvidia.com&gt;
+    Signed-off-by: Steffen Klassert &lt;steffen.klassert@secunet.com&gt;
+
+diff --git a/net/xfrm/xfrm_user.c b/net/xfrm/xfrm_user.c
+index fdc0c17122b6..8f74dde4a55f 100644
+--- a/net/xfrm/xfrm_user.c
++++ b/net/xfrm/xfrm_user.c
+@@ -628,7 +628,7 @@ static void xfrm_update_ae_params(struct xfrm_state *x, struct nlattr **attrs,
+ 	struct nlattr *rt = attrs[XFRMA_REPLAY_THRESH];
+ 	struct nlattr *mt = attrs[XFRMA_MTIMER_THRESH];
+ 
+-	if (re) {
++	if (re &amp;&amp; x-&gt;replay_esn &amp;&amp; x-&gt;preplay_esn) {
+ 		struct xfrm_replay_state_esn *replay_esn;
+ 		replay_esn = nla_data(re);
+ 		memcpy(x-&gt;replay_esn, replay_esn,</pre><hr><pre>commit d73ef2d69c0dba5f5a1cb9600045c873bab1fb7f
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Wed Jul 26 15:53:14 2023 +0800
+
+    rtnetlink: let rtnl_bridge_setlink checks IFLA_BRIDGE_MODE length
+    
+    There are totally 9 ndo_bridge_setlink handlers in the current kernel,
+    which are 1) bnxt_bridge_setlink, 2) be_ndo_bridge_setlink 3)
+    i40e_ndo_bridge_setlink 4) ice_bridge_setlink 5)
+    ixgbe_ndo_bridge_setlink 6) mlx5e_bridge_setlink 7)
+    nfp_net_bridge_setlink 8) qeth_l2_bridge_setlink 9) br_setlink.
+    
+    By investigating the code, we find that 1-7 parse and use nlattr
+    IFLA_BRIDGE_MODE but 3 and 4 forget to do the nla_len check. This can
+    lead to an out-of-attribute read and allow a malformed nlattr (e.g.,
+    length 0) to be viewed as a 2 byte integer.
+    
+    To avoid such issues, also for other ndo_bridge_setlink handlers in the
+    future. This patch adds the nla_len check in rtnl_bridge_setlink and
+    does an early error return if length mismatches. To make it works, the
+    break is removed from the parsing for IFLA_BRIDGE_FLAGS to make sure
+    this nla_for_each_nested iterates every attribute.
+    
+    Fixes: b1edc14a3fbf ("ice: Implement ice_bridge_getlink and ice_bridge_setlink")
+    Fixes: 51616018dd1b ("i40e: Add support for getlink, setlink ndo ops")
+    Suggested-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Acked-by: Nikolay Aleksandrov &lt;razor@blackwall.org&gt;
+    Reviewed-by: Hangbin Liu &lt;liuhangbin@gmail.com&gt;
+    Link: https://lore.kernel.org/r/20230726075314.1059224-1-linma@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/core/rtnetlink.c b/net/core/rtnetlink.c
+index 3ad4e030846d..aef25aa5cf1d 100644
+--- a/net/core/rtnetlink.c
++++ b/net/core/rtnetlink.c
+@@ -5140,13 +5140,17 @@ static int rtnl_bridge_setlink(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 	br_spec = nlmsg_find_attr(nlh, sizeof(struct ifinfomsg), IFLA_AF_SPEC);
+ 	if (br_spec) {
+ 		nla_for_each_nested(attr, br_spec, rem) {
+-			if (nla_type(attr) == IFLA_BRIDGE_FLAGS) {
++			if (nla_type(attr) == IFLA_BRIDGE_FLAGS &amp;&amp; !have_flags) {
+ 				if (nla_len(attr) &lt; sizeof(flags))
+ 					return -EINVAL;
+ 
+ 				have_flags = true;
+ 				flags = nla_get_u16(attr);
+-				break;
++			}
++
++			if (nla_type(attr) == IFLA_BRIDGE_MODE) {
++				if (nla_len(attr) &lt; sizeof(u16))
++					return -EINVAL;
+ 			}
+ 		}
+ 	}</pre><hr><pre>commit bcc29b7f5af6797702c2306a7aacb831fc5ce9cb
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Tue Jul 25 10:33:30 2023 +0800
+
+    bpf: Add length check for SK_DIAG_BPF_STORAGE_REQ_MAP_FD parsing
+    
+    The nla_for_each_nested parsing in function bpf_sk_storage_diag_alloc
+    does not check the length of the nested attribute. This can lead to an
+    out-of-attribute read and allow a malformed nlattr (e.g., length 0) to
+    be viewed as a 4 byte integer.
+    
+    This patch adds an additional check when the nlattr is getting counted.
+    This makes sure the latter nla_get_u32 can access the attributes with
+    the correct length.
+    
+    Fixes: 1ed4d92458a9 ("bpf: INET_DIAG support in bpf_sk_storage")
+    Suggested-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+    Link: https://lore.kernel.org/r/20230725023330.422856-1-linma@zju.edu.cn
+    Signed-off-by: Martin KaFai Lau &lt;martin.lau@kernel.org&gt;
+
+diff --git a/net/core/bpf_sk_storage.c b/net/core/bpf_sk_storage.c
+index d4172534dfa8..cca7594be92e 100644
+--- a/net/core/bpf_sk_storage.c
++++ b/net/core/bpf_sk_storage.c
+@@ -496,8 +496,11 @@ bpf_sk_storage_diag_alloc(const struct nlattr *nla_stgs)
+ 		return ERR_PTR(-EPERM);
+ 
+ 	nla_for_each_nested(nla, nla_stgs, rem) {
+-		if (nla_type(nla) == SK_DIAG_BPF_STORAGE_REQ_MAP_FD)
++		if (nla_type(nla) == SK_DIAG_BPF_STORAGE_REQ_MAP_FD) {
++			if (nla_len(nla) != sizeof(u32))
++				return ERR_PTR(-EINVAL);
+ 			nr_maps++;
++		}
+ 	}
+ 
+ 	diag = kzalloc(struct_size(diag, maps, nr_maps), GFP_KERNEL);</pre><hr><pre>commit 0c805e80e35d042a41c8702fa13f453a504d2ede
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Wed Jul 12 21:32:36 2023 +0800
+
+    netfilter: conntrack: validate cta_ip via parsing
+    
+    In current ctnetlink_parse_tuple_ip() function, nested parsing and
+    validation is splitting as two parts,  which could be cleanup to a
+    simplified form. As the nla_parse_nested_deprecated function
+    supports validation in the fly. These two finially reach same place
+    __nla_validate_parse with same validate flag.
+    
+    nla_parse_nested_deprecated
+      __nla_parse(.., NL_VALIDATE_LIBERAL, ..)
+        __nla_validate_parse
+    
+    nla_validate_nested_deprecated
+      __nla_validate_nested(.., NL_VALIDATE_LIBERAL, ..)
+        __nla_validate
+          __nla_validate_parse
+    
+    This commit removes the call to nla_validate_nested_deprecated and pass
+    cta_ip_nla_policy when do parsing.
+    
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Simon Horman &lt;simon.horman@corigine.com&gt;
+    Signed-off-by: Florian Westphal &lt;fw@strlen.de&gt;
+
+diff --git a/net/netfilter/nf_conntrack_netlink.c b/net/netfilter/nf_conntrack_netlink.c
+index 69c8c8c7e9b8..334db22199c1 100644
+--- a/net/netfilter/nf_conntrack_netlink.c
++++ b/net/netfilter/nf_conntrack_netlink.c
+@@ -1321,15 +1321,11 @@ static int ctnetlink_parse_tuple_ip(struct nlattr *attr,
+ 	struct nlattr *tb[CTA_IP_MAX+1];
+ 	int ret = 0;
+ 
+-	ret = nla_parse_nested_deprecated(tb, CTA_IP_MAX, attr, NULL, NULL);
++	ret = nla_parse_nested_deprecated(tb, CTA_IP_MAX, attr,
++					  cta_ip_nla_policy, NULL);
+ 	if (ret &lt; 0)
+ 		return ret;
+ 
+-	ret = nla_validate_nested_deprecated(attr, CTA_IP_MAX,
+-					     cta_ip_nla_policy, NULL);
+-	if (ret)
+-		return ret;
+-
+ 	switch (tuple-&gt;src.l3num) {
+ 	case NFPROTO_IPV4:
+ 		ret = ipv4_nlattr_to_tuple(tb, tuple, flags);</pre><hr><pre>commit 6c58c8816abb7b93b21fa3b1d0c1726402e5e568
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Tue Jul 25 10:42:27 2023 +0800
+
+    net/sched: mqprio: Add length check for TCA_MQPRIO_{MAX/MIN}_RATE64
+    
+    The nla_for_each_nested parsing in function mqprio_parse_nlattr() does
+    not check the length of the nested attribute. This can lead to an
+    out-of-attribute read and allow a malformed nlattr (e.g., length 0) to
+    be viewed as 8 byte integer and passed to priv-&gt;max_rate/min_rate.
+    
+    This patch adds the check based on nla_len() when check the nla_type(),
+    which ensures that the length of these two attribute must equals
+    sizeof(u64).
+    
+    Fixes: 4e8b86c06269 ("mqprio: Introduce new hardware offload mode and shaper in mqprio")
+    Reviewed-by: Victor Nogueira &lt;victor@mojatatu.com&gt;
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230725024227.426561-1-linma@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/sched/sch_mqprio.c b/net/sched/sch_mqprio.c
+index ab69ff7577fc..793009f445c0 100644
+--- a/net/sched/sch_mqprio.c
++++ b/net/sched/sch_mqprio.c
+@@ -290,6 +290,13 @@ static int mqprio_parse_nlattr(struct Qdisc *sch, struct tc_mqprio_qopt *qopt,
+ 						    "Attribute type expected to be TCA_MQPRIO_MIN_RATE64");
+ 				return -EINVAL;
+ 			}
++
++			if (nla_len(attr) != sizeof(u64)) {
++				NL_SET_ERR_MSG_ATTR(extack, attr,
++						    "Attribute TCA_MQPRIO_MIN_RATE64 expected to have 8 bytes length");
++				return -EINVAL;
++			}
++
+ 			if (i &gt;= qopt-&gt;num_tc)
+ 				break;
+ 			priv-&gt;min_rate[i] = nla_get_u64(attr);
+@@ -312,6 +319,13 @@ static int mqprio_parse_nlattr(struct Qdisc *sch, struct tc_mqprio_qopt *qopt,
+ 						    "Attribute type expected to be TCA_MQPRIO_MAX_RATE64");
+ 				return -EINVAL;
+ 			}
++
++			if (nla_len(attr) != sizeof(u64)) {
++				NL_SET_ERR_MSG_ATTR(extack, attr,
++						    "Attribute TCA_MQPRIO_MAX_RATE64 expected to have 8 bytes length");
++				return -EINVAL;
++			}
++
+ 			if (i &gt;= qopt-&gt;num_tc)
+ 				break;
+ 			priv-&gt;max_rate[i] = nla_get_u64(attr);</pre><hr><pre>commit 74f12d511625e603fac8c0c2b6872e687e56dd61
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Sun Jul 23 16:03:50 2023 +0800
+
+    wifi: mt76: testmode: add nla_policy for MT76_TM_ATTR_TX_LENGTH
+    
+    It seems that the nla_policy in mt76_tm_policy is missed for attribute
+    MT76_TM_ATTR_TX_LENGTH. This patch adds the correct description to make
+    sure the
+    
+      u32 val = nla_get_u32(tb[MT76_TM_ATTR_TX_LENGTH]);
+    
+    in function mt76_testmode_cmd() is safe and will not result in
+    out-of-attribute read.
+    
+    Fixes: f0efa8621550 ("mt76: add API for testmode support")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Signed-off-by: Felix Fietkau &lt;nbd@nbd.name&gt;
+
+diff --git a/drivers/net/wireless/mediatek/mt76/testmode.c b/drivers/net/wireless/mediatek/mt76/testmode.c
+index 0accc71a91c9..4644dace9bb3 100644
+--- a/drivers/net/wireless/mediatek/mt76/testmode.c
++++ b/drivers/net/wireless/mediatek/mt76/testmode.c
+@@ -8,6 +8,7 @@ const struct nla_policy mt76_tm_policy[NUM_MT76_TM_ATTRS] = {
+ 	[MT76_TM_ATTR_RESET] = { .type = NLA_FLAG },
+ 	[MT76_TM_ATTR_STATE] = { .type = NLA_U8 },
+ 	[MT76_TM_ATTR_TX_COUNT] = { .type = NLA_U32 },
++	[MT76_TM_ATTR_TX_LENGTH] = { .type = NLA_U32 },
+ 	[MT76_TM_ATTR_TX_RATE_MODE] = { .type = NLA_U8 },
+ 	[MT76_TM_ATTR_TX_RATE_NSS] = { .type = NLA_U8 },
+ 	[MT76_TM_ATTR_TX_RATE_IDX] = { .type = NLA_U8 },</pre><hr><pre>commit 55cef78c244d0d076f5a75a35530ca63c92f4426
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Sun Jul 23 16:02:05 2023 +0800
+
+    macvlan: add forgotten nla_policy for IFLA_MACVLAN_BC_CUTOFF
+    
+    The previous commit 954d1fa1ac93 ("macvlan: Add netlink attribute for
+    broadcast cutoff") added one additional attribute named
+    IFLA_MACVLAN_BC_CUTOFF to allow broadcast cutfoff.
+    
+    However, it forgot to describe the nla_policy at macvlan_policy
+    (drivers/net/macvlan.c). Hence, this suppose NLA_S32 (4 bytes) integer
+    can be faked as empty (0 bytes) by a malicious user, which could leads
+    to OOB in heap just like CVE-2023-3773.
+    
+    To fix it, this commit just completes the nla_policy description for
+    IFLA_MACVLAN_BC_CUTOFF. This enforces the length check and avoids the
+    potential OOB read.
+    
+    Fixes: 954d1fa1ac93 ("macvlan: Add netlink attribute for broadcast cutoff")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Simon Horman &lt;simon.horman@corigine.com&gt;
+    Link: https://lore.kernel.org/r/20230723080205.3715164-1-linma@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/drivers/net/macvlan.c b/drivers/net/macvlan.c
+index 4a53debf9d7c..ed908165a8b4 100644
+--- a/drivers/net/macvlan.c
++++ b/drivers/net/macvlan.c
+@@ -1746,6 +1746,7 @@ static const struct nla_policy macvlan_policy[IFLA_MACVLAN_MAX + 1] = {
+ 	[IFLA_MACVLAN_MACADDR_COUNT] = { .type = NLA_U32 },
+ 	[IFLA_MACVLAN_BC_QUEUE_LEN] = { .type = NLA_U32 },
+ 	[IFLA_MACVLAN_BC_QUEUE_LEN_USED] = { .type = NLA_REJECT },
++	[IFLA_MACVLAN_BC_CUTOFF] = { .type = NLA_S32 },
+ };
+ 
+ int macvlan_link_register(struct rtnl_link_ops *ops)</pre><hr><pre>commit 47cd3770e31df942e2bb925a9a855c79ed0662eb
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Sun Jul 23 16:00:53 2023 +0800
+
+    scsi: qla4xxx: Add length check when parsing nlattrs
+    
+    There are three places that qla4xxx parses nlattrs:
+    
+     - qla4xxx_set_chap_entry()
+    
+     - qla4xxx_iface_set_param()
+    
+     - qla4xxx_sysfs_ddb_set_param()
+    
+    and each of them directly converts the nlattr to specific pointer of
+    structure without length checking. This could be dangerous as those
+    attributes are not validated and a malformed nlattr (e.g., length 0) could
+    result in an OOB read that leaks heap dirty data.
+    
+    Add the nla_len check before accessing the nlattr data and return EINVAL if
+    the length check fails.
+    
+    Fixes: 26ffd7b45fe9 ("[SCSI] qla4xxx: Add support to set CHAP entries")
+    Fixes: 1e9e2be3ee03 ("[SCSI] qla4xxx: Add flash node mgmt support")
+    Fixes: 00c31889f751 ("[SCSI] qla4xxx: fix data alignment and use nl helpers")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230723080053.3714534-1-linma@zju.edu.cn
+    Reviewed-by: Chris Leech &lt;cleech@redhat.com&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/qla4xxx/ql4_os.c b/drivers/scsi/qla4xxx/ql4_os.c
+index b2a3988e1e15..675332e49a7b 100644
+--- a/drivers/scsi/qla4xxx/ql4_os.c
++++ b/drivers/scsi/qla4xxx/ql4_os.c
+@@ -968,6 +968,11 @@ static int qla4xxx_set_chap_entry(struct Scsi_Host *shost, void *data, int len)
+ 	memset(&amp;chap_rec, 0, sizeof(chap_rec));
+ 
+ 	nla_for_each_attr(attr, data, len, rem) {
++		if (nla_len(attr) &lt; sizeof(*param_info)) {
++			rc = -EINVAL;
++			goto exit_set_chap;
++		}
++
+ 		param_info = nla_data(attr);
+ 
+ 		switch (param_info-&gt;param) {
+@@ -2750,6 +2755,11 @@ qla4xxx_iface_set_param(struct Scsi_Host *shost, void *data, uint32_t len)
+ 	}
+ 
+ 	nla_for_each_attr(attr, data, len, rem) {
++		if (nla_len(attr) &lt; sizeof(*iface_param)) {
++			rval = -EINVAL;
++			goto exit_init_fw_cb;
++		}
++
+ 		iface_param = nla_data(attr);
+ 
+ 		if (iface_param-&gt;param_type == ISCSI_NET_PARAM) {
+@@ -8104,6 +8114,11 @@ qla4xxx_sysfs_ddb_set_param(struct iscsi_bus_flash_session *fnode_sess,
+ 
+ 	memset((void *)&amp;chap_tbl, 0, sizeof(chap_tbl));
+ 	nla_for_each_attr(attr, data, len, rem) {
++		if (nla_len(attr) &lt; sizeof(*fnode_param)) {
++			rc = -EINVAL;
++			goto exit_set_param;
++		}
++
+ 		fnode_param = nla_data(attr);
+ 
+ 		switch (fnode_param-&gt;param) {</pre><hr><pre>commit ee0268f230f66cb472df3424f380ea668da2749a
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Sun Jul 23 15:59:38 2023 +0800
+
+    scsi: be2iscsi: Add length check when parsing nlattrs
+    
+    beiscsi_iface_set_param() parses nlattr with nla_for_each_attr and assumes
+    every attributes can be viewed as struct iscsi_iface_param_info.
+    
+    This is not true because there is no any nla_policy to validate the
+    attributes passed from the upper function iscsi_set_iface_params().
+    
+    Add the nla_len check before accessing the nlattr data and return EINVAL if
+    the length check fails.
+    
+    Fixes: 0e43895ec1f4 ("[SCSI] be2iscsi: adding functionality to change network settings using iscsiadm")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230723075938.3713864-1-linma@zju.edu.cn
+    Reviewed-by: Chris Leech &lt;cleech@redhat.com&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/be2iscsi/be_iscsi.c b/drivers/scsi/be2iscsi/be_iscsi.c
+index 8aeaddc93b16..8d374ae863ba 100644
+--- a/drivers/scsi/be2iscsi/be_iscsi.c
++++ b/drivers/scsi/be2iscsi/be_iscsi.c
+@@ -450,6 +450,10 @@ int beiscsi_iface_set_param(struct Scsi_Host *shost,
+ 	}
+ 
+ 	nla_for_each_attr(attrib, data, dt_len, rm_len) {
++		/* ignore nla_type as it is never used */
++		if (nla_len(attrib) &lt; sizeof(*iface_param))
++			return -EINVAL;
++
+ 		iface_param = nla_data(attrib);
+ 
+ 		if (iface_param-&gt;param_type != ISCSI_NET_PARAM)</pre>
+    <div class="pagination">
+        <a href='6_7.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><span>[8]</span><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_9.html'>Next&gt;&gt;</a>
+    <div>
+</body>

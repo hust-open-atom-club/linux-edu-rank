@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Columbia University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Columbia University</h1>
+    <div class="pagination">
+        <a href='23_2.html'>&lt;&lt;Prev</a><a href='23.html'>1</a><a href='23_2.html'>2</a><span>[3]</span>
+    </div>
+    <hr>
+    <pre>commit 1650ac49c2a0fb8188a2c8eac36537640ed57892
+Author: Jintack &lt;jintack@cs.columbia.edu&gt;
+Date:   Mon Nov 28 21:13:02 2016 -0500
+
+    arm64: head.S: Fix CNTHCTL_EL2 access on VHE system
+    
+    Bit positions of CNTHCTL_EL2 are changing depending on HCR_EL2.E2H bit.
+    EL1PCEN and EL1PCTEN are 1st and 0th bits when E2H is not set, but they
+    are 11th and 10th bits respectively when E2H is set.  Current code is
+    unintentionally setting wrong bits to CNTHCTL_EL2 with E2H set.
+    
+    In fact, we don't need to set those two bits, which allow EL1 and EL0 to
+    access physical timer and counter respectively, if E2H and TGE are set
+    for the host kernel. They will be configured later as necessary. First,
+    we don't need to configure those bits for EL1, since the host kernel
+    runs in EL2.  It is a hypervisor's responsibility to configure them
+    before entering a VM, which runs in EL0 and EL1. Second, EL0 accesses
+    are configured in the later stage of boot process.
+    
+    Signed-off-by: Jintack Lim &lt;jintack@cs.columbia.edu&gt;
+    Acked-by: Marc Zyngier &lt;marc.zyngier@arm.com&gt;
+    Signed-off-by: Catalin Marinas &lt;catalin.marinas@arm.com&gt;
+
+diff --git a/arch/arm64/kernel/head.S b/arch/arm64/kernel/head.S
+index 7ee6d74101cf..4b1abac3485a 100644
+--- a/arch/arm64/kernel/head.S
++++ b/arch/arm64/kernel/head.S
+@@ -525,10 +525,21 @@ set_hcr:
+ 	msr	hcr_el2, x0
+ 	isb
+ 
+-	/* Generic timers. */
++	/*
++	 * Allow Non-secure EL1 and EL0 to access physical timer and counter.
++	 * This is not necessary for VHE, since the host kernel runs in EL2,
++	 * and EL0 accesses are configured in the later stage of boot process.
++	 * Note that when HCR_EL2.E2H == 1, CNTHCTL_EL2 has the same bit layout
++	 * as CNTKCTL_EL1, and CNTKCTL_EL1 accessing instructions are redefined
++	 * to access CNTHCTL_EL2. This allows the kernel designed to run at EL1
++	 * to transparently mess with the EL0 bits via CNTKCTL_EL1 access in
++	 * EL2.
++	 */
++	cbnz	x2, 1f
+ 	mrs	x0, cnthctl_el2
+ 	orr	x0, x0, #3			// Enable EL1 physical timers
+ 	msr	cnthctl_el2, x0
++1:
+ 	msr	cntvoff_el2, xzr		// Clear virtual offset
+ 
+ #ifdef CONFIG_ARM_GIC_V3</pre><hr><pre>commit d42c79701a3ee5c38fbbc82f98a140420bd40134
+Author: Shih-Wei Li &lt;shihwei@cs.columbia.edu&gt;
+Date:   Thu Oct 27 15:08:13 2016 +0000
+
+    KVM: arm/arm64: vgic: Kick VCPUs when queueing already pending IRQs
+    
+    In cases like IPI, we could be queueing an interrupt for a VCPU
+    that is already running and is not about to exit, because the
+    VCPU has entered the VM with the interrupt pending and would
+    not trap on EOI'ing that interrupt. This could result to delays
+    in interrupt deliveries or even loss of interrupts.
+    To guarantee prompt interrupt injection, here we have to try to
+    kick the VCPU.
+    
+    Signed-off-by: Shih-Wei Li &lt;shihwei@cs.columbia.edu&gt;
+    Reviewed-by: Christoffer Dall &lt;christoffer.dall@linaro.org&gt;
+    Signed-off-by: Marc Zyngier &lt;marc.zyngier@arm.com&gt;
+
+diff --git a/virt/kvm/arm/vgic/vgic.c b/virt/kvm/arm/vgic/vgic.c
+index 2893d5ba523a..6440b56ec90e 100644
+--- a/virt/kvm/arm/vgic/vgic.c
++++ b/virt/kvm/arm/vgic/vgic.c
+@@ -273,6 +273,18 @@ bool vgic_queue_irq_unlock(struct kvm *kvm, struct vgic_irq *irq)
+ 		 * no more work for us to do.
+ 		 */
+ 		spin_unlock(&amp;irq-&gt;irq_lock);
++
++		/*
++		 * We have to kick the VCPU here, because we could be
++		 * queueing an edge-triggered interrupt for which we
++		 * get no EOI maintenance interrupt. In that case,
++		 * while the IRQ is already on the VCPU's AP list, the
++		 * VCPU could have EOI'ed the original interrupt and
++		 * won't see this one until it exits for some other
++		 * reason.
++		 */
++		if (vcpu)
++			kvm_vcpu_kick(vcpu);
+ 		return false;
+ 	}
+ </pre><hr><pre>commit df759217386fcff9c5e45547d1578270fd592a1b
+Author: Christoffer Dall &lt;cdall@cs.columbia.edu&gt;
+Date:   Tue Apr 23 14:26:31 2013 -0700
+
+    KVM: ARM: Fix spelling in error message
+    
+    s/unkown/unknown/
+    
+    Signed-off-by: Christoffer Dall &lt;cdall@cs.columbia.edu&gt;
+
+diff --git a/arch/arm/kvm/handle_exit.c b/arch/arm/kvm/handle_exit.c
+index 26ad17310a1e..3d74a0be47db 100644
+--- a/arch/arm/kvm/handle_exit.c
++++ b/arch/arm/kvm/handle_exit.c
+@@ -115,7 +115,7 @@ static exit_handle_fn kvm_get_exit_handler(struct kvm_vcpu *vcpu)
+ 
+ 	if (hsr_ec &gt;= ARRAY_SIZE(arm_exit_handlers) ||
+ 	    !arm_exit_handlers[hsr_ec]) {
+-		kvm_err("Unkown exception class: hsr: %#08x\n",
++		kvm_err("Unknown exception class: hsr: %#08x\n",
+ 			(unsigned int)kvm_vcpu_get_hsr(vcpu));
+ 		BUG();
+ 	}</pre><hr><pre>commit aa404ddf952fa59c07575529ce93435538a3aebe
+Author: Christoffer Dall &lt;cdall@cs.columbia.edu&gt;
+Date:   Mon Apr 22 18:57:46 2013 -0700
+
+    KVM: ARM: Fix API documentation for ONE_REG encoding
+    
+    Unless I'm mistaken, the size field was encoded 4 bits off and a wrong
+    value was used for 64-bit FP registers.
+    
+    Signed-off-by: Christoffer Dall &lt;cdall@cs.columbia.edu&gt;
+
+diff --git a/Documentation/virtual/kvm/api.txt b/Documentation/virtual/kvm/api.txt
+index c09d1832e935..59fd9e6a5366 100644
+--- a/Documentation/virtual/kvm/api.txt
++++ b/Documentation/virtual/kvm/api.txt
+@@ -1814,22 +1814,22 @@ ARM registers are mapped using the lower 32 bits.  The upper 16 of that
+ is the register group type, or coprocessor number:
+ 
+ ARM core registers have the following id bit patterns:
+-  0x4002 0000 0010 &lt;index into the kvm_regs struct:16&gt;
++  0x4020 0000 0010 &lt;index into the kvm_regs struct:16&gt;
+ 
+ ARM 32-bit CP15 registers have the following id bit patterns:
+-  0x4002 0000 000F &lt;zero:1&gt; &lt;crn:4&gt; &lt;crm:4&gt; &lt;opc1:4&gt; &lt;opc2:3&gt;
++  0x4020 0000 000F &lt;zero:1&gt; &lt;crn:4&gt; &lt;crm:4&gt; &lt;opc1:4&gt; &lt;opc2:3&gt;
+ 
+ ARM 64-bit CP15 registers have the following id bit patterns:
+-  0x4003 0000 000F &lt;zero:1&gt; &lt;zero:4&gt; &lt;crm:4&gt; &lt;opc1:4&gt; &lt;zero:3&gt;
++  0x4030 0000 000F &lt;zero:1&gt; &lt;zero:4&gt; &lt;crm:4&gt; &lt;opc1:4&gt; &lt;zero:3&gt;
+ 
+ ARM CCSIDR registers are demultiplexed by CSSELR value:
+-  0x4002 0000 0011 00 &lt;csselr:8&gt;
++  0x4020 0000 0011 00 &lt;csselr:8&gt;
+ 
+ ARM 32-bit VFP control registers have the following id bit patterns:
+-  0x4002 0000 0012 1 &lt;regno:12&gt;
++  0x4020 0000 0012 1 &lt;regno:12&gt;
+ 
+ ARM 64-bit FP registers have the following id bit patterns:
+-  0x4002 0000 0012 0 &lt;regno:12&gt;
++  0x4030 0000 0012 0 &lt;regno:12&gt;
+ 
+ 4.69 KVM_GET_ONE_REG
+ </pre><hr><pre>commit c088f8f0088decf0ce172a6bb4a6f5742cc54c15
+Author: Christoffer Dall &lt;cdall@cs.columbia.edu&gt;
+Date:   Thu Feb 21 11:26:10 2013 -0800
+
+    KVM: ARM: Reintroduce trace_kvm_hvc
+    
+    This one got lost in the move to handle_exit, so let's reintroduce it
+    using an accessor to the immediate value field like the other ones.
+    
+    Signed-off-by: Christoffer Dall &lt;cdall@cs.columbia.edu&gt;
+
+diff --git a/arch/arm/include/asm/kvm_emulate.h b/arch/arm/include/asm/kvm_emulate.h
+index e14268c77af0..9cb2fe17cf3a 100644
+--- a/arch/arm/include/asm/kvm_emulate.h
++++ b/arch/arm/include/asm/kvm_emulate.h
+@@ -158,4 +158,9 @@ static inline u8 kvm_vcpu_trap_get_fault(struct kvm_vcpu *vcpu)
+ 	return kvm_vcpu_get_hsr(vcpu) &amp; HSR_FSC_TYPE;
+ }
+ 
++static inline u32 kvm_vcpu_hvc_get_imm(struct kvm_vcpu *vcpu)
++{
++	return kvm_vcpu_get_hsr(vcpu) &amp; HSR_HVC_IMM_MASK;
++}
++
+ #endif /* __ARM_KVM_EMULATE_H__ */
+diff --git a/arch/arm/kvm/handle_exit.c b/arch/arm/kvm/handle_exit.c
+index f1cc3a8a9c7e..301301808c4e 100644
+--- a/arch/arm/kvm/handle_exit.c
++++ b/arch/arm/kvm/handle_exit.c
+@@ -23,6 +23,8 @@
+ #include &lt;asm/kvm_mmu.h&gt;
+ #include &lt;asm/kvm_psci.h&gt;
+ 
++#include "trace.h"
++
+ typedef int (*exit_handle_fn)(struct kvm_vcpu *, struct kvm_run *);
+ 
+ static int handle_svc_hyp(struct kvm_vcpu *vcpu, struct kvm_run *run)
+@@ -35,6 +37,9 @@ static int handle_svc_hyp(struct kvm_vcpu *vcpu, struct kvm_run *run)
+ 
+ static int handle_hvc(struct kvm_vcpu *vcpu, struct kvm_run *run)
+ {
++	trace_kvm_hvc(*vcpu_pc(vcpu), *vcpu_reg(vcpu, 0),
++		      kvm_vcpu_hvc_get_imm(vcpu));
++
+ 	if (kvm_psci_call(vcpu))
+ 		return 1;
+ </pre><hr><pre>commit 86ce85352f0da7e1431ad8efcb04323819a620e7
+Author: Christoffer Dall &lt;cdall@cs.columbia.edu&gt;
+Date:   Sun Jan 20 18:28:08 2013 -0500
+
+    KVM: ARM: Inject IRQs and FIQs from userspace
+    
+    All interrupt injection is now based on the VM ioctl KVM_IRQ_LINE.  This
+    works semantically well for the GIC as we in fact raise/lower a line on
+    a machine component (the gic).  The IOCTL uses the follwing struct.
+    
+    struct kvm_irq_level {
+            union {
+                    __u32 irq;     /* GSI */
+                    __s32 status;  /* not used for KVM_IRQ_LEVEL */
+            };
+            __u32 level;           /* 0 or 1 */
+    };
+    
+    ARM can signal an interrupt either at the CPU level, or at the in-kernel irqchip
+    (GIC), and for in-kernel irqchip can tell the GIC to use PPIs designated for
+    specific cpus.  The irq field is interpreted like this:
+    
+      bits:  | 31 ... 24 | 23  ... 16 | 15    ...    0 |
+      field: | irq_type  | vcpu_index |   irq_number   |
+    
+    The irq_type field has the following values:
+    - irq_type[0]: out-of-kernel GIC: irq_number 0 is IRQ, irq_number 1 is FIQ
+    - irq_type[1]: in-kernel GIC: SPI, irq_number between 32 and 1019 (incl.)
+                   (the vcpu_index field is ignored)
+    - irq_type[2]: in-kernel GIC: PPI, irq_number between 16 and 31 (incl.)
+    
+    The irq_number thus corresponds to the irq ID in as in the GICv2 specs.
+    
+    This is documented in Documentation/kvm/api.txt.
+    
+    Reviewed-by: Will Deacon &lt;will.deacon@arm.com&gt;
+    Reviewed-by: Marcelo Tosatti &lt;mtosatti@redhat.com&gt;
+    Signed-off-by: Christoffer Dall &lt;c.dall@virtualopensystems.com&gt;
+
+diff --git a/Documentation/virtual/kvm/api.txt b/Documentation/virtual/kvm/api.txt
+index 4237c27ea612..505049299298 100644
+--- a/Documentation/virtual/kvm/api.txt
++++ b/Documentation/virtual/kvm/api.txt
+@@ -615,15 +615,32 @@ created.
+ 4.25 KVM_IRQ_LINE
+ 
+ Capability: KVM_CAP_IRQCHIP
+-Architectures: x86, ia64
++Architectures: x86, ia64, arm
+ Type: vm ioctl
+ Parameters: struct kvm_irq_level
+ Returns: 0 on success, -1 on error
+ 
+ Sets the level of a GSI input to the interrupt controller model in the kernel.
+-Requires that an interrupt controller model has been previously created with
+-KVM_CREATE_IRQCHIP.  Note that edge-triggered interrupts require the level
+-to be set to 1 and then back to 0.
++On some architectures it is required that an interrupt controller model has
++been previously created with KVM_CREATE_IRQCHIP.  Note that edge-triggered
++interrupts require the level to be set to 1 and then back to 0.
++
++ARM can signal an interrupt either at the CPU level, or at the in-kernel irqchip
++(GIC), and for in-kernel irqchip can tell the GIC to use PPIs designated for
++specific cpus.  The irq field is interpreted like this:
++
++  bits:  | 31 ... 24 | 23  ... 16 | 15    ...    0 |
++  field: | irq_type  | vcpu_index |     irq_id     |
++
++The irq_type field has the following values:
++- irq_type[0]: out-of-kernel GIC: irq_id 0 is IRQ, irq_id 1 is FIQ
++- irq_type[1]: in-kernel GIC: SPI, irq_id between 32 and 1019 (incl.)
++               (the vcpu_index field is ignored)
++- irq_type[2]: in-kernel GIC: PPI, irq_id between 16 and 31 (incl.)
++
++(The irq_id field thus corresponds nicely to the IRQ ID in the ARM GIC specs)
++
++In both cases, level is used to raise/lower the line.
+ 
+ struct kvm_irq_level {
+ 	union {
+diff --git a/arch/arm/include/asm/kvm_arm.h b/arch/arm/include/asm/kvm_arm.h
+index 8875b3f605a7..d64b5250ad4e 100644
+--- a/arch/arm/include/asm/kvm_arm.h
++++ b/arch/arm/include/asm/kvm_arm.h
+@@ -68,6 +68,7 @@
+ #define HCR_GUEST_MASK (HCR_TSC | HCR_TSW | HCR_TWI | HCR_VM | HCR_BSU_IS | \
+ 			HCR_FB | HCR_TAC | HCR_AMO | HCR_IMO | HCR_FMO | \
+ 			HCR_SWIO | HCR_TIDCP)
++#define HCR_VIRT_EXCP_MASK (HCR_VA | HCR_VI | HCR_VF)
+ 
+ /* Hyp System Control Register (HSCTLR) bits */
+ #define HSCTLR_TE	(1 &lt;&lt; 30)
+diff --git a/arch/arm/include/uapi/asm/kvm.h b/arch/arm/include/uapi/asm/kvm.h
+index 1083327b5fcd..53f45f146875 100644
+--- a/arch/arm/include/uapi/asm/kvm.h
++++ b/arch/arm/include/uapi/asm/kvm.h
+@@ -23,6 +23,7 @@
+ #include &lt;asm/ptrace.h&gt;
+ 
+ #define __KVM_HAVE_GUEST_DEBUG
++#define __KVM_HAVE_IRQ_LINE
+ 
+ #define KVM_REG_SIZE(id)						\
+ 	(1U &lt;&lt; (((id) &amp; KVM_REG_SIZE_MASK) &gt;&gt; KVM_REG_SIZE_SHIFT))
+@@ -103,4 +104,24 @@ struct kvm_arch_memory_slot {
+ #define KVM_REG_ARM_CORE		(0x0010 &lt;&lt; KVM_REG_ARM_COPROC_SHIFT)
+ #define KVM_REG_ARM_CORE_REG(name)	(offsetof(struct kvm_regs, name) / 4)
+ 
++/* KVM_IRQ_LINE irq field index values */
++#define KVM_ARM_IRQ_TYPE_SHIFT		24
++#define KVM_ARM_IRQ_TYPE_MASK		0xff
++#define KVM_ARM_IRQ_VCPU_SHIFT		16
++#define KVM_ARM_IRQ_VCPU_MASK		0xff
++#define KVM_ARM_IRQ_NUM_SHIFT		0
++#define KVM_ARM_IRQ_NUM_MASK		0xffff
++
++/* irq_type field */
++#define KVM_ARM_IRQ_TYPE_CPU		0
++#define KVM_ARM_IRQ_TYPE_SPI		1
++#define KVM_ARM_IRQ_TYPE_PPI		2
++
++/* out-of-kernel GIC cpu interrupt injection irq_number field */
++#define KVM_ARM_IRQ_CPU_IRQ		0
++#define KVM_ARM_IRQ_CPU_FIQ		1
++
++/* Highest supported SPI, from VGIC_NR_IRQS */
++#define KVM_ARM_IRQ_GIC_MAX		127
++
+ #endif /* __ARM_KVM_H__ */
+diff --git a/arch/arm/kvm/arm.c b/arch/arm/kvm/arm.c
+index d810afb6cb84..2101152c3a4b 100644
+--- a/arch/arm/kvm/arm.c
++++ b/arch/arm/kvm/arm.c
+@@ -24,6 +24,7 @@
+ #include &lt;linux/fs.h&gt;
+ #include &lt;linux/mman.h&gt;
+ #include &lt;linux/sched.h&gt;
++#include &lt;linux/kvm.h&gt;
+ #include &lt;trace/events/kvm.h&gt;
+ 
+ #define CREATE_TRACE_POINTS
+@@ -284,6 +285,7 @@ void kvm_arch_vcpu_uninit(struct kvm_vcpu *vcpu)
+ 
+ void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
+ {
++	vcpu-&gt;cpu = cpu;
+ }
+ 
+ void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
+@@ -319,6 +321,69 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu, struct kvm_run *run)
+ 	return -EINVAL;
+ }
+ 
++static int vcpu_interrupt_line(struct kvm_vcpu *vcpu, int number, bool level)
++{
++	int bit_index;
++	bool set;
++	unsigned long *ptr;
++
++	if (number == KVM_ARM_IRQ_CPU_IRQ)
++		bit_index = __ffs(HCR_VI);
++	else /* KVM_ARM_IRQ_CPU_FIQ */
++		bit_index = __ffs(HCR_VF);
++
++	ptr = (unsigned long *)&amp;vcpu-&gt;arch.irq_lines;
++	if (level)
++		set = test_and_set_bit(bit_index, ptr);
++	else
++		set = test_and_clear_bit(bit_index, ptr);
++
++	/*
++	 * If we didn't change anything, no need to wake up or kick other CPUs
++	 */
++	if (set == level)
++		return 0;
++
++	/*
++	 * The vcpu irq_lines field was updated, wake up sleeping VCPUs and
++	 * trigger a world-switch round on the running physical CPU to set the
++	 * virtual IRQ/FIQ fields in the HCR appropriately.
++	 */
++	kvm_vcpu_kick(vcpu);
++
++	return 0;
++}
++
++int kvm_vm_ioctl_irq_line(struct kvm *kvm, struct kvm_irq_level *irq_level)
++{
++	u32 irq = irq_level-&gt;irq;
++	unsigned int irq_type, vcpu_idx, irq_num;
++	int nrcpus = atomic_read(&amp;kvm-&gt;online_vcpus);
++	struct kvm_vcpu *vcpu = NULL;
++	bool level = irq_level-&gt;level;
++
++	irq_type = (irq &gt;&gt; KVM_ARM_IRQ_TYPE_SHIFT) &amp; KVM_ARM_IRQ_TYPE_MASK;
++	vcpu_idx = (irq &gt;&gt; KVM_ARM_IRQ_VCPU_SHIFT) &amp; KVM_ARM_IRQ_VCPU_MASK;
++	irq_num = (irq &gt;&gt; KVM_ARM_IRQ_NUM_SHIFT) &amp; KVM_ARM_IRQ_NUM_MASK;
++
++	trace_kvm_irq_line(irq_type, vcpu_idx, irq_num, irq_level-&gt;level);
++
++	if (irq_type != KVM_ARM_IRQ_TYPE_CPU)
++		return -EINVAL;
++
++	if (vcpu_idx &gt;= nrcpus)
++		return -EINVAL;
++
++	vcpu = kvm_get_vcpu(kvm, vcpu_idx);
++	if (!vcpu)
++		return -EINVAL;
++
++	if (irq_num &gt; KVM_ARM_IRQ_CPU_FIQ)
++		return -EINVAL;
++
++	return vcpu_interrupt_line(vcpu, irq_num, level);
++}
++
+ long kvm_arch_vcpu_ioctl(struct file *filp,
+ 			 unsigned int ioctl, unsigned long arg)
+ {
+diff --git a/arch/arm/kvm/trace.h b/arch/arm/kvm/trace.h
+index 862b2cc12fbe..105d1f79909a 100644
+--- a/arch/arm/kvm/trace.h
++++ b/arch/arm/kvm/trace.h
+@@ -39,6 +39,31 @@ TRACE_EVENT(kvm_exit,
+ 	TP_printk("PC: 0x%08lx", __entry-&gt;vcpu_pc)
+ );
+ 
++TRACE_EVENT(kvm_irq_line,
++	TP_PROTO(unsigned int type, int vcpu_idx, int irq_num, int level),
++	TP_ARGS(type, vcpu_idx, irq_num, level),
++
++	TP_STRUCT__entry(
++		__field(	unsigned int,	type		)
++		__field(	int,		vcpu_idx	)
++		__field(	int,		irq_num		)
++		__field(	int,		level		)
++	),
++
++	TP_fast_assign(
++		__entry-&gt;type		= type;
++		__entry-&gt;vcpu_idx	= vcpu_idx;
++		__entry-&gt;irq_num	= irq_num;
++		__entry-&gt;level		= level;
++	),
++
++	TP_printk("Inject %s interrupt (%d), vcpu-&gt;idx: %d, num: %d, level: %d",
++		  (__entry-&gt;type == KVM_ARM_IRQ_TYPE_CPU) ? "CPU" :
++		  (__entry-&gt;type == KVM_ARM_IRQ_TYPE_PPI) ? "VGIC PPI" :
++		  (__entry-&gt;type == KVM_ARM_IRQ_TYPE_SPI) ? "VGIC SPI" : "UNKNOWN",
++		  __entry-&gt;type, __entry-&gt;vcpu_idx, __entry-&gt;irq_num, __entry-&gt;level)
++);
++
+ TRACE_EVENT(kvm_unmap_hva,
+ 	TP_PROTO(unsigned long hva),
+ 	TP_ARGS(hva),
+diff --git a/include/uapi/linux/kvm.h b/include/uapi/linux/kvm.h
+index 24978d525c6e..dc63665e73ad 100644
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -115,6 +115,7 @@ struct kvm_irq_level {
+ 	 * ACPI gsi notion of irq.
+ 	 * For IA-64 (APIC model) IOAPIC0: irq 0-23; IOAPIC1: irq 24-47..
+ 	 * For X86 (standard AT mode) PIC0/1: irq 0-15. IOAPIC0: 0-23..
++	 * For ARM: See Documentation/virtual/kvm/api.txt
+ 	 */
+ 	union {
+ 		__u32 irq;</pre><hr><pre>commit ad4b3fb7ff9940bcdb1e4cd62bd189d10fa636ba
+Author: Christoffer Dall &lt;cdall@cs.columbia.edu&gt;
+Date:   Fri Dec 21 13:03:50 2012 -0500
+
+    mm: Fix PageHead when !CONFIG_PAGEFLAGS_EXTENDED
+    
+    Unfortunately with !CONFIG_PAGEFLAGS_EXTENDED, (!PageHead) is false, and
+    (PageHead) is true, for tail pages.  If this is indeed the intended
+    behavior, which I doubt because it breaks cache cleaning on some ARM
+    systems, then the nomenclature is highly problematic.
+    
+    This patch makes sure PageHead is only true for head pages and PageTail
+    is only true for tail pages, and neither is true for non-compound pages.
+    
+    [ This buglet seems ancient - seems to have been introduced back in Apr
+      2008 in commit 6a1e7f777f61: "pageflags: convert to the use of new
+      macros".  And the reason nobody noticed is because the PageHead()
+      tests are almost all about just sanity-checking, and only used on
+      pages that are actual page heads.  The fact that the old code returned
+      true for tail pages too was thus not really noticeable.   - Linus ]
+    
+    Signed-off-by: Christoffer Dall &lt;cdall@cs.columbia.edu&gt;
+    Acked-by:  Andrea Arcangeli &lt;aarcange@redhat.com&gt;
+    Cc: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Cc: Will Deacon &lt;Will.Deacon@arm.com&gt;
+    Cc: Steve Capper &lt;Steve.Capper@arm.com&gt;
+    Cc: Christoph Lameter &lt;cl@linux.com&gt;
+    Cc: stable@kernel.org  # 2.6.26+
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/include/linux/page-flags.h b/include/linux/page-flags.h
+index b5d13841604e..70473da47b3f 100644
+--- a/include/linux/page-flags.h
++++ b/include/linux/page-flags.h
+@@ -362,7 +362,7 @@ static inline void ClearPageCompound(struct page *page)
+  * pages on the LRU and/or pagecache.
+  */
+ TESTPAGEFLAG(Compound, compound)
+-__PAGEFLAG(Head, compound)
++__SETPAGEFLAG(Head, compound)  __CLEARPAGEFLAG(Head, compound)
+ 
+ /*
+  * PG_reclaim is used in combination with PG_compound to mark the
+@@ -374,8 +374,14 @@ __PAGEFLAG(Head, compound)
+  * PG_compound &amp; PG_reclaim	=&gt; Tail page
+  * PG_compound &amp; ~PG_reclaim	=&gt; Head page
+  */
++#define PG_head_mask ((1L &lt;&lt; PG_compound))
+ #define PG_head_tail_mask ((1L &lt;&lt; PG_compound) | (1L &lt;&lt; PG_reclaim))
+ 
++static inline int PageHead(struct page *page)
++{
++	return ((page-&gt;flags &amp; PG_head_tail_mask) == PG_head_mask);
++}
++
+ static inline int PageTail(struct page *page)
+ {
+ 	return ((page-&gt;flags &amp; PG_head_tail_mask) == PG_head_tail_mask);</pre><hr><pre>commit e19f247a3dbd85485ec13174817ae9c2478fe541
+Author: Oren Laadan &lt;orenl@cs.columbia.edu&gt;
+Date:   Sun Jan 8 01:03:58 2006 -0800
+
+    [PATCH] setpgid: should work for sub-threads
+    
+    setsid() does not work unless the calling process is a
+    thread_group_leader().
+    
+    'man setpgid' does not tell anything about that, so I consider this
+    behaviour is a bug.
+    
+    Signed-off-by: Oren Laadan &lt;orenl@cs.columbia.edu&gt;
+    Cc: Oleg Nesterov &lt;oleg@tv-sign.ru&gt;
+    Cc: Roland McGrath &lt;roland@redhat.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/kernel/exit.c b/kernel/exit.c
+index a80824f6108b..caceabf3f230 100644
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -257,7 +257,7 @@ static inline void reparent_to_init(void)
+ 
+ void __set_special_pids(pid_t session, pid_t pgrp)
+ {
+-	struct task_struct *curr = current;
++	struct task_struct *curr = current-&gt;group_leader;
+ 
+ 	if (curr-&gt;signal-&gt;session != session) {
+ 		detach_pid(curr, PIDTYPE_SID);
+diff --git a/kernel/sys.c b/kernel/sys.c
+index 43e557211d8d..f497bf56ada1 100644
+--- a/kernel/sys.c
++++ b/kernel/sys.c
+@@ -1215,24 +1215,22 @@ asmlinkage long sys_getsid(pid_t pid)
+ 
+ asmlinkage long sys_setsid(void)
+ {
++	struct task_struct *group_leader = current-&gt;group_leader;
+ 	struct pid *pid;
+ 	int err = -EPERM;
+ 
+-	if (!thread_group_leader(current))
+-		return -EINVAL;
+-
+ 	down(&amp;tty_sem);
+ 	write_lock_irq(&amp;tasklist_lock);
+ 
+-	pid = find_pid(PIDTYPE_PGID, current-&gt;pid);
++	pid = find_pid(PIDTYPE_PGID, group_leader-&gt;pid);
+ 	if (pid)
+ 		goto out;
+ 
+-	current-&gt;signal-&gt;leader = 1;
+-	__set_special_pids(current-&gt;pid, current-&gt;pid);
+-	current-&gt;signal-&gt;tty = NULL;
+-	current-&gt;signal-&gt;tty_old_pgrp = 0;
+-	err = process_group(current);
++	group_leader-&gt;signal-&gt;leader = 1;
++	__set_special_pids(group_leader-&gt;pid, group_leader-&gt;pid);
++	group_leader-&gt;signal-&gt;tty = NULL;
++	group_leader-&gt;signal-&gt;tty_old_pgrp = 0;
++	err = process_group(group_leader);
+ out:
+ 	write_unlock_irq(&amp;tasklist_lock);
+ 	up(&amp;tty_sem);</pre><hr><pre>commit 9a5d3023e626a0baf86ac6b892c983b3db13f22b
+Author: Oren Laadan &lt;orenl@cs.columbia.edu&gt;
+Date:   Sun Jan 8 01:03:51 2006 -0800
+
+    [PATCH] fork: fix race in setting child's pgrp and tty
+    
+    In fork, child should recopy parent's pgrp/tty after it has tasklist_lock.
+    Otherwise following a setpgid() on the parent, *after* copy_signal(), the
+    child will own a stale pgrp (which may be reused); (eg.  if copy_mm()
+    sleeps a long while due to memory pressure).  Similar issue for the tty.
+    
+    Signed-off-by: Oren Laadan &lt;orenl@cs.columbia.edu&gt;
+    Cc: Oleg Nesterov &lt;oleg@tv-sign.ru&gt;
+    Cc: Roland McGrath &lt;roland@redhat.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 7992ee759d89..4bc0bd8ef176 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -811,9 +811,6 @@ static inline int copy_signal(unsigned long clone_flags, struct task_struct * ts
+ 	sig-&gt;it_prof_expires = cputime_zero;
+ 	sig-&gt;it_prof_incr = cputime_zero;
+ 
+-	sig-&gt;tty = current-&gt;signal-&gt;tty;
+-	sig-&gt;pgrp = process_group(current);
+-	sig-&gt;session = current-&gt;signal-&gt;session;
+ 	sig-&gt;leader = 0;	/* session leadership doesn't inherit */
+ 	sig-&gt;tty_old_pgrp = 0;
+ 
+@@ -1136,15 +1133,15 @@ static task_t *copy_process(unsigned long clone_flags,
+ 	attach_pid(p, PIDTYPE_PID, p-&gt;pid);
+ 	attach_pid(p, PIDTYPE_TGID, p-&gt;tgid);
+ 	if (thread_group_leader(p)) {
++		p-&gt;signal-&gt;tty = current-&gt;signal-&gt;tty;
++		p-&gt;signal-&gt;pgrp = process_group(current);
++		p-&gt;signal-&gt;session = current-&gt;signal-&gt;session;
+ 		attach_pid(p, PIDTYPE_PGID, process_group(p));
+ 		attach_pid(p, PIDTYPE_SID, p-&gt;signal-&gt;session);
+ 		if (p-&gt;pid)
+ 			__get_cpu_var(process_counts)++;
+ 	}
+ 
+-	if (!current-&gt;signal-&gt;tty &amp;&amp; p-&gt;signal-&gt;tty)
+-		p-&gt;signal-&gt;tty = NULL;
+-
+ 	nr_threads++;
+ 	total_forks++;
+ 	write_unlock_irq(&amp;tasklist_lock);</pre>
+    <div class="pagination">
+        <a href='23_2.html'>&lt;&lt;Prev</a><a href='23.html'>1</a><a href='23_2.html'>2</a><span>[3]</span>
+    <div>
+</body>

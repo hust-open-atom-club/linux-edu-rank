@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_21.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><span>[22]</span><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_23.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit b2c0cea6b1cb210e962f07047df602875564069e
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue May 5 19:04:29 2009 -0400
+
+    nfsd4: check for negative dentry before use in nfsv4 readdir
+    
+    After 2f9092e1020246168b1309b35e085ecd7ff9ff72 "Fix i_mutex vs.  readdir
+    handling in nfsd" (and 14f7dd63 "Copy XFS readdir hack into nfsd code"),
+    an entry may be removed between the first mutex_unlock and the second
+    mutex_lock. In this case, lookup_one_len() will return a negative
+    dentry.  Check for this case to avoid a NULL dereference.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Reviewed-by: J. R. Okajima &lt;hooanon05@yahoo.co.jp&gt;
+    Cc: stable@kernel.org
+
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index b820c311931c..b73549d293be 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -2214,6 +2214,15 @@ nfsd4_encode_dirent_fattr(struct nfsd4_readdir *cd,
+ 	dentry = lookup_one_len(name, cd-&gt;rd_fhp-&gt;fh_dentry, namlen);
+ 	if (IS_ERR(dentry))
+ 		return nfserrno(PTR_ERR(dentry));
++	if (!dentry-&gt;d_inode) {
++		/*
++		 * nfsd_buffered_readdir drops the i_mutex between
++		 * readdir and calling this callback, leaving a window
++		 * where this directory entry could have gone away.
++		 */
++		dput(dentry);
++		return nfserr_noent;
++	}
+ 
+ 	exp_get(exp);
+ 	/*
+@@ -2276,6 +2285,7 @@ nfsd4_encode_dirent(void *ccdv, const char *name, int namlen,
+ 	struct nfsd4_readdir *cd = container_of(ccd, struct nfsd4_readdir, common);
+ 	int buflen;
+ 	__be32 *p = cd-&gt;buffer;
++	__be32 *cookiep;
+ 	__be32 nfserr = nfserr_toosmall;
+ 
+ 	/* In nfsv4, "." and ".." never make it onto the wire.. */
+@@ -2292,7 +2302,7 @@ nfsd4_encode_dirent(void *ccdv, const char *name, int namlen,
+ 		goto fail;
+ 
+ 	*p++ = xdr_one;                             /* mark entry present */
+-	cd-&gt;offset = p;                             /* remember pointer */
++	cookiep = p;
+ 	p = xdr_encode_hyper(p, NFS_OFFSET_MAX);    /* offset of next entry */
+ 	p = xdr_encode_array(p, name, namlen);      /* name length &amp; name */
+ 
+@@ -2306,6 +2316,8 @@ nfsd4_encode_dirent(void *ccdv, const char *name, int namlen,
+ 		goto fail;
+ 	case nfserr_dropit:
+ 		goto fail;
++	case nfserr_noent:
++		goto skip_entry;
+ 	default:
+ 		/*
+ 		 * If the client requested the RDATTR_ERROR attribute,
+@@ -2324,6 +2336,8 @@ nfsd4_encode_dirent(void *ccdv, const char *name, int namlen,
+ 	}
+ 	cd-&gt;buflen -= (p - cd-&gt;buffer);
+ 	cd-&gt;buffer = p;
++	cd-&gt;offset = cookiep;
++skip_entry:
+ 	cd-&gt;common.err = nfs_ok;
+ 	return 0;
+ fail:</pre><hr><pre>commit 63e4863fabc6e165a6ca813051305be58966da45
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri May 1 22:36:55 2009 -0400
+
+    nfsd4: make recall callback an asynchronous rpc
+    
+    As with the probe, this removes the need for another kthread.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index b88b207d75d9..f4fab69a8c30 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -494,6 +494,49 @@ nfsd4_probe_callback(struct nfs4_client *clp)
+ 	do_probe_callback(clp);
+ }
+ 
++static void nfsd4_cb_recall_done(struct rpc_task *task, void *calldata)
++{
++	struct nfs4_delegation *dp = calldata;
++	struct nfs4_client *clp = dp-&gt;dl_client;
++
++	switch (task-&gt;tk_status) {
++	case -EIO:
++		/* Network partition? */
++		atomic_set(&amp;clp-&gt;cl_cb_conn.cb_set, 0);
++		warn_no_callback_path(clp, task-&gt;tk_status);
++	case -EBADHANDLE:
++	case -NFS4ERR_BAD_STATEID:
++		/* Race: client probably got cb_recall
++		 * before open reply granting delegation */
++		break;
++	default:
++		/* success, or error we can't handle */
++		return;
++	}
++	if (dp-&gt;dl_retries--) {
++		rpc_delay(task, 2*HZ);
++		task-&gt;tk_status = 0;
++		rpc_restart_call(task);
++	} else {
++		atomic_set(&amp;clp-&gt;cl_cb_conn.cb_set, 0);
++		warn_no_callback_path(clp, task-&gt;tk_status);
++	}
++}
++
++static void nfsd4_cb_recall_release(void *calldata)
++{
++	struct nfs4_delegation *dp = calldata;
++	struct nfs4_client *clp = dp-&gt;dl_client;
++
++	nfs4_put_delegation(dp);
++	put_nfs4_client(clp);
++}
++
++static const struct rpc_call_ops nfsd4_cb_recall_ops = {
++	.rpc_call_done = nfsd4_cb_recall_done,
++	.rpc_release = nfsd4_cb_recall_release,
++};
++
+ /*
+  * called with dp-&gt;dl_count inc'ed.
+  */
+@@ -507,32 +550,13 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ 		.rpc_argp = dp,
+ 		.rpc_cred = clp-&gt;cl_cb_conn.cb_cred
+ 	};
+-	int status = 0;
++	int status;
+ 
+ 	dp-&gt;dl_retries = 1;
+-	status = rpc_call_sync(clnt, &amp;msg, RPC_TASK_SOFT);
+-	while (dp-&gt;dl_retries--) {
+-		switch (status) {
+-			case -EIO:
+-				/* Network partition? */
+-				atomic_set(&amp;clp-&gt;cl_cb_conn.cb_set, 0);
+-			case -EBADHANDLE:
+-			case -NFS4ERR_BAD_STATEID:
+-				/* Race: client probably got cb_recall
+-				 * before open reply granting delegation */
+-				break;
+-			default:
+-				goto out_put_cred;
+-		}
+-		ssleep(2);
+-		status = rpc_call_sync(clnt, &amp;msg, RPC_TASK_SOFT);
++	status = rpc_call_async(clnt, &amp;msg, RPC_TASK_SOFT,
++				&amp;nfsd4_cb_recall_ops, dp);
++	if (status) {
++		put_nfs4_client(clp);
++		nfs4_put_delegation(dp);
+ 	}
+-out_put_cred:
+-	/*
+-	 * Success or failure, now we're either waiting for lease expiration
+-	 * or deleg_return.
+-	 */
+-	put_nfs4_client(clp);
+-	nfs4_put_delegation(dp);
+-	return;
+ }
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index cbb16e191d5b..a4bdf2589b41 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -2059,19 +2059,6 @@ nfs4_file_downgrade(struct file *filp, unsigned int share_access)
+ 	}
+ }
+ 
+-/*
+- * Recall a delegation
+- */
+-static int
+-do_recall(void *__dp)
+-{
+-	struct nfs4_delegation *dp = __dp;
+-
+-	dp-&gt;dl_file-&gt;fi_had_conflict = true;
+-	nfsd4_cb_recall(dp);
+-	return 0;
+-}
+-
+ /*
+  * Spawn a thread to perform a recall on the delegation represented
+  * by the lease (file_lock)
+@@ -2083,8 +2070,7 @@ do_recall(void *__dp)
+ static
+ void nfsd_break_deleg_cb(struct file_lock *fl)
+ {
+-	struct nfs4_delegation *dp=  (struct nfs4_delegation *)fl-&gt;fl_owner;
+-	struct task_struct *t;
++	struct nfs4_delegation *dp = (struct nfs4_delegation *)fl-&gt;fl_owner;
+ 
+ 	dprintk("NFSD nfsd_break_deleg_cb: dp %p fl %p\n",dp,fl);
+ 	if (!dp)
+@@ -2112,16 +2098,8 @@ void nfsd_break_deleg_cb(struct file_lock *fl)
+ 	 */
+ 	fl-&gt;fl_break_time = 0;
+ 
+-	t = kthread_run(do_recall, dp, "%s", "nfs4_cb_recall");
+-	if (IS_ERR(t)) {
+-		struct nfs4_client *clp = dp-&gt;dl_client;
+-
+-		printk(KERN_INFO "NFSD: Callback thread failed for "
+-			"for client (clientid %08x/%08x)\n",
+-			clp-&gt;cl_clientid.cl_boot, clp-&gt;cl_clientid.cl_id);
+-		put_nfs4_client(dp-&gt;dl_client);
+-		nfs4_put_delegation(dp);
+-	}
++	dp-&gt;dl_file-&gt;fi_had_conflict = true;
++	nfsd4_cb_recall(dp);
+ }
+ 
+ /*</pre><hr><pre>commit 3aea09dc9106407d8bc18e593fbffda9ad632844
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri May 1 20:11:12 2009 -0400
+
+    nfsd4: track recall retries in nfs4_delegation
+    
+    Move this out of a local variable into the nfs4_delegation object in
+    preparation for making this an async rpc call (at which point we'll need
+    any state like this in a common object that's preserved across function
+    calls).
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 0420b5e6e20d..b88b207d75d9 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -507,11 +507,11 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ 		.rpc_argp = dp,
+ 		.rpc_cred = clp-&gt;cl_cb_conn.cb_cred
+ 	};
+-	int retries = 1;
+ 	int status = 0;
+ 
++	dp-&gt;dl_retries = 1;
+ 	status = rpc_call_sync(clnt, &amp;msg, RPC_TASK_SOFT);
+-	while (retries--) {
++	while (dp-&gt;dl_retries--) {
+ 		switch (status) {
+ 			case -EIO:
+ 				/* Network partition? */
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index 346b603072ce..c0c49215ddc5 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -76,6 +76,7 @@ struct nfs4_delegation {
+ 	u32			dl_ident;
+ 	stateid_t		dl_stateid;
+ 	struct knfsd_fh		dl_fh;
++	int			dl_retries;
+ };
+ 
+ /* client delegation callback info */</pre><hr><pre>commit 6707bd3d420f53ae8f090dac871843f6f43c9980
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri May 1 19:57:46 2009 -0400
+
+    nfsd4: remove unused dl_trunc
+    
+    There's no point in keeping this field around--it's always zero.
+    
+    (Background: the protocol allows you to tell the client that the file is
+    about to be truncated, as an optimization to save the client from
+    writing back dirty pages that will just be discarded.  We don't
+    implement this hint.  If we do some day, adding this field back in will
+    be the least of the work involved.)
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 2509305f6f53..0420b5e6e20d 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -224,7 +224,7 @@ encode_cb_recall(struct xdr_stream *xdr, struct nfs4_delegation *dp)
+ 	WRITE32(OP_CB_RECALL);
+ 	WRITE32(dp-&gt;dl_stateid.si_generation);
+ 	WRITEMEM(&amp;dp-&gt;dl_stateid.si_opaque, sizeof(stateid_opaque_t));
+-	WRITE32(dp-&gt;dl_trunc);
++	WRITE32(0); /* truncate optimization not implemented */
+ 	WRITE32(len);
+ 	WRITEMEM(&amp;dp-&gt;dl_fh.fh_base, len);
+ 	return 0;
+@@ -510,8 +510,6 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ 	int retries = 1;
+ 	int status = 0;
+ 
+-	dp-&gt;dl_trunc = 0; /* XXX need to implement truncate optimization */
+-
+ 	status = rpc_call_sync(clnt, &amp;msg, RPC_TASK_SOFT);
+ 	while (retries--) {
+ 		switch (status) {
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 3e5345e01b13..cbb16e191d5b 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -204,7 +204,6 @@ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_stateid *stp, struct svc_f
+ 	dp-&gt;dl_vfs_file = stp-&gt;st_vfs_file;
+ 	dp-&gt;dl_type = type;
+ 	dp-&gt;dl_ident = cb-&gt;cb_ident;
+-	dp-&gt;dl_trunc = 0;
+ 	dp-&gt;dl_stateid.si_boot = get_seconds();
+ 	dp-&gt;dl_stateid.si_stateownerid = current_delegid++;
+ 	dp-&gt;dl_stateid.si_fileid = 0;
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index 233b60d39b84..346b603072ce 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -74,7 +74,6 @@ struct nfs4_delegation {
+ 	time_t			dl_time;
+ /* For recall: */
+ 	u32			dl_ident;
+-	int			dl_trunc;
+ 	stateid_t		dl_stateid;
+ 	struct knfsd_fh		dl_fh;
+ };</pre><hr><pre>commit b53d40c5070bffde1b2bcaf848412a50d8894794
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri May 1 19:50:00 2009 -0400
+
+    nfsd4: eliminate struct nfs4_cb_recall
+    
+    The nfs4_cb_recall struct is used only in nfs4_delegation, so its
+    pointer to the containing delegation is unnecessary--we could just use
+    container_of().
+    
+    But there's no real reason to have this a separate struct at all--just
+    move these fields to nfs4_delegation.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index ed860d7ddd19..2509305f6f53 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -215,18 +215,18 @@ encode_cb_compound_hdr(struct xdr_stream *xdr, struct nfs4_cb_compound_hdr *hdr)
+ }
+ 
+ static int
+-encode_cb_recall(struct xdr_stream *xdr, struct nfs4_cb_recall *cb_rec)
++encode_cb_recall(struct xdr_stream *xdr, struct nfs4_delegation *dp)
+ {
+ 	__be32 *p;
+-	int len = cb_rec-&gt;cbr_fh.fh_size;
++	int len = dp-&gt;dl_fh.fh_size;
+ 
+-	RESERVE_SPACE(12+sizeof(cb_rec-&gt;cbr_stateid) + len);
++	RESERVE_SPACE(12+sizeof(dp-&gt;dl_stateid) + len);
+ 	WRITE32(OP_CB_RECALL);
+-	WRITE32(cb_rec-&gt;cbr_stateid.si_generation);
+-	WRITEMEM(&amp;cb_rec-&gt;cbr_stateid.si_opaque, sizeof(stateid_opaque_t));
+-	WRITE32(cb_rec-&gt;cbr_trunc);
++	WRITE32(dp-&gt;dl_stateid.si_generation);
++	WRITEMEM(&amp;dp-&gt;dl_stateid.si_opaque, sizeof(stateid_opaque_t));
++	WRITE32(dp-&gt;dl_trunc);
+ 	WRITE32(len);
+-	WRITEMEM(&amp;cb_rec-&gt;cbr_fh.fh_base, len);
++	WRITEMEM(&amp;dp-&gt;dl_fh.fh_base, len);
+ 	return 0;
+ }
+ 
+@@ -241,11 +241,11 @@ nfs4_xdr_enc_cb_null(struct rpc_rqst *req, __be32 *p)
+ }
+ 
+ static int
+-nfs4_xdr_enc_cb_recall(struct rpc_rqst *req, __be32 *p, struct nfs4_cb_recall *args)
++nfs4_xdr_enc_cb_recall(struct rpc_rqst *req, __be32 *p, struct nfs4_delegation *args)
+ {
+ 	struct xdr_stream xdr;
+ 	struct nfs4_cb_compound_hdr hdr = {
+-		.ident = args-&gt;cbr_ident,
++		.ident = args-&gt;dl_ident,
+ 		.nops   = 1,
+ 	};
+ 
+@@ -502,17 +502,15 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ {
+ 	struct nfs4_client *clp = dp-&gt;dl_client;
+ 	struct rpc_clnt *clnt = clp-&gt;cl_cb_conn.cb_client;
+-	struct nfs4_cb_recall *cbr = &amp;dp-&gt;dl_recall;
+ 	struct rpc_message msg = {
+ 		.rpc_proc = &amp;nfs4_cb_procedures[NFSPROC4_CLNT_CB_RECALL],
+-		.rpc_argp = cbr,
++		.rpc_argp = dp,
+ 		.rpc_cred = clp-&gt;cl_cb_conn.cb_cred
+ 	};
+ 	int retries = 1;
+ 	int status = 0;
+ 
+-	cbr-&gt;cbr_trunc = 0; /* XXX need to implement truncate optimization */
+-	cbr-&gt;cbr_dp = dp;
++	dp-&gt;dl_trunc = 0; /* XXX need to implement truncate optimization */
+ 
+ 	status = rpc_call_sync(clnt, &amp;msg, RPC_TASK_SOFT);
+ 	while (retries--) {
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index d7b5e6b89207..3e5345e01b13 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -203,9 +203,8 @@ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_stateid *stp, struct svc_f
+ 	get_file(stp-&gt;st_vfs_file);
+ 	dp-&gt;dl_vfs_file = stp-&gt;st_vfs_file;
+ 	dp-&gt;dl_type = type;
+-	dp-&gt;dl_recall.cbr_dp = NULL;
+-	dp-&gt;dl_recall.cbr_ident = cb-&gt;cb_ident;
+-	dp-&gt;dl_recall.cbr_trunc = 0;
++	dp-&gt;dl_ident = cb-&gt;cb_ident;
++	dp-&gt;dl_trunc = 0;
+ 	dp-&gt;dl_stateid.si_boot = get_seconds();
+ 	dp-&gt;dl_stateid.si_stateownerid = current_delegid++;
+ 	dp-&gt;dl_stateid.si_fileid = 0;
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index 563c367a3013..233b60d39b84 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -61,15 +61,6 @@ typedef struct {
+ #define si_stateownerid   si_opaque.so_stateownerid
+ #define si_fileid         si_opaque.so_fileid
+ 
+-
+-struct nfs4_cb_recall {
+-	u32			cbr_ident;
+-	int			cbr_trunc;
+-	stateid_t		cbr_stateid;
+-	struct knfsd_fh		cbr_fh;
+-	struct nfs4_delegation	*cbr_dp;
+-};
+-
+ struct nfs4_delegation {
+ 	struct list_head	dl_perfile;
+ 	struct list_head	dl_perclnt;
+@@ -81,12 +72,13 @@ struct nfs4_delegation {
+ 	struct file		*dl_vfs_file;
+ 	u32			dl_type;
+ 	time_t			dl_time;
+-	struct nfs4_cb_recall	dl_recall;
++/* For recall: */
++	u32			dl_ident;
++	int			dl_trunc;
++	stateid_t		dl_stateid;
++	struct knfsd_fh		dl_fh;
+ };
+ 
+-#define dl_stateid      dl_recall.cbr_stateid
+-#define dl_fh           dl_recall.cbr_fh
+-
+ /* client delegation callback info */
+ struct nfs4_cb_conn {
+ 	/* SETCLIENTID info */</pre><hr><pre>commit c237dc0303bcf6f4cc2e0efe4fe4e341c6f34dac
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Apr 29 19:09:19 2009 -0400
+
+    nfsd4: rename callback struct to cb_conn
+    
+    I want to use the name for a struct that actually does represent a
+    single callback.
+    
+    (Actually, I've never been sure it helps to a separate struct for the
+    callback information.  Some day maybe those fields could just be dumped
+    into struct nfs4_client.  I don't know.)
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 0aaf68beedbd..ed860d7ddd19 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -369,7 +369,7 @@ static int max_cb_time(void)
+ int setup_callback_client(struct nfs4_client *clp)
+ {
+ 	struct sockaddr_in	addr;
+-	struct nfs4_callback    *cb = &amp;clp-&gt;cl_callback;
++	struct nfs4_cb_conn *cb = &amp;clp-&gt;cl_cb_conn;
+ 	struct rpc_timeout	timeparms = {
+ 		.to_initval	= max_cb_time(),
+ 		.to_retries	= 0,
+@@ -422,7 +422,7 @@ static void nfsd4_cb_probe_done(struct rpc_task *task, void *calldata)
+ 	if (task-&gt;tk_status)
+ 		warn_no_callback_path(clp, task-&gt;tk_status);
+ 	else
+-		atomic_set(&amp;clp-&gt;cl_callback.cb_set, 1);
++		atomic_set(&amp;clp-&gt;cl_cb_conn.cb_set, 1);
+ 	put_nfs4_client(clp);
+ }
+ 
+@@ -430,7 +430,7 @@ static const struct rpc_call_ops nfsd4_cb_probe_ops = {
+ 	.rpc_call_done = nfsd4_cb_probe_done,
+ };
+ 
+-static struct rpc_cred *lookup_cb_cred(struct nfs4_callback *cb)
++static struct rpc_cred *lookup_cb_cred(struct nfs4_cb_conn *cb)
+ {
+ 	struct auth_cred acred = {
+ 		.machine_cred = 1
+@@ -448,7 +448,7 @@ static struct rpc_cred *lookup_cb_cred(struct nfs4_callback *cb)
+ 
+ void do_probe_callback(struct nfs4_client *clp)
+ {
+-	struct nfs4_callback    *cb = &amp;clp-&gt;cl_callback;
++	struct nfs4_cb_conn *cb = &amp;clp-&gt;cl_cb_conn;
+ 	struct rpc_message msg = {
+ 		.rpc_proc       = &amp;nfs4_cb_procedures[NFSPROC4_CLNT_CB_NULL],
+ 		.rpc_argp       = clp,
+@@ -480,7 +480,7 @@ nfsd4_probe_callback(struct nfs4_client *clp)
+ {
+ 	int status;
+ 
+-	BUG_ON(atomic_read(&amp;clp-&gt;cl_callback.cb_set));
++	BUG_ON(atomic_read(&amp;clp-&gt;cl_cb_conn.cb_set));
+ 
+ 	status = setup_callback_client(clp);
+ 	if (status) {
+@@ -501,12 +501,12 @@ void
+ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ {
+ 	struct nfs4_client *clp = dp-&gt;dl_client;
+-	struct rpc_clnt *clnt = clp-&gt;cl_callback.cb_client;
++	struct rpc_clnt *clnt = clp-&gt;cl_cb_conn.cb_client;
+ 	struct nfs4_cb_recall *cbr = &amp;dp-&gt;dl_recall;
+ 	struct rpc_message msg = {
+ 		.rpc_proc = &amp;nfs4_cb_procedures[NFSPROC4_CLNT_CB_RECALL],
+ 		.rpc_argp = cbr,
+-		.rpc_cred = clp-&gt;cl_callback.cb_cred
++		.rpc_cred = clp-&gt;cl_cb_conn.cb_cred
+ 	};
+ 	int retries = 1;
+ 	int status = 0;
+@@ -519,7 +519,7 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ 		switch (status) {
+ 			case -EIO:
+ 				/* Network partition? */
+-				atomic_set(&amp;clp-&gt;cl_callback.cb_set, 0);
++				atomic_set(&amp;clp-&gt;cl_cb_conn.cb_set, 0);
+ 			case -EBADHANDLE:
+ 			case -NFS4ERR_BAD_STATEID:
+ 				/* Race: client probably got cb_recall
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index b205c7d7bc6a..d7b5e6b89207 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -182,7 +182,7 @@ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_stateid *stp, struct svc_f
+ {
+ 	struct nfs4_delegation *dp;
+ 	struct nfs4_file *fp = stp-&gt;st_file;
+-	struct nfs4_callback *cb = &amp;stp-&gt;st_stateowner-&gt;so_client-&gt;cl_callback;
++	struct nfs4_cb_conn *cb = &amp;stp-&gt;st_stateowner-&gt;so_client-&gt;cl_cb_conn;
+ 
+ 	dprintk("NFSD alloc_init_deleg\n");
+ 	if (fp-&gt;fi_had_conflict)
+@@ -633,19 +633,19 @@ static struct nfs4_client *alloc_client(struct xdr_netobj name)
+ static void
+ shutdown_callback_client(struct nfs4_client *clp)
+ {
+-	struct rpc_clnt *clnt = clp-&gt;cl_callback.cb_client;
++	struct rpc_clnt *clnt = clp-&gt;cl_cb_conn.cb_client;
+ 
+ 	if (clnt) {
+ 		/*
+ 		 * Callback threads take a reference on the client, so there
+ 		 * should be no outstanding callbacks at this point.
+ 		 */
+-		clp-&gt;cl_callback.cb_client = NULL;
++		clp-&gt;cl_cb_conn.cb_client = NULL;
+ 		rpc_shutdown_client(clnt);
+ 	}
+-	if (clp-&gt;cl_callback.cb_cred) {
+-		put_rpccred(clp-&gt;cl_callback.cb_cred);
+-		clp-&gt;cl_callback.cb_cred = NULL;
++	if (clp-&gt;cl_cb_conn.cb_cred) {
++		put_rpccred(clp-&gt;cl_cb_conn.cb_cred);
++		clp-&gt;cl_cb_conn.cb_cred = NULL;
+ 	}
+ }
+ 
+@@ -719,7 +719,7 @@ static struct nfs4_client *create_client(struct xdr_netobj name, char *recdir)
+ 		return NULL;
+ 	memcpy(clp-&gt;cl_recdir, recdir, HEXDIR_LEN);
+ 	atomic_set(&amp;clp-&gt;cl_count, 1);
+-	atomic_set(&amp;clp-&gt;cl_callback.cb_set, 0);
++	atomic_set(&amp;clp-&gt;cl_cb_conn.cb_set, 0);
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_idhash);
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_strhash);
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_openowners);
+@@ -971,7 +971,7 @@ parse_ipv4(unsigned int addr_len, char *addr_val, unsigned int *cbaddrp, unsigne
+ static void
+ gen_callback(struct nfs4_client *clp, struct nfsd4_setclientid *se)
+ {
+-	struct nfs4_callback *cb = &amp;clp-&gt;cl_callback;
++	struct nfs4_cb_conn *cb = &amp;clp-&gt;cl_cb_conn;
+ 
+ 	/* Currently, we only support tcp for the callback channel */
+ 	if ((se-&gt;se_callback_netid_len != 3) || memcmp((char *)se-&gt;se_callback_netid_val, "tcp", 3))
+@@ -1691,7 +1691,7 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 		else {
+ 			/* XXX: We just turn off callbacks until we can handle
+ 			  * change request correctly. */
+-			atomic_set(&amp;conf-&gt;cl_callback.cb_set, 0);
++			atomic_set(&amp;conf-&gt;cl_cb_conn.cb_set, 0);
+ 			expire_client(unconf);
+ 			status = nfs_ok;
+ 
+@@ -2425,7 +2425,7 @@ nfs4_open_delegation(struct svc_fh *fh, struct nfsd4_open *open, struct nfs4_sta
+ {
+ 	struct nfs4_delegation *dp;
+ 	struct nfs4_stateowner *sop = stp-&gt;st_stateowner;
+-	struct nfs4_callback *cb = &amp;sop-&gt;so_client-&gt;cl_callback;
++	struct nfs4_cb_conn *cb = &amp;sop-&gt;so_client-&gt;cl_cb_conn;
+ 	struct file_lock fl, *flp = &amp;fl;
+ 	int status, flag = 0;
+ 
+@@ -2617,7 +2617,7 @@ nfsd4_renew(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	renew_client(clp);
+ 	status = nfserr_cb_path_down;
+ 	if (!list_empty(&amp;clp-&gt;cl_delegations)
+-			&amp;&amp; !atomic_read(&amp;clp-&gt;cl_callback.cb_set))
++			&amp;&amp; !atomic_read(&amp;clp-&gt;cl_cb_conn.cb_set))
+ 		goto out;
+ 	status = nfs_ok;
+ out:
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index 8d882a3eb4b9..563c367a3013 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -88,7 +88,7 @@ struct nfs4_delegation {
+ #define dl_fh           dl_recall.cbr_fh
+ 
+ /* client delegation callback info */
+-struct nfs4_callback {
++struct nfs4_cb_conn {
+ 	/* SETCLIENTID info */
+ 	u32                     cb_addr;
+ 	unsigned short          cb_port;
+@@ -186,7 +186,7 @@ struct nfs4_client {
+ 	struct svc_cred		cl_cred; 	/* setclientid principal */
+ 	clientid_t		cl_clientid;	/* generated by server */
+ 	nfs4_verifier		cl_confirm;	/* generated by server */
+-	struct nfs4_callback	cl_callback;    /* callback info */
++	struct nfs4_cb_conn	cl_cb_conn;     /* callback info */
+ 	atomic_t		cl_count;	/* ref count */
+ 	u32			cl_firststate;	/* recovery dir creation */
+ </pre><hr><pre>commit e300a63ce4ccec073d254d883a3638d5dca1d771
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Mar 5 15:01:11 2009 -0500
+
+    nfsd4: replace callback thread by asynchronous rpc
+    
+    We don't really need a synchronous rpc, and moving to an asynchronous
+    rpc allows us to do without this extra kthread.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index cc10ed35ac81..0aaf68beedbd 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -415,6 +415,21 @@ static void warn_no_callback_path(struct nfs4_client *clp, int reason)
+ 		(int)clp-&gt;cl_name.len, clp-&gt;cl_name.data, reason);
+ }
+ 
++static void nfsd4_cb_probe_done(struct rpc_task *task, void *calldata)
++{
++	struct nfs4_client *clp = calldata;
++
++	if (task-&gt;tk_status)
++		warn_no_callback_path(clp, task-&gt;tk_status);
++	else
++		atomic_set(&amp;clp-&gt;cl_callback.cb_set, 1);
++	put_nfs4_client(clp);
++}
++
++static const struct rpc_call_ops nfsd4_cb_probe_ops = {
++	.rpc_call_done = nfsd4_cb_probe_done,
++};
++
+ static struct rpc_cred *lookup_cb_cred(struct nfs4_callback *cb)
+ {
+ 	struct auth_cred acred = {
+@@ -431,9 +446,8 @@ static struct rpc_cred *lookup_cb_cred(struct nfs4_callback *cb)
+ 							RPCAUTH_LOOKUP_NEW);
+ }
+ 
+-static int do_probe_callback(void *data)
++void do_probe_callback(struct nfs4_client *clp)
+ {
+-	struct nfs4_client *clp = data;
+ 	struct nfs4_callback    *cb = &amp;clp-&gt;cl_callback;
+ 	struct rpc_message msg = {
+ 		.rpc_proc       = &amp;nfs4_cb_procedures[NFSPROC4_CLNT_CB_NULL],
+@@ -449,15 +463,13 @@ static int do_probe_callback(void *data)
+ 	}
+ 	cb-&gt;cb_cred = cred;
+ 	msg.rpc_cred = cb-&gt;cb_cred;
+-	status = rpc_call_sync(cb-&gt;cb_client, &amp;msg, RPC_TASK_SOFT);
++	status = rpc_call_async(cb-&gt;cb_client, &amp;msg, RPC_TASK_SOFT,
++				&amp;nfsd4_cb_probe_ops, (void *)clp);
+ out:
+-	if (status)
++	if (status) {
+ 		warn_no_callback_path(clp, status);
+-	else
+-		atomic_set(&amp;cb-&gt;cb_set, 1);
+-
+-	put_nfs4_client(clp);
+-	return 0;
++		put_nfs4_client(clp);
++	}
+ }
+ 
+ /*
+@@ -466,7 +478,6 @@ static int do_probe_callback(void *data)
+ void
+ nfsd4_probe_callback(struct nfs4_client *clp)
+ {
+-	struct task_struct *t;
+ 	int status;
+ 
+ 	BUG_ON(atomic_read(&amp;clp-&gt;cl_callback.cb_set));
+@@ -480,12 +491,7 @@ nfsd4_probe_callback(struct nfs4_client *clp)
+ 	/* the task holds a reference to the nfs4_client struct */
+ 	atomic_inc(&amp;clp-&gt;cl_count);
+ 
+-	t = kthread_run(do_probe_callback, clp, "nfs4_cb_probe");
+-
+-	if (IS_ERR(t))
+-		atomic_dec(&amp;clp-&gt;cl_count);
+-
+-	return;
++	do_probe_callback(clp);
+ }
+ 
+ /*</pre><hr><pre>commit 3cef9ab266a932899e756f7e1ea7a988a97bf3b2
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Feb 23 21:42:10 2009 -0800
+
+    nfsd4: lookup up callback cred only once
+    
+    Lookup the callback cred once and then use it for all subsequent
+    callbacks.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 711c6282151f..cc10ed35ac81 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -415,6 +415,22 @@ static void warn_no_callback_path(struct nfs4_client *clp, int reason)
+ 		(int)clp-&gt;cl_name.len, clp-&gt;cl_name.data, reason);
+ }
+ 
++static struct rpc_cred *lookup_cb_cred(struct nfs4_callback *cb)
++{
++	struct auth_cred acred = {
++		.machine_cred = 1
++	};
++
++	/*
++	 * Note in the gss case this doesn't actually have to wait for a
++	 * gss upcall (or any calls to the client); this just creates a
++	 * non-uptodate cred which the rpc state machine will fill in with
++	 * a refresh_upcall later.
++	 */
++	return rpcauth_lookup_credcache(cb-&gt;cb_client-&gt;cl_auth, &amp;acred,
++							RPCAUTH_LOOKUP_NEW);
++}
++
+ static int do_probe_callback(void *data)
+ {
+ 	struct nfs4_client *clp = data;
+@@ -423,9 +439,18 @@ static int do_probe_callback(void *data)
+ 		.rpc_proc       = &amp;nfs4_cb_procedures[NFSPROC4_CLNT_CB_NULL],
+ 		.rpc_argp       = clp,
+ 	};
++	struct rpc_cred *cred;
+ 	int status;
+ 
++	cred = lookup_cb_cred(cb);
++	if (IS_ERR(cred)) {
++		status = PTR_ERR(cred);
++		goto out;
++	}
++	cb-&gt;cb_cred = cred;
++	msg.rpc_cred = cb-&gt;cb_cred;
+ 	status = rpc_call_sync(cb-&gt;cb_client, &amp;msg, RPC_TASK_SOFT);
++out:
+ 	if (status)
+ 		warn_no_callback_path(clp, status);
+ 	else
+@@ -475,6 +500,7 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ 	struct rpc_message msg = {
+ 		.rpc_proc = &amp;nfs4_cb_procedures[NFSPROC4_CLNT_CB_RECALL],
+ 		.rpc_argp = cbr,
++		.rpc_cred = clp-&gt;cl_callback.cb_cred
+ 	};
+ 	int retries = 1;
+ 	int status = 0;
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 7e1fcc3aade4..b205c7d7bc6a 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -643,6 +643,10 @@ shutdown_callback_client(struct nfs4_client *clp)
+ 		clp-&gt;cl_callback.cb_client = NULL;
+ 		rpc_shutdown_client(clnt);
+ 	}
++	if (clp-&gt;cl_callback.cb_cred) {
++		put_rpccred(clp-&gt;cl_callback.cb_cred);
++		clp-&gt;cl_callback.cb_cred = NULL;
++	}
+ }
+ 
+ static inline void
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index 4d61c873feed..8d882a3eb4b9 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -97,6 +97,7 @@ struct nfs4_callback {
+ 	/* RPC client info */
+ 	atomic_t		cb_set;     /* successful CB_NULL call */
+ 	struct rpc_clnt *       cb_client;
++	struct rpc_cred	*	cb_cred;
+ };
+ 
+ /* Maximum number of slots per session. 128 is useful for long haul TCP */</pre><hr><pre>commit ecdd03b7914c91ef849e49c4d466c87f4981b5cd
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Feb 23 19:35:22 2009 -0800
+
+    nfsd4: create rpc callback client from server thread
+    
+    The code is a little simpler, and it should be easier to avoid races, if
+    we just do all rpc client creation/destruction from nfsd or laundromat
+    threads and do only the rpc calls themselves asynchronously.  The rpc
+    creation doesn't involve any significant waiting (it doesn't call the
+    client, for example), so there's no reason not to do this.
+    
+    Also don't bother destroying the client on failure of the rpc null
+    probe.  We may want to retry the probe later anyway.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 4788d09d9bec..711c6282151f 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -409,6 +409,12 @@ int setup_callback_client(struct nfs4_client *clp)
+ 
+ }
+ 
++static void warn_no_callback_path(struct nfs4_client *clp, int reason)
++{
++	dprintk("NFSD: warning: no callback path to client %.*s: error %d\n",
++		(int)clp-&gt;cl_name.len, clp-&gt;cl_name.data, reason);
++}
++
+ static int do_probe_callback(void *data)
+ {
+ 	struct nfs4_client *clp = data;
+@@ -419,24 +425,12 @@ static int do_probe_callback(void *data)
+ 	};
+ 	int status;
+ 
+-	status = setup_callback_client(clp);
+-	if (status)
+-		goto out_err;
+-
+ 	status = rpc_call_sync(cb-&gt;cb_client, &amp;msg, RPC_TASK_SOFT);
+-
+ 	if (status)
+-		goto out_release_client;
++		warn_no_callback_path(clp, status);
++	else
++		atomic_set(&amp;cb-&gt;cb_set, 1);
+ 
+-	atomic_set(&amp;cb-&gt;cb_set, 1);
+-	put_nfs4_client(clp);
+-	return 0;
+-out_release_client:
+-	rpc_shutdown_client(cb-&gt;cb_client);
+-	cb-&gt;cb_client = NULL;
+-out_err:
+-	dprintk("NFSD: warning: no callback path to client %.*s: error %d\n",
+-		(int)clp-&gt;cl_name.len, clp-&gt;cl_name.data, status);
+ 	put_nfs4_client(clp);
+ 	return 0;
+ }
+@@ -448,9 +442,16 @@ void
+ nfsd4_probe_callback(struct nfs4_client *clp)
+ {
+ 	struct task_struct *t;
++	int status;
+ 
+ 	BUG_ON(atomic_read(&amp;clp-&gt;cl_callback.cb_set));
+ 
++	status = setup_callback_client(clp);
++	if (status) {
++		warn_no_callback_path(clp, status);
++		return;
++	}
++
+ 	/* the task holds a reference to the nfs4_client struct */
+ 	atomic_inc(&amp;clp-&gt;cl_count);
+ </pre><hr><pre>commit e1cab5a5896e142190cd66a8287099b52e5855a7
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Feb 23 10:45:27 2009 -0800
+
+    nfsd4: set cb_client inside setup_callback_client
+    
+    This is just a minor code simplification.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 049f052a6eb3..4788d09d9bec 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -366,7 +366,7 @@ static int max_cb_time(void)
+ /* Reference counting, callback cleanup, etc., all look racy as heck.
+  * And why is cb_set an atomic? */
+ 
+-static struct rpc_clnt *setup_callback_client(struct nfs4_client *clp)
++int setup_callback_client(struct nfs4_client *clp)
+ {
+ 	struct sockaddr_in	addr;
+ 	struct nfs4_callback    *cb = &amp;clp-&gt;cl_callback;
+@@ -389,7 +389,7 @@ static struct rpc_clnt *setup_callback_client(struct nfs4_client *clp)
+ 	struct rpc_clnt *client;
+ 
+ 	if (!clp-&gt;cl_principal &amp;&amp; (clp-&gt;cl_flavor &gt;= RPC_AUTH_GSS_KRB5))
+-		return ERR_PTR(-EINVAL);
++		return -EINVAL;
+ 
+ 	/* Initialize address */
+ 	memset(&amp;addr, 0, sizeof(addr));
+@@ -399,10 +399,13 @@ static struct rpc_clnt *setup_callback_client(struct nfs4_client *clp)
+ 
+ 	/* Create RPC client */
+ 	client = rpc_create(&amp;args);
+-	if (IS_ERR(client))
++	if (IS_ERR(client)) {
+ 		dprintk("NFSD: couldn't create callback client: %ld\n",
+ 			PTR_ERR(client));
+-	return client;
++		return PTR_ERR(client);
++	}
++	cb-&gt;cb_client = client;
++	return 0;
+ 
+ }
+ 
+@@ -414,28 +417,23 @@ static int do_probe_callback(void *data)
+ 		.rpc_proc       = &amp;nfs4_cb_procedures[NFSPROC4_CLNT_CB_NULL],
+ 		.rpc_argp       = clp,
+ 	};
+-	struct rpc_clnt *client;
+ 	int status;
+ 
+-	client = setup_callback_client(clp);
+-	if (IS_ERR(client)) {
+-		status = PTR_ERR(client);
+-		dprintk("NFSD: couldn't create callback client: %d\n",
+-								status);
++	status = setup_callback_client(clp);
++	if (status)
+ 		goto out_err;
+-	}
+ 
+-	status = rpc_call_sync(client, &amp;msg, RPC_TASK_SOFT);
++	status = rpc_call_sync(cb-&gt;cb_client, &amp;msg, RPC_TASK_SOFT);
+ 
+ 	if (status)
+ 		goto out_release_client;
+ 
+-	cb-&gt;cb_client = client;
+ 	atomic_set(&amp;cb-&gt;cb_set, 1);
+ 	put_nfs4_client(clp);
+ 	return 0;
+ out_release_client:
+-	rpc_shutdown_client(client);
++	rpc_shutdown_client(cb-&gt;cb_client);
++	cb-&gt;cb_client = NULL;
+ out_err:
+ 	dprintk("NFSD: warning: no callback path to client %.*s: error %d\n",
+ 		(int)clp-&gt;cl_name.len, clp-&gt;cl_name.data, status);</pre>
+    <div class="pagination">
+        <a href='4_21.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><span>[22]</span><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_23.html'>Next&gt;&gt;</a>
+    <div>
+</body>

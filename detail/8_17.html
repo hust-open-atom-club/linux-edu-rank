@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of New South Wales</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of New South Wales</h1>
+    <div class="pagination">
+        <a href='8_16.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><span>[17]</span><a href='8_18.html'>18</a><a href='8_18.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit b6a7e1ecef66b9ecd1eed31f46ba0248d6d7e957
+Author: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+Date:   Thu Oct 20 12:31:19 2005 +1000
+
+    [IA64] Allow simulator to use bigger disks
+    
+    The simscsi code at present overflows an int if it's given a large
+    disk image.  The attached patch increases the possible size to 128G.
+    While it's unlikely that anyone will want to use SKI with such a
+    large drive, the same framework is currently being used for various
+    virtualisation experiments.
+    
+    Signed-off-by: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+    Signed-off-by: Tony Luck &lt;tony.luck@intel.com&gt;
+
+diff --git a/arch/ia64/hp/sim/simscsi.c b/arch/ia64/hp/sim/simscsi.c
+index a18983a3c934..a3fe97531134 100644
+--- a/arch/ia64/hp/sim/simscsi.c
++++ b/arch/ia64/hp/sim/simscsi.c
+@@ -205,10 +205,11 @@ simscsi_get_disk_size (int fd)
+ 	char buf[512];
+ 
+ 	/*
+-	 * This is a bit kludgey: the simulator doesn't provide a direct way of determining
+-	 * the disk size, so we do a binary search, assuming a maximum disk size of 4GB.
++	 * This is a bit kludgey: the simulator doesn't provide a
++	 * direct way of determining the disk size, so we do a binary
++	 * search, assuming a maximum disk size of 128GB.
+ 	 */
+-	for (bit = (4UL &lt;&lt; 30)/512; bit != 0; bit &gt;&gt;= 1) {
++	for (bit = (128UL &lt;&lt; 30)/512; bit != 0; bit &gt;&gt;= 1) {
+ 		req.addr = __pa(&amp;buf);
+ 		req.len = sizeof(buf);
+ 		ia64_ssc(fd, 1, __pa(&amp;req), ((sectors | bit) - 1)*512, SSC_READ);
+@@ -225,8 +226,10 @@ simscsi_readwrite10 (struct scsi_cmnd *sc, int mode)
+ {
+ 	unsigned long offset;
+ 
+-	offset = (  (sc-&gt;cmnd[2] &lt;&lt; 24) | (sc-&gt;cmnd[3] &lt;&lt; 16)
+-		  | (sc-&gt;cmnd[4] &lt;&lt;  8) | (sc-&gt;cmnd[5] &lt;&lt;  0))*512;
++	offset = (((unsigned long)sc-&gt;cmnd[2] &lt;&lt; 24) 
++		| ((unsigned long)sc-&gt;cmnd[3] &lt;&lt; 16)
++		| ((unsigned long)sc-&gt;cmnd[4] &lt;&lt;  8) 
++		| ((unsigned long)sc-&gt;cmnd[5] &lt;&lt;  0))*512UL;
+ 	if (sc-&gt;use_sg &gt; 0)
+ 		simscsi_sg_readwrite(sc, mode, offset);
+ 	else</pre><hr><pre>commit 51b190b304bbeb1090ba20b0623d39917fa62997
+Author: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+Date:   Wed Oct 19 22:45:14 2005 -0700
+
+    [PATCH] `unaligned access' in acpi get_root_bridge_busnr()
+    
+    In drivers/acpi/glue.c the address of an integer is cast to the address of
+    an unsigned long.  This breaks on systems where a long is larger than an
+    int --- for a start the int can be misaligned; for a second the assignment
+    through the pointer will overwrite part of the next variable.
+    
+    Signed-off-by: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+    Acked-by: "Brown, Len" &lt;len.brown@intel.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/acpi/glue.c b/drivers/acpi/glue.c
+index e36c5da2b31a..3937adf4e5e5 100644
+--- a/drivers/acpi/glue.c
++++ b/drivers/acpi/glue.c
+@@ -96,7 +96,7 @@ struct acpi_find_pci_root {
+ static acpi_status
+ do_root_bridge_busnr_callback(struct acpi_resource *resource, void *data)
+ {
+-	int *busnr = (int *)data;
++	unsigned long *busnr = (unsigned long *)data;
+ 	struct acpi_resource_address64 address;
+ 
+ 	if (resource-&gt;id != ACPI_RSTYPE_ADDRESS16 &amp;&amp;
+@@ -115,13 +115,13 @@ do_root_bridge_busnr_callback(struct acpi_resource *resource, void *data)
+ static int get_root_bridge_busnr(acpi_handle handle)
+ {
+ 	acpi_status status;
+-	int bus, bbn;
++	unsigned long bus, bbn;
+ 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+ 
+ 	acpi_get_name(handle, ACPI_FULL_PATHNAME, &amp;buffer);
+ 
+ 	status = acpi_evaluate_integer(handle, METHOD_NAME__BBN, NULL,
+-				       (unsigned long *)&amp;bbn);
++				       &amp;bbn);
+ 	if (status == AE_NOT_FOUND) {
+ 		/* Assume bus = 0 */
+ 		printk(KERN_INFO PREFIX
+@@ -153,7 +153,7 @@ static int get_root_bridge_busnr(acpi_handle handle)
+ 	}
+       exit:
+ 	acpi_os_free(buffer.pointer);
+-	return bbn;
++	return (int)bbn;
+ }
+ 
+ static acpi_status</pre><hr><pre>commit 83a78d9ba792660418d692fd6737871aefdbff36
+Author: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+Date:   Mon Sep 19 09:36:12 2005 +1000
+
+    [IA64] Fix simscsi for new SCSI midlayer
+    
+    The sd driver now uses scsi_execute_req() for almost everything.
+    scsi_execute_req() converts requests into scatterlists.
+    
+    Fix the HP SCSI disk simulator to understand scatterlists for
+    more commands.
+    
+    Without this patch the current kernel will not boot on the simulator
+    (the disks are always detected as having no sectors, and so cannot be
+    mounted).
+    
+    Signed-off-by: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+    Signed-off-by: Tony Luck &lt;tony.luck@intel.com&gt;
+
+diff --git a/arch/ia64/hp/sim/simscsi.c b/arch/ia64/hp/sim/simscsi.c
+index 56405dbfd739..a18983a3c934 100644
+--- a/arch/ia64/hp/sim/simscsi.c
++++ b/arch/ia64/hp/sim/simscsi.c
+@@ -233,6 +233,23 @@ simscsi_readwrite10 (struct scsi_cmnd *sc, int mode)
+ 		simscsi_readwrite(sc, mode, offset, ((sc-&gt;cmnd[7] &lt;&lt; 8) | sc-&gt;cmnd[8])*512);
+ }
+ 
++static void simscsi_fillresult(struct scsi_cmnd *sc, char *buf, unsigned len)
++{
++
++	int scatterlen = sc-&gt;use_sg;
++	struct scatterlist *slp;
++
++	if (scatterlen == 0)
++		memcpy(sc-&gt;request_buffer, buf, len);
++	else for (slp = (struct scatterlist *)sc-&gt;buffer; scatterlen-- &gt; 0 &amp;&amp; len &gt; 0; slp++) {
++		unsigned thislen = min(len, slp-&gt;length);
++
++		memcpy(page_address(slp-&gt;page) + slp-&gt;offset, buf, thislen);
++		slp++;
++		len -= thislen;
++	}
++}
++
+ static int
+ simscsi_queuecommand (struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ {
+@@ -240,6 +257,7 @@ simscsi_queuecommand (struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 	char fname[MAX_ROOT_LEN+16];
+ 	size_t disk_size;
+ 	char *buf;
++	char localbuf[36];
+ #if DEBUG_SIMSCSI
+ 	register long sp asm ("sp");
+ 
+@@ -263,7 +281,7 @@ simscsi_queuecommand (struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 				/* disk doesn't exist... */
+ 				break;
+ 			}
+-			buf = sc-&gt;request_buffer;
++			buf = localbuf;
+ 			buf[0] = 0;	/* magnetic disk */
+ 			buf[1] = 0;	/* not a removable medium */
+ 			buf[2] = 2;	/* SCSI-2 compliant device */
+@@ -273,6 +291,7 @@ simscsi_queuecommand (struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 			buf[6] = 0;	/* reserved */
+ 			buf[7] = 0;	/* various flags */
+ 			memcpy(buf + 8, "HP      SIMULATED DISK  0.00",  28);
++			simscsi_fillresult(sc, buf, 36);
+ 			sc-&gt;result = GOOD;
+ 			break;
+ 
+@@ -304,16 +323,13 @@ simscsi_queuecommand (struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 			simscsi_readwrite10(sc, SSC_WRITE);
+ 			break;
+ 
+-
+ 		      case READ_CAPACITY:
+ 			if (desc[target_id] &lt; 0 || sc-&gt;request_bufflen &lt; 8) {
+ 				break;
+ 			}
+-			buf = sc-&gt;request_buffer;
+-
++			buf = localbuf;
+ 			disk_size = simscsi_get_disk_size(desc[target_id]);
+ 
+-			/* pretend to be a 1GB disk (partition table contains real stuff): */
+ 			buf[0] = (disk_size &gt;&gt; 24) &amp; 0xff;
+ 			buf[1] = (disk_size &gt;&gt; 16) &amp; 0xff;
+ 			buf[2] = (disk_size &gt;&gt;  8) &amp; 0xff;
+@@ -323,13 +339,14 @@ simscsi_queuecommand (struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 			buf[5] = 0;
+ 			buf[6] = 2;
+ 			buf[7] = 0;
++			simscsi_fillresult(sc, buf, 8);
+ 			sc-&gt;result = GOOD;
+ 			break;
+ 
+ 		      case MODE_SENSE:
+ 		      case MODE_SENSE_10:
+ 			/* sd.c uses this to determine whether disk does write-caching. */
+-			memset(sc-&gt;request_buffer, 0, 128);
++			simscsi_fillresult(sc, (char *)empty_zero_page, sc-&gt;request_bufflen);
+ 			sc-&gt;result = GOOD;
+ 			break;
+ </pre><hr><pre>commit 24b8e0cc09483adc0fdd9c68914b19597bb9fddc
+Author: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+Date:   Thu Sep 15 15:36:35 2005 +1000
+
+    [IA64] Remove warnings for gcc 4.0 IA64 compilation.
+    
+    This patch removes some compilation warnings, mostly
+    trivially. acpi.c fix also noted by Kenji Kaneshige.
+    
+    Signed-off-by; Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+    Signed-off-by: Tony Luck &lt;tony.luck@intel.com&gt;
+
+diff --git a/arch/ia64/kernel/acpi.c b/arch/ia64/kernel/acpi.c
+index 28a4529fdd60..7e926471e4ec 100644
+--- a/arch/ia64/kernel/acpi.c
++++ b/arch/ia64/kernel/acpi.c
+@@ -899,7 +899,7 @@ int acpi_register_ioapic(acpi_handle handle, u64 phys_addr, u32 gsi_base)
+ 	if ((err = iosapic_init(phys_addr, gsi_base)))
+ 		return err;
+ 
+-#if CONFIG_ACPI_NUMA
++#ifdef CONFIG_ACPI_NUMA
+ 	acpi_map_iosapic(handle, 0, NULL, NULL);
+ #endif				/* CONFIG_ACPI_NUMA */
+ 
+diff --git a/arch/ia64/kernel/entry.S b/arch/ia64/kernel/entry.S
+index ba0b6a1f429f..0741b066b98f 100644
+--- a/arch/ia64/kernel/entry.S
++++ b/arch/ia64/kernel/entry.S
+@@ -491,7 +491,7 @@ GLOBAL_ENTRY(prefetch_stack)
+ 	;;
+ 	lfetch.fault [r16], 128
+ 	br.ret.sptk.many rp
+-END(prefetch_switch_stack)
++END(prefetch_stack)
+ 
+ GLOBAL_ENTRY(execve)
+ 	mov r15=__NR_execve			// put syscall number in place
+diff --git a/arch/ia64/kernel/perfmon.c b/arch/ia64/kernel/perfmon.c
+index 1650353e3f77..af42cda6be80 100644
+--- a/arch/ia64/kernel/perfmon.c
++++ b/arch/ia64/kernel/perfmon.c
+@@ -574,7 +574,7 @@ pfm_protect_ctx_ctxsw(pfm_context_t *x)
+ 	return 0UL;
+ }
+ 
+-static inline unsigned long
++static inline void
+ pfm_unprotect_ctx_ctxsw(pfm_context_t *x, unsigned long f)
+ {
+ 	spin_unlock(&amp;(x)-&gt;ctx_lock);
+diff --git a/drivers/char/agp/hp-agp.c b/drivers/char/agp/hp-agp.c
+index 99762b6c19ae..de5d6d212674 100644
+--- a/drivers/char/agp/hp-agp.c
++++ b/drivers/char/agp/hp-agp.c
+@@ -252,7 +252,7 @@ hp_zx1_configure (void)
+ 		readl(hp-&gt;ioc_regs+HP_ZX1_PDIR_BASE);
+ 		writel(hp-&gt;io_tlb_ps, hp-&gt;ioc_regs+HP_ZX1_TCNFG);
+ 		readl(hp-&gt;ioc_regs+HP_ZX1_TCNFG);
+-		writel(~(HP_ZX1_IOVA_SIZE-1), hp-&gt;ioc_regs+HP_ZX1_IMASK);
++		writel((unsigned int)(~(HP_ZX1_IOVA_SIZE-1)), hp-&gt;ioc_regs+HP_ZX1_IMASK);
+ 		readl(hp-&gt;ioc_regs+HP_ZX1_IMASK);
+ 		writel(hp-&gt;iova_base|1, hp-&gt;ioc_regs+HP_ZX1_IBASE);
+ 		readl(hp-&gt;ioc_regs+HP_ZX1_IBASE);</pre><hr><pre>commit dc85dec68880176c8ba05f68218a161964cada46
+Author: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+Date:   Sat Sep 3 14:05:06 2005 -0700
+
+    [PATCH] 'mdio_bus_exit' in discarded section .text.exit
+    
+    When building with  CONFIG_PHYLIB=y on Itanium, I see:
+     `mdio_bus_exit' referenced in section `.init.text' of
+    drivers/built-in.o: defined in discarded section `.exit.text' of
+    drivers/built-in.o
+    
+    I believe that mdio_bus_exit should not be declared __exit, because it is
+    referencesd from __init sections in, say, phy_init().
+    
+    Signed-off-by: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Jeff Garzik &lt;jgarzik@pobox.com&gt;
+
+diff --git a/drivers/net/phy/mdio_bus.c b/drivers/net/phy/mdio_bus.c
+index 5e81494e9a9a..90630672703d 100644
+--- a/drivers/net/phy/mdio_bus.c
++++ b/drivers/net/phy/mdio_bus.c
+@@ -170,7 +170,7 @@ int __init mdio_bus_init(void)
+ 	return bus_register(&amp;mdio_bus_type);
+ }
+ 
+-void __exit mdio_bus_exit(void)
++void mdio_bus_exit(void)
+ {
+ 	bus_unregister(&amp;mdio_bus_type);
+ }</pre><hr><pre>commit 6cf07a8cc86a0b471466c7fe45892f7ef434015b
+Author: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+Date:   Tue Aug 23 20:07:00 2005 -0700
+
+    [IA64] Fix nasty VMLPT problem...
+    
+    I've solved the problem I was having with the simulator and not
+    booting Debian.
+    
+    The problem is that the number of bits for the virtual linear array
+    short-format VHPT (Virtually mapped linear page table, VMLPT for
+    short) is being tested incorrectly.
+    
+    There are two problems:
+          1. The PAL call that should tell the kernel the size of the
+          virtual address space isn't implemented for the simulator, so
+          the kernel uses the default 50.  This is addressed separately
+          in dc90e95f310f4f821c905b2aec8e9449bb3270fa
+    
+          2.  In arch/ia64/mm/init.c there's code to calcualte the size
+          of the VMLPT based on the number of implemented virtual address
+          bits and the page size.  It checks to see if the VMLPT base
+          address overlaps the top of the mapped region, but this check
+          doesn't allow for the address space hole, and in fact will
+          never trigger.
+    
+    Here's an alternative test and panic, that I think is more accurate.
+    
+    Signed-off-by: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+    Signed-off-by: Tony Luck &lt;tony.luck@intel.com&gt;
+
+diff --git a/arch/ia64/mm/init.c b/arch/ia64/mm/init.c
+index 65f9958db9f0..1281c609ee98 100644
+--- a/arch/ia64/mm/init.c
++++ b/arch/ia64/mm/init.c
+@@ -382,13 +382,22 @@ ia64_mmu_init (void *my_cpu_data)
+ 
+ 	if (impl_va_bits &lt; 51 || impl_va_bits &gt; 61)
+ 		panic("CPU has bogus IMPL_VA_MSB value of %lu!\n", impl_va_bits - 1);
++	/*
++	 * mapped_space_bits - PAGE_SHIFT is the total number of ptes we need,
++	 * which must fit into "vmlpt_bits - pte_bits" slots. Second half of
++	 * the test makes sure that our mapped space doesn't overlap the
++	 * unimplemented hole in the middle of the region.
++	 */
++	if ((mapped_space_bits - PAGE_SHIFT &gt; vmlpt_bits - pte_bits) ||
++	    (mapped_space_bits &gt; impl_va_bits - 1))
++		panic("Cannot build a big enough virtual-linear page table"
++		      " to cover mapped address space.\n"
++		      " Try using a smaller page size.\n");
++
+ 
+ 	/* place the VMLPT at the end of each page-table mapped region: */
+ 	pta = POW2(61) - POW2(vmlpt_bits);
+ 
+-	if (POW2(mapped_space_bits) &gt;= pta)
+-		panic("mm/init: overlap between virtually mapped linear page table and "
+-		      "mapped kernel space!");
+ 	/*
+ 	 * Set the (virtually mapped linear) page table address.  Bit
+ 	 * 8 selects between the short and long format, bits 2-7 the</pre><hr><pre>commit 714d2dc14914f0f7bb008effe830c99eb47c75df
+Author: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+Date:   Thu Aug 25 17:39:00 2005 -0700
+
+    [IA64] Allow /proc/pal/cpu0/vm_info under the simulator
+    
+    Not all of the PAL VM calls are implemented for the SKI simulator.
+    Don't just give up if one fails, print information from the calls
+    that succeed.
+    
+    Signed-off-by: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+    Signed-off-by: Tony Luck &lt;tony.luck@intel.com&gt;
+
+diff --git a/arch/ia64/kernel/palinfo.c b/arch/ia64/kernel/palinfo.c
+index 25e7c8344564..89faa603c6be 100644
+--- a/arch/ia64/kernel/palinfo.c
++++ b/arch/ia64/kernel/palinfo.c
+@@ -307,11 +307,9 @@ vm_info(char *page)
+ 
+ 	if ((status = ia64_pal_vm_summary(&amp;vm_info_1, &amp;vm_info_2)) !=0) {
+ 		printk(KERN_ERR "ia64_pal_vm_summary=%ld\n", status);
+-		return 0;
+-	}
++	} else {
+ 
+-
+-	p += sprintf(p,
++		p += sprintf(p,
+ 		     "Physical Address Space         : %d bits\n"
+ 		     "Virtual Address Space          : %d bits\n"
+ 		     "Protection Key Registers(PKR)  : %d\n"
+@@ -319,92 +317,99 @@ vm_info(char *page)
+ 		     "Hash Tag ID                    : 0x%x\n"
+ 		     "Size of RR.rid                 : %d\n",
+ 		     vm_info_1.pal_vm_info_1_s.phys_add_size,
+-		     vm_info_2.pal_vm_info_2_s.impl_va_msb+1, vm_info_1.pal_vm_info_1_s.max_pkr+1,
+-		     vm_info_1.pal_vm_info_1_s.key_size, vm_info_1.pal_vm_info_1_s.hash_tag_id,
++		     vm_info_2.pal_vm_info_2_s.impl_va_msb+1,
++		     vm_info_1.pal_vm_info_1_s.max_pkr+1,
++		     vm_info_1.pal_vm_info_1_s.key_size,
++		     vm_info_1.pal_vm_info_1_s.hash_tag_id,
+ 		     vm_info_2.pal_vm_info_2_s.rid_size);
++	}
+ 
+-	if (ia64_pal_mem_attrib(&amp;attrib) != 0)
+-		return 0;
+-
+-	p += sprintf(p, "Supported memory attributes    : ");
+-	sep = "";
+-	for (i = 0; i &lt; 8; i++) {
+-		if (attrib &amp; (1 &lt;&lt; i)) {
+-			p += sprintf(p, "%s%s", sep, mem_attrib[i]);
+-			sep = ", ";
++	if (ia64_pal_mem_attrib(&amp;attrib) == 0) {
++		p += sprintf(p, "Supported memory attributes    : ");
++		sep = "";
++		for (i = 0; i &lt; 8; i++) {
++			if (attrib &amp; (1 &lt;&lt; i)) {
++				p += sprintf(p, "%s%s", sep, mem_attrib[i]);
++				sep = ", ";
++			}
+ 		}
++		p += sprintf(p, "\n");
+ 	}
+-	p += sprintf(p, "\n");
+ 
+ 	if ((status = ia64_pal_vm_page_size(&amp;tr_pages, &amp;vw_pages)) !=0) {
+ 		printk(KERN_ERR "ia64_pal_vm_page_size=%ld\n", status);
+-		return 0;
+-	}
+-
+-	p += sprintf(p,
+-		     "\nTLB walker                     : %simplemented\n"
+-		     "Number of DTR                  : %d\n"
+-		     "Number of ITR                  : %d\n"
+-		     "TLB insertable page sizes      : ",
+-		     vm_info_1.pal_vm_info_1_s.vw ? "" : "not ",
+-		     vm_info_1.pal_vm_info_1_s.max_dtr_entry+1,
+-		     vm_info_1.pal_vm_info_1_s.max_itr_entry+1);
++	} else {
+ 
++		p += sprintf(p,
++			     "\nTLB walker                     : %simplemented\n"
++			     "Number of DTR                  : %d\n"
++			     "Number of ITR                  : %d\n"
++			     "TLB insertable page sizes      : ",
++			     vm_info_1.pal_vm_info_1_s.vw ? "" : "not ",
++			     vm_info_1.pal_vm_info_1_s.max_dtr_entry+1,
++			     vm_info_1.pal_vm_info_1_s.max_itr_entry+1);
+ 
+-	p = bitvector_process(p, tr_pages);
+ 
+-	p += sprintf(p, "\nTLB purgeable page sizes       : ");
++		p = bitvector_process(p, tr_pages);
+ 
+-	p = bitvector_process(p, vw_pages);
++		p += sprintf(p, "\nTLB purgeable page sizes       : ");
+ 
++		p = bitvector_process(p, vw_pages);
++	}
+ 	if ((status=ia64_get_ptce(&amp;ptce)) != 0) {
+ 		printk(KERN_ERR "ia64_get_ptce=%ld\n", status);
+-		return 0;
+-	}
+-
+-	p += sprintf(p,
++	} else {
++		p += sprintf(p,
+ 		     "\nPurge base address             : 0x%016lx\n"
+ 		     "Purge outer loop count         : %d\n"
+ 		     "Purge inner loop count         : %d\n"
+ 		     "Purge outer loop stride        : %d\n"
+ 		     "Purge inner loop stride        : %d\n",
+-		     ptce.base, ptce.count[0], ptce.count[1], ptce.stride[0], ptce.stride[1]);
++		     ptce.base, ptce.count[0], ptce.count[1],
++		     ptce.stride[0], ptce.stride[1]);
+ 
+-	p += sprintf(p,
++		p += sprintf(p,
+ 		     "TC Levels                      : %d\n"
+ 		     "Unique TC(s)                   : %d\n",
+ 		     vm_info_1.pal_vm_info_1_s.num_tc_levels,
+ 		     vm_info_1.pal_vm_info_1_s.max_unique_tcs);
+ 
+-	for(i=0; i &lt; vm_info_1.pal_vm_info_1_s.num_tc_levels; i++) {
+-		for (j=2; j&gt;0 ; j--) {
+-			tc_pages = 0; /* just in case */
++		for(i=0; i &lt; vm_info_1.pal_vm_info_1_s.num_tc_levels; i++) {
++			for (j=2; j&gt;0 ; j--) {
++				tc_pages = 0; /* just in case */
+ 
+ 
+-			/* even without unification, some levels may not be present */
+-			if ((status=ia64_pal_vm_info(i,j, &amp;tc_info, &amp;tc_pages)) != 0) {
+-				continue;
+-			}
++				/* even without unification, some levels may not be present */
++				if ((status=ia64_pal_vm_info(i,j, &amp;tc_info, &amp;tc_pages)) != 0) {
++					continue;
++				}
+ 
+-			p += sprintf(p,
++				p += sprintf(p,
+ 				     "\n%s Translation Cache Level %d:\n"
+ 				     "\tHash sets           : %d\n"
+ 				     "\tAssociativity       : %d\n"
+ 				     "\tNumber of entries   : %d\n"
+ 				     "\tFlags               : ",
+-				     cache_types[j+tc_info.tc_unified], i+1, tc_info.tc_num_sets,
+-				     tc_info.tc_associativity, tc_info.tc_num_entries);
++				     cache_types[j+tc_info.tc_unified], i+1,
++				     tc_info.tc_num_sets,
++				     tc_info.tc_associativity,
++				     tc_info.tc_num_entries);
+ 
+-			if (tc_info.tc_pf) p += sprintf(p, "PreferredPageSizeOptimized ");
+-			if (tc_info.tc_unified) p += sprintf(p, "Unified ");
+-			if (tc_info.tc_reduce_tr) p += sprintf(p, "TCReduction");
++				if (tc_info.tc_pf)
++					p += sprintf(p, "PreferredPageSizeOptimized ");
++				if (tc_info.tc_unified)
++					p += sprintf(p, "Unified ");
++				if (tc_info.tc_reduce_tr)
++					p += sprintf(p, "TCReduction");
+ 
+-			p += sprintf(p, "\n\tSupported page sizes: ");
++				p += sprintf(p, "\n\tSupported page sizes: ");
+ 
+-			p = bitvector_process(p, tc_pages);
++				p = bitvector_process(p, tc_pages);
+ 
+-			/* when unified date (j=2) is enough */
+-			if (tc_info.tc_unified) break;
++				/* when unified date (j=2) is enough */
++				if (tc_info.tc_unified)
++					break;
++			}
+ 		}
+ 	}
+ 	p += sprintf(p, "\n");
+@@ -440,14 +445,14 @@ register_info(char *page)
+ 		p += sprintf(p, "\n");
+ 	}
+ 
+-	if (ia64_pal_rse_info(&amp;phys_stacked, &amp;hints) != 0) return 0;
++	if (ia64_pal_rse_info(&amp;phys_stacked, &amp;hints) == 0) {
+ 
+ 	p += sprintf(p,
+ 		     "RSE stacked physical registers   : %ld\n"
+ 		     "RSE load/store hints             : %ld (%s)\n",
+ 		     phys_stacked, hints.ph_data,
+ 		     hints.ph_data &lt; RSE_HINTS_COUNT ? rse_hints[hints.ph_data]: "(??)");
+-
++	}
+ 	if (ia64_pal_debug_info(&amp;iregs, &amp;dregs))
+ 		return 0;
+ </pre><hr><pre>commit dc90e95f310f4f821c905b2aec8e9449bb3270fa
+Author: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+Date:   Wed Aug 24 17:13:00 2005 -0700
+
+    [IA64] Add PAL_VM_SUMMARY/PAL_MEM_ATTRIB to bootloader for SKI
+    
+    This patch implements PAL_VM_SUMMARY (and PAL_MEM_ATTRIB for good
+    measure) and pretends that the simulated machine is a McKinley.
+    
+    Some extra comments and clean-up by Tony Luck.
+    
+    Signed-off-by: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+    Signed-off-by: Tony Luck &lt;tony.luck@intel.com&gt;
+
+diff --git a/arch/ia64/hp/sim/boot/boot_head.S b/arch/ia64/hp/sim/boot/boot_head.S
+index 1c8c7e6a9a5e..a9bd71ac78e2 100644
+--- a/arch/ia64/hp/sim/boot/boot_head.S
++++ b/arch/ia64/hp/sim/boot/boot_head.S
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include &lt;asm/asmmacro.h&gt;
++#include &lt;asm/pal.h&gt;
+ 
+ 	.bss
+ 	.align 16
+@@ -49,7 +50,11 @@ GLOBAL_ENTRY(jmp_to_kernel)
+ 	br.sptk.few b7
+ END(jmp_to_kernel)
+ 
+-
++/*
++ * r28 contains the index of the PAL function
++ * r29--31 the args
++ * Return values in ret0--3 (r8--11)
++ */
+ GLOBAL_ENTRY(pal_emulator_static)
+ 	mov r8=-1
+ 	mov r9=256
+@@ -62,7 +67,7 @@ GLOBAL_ENTRY(pal_emulator_static)
+ 	cmp.gtu p6,p7=r9,r28
+ (p6)	br.cond.sptk.few stacked
+ 	;;
+-static:	cmp.eq p6,p7=6,r28		/* PAL_PTCE_INFO */
++static:	cmp.eq p6,p7=PAL_PTCE_INFO,r28
+ (p7)	br.cond.sptk.few 1f
+ 	;;
+ 	mov r8=0			/* status = 0 */
+@@ -70,21 +75,21 @@ static:	cmp.eq p6,p7=6,r28		/* PAL_PTCE_INFO */
+ 	movl r10=0x0000000200000003	/* count[0], count[1] */
+ 	movl r11=0x1000000000002000	/* stride[0], stride[1] */
+ 	br.cond.sptk.few rp
+-1:	cmp.eq p6,p7=14,r28		/* PAL_FREQ_RATIOS */
++1:	cmp.eq p6,p7=PAL_FREQ_RATIOS,r28
+ (p7)	br.cond.sptk.few 1f
+ 	mov r8=0			/* status = 0 */
+ 	movl r9 =0x100000064		/* proc_ratio (1/100) */
+ 	movl r10=0x100000100		/* bus_ratio&lt;&lt;32 (1/256) */
+ 	movl r11=0x100000064		/* itc_ratio&lt;&lt;32 (1/100) */
+ 	;;
+-1:	cmp.eq p6,p7=19,r28		/* PAL_RSE_INFO */
++1:	cmp.eq p6,p7=PAL_RSE_INFO,r28
+ (p7)	br.cond.sptk.few 1f
+ 	mov r8=0			/* status = 0 */
+ 	mov r9=96			/* num phys stacked */
+ 	mov r10=0			/* hints */
+ 	mov r11=0
+ 	br.cond.sptk.few rp
+-1:	cmp.eq p6,p7=1,r28		/* PAL_CACHE_FLUSH */
++1:	cmp.eq p6,p7=PAL_CACHE_FLUSH,r28		/* PAL_CACHE_FLUSH */
+ (p7)	br.cond.sptk.few 1f
+ 	mov r9=ar.lc
+ 	movl r8=524288			/* flush 512k million cache lines (16MB) */
+@@ -102,7 +107,7 @@ static:	cmp.eq p6,p7=6,r28		/* PAL_PTCE_INFO */
+ 	mov ar.lc=r9
+ 	mov r8=r0
+ 	;;
+-1:	cmp.eq p6,p7=15,r28		/* PAL_PERF_MON_INFO */
++1:	cmp.eq p6,p7=PAL_PERF_MON_INFO,r28
+ (p7)	br.cond.sptk.few 1f
+ 	mov r8=0			/* status = 0 */
+ 	movl r9 =0x08122f04		/* generic=4 width=47 retired=8 cycles=18 */
+@@ -138,6 +143,20 @@ static:	cmp.eq p6,p7=6,r28		/* PAL_PTCE_INFO */
+ 	st8 [r29]=r0,16			/* clear remaining bits  */
+ 	st8 [r18]=r0,16			/* clear remaining bits  */
+ 	;;
++1:	cmp.eq p6,p7=PAL_VM_SUMMARY,r28
++(p7)	br.cond.sptk.few 1f
++	mov	r8=0			/* status = 0  */
++	movl	r9=0x2044040020F1865	/* num_tc_levels=2, num_unique_tcs=4 */
++					/* max_itr_entry=64, max_dtr_entry=64 */
++					/* hash_tag_id=2, max_pkr=15 */
++					/* key_size=24, phys_add_size=50, vw=1 */
++	movl	r10=0x183C		/* rid_size=24, impl_va_msb=60 */
++	;;
++1:	cmp.eq p6,p7=PAL_MEM_ATTRIB,r28
++(p7)	br.cond.sptk.few 1f
++	mov	r8=0			/* status = 0 */
++	mov	r9=0x80|0x01		/* NatPage|WB */
++	;;
+ 1:	br.cond.sptk.few rp
+ stacked:
+ 	br.ret.sptk.few rp</pre><hr><pre>commit 0a41e2501160587eb8f66cef3bdf1c6f2cb86997
+Author: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+Date:   Tue Aug 16 19:54:00 2005 -0700
+
+    [IA64] Rationalise Region Definitions
+    
+    Currently, region numbers are defined in several files, with several
+    names.  For example, we have REGION_KERNEL in asm/page.h and
+    RGN_KERNEL in pgtable.h
+    
+    We also have address definitions that should depend on the
+    RGN_XXX macros, but are currently just long constants.
+    
+    The following patch reorganises all the definitions so that they have
+    the same form (RGN_XXX), are in one place, and that addresses that
+    depend on RGN_XXX are derived from them.
+    
+    (This is a necessary but not sufficient patch to allow UML-like
+    operation on IA64).
+    
+    Thanks to David Mosberger for catching the change I missed in mmu_context.h.
+    
+    Signed-off-by: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+    Signed-off-by: Tony Luck &lt;tony.luck@intel.com&gt;
+
+diff --git a/arch/ia64/kernel/sys_ia64.c b/arch/ia64/kernel/sys_ia64.c
+index 770fab37928e..f2dbcd1db0d4 100644
+--- a/arch/ia64/kernel/sys_ia64.c
++++ b/arch/ia64/kernel/sys_ia64.c
+@@ -35,7 +35,7 @@ arch_get_unmapped_area (struct file *filp, unsigned long addr, unsigned long len
+ 		return -ENOMEM;
+ 
+ #ifdef CONFIG_HUGETLB_PAGE
+-	if (REGION_NUMBER(addr) == REGION_HPAGE)
++	if (REGION_NUMBER(addr) == RGN_HPAGE)
+ 		addr = 0;
+ #endif
+ 	if (!addr)
+diff --git a/arch/ia64/mm/hugetlbpage.c b/arch/ia64/mm/hugetlbpage.c
+index e0a776a3044c..2d13889d0a99 100644
+--- a/arch/ia64/mm/hugetlbpage.c
++++ b/arch/ia64/mm/hugetlbpage.c
+@@ -76,7 +76,7 @@ int is_aligned_hugepage_range(unsigned long addr, unsigned long len)
+ 		return -EINVAL;
+ 	if (addr &amp; ~HPAGE_MASK)
+ 		return -EINVAL;
+-	if (REGION_NUMBER(addr) != REGION_HPAGE)
++	if (REGION_NUMBER(addr) != RGN_HPAGE)
+ 		return -EINVAL;
+ 
+ 	return 0;
+@@ -87,7 +87,7 @@ struct page *follow_huge_addr(struct mm_struct *mm, unsigned long addr, int writ
+ 	struct page *page;
+ 	pte_t *ptep;
+ 
+-	if (REGION_NUMBER(addr) != REGION_HPAGE)
++	if (REGION_NUMBER(addr) != RGN_HPAGE)
+ 		return ERR_PTR(-EINVAL);
+ 
+ 	ptep = huge_pte_offset(mm, addr);
+@@ -142,8 +142,8 @@ unsigned long hugetlb_get_unmapped_area(struct file *file, unsigned long addr, u
+ 		return -ENOMEM;
+ 	if (len &amp; ~HPAGE_MASK)
+ 		return -EINVAL;
+-	/* This code assumes that REGION_HPAGE != 0. */
+-	if ((REGION_NUMBER(addr) != REGION_HPAGE) || (addr &amp; (HPAGE_SIZE - 1)))
++	/* This code assumes that RGN_HPAGE != 0. */
++	if ((REGION_NUMBER(addr) != RGN_HPAGE) || (addr &amp; (HPAGE_SIZE - 1)))
+ 		addr = HPAGE_REGION_BASE;
+ 	else
+ 		addr = ALIGN(addr, HPAGE_SIZE);
+diff --git a/include/asm-ia64/io.h b/include/asm-ia64/io.h
+index 54e7637a326c..3c28eeb0b009 100644
+--- a/include/asm-ia64/io.h
++++ b/include/asm-ia64/io.h
+@@ -23,7 +23,7 @@
+ #define __SLOW_DOWN_IO	do { } while (0)
+ #define SLOW_DOWN_IO	do { } while (0)
+ 
+-#define __IA64_UNCACHED_OFFSET	0xc000000000000000UL	/* region 6 */
++#define __IA64_UNCACHED_OFFSET	RGN_BASE(RGN_UNCACHED)
+ 
+ /*
+  * The legacy I/O space defined by the ia64 architecture supports only 65536 ports, but
+diff --git a/include/asm-ia64/mmu_context.h b/include/asm-ia64/mmu_context.h
+index e3e5fededb04..ab60a6a26911 100644
+--- a/include/asm-ia64/mmu_context.h
++++ b/include/asm-ia64/mmu_context.h
+@@ -19,6 +19,7 @@
+ 
+ #define ia64_rid(ctx,addr)	(((ctx) &lt;&lt; 3) | (addr &gt;&gt; 61))
+ 
++# include &lt;asm/page.h&gt;
+ # ifndef __ASSEMBLY__
+ 
+ #include &lt;linux/compiler.h&gt;
+@@ -110,7 +111,7 @@ reload_context (mm_context_t context)
+ 	unsigned long rid_incr = 0;
+ 	unsigned long rr0, rr1, rr2, rr3, rr4, old_rr4;
+ 
+-	old_rr4 = ia64_get_rr(0x8000000000000000UL);
++	old_rr4 = ia64_get_rr(RGN_BASE(RGN_HPAGE));
+ 	rid = context &lt;&lt; 3;	/* make space for encoding the region number */
+ 	rid_incr = 1 &lt;&lt; 8;
+ 
+@@ -122,6 +123,10 @@ reload_context (mm_context_t context)
+ 	rr4 = rr0 + 4*rid_incr;
+ #ifdef  CONFIG_HUGETLB_PAGE
+ 	rr4 = (rr4 &amp; (~(0xfcUL))) | (old_rr4 &amp; 0xfc);
++
++#  if RGN_HPAGE != 4
++#    error "reload_context assumes RGN_HPAGE is 4"
++#  endif
+ #endif
+ 
+ 	ia64_set_rr(0x0000000000000000UL, rr0);
+diff --git a/include/asm-ia64/page.h b/include/asm-ia64/page.h
+index 08894f73abf0..ec17f9e9da75 100644
+--- a/include/asm-ia64/page.h
++++ b/include/asm-ia64/page.h
+@@ -12,6 +12,19 @@
+ #include &lt;asm/intrinsics.h&gt;
+ #include &lt;asm/types.h&gt;
+ 
++/*
++ * The top three bits of an IA64 address are its Region Number.
++ * Different regions are assigned to different purposes.
++ */
++#define RGN_SHIFT	(61)
++#define RGN_BASE(r)  (__IA64_UL_CONST(r)&lt;&lt;RGN_SHIFT)
++
++#define KHIGH -1	/* high three bits of Kernel virtual address */
++#define RGN_KERNEL	7	/* Identity mapped region */
++#define RGN_UNCACHED    6	/* Identity mapped I/O region */
++#define RGN_GATE	5	/* Gate page, Kernel text, etc */
++#define RGN_HPAGE	4	/* For Huge TLB pages */
++
+ /*
+  * PAGE_SHIFT determines the actual kernel page size.
+  */
+@@ -36,10 +49,9 @@
+ 
+ #define RGN_MAP_LIMIT	((1UL &lt;&lt; (4*PAGE_SHIFT - 12)) - PAGE_SIZE)	/* per region addr limit */
+ 
++
+ #ifdef CONFIG_HUGETLB_PAGE
+-# define REGION_HPAGE		(4UL)	/* note: this is hardcoded in reload_context()!*/
+-# define REGION_SHIFT		61
+-# define HPAGE_REGION_BASE	(REGION_HPAGE &lt;&lt; REGION_SHIFT)
++# define HPAGE_REGION_BASE	RGN_BASE(RGN_HPAGE)
+ # define HPAGE_SHIFT		hpage_shift
+ # define HPAGE_SHIFT_DEFAULT	28	/* check ia64 SDM for architecture supported size */
+ # define HPAGE_SIZE		(__IA64_UL_CONST(1) &lt;&lt; HPAGE_SHIFT)
+@@ -130,16 +142,13 @@ typedef union ia64_va {
+ #define REGION_NUMBER(x)	({ia64_va _v; _v.l = (long) (x); _v.f.reg;})
+ #define REGION_OFFSET(x)	({ia64_va _v; _v.l = (long) (x); _v.f.off;})
+ 
+-#define REGION_SIZE		REGION_NUMBER(1)
+-#define REGION_KERNEL		7
+-
+ #ifdef CONFIG_HUGETLB_PAGE
+ # define htlbpage_to_page(x)	(((unsigned long) REGION_NUMBER(x) &lt;&lt; 61)			\
+ 				 | (REGION_OFFSET(x) &gt;&gt; (HPAGE_SHIFT-PAGE_SHIFT)))
+ # define HUGETLB_PAGE_ORDER	(HPAGE_SHIFT - PAGE_SHIFT)
+ # define is_hugepage_only_range(mm, addr, len)		\
+-	 (REGION_NUMBER(addr) == REGION_HPAGE &amp;&amp;	\
+-	  REGION_NUMBER((addr)+(len)-1) == REGION_HPAGE)
++	 (REGION_NUMBER(addr) == RGN_HPAGE &amp;&amp;	\
++	  REGION_NUMBER((addr)+(len)-1) == RGN_HPAGE)
+ extern unsigned int hpage_shift;
+ #endif
+ 
+@@ -197,7 +206,7 @@ get_order (unsigned long size)
+ # define __pgprot(x)	(x)
+ #endif /* !STRICT_MM_TYPECHECKS */
+ 
+-#define PAGE_OFFSET			__IA64_UL_CONST(0xe000000000000000)
++#define PAGE_OFFSET			RGN_BASE(RGN_KERNEL)
+ 
+ #define VM_DATA_DEFAULT_FLAGS		(VM_READ | VM_WRITE |					\
+ 					 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC |		\
+diff --git a/include/asm-ia64/pgtable.h b/include/asm-ia64/pgtable.h
+index 48586e08f432..2e34c06e6777 100644
+--- a/include/asm-ia64/pgtable.h
++++ b/include/asm-ia64/pgtable.h
+@@ -204,21 +204,18 @@ ia64_phys_addr_valid (unsigned long addr)
+ #define set_pte(ptep, pteval)	(*(ptep) = (pteval))
+ #define set_pte_at(mm,addr,ptep,pteval) set_pte(ptep,pteval)
+ 
+-#define RGN_SIZE	(1UL &lt;&lt; 61)
+-#define RGN_KERNEL	7
+-
+-#define VMALLOC_START		0xa000000200000000UL
++#define VMALLOC_START		(RGN_BASE(RGN_GATE) + 0x200000000UL)
+ #ifdef CONFIG_VIRTUAL_MEM_MAP
+-# define VMALLOC_END_INIT	(0xa000000000000000UL + (1UL &lt;&lt; (4*PAGE_SHIFT - 9)))
++# define VMALLOC_END_INIT	(RGN_BASE(RGN_GATE) + (1UL &lt;&lt; (4*PAGE_SHIFT - 9)))
+ # define VMALLOC_END		vmalloc_end
+   extern unsigned long vmalloc_end;
+ #else
+-# define VMALLOC_END		(0xa000000000000000UL + (1UL &lt;&lt; (4*PAGE_SHIFT - 9)))
++# define VMALLOC_END		(RGN_BASE(RGN_GATE) + (1UL &lt;&lt; (4*PAGE_SHIFT - 9)))
+ #endif
+ 
+ /* fs/proc/kcore.c */
+-#define	kc_vaddr_to_offset(v) ((v) - 0xa000000000000000UL)
+-#define	kc_offset_to_vaddr(o) ((o) + 0xa000000000000000UL)
++#define	kc_vaddr_to_offset(v) ((v) - RGN_BASE(RGN_GATE))
++#define	kc_offset_to_vaddr(o) ((o) + RGN_BASE(RGN_GATE))
+ 
+ /*
+  * Conversion functions: convert page frame number (pfn) and a protection value to a page
+diff --git a/include/asm-ia64/system.h b/include/asm-ia64/system.h
+index cd2cf76b2db1..33256db4a7cf 100644
+--- a/include/asm-ia64/system.h
++++ b/include/asm-ia64/system.h
+@@ -19,12 +19,13 @@
+ #include &lt;asm/pal.h&gt;
+ #include &lt;asm/percpu.h&gt;
+ 
+-#define GATE_ADDR		__IA64_UL_CONST(0xa000000000000000)
++#define GATE_ADDR		RGN_BASE(RGN_GATE)
++
+ /*
+  * 0xa000000000000000+2*PERCPU_PAGE_SIZE
+  * - 0xa000000000000000+3*PERCPU_PAGE_SIZE remain unmapped (guard page)
+  */
+-#define KERNEL_START		 __IA64_UL_CONST(0xa000000100000000)
++#define KERNEL_START		 (GATE_ADDR+0x100000000)
+ #define PERCPU_ADDR		(-PERCPU_PAGE_SIZE)
+ 
+ #ifndef __ASSEMBLY__</pre><hr><pre>commit a4cce10492358b33d33bb43f98284c80482037e8
+Author: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+Date:   Mon Aug 22 17:50:00 2005 -0700
+
+    [IA64] Fix simulator boot (for real this time).
+    
+    Thanks to Stephane, we've now worked out the real cause of the
+    `Linux  will not boot on simulator' problem.  Turns out it's a stack
+    overflow because the stack pointer wasn't being initialised properly
+    in boot_head.S (it was being initialised to the lowest instead of the
+    highest address of the stack, so the first push started to overwrite
+    data in the BSS).
+    
+    Signed-off-by: Peter Chubb &lt;peterc@gelato.unsw.edu.au&gt;
+    Signed-off-by: Tony Luck &lt;tony.luck@intel.com&gt;
+
+diff --git a/arch/ia64/hp/sim/boot/boot_head.S b/arch/ia64/hp/sim/boot/boot_head.S
+index 9364199e5632..1c8c7e6a9a5e 100644
+--- a/arch/ia64/hp/sim/boot/boot_head.S
++++ b/arch/ia64/hp/sim/boot/boot_head.S
+@@ -22,7 +22,7 @@ GLOBAL_ENTRY(_start)
+ 	.save rp, r0
+ 	.body
+ 	movl gp = __gp
+-	movl sp = stack_mem
++	movl sp = stack_mem+16384-16
+ 	bsw.1
+ 	br.call.sptk.many rp=start_bootloader
+ END(_start)</pre>
+    <div class="pagination">
+        <a href='8_16.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><span>[17]</span><a href='8_18.html'>18</a><a href='8_18.html'>Next&gt;&gt;</a>
+    <div>
+</body>

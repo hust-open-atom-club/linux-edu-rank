@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by South China University of Technology</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by South China University of Technology</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit 7cb9994754f8a36ae9e5ec4597c5c4c2d6c03832
+Author: Hu Weiwen &lt;sehuww@mail.scut.edu.cn&gt;
+Date:   Fri Jul 1 10:52:27 2022 +0800
+
+    ceph: don't truncate file in atomic_open
+    
+    Clear O_TRUNC from the flags sent in the MDS create request.
+    
+    `atomic_open' is called before permission check. We should not do any
+    modification to the file here. The caller will do the truncation
+    afterward.
+    
+    Fixes: 124e68e74099 ("ceph: file operations")
+    Signed-off-by: Hu Weiwen &lt;sehuww@mail.scut.edu.cn&gt;
+    Reviewed-by: Xiubo Li &lt;xiubli@redhat.com&gt;
+    Signed-off-by: Ilya Dryomov &lt;idryomov@gmail.com&gt;
+
+diff --git a/fs/ceph/file.c b/fs/ceph/file.c
+index cd025ff25bf0..b4e978420802 100644
+--- a/fs/ceph/file.c
++++ b/fs/ceph/file.c
+@@ -749,6 +749,11 @@ int ceph_atomic_open(struct inode *dir, struct dentry *dentry,
+ 	err = ceph_wait_on_conflict_unlink(dentry);
+ 	if (err)
+ 		return err;
++	/*
++	 * Do not truncate the file, since atomic_open is called before the
++	 * permission check. The caller will do the truncation afterward.
++	 */
++	flags &amp;= ~O_TRUNC;
+ 
+ 	if (flags &amp; O_CREAT) {
+ 		if (ceph_quota_is_max_files_exceeded(dir))
+@@ -824,9 +829,7 @@ int ceph_atomic_open(struct inode *dir, struct dentry *dentry,
+ 	}
+ 
+ 	set_bit(CEPH_MDS_R_PARENT_LOCKED, &amp;req-&gt;r_req_flags);
+-	err = ceph_mdsc_do_request(mdsc,
+-				   (flags &amp; (O_CREAT|O_TRUNC)) ? dir : NULL,
+-				   req);
++	err = ceph_mdsc_do_request(mdsc, (flags &amp; O_CREAT) ? dir : NULL, req);
+ 	if (err == -ENOENT) {
+ 		dentry = ceph_handle_snapdir(req, dentry);
+ 		if (IS_ERR(dentry)) {</pre><hr><pre>commit 973e5245637accc4002843f6b888495a6a7762bc
+Author: Hu Weiwen &lt;sehuww@mail.scut.edu.cn&gt;
+Date:   Mon Nov 22 22:22:12 2021 +0800
+
+    ceph: fix duplicate increment of opened_inodes metric
+    
+    opened_inodes is incremented twice when the same inode is opened twice
+    with O_RDONLY and O_WRONLY respectively.
+    
+    To reproduce, run this python script, then check the metrics:
+    
+    import os
+    for _ in range(10000):
+        fd_r = os.open('a', os.O_RDONLY)
+        fd_w = os.open('a', os.O_WRONLY)
+        os.close(fd_r)
+        os.close(fd_w)
+    
+    Fixes: 1dd8d4708136 ("ceph: metrics for opened files, pinned caps and opened inodes")
+    Signed-off-by: Hu Weiwen &lt;sehuww@mail.scut.edu.cn&gt;
+    Reviewed-by: Xiubo Li &lt;xiubli@redhat.com&gt;
+    Signed-off-by: Ilya Dryomov &lt;idryomov@gmail.com&gt;
+
+diff --git a/fs/ceph/caps.c b/fs/ceph/caps.c
+index b9460b6fb76f..c447fa2e2d1f 100644
+--- a/fs/ceph/caps.c
++++ b/fs/ceph/caps.c
+@@ -4350,7 +4350,7 @@ void ceph_get_fmode(struct ceph_inode_info *ci, int fmode, int count)
+ {
+ 	struct ceph_mds_client *mdsc = ceph_sb_to_mdsc(ci-&gt;vfs_inode.i_sb);
+ 	int bits = (fmode &lt;&lt; 1) | 1;
+-	bool is_opened = false;
++	bool already_opened = false;
+ 	int i;
+ 
+ 	if (count == 1)
+@@ -4358,19 +4358,19 @@ void ceph_get_fmode(struct ceph_inode_info *ci, int fmode, int count)
+ 
+ 	spin_lock(&amp;ci-&gt;i_ceph_lock);
+ 	for (i = 0; i &lt; CEPH_FILE_MODE_BITS; i++) {
+-		if (bits &amp; (1 &lt;&lt; i))
+-			ci-&gt;i_nr_by_mode[i] += count;
+-
+ 		/*
+-		 * If any of the mode ref is larger than 1,
++		 * If any of the mode ref is larger than 0,
+ 		 * that means it has been already opened by
+ 		 * others. Just skip checking the PIN ref.
+ 		 */
+-		if (i &amp;&amp; ci-&gt;i_nr_by_mode[i] &gt; 1)
+-			is_opened = true;
++		if (i &amp;&amp; ci-&gt;i_nr_by_mode[i])
++			already_opened = true;
++
++		if (bits &amp; (1 &lt;&lt; i))
++			ci-&gt;i_nr_by_mode[i] += count;
+ 	}
+ 
+-	if (!is_opened)
++	if (!already_opened)
+ 		percpu_counter_inc(&amp;mdsc-&gt;metric.opened_inodes);
+ 	spin_unlock(&amp;ci-&gt;i_ceph_lock);
+ }</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

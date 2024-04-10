@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6_14.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><span>[15]</span><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_16.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 219b51a6f040fa5367adadd7d58c4dda0896a01d
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue Jun 14 17:25:57 2022 +0800
+
+    net: ax25: Fix deadlock caused by skb_recv_datagram in ax25_recvmsg
+    
+    The skb_recv_datagram() in ax25_recvmsg() will hold lock_sock
+    and block until it receives a packet from the remote. If the client
+    doesn`t connect to server and calls read() directly, it will not
+    receive any packets forever. As a result, the deadlock will happen.
+    
+    The fail log caused by deadlock is shown below:
+    
+    [  369.606973] INFO: task ax25_deadlock:157 blocked for more than 245 seconds.
+    [  369.608919] "echo 0 &gt; /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+    [  369.613058] Call Trace:
+    [  369.613315]  &lt;TASK&gt;
+    [  369.614072]  __schedule+0x2f9/0xb20
+    [  369.615029]  schedule+0x49/0xb0
+    [  369.615734]  __lock_sock+0x92/0x100
+    [  369.616763]  ? destroy_sched_domains_rcu+0x20/0x20
+    [  369.617941]  lock_sock_nested+0x6e/0x70
+    [  369.618809]  ax25_bind+0xaa/0x210
+    [  369.619736]  __sys_bind+0xca/0xf0
+    [  369.620039]  ? do_futex+0xae/0x1b0
+    [  369.620387]  ? __x64_sys_futex+0x7c/0x1c0
+    [  369.620601]  ? fpregs_assert_state_consistent+0x19/0x40
+    [  369.620613]  __x64_sys_bind+0x11/0x20
+    [  369.621791]  do_syscall_64+0x3b/0x90
+    [  369.622423]  entry_SYSCALL_64_after_hwframe+0x46/0xb0
+    [  369.623319] RIP: 0033:0x7f43c8aa8af7
+    [  369.624301] RSP: 002b:00007f43c8197ef8 EFLAGS: 00000246 ORIG_RAX: 0000000000000031
+    [  369.625756] RAX: ffffffffffffffda RBX: 0000000000000000 RCX: 00007f43c8aa8af7
+    [  369.626724] RDX: 0000000000000010 RSI: 000055768e2021d0 RDI: 0000000000000005
+    [  369.628569] RBP: 00007f43c8197f00 R08: 0000000000000011 R09: 00007f43c8198700
+    [  369.630208] R10: 0000000000000000 R11: 0000000000000246 R12: 00007fff845e6afe
+    [  369.632240] R13: 00007fff845e6aff R14: 00007f43c8197fc0 R15: 00007f43c8198700
+    
+    This patch replaces skb_recv_datagram() with an open-coded variant of it
+    releasing the socket lock before the __skb_wait_for_more_packets() call
+    and re-acquiring it after such call in order that other functions that
+    need socket lock could be executed.
+    
+    what's more, the socket lock will be released only when recvmsg() will
+    block and that should produce nicer overall behavior.
+    
+    Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
+    Suggested-by: Thomas Osterried &lt;thomas@osterried.de&gt;
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reported-by: Thomas Habets &lt;thomas@@habets.se&gt;
+    Acked-by: Paolo Abeni &lt;pabeni@redhat.com&gt;
+    Reviewed-by: Eric Dumazet &lt;edumazet@google.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ax25/af_ax25.c b/net/ax25/af_ax25.c
+index 95393bb2760b..4c7030ed8d33 100644
+--- a/net/ax25/af_ax25.c
++++ b/net/ax25/af_ax25.c
+@@ -1661,9 +1661,12 @@ static int ax25_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
+ 			int flags)
+ {
+ 	struct sock *sk = sock-&gt;sk;
+-	struct sk_buff *skb;
++	struct sk_buff *skb, *last;
++	struct sk_buff_head *sk_queue;
+ 	int copied;
+ 	int err = 0;
++	int off = 0;
++	long timeo;
+ 
+ 	lock_sock(sk);
+ 	/*
+@@ -1675,10 +1678,29 @@ static int ax25_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
+ 		goto out;
+ 	}
+ 
+-	/* Now we can treat all alike */
+-	skb = skb_recv_datagram(sk, flags, &amp;err);
+-	if (skb == NULL)
+-		goto out;
++	/*  We need support for non-blocking reads. */
++	sk_queue = &amp;sk-&gt;sk_receive_queue;
++	skb = __skb_try_recv_datagram(sk, sk_queue, flags, &amp;off, &amp;err, &amp;last);
++	/* If no packet is available, release_sock(sk) and try again. */
++	if (!skb) {
++		if (err != -EAGAIN)
++			goto out;
++		release_sock(sk);
++		timeo = sock_rcvtimeo(sk, flags &amp; MSG_DONTWAIT);
++		while (timeo &amp;&amp; !__skb_wait_for_more_packets(sk, sk_queue, &amp;err,
++							     &amp;timeo, last)) {
++			skb = __skb_try_recv_datagram(sk, sk_queue, flags, &amp;off,
++						      &amp;err, &amp;last);
++			if (skb)
++				break;
++
++			if (err != -EAGAIN)
++				goto done;
++		}
++		if (!skb)
++			goto done;
++		lock_sock(sk);
++	}
+ 
+ 	if (!sk_to_ax25(sk)-&gt;pidincl)
+ 		skb_pull(skb, 1);		/* Remove PID */
+@@ -1725,6 +1747,7 @@ static int ax25_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
+ out:
+ 	release_sock(sk);
+ 
++done:
+ 	return err;
+ }
+ </pre><hr><pre>commit a61528d997619a518ee8c51cf0ef0513021afaff
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue May 24 12:48:41 2022 +0800
+
+    mtd: sm_ftl: Fix deadlock caused by cancel_work_sync in sm_release
+    
+    There is a deadlock between sm_release and sm_cache_flush_work
+    which is a work item. The cancel_work_sync in sm_release will
+    not return until sm_cache_flush_work is finished. If we hold
+    mutex_lock and use cancel_work_sync to wait the work item to
+    finish, the work item also requires mutex_lock. As a result,
+    the sm_release will be blocked forever. The race condition is
+    shown below:
+    
+        (Thread 1)             |   (Thread 2)
+    sm_release                 |
+      mutex_lock(&amp;ftl-&gt;mutex)  | sm_cache_flush_work
+                               |   mutex_lock(&amp;ftl-&gt;mutex)
+      cancel_work_sync         |   ...
+    
+    This patch moves del_timer_sync and cancel_work_sync out of
+    mutex_lock in order to mitigate deadlock.
+    
+    Fixes: 7d17c02a01a1 ("mtd: Add new SmartMedia/xD FTL")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: Miquel Raynal &lt;miquel.raynal@bootlin.com&gt;
+    Link: https://lore.kernel.org/linux-mtd/20220524044841.10517-1-duoming@zju.edu.cn
+
+diff --git a/drivers/mtd/sm_ftl.c b/drivers/mtd/sm_ftl.c
+index 0cff2cda1b5a..7f955fade838 100644
+--- a/drivers/mtd/sm_ftl.c
++++ b/drivers/mtd/sm_ftl.c
+@@ -1111,9 +1111,9 @@ static void sm_release(struct mtd_blktrans_dev *dev)
+ {
+ 	struct sm_ftl *ftl = dev-&gt;priv;
+ 
+-	mutex_lock(&amp;ftl-&gt;mutex);
+ 	del_timer_sync(&amp;ftl-&gt;timer);
+ 	cancel_work_sync(&amp;ftl-&gt;flush_work);
++	mutex_lock(&amp;ftl-&gt;mutex);
+ 	sm_cache_flush(ftl);
+ 	mutex_unlock(&amp;ftl-&gt;mutex);
+ }</pre><hr><pre>commit 7d8a3a477b3e25ada8dc71d22048c2ea417209a0
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Mon May 30 23:21:58 2022 +0800
+
+    ax25: Fix ax25 session cleanup problems
+    
+    There are session cleanup problems in ax25_release() and
+    ax25_disconnect(). If we setup a session and then disconnect,
+    the disconnected session is still in "LISTENING" state that
+    is shown below.
+    
+    Active AX.25 sockets
+    Dest       Source     Device  State        Vr/Vs    Send-Q  Recv-Q
+    DL9SAU-4   DL9SAU-3   ???     LISTENING    000/000  0       0
+    DL9SAU-3   DL9SAU-4   ???     LISTENING    000/000  0       0
+    
+    The first reason is caused by del_timer_sync() in ax25_release().
+    The timers of ax25 are used for correct session cleanup. If we use
+    ax25_release() to close ax25 sessions and ax25_dev is not null,
+    the del_timer_sync() functions in ax25_release() will execute.
+    As a result, the sessions could not be cleaned up correctly,
+    because the timers have stopped.
+    
+    In order to solve this problem, this patch adds a device_up flag
+    in ax25_dev in order to judge whether the device is up. If there
+    are sessions to be cleaned up, the del_timer_sync() in
+    ax25_release() will not execute. What's more, we add ax25_cb_del()
+    in ax25_kill_by_device(), because the timers have been stopped
+    and there are no functions that could delete ax25_cb if we do not
+    call ax25_release(). Finally, we reorder the position of
+    ax25_list_lock in ax25_cb_del() in order to synchronize among
+    different functions that call ax25_cb_del().
+    
+    The second reason is caused by improper check in ax25_disconnect().
+    The incoming ax25 sessions which ax25-&gt;sk is null will close
+    heartbeat timer, because the check "if(!ax25-&gt;sk || ..)" is
+    satisfied. As a result, the session could not be cleaned up properly.
+    
+    In order to solve this problem, this patch changes the improper
+    check to "if(ax25-&gt;sk &amp;&amp; ..)" in ax25_disconnect().
+    
+    What`s more, the ax25_disconnect() may be called twice, which is
+    not necessary. For example, ax25_kill_by_device() calls
+    ax25_disconnect() and sets ax25-&gt;state to AX25_STATE_0, but
+    ax25_release() calls ax25_disconnect() again.
+    
+    In order to solve this problem, this patch add a check in
+    ax25_release(). If the flag of ax25-&gt;sk equals to SOCK_DEAD,
+    the ax25_disconnect() in ax25_release() should not be executed.
+    
+    Fixes: 82e31755e55f ("ax25: Fix UAF bugs in ax25 timers")
+    Fixes: 8a367e74c012 ("ax25: Fix segfault after sock connection timeout")
+    Reported-and-tested-by: Thomas Osterried &lt;thomas@osterried.de&gt;
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220530152158.108619-1-duoming@zju.edu.cn
+    Signed-off-by: Paolo Abeni &lt;pabeni@redhat.com&gt;
+
+diff --git a/include/net/ax25.h b/include/net/ax25.h
+index 0f9790c455bb..a427a05672e2 100644
+--- a/include/net/ax25.h
++++ b/include/net/ax25.h
+@@ -228,6 +228,7 @@ typedef struct ax25_dev {
+ 	ax25_dama_info		dama;
+ #endif
+ 	refcount_t		refcount;
++	bool device_up;
+ } ax25_dev;
+ 
+ typedef struct ax25_cb {
+diff --git a/net/ax25/af_ax25.c b/net/ax25/af_ax25.c
+index 116481e4da82..95393bb2760b 100644
+--- a/net/ax25/af_ax25.c
++++ b/net/ax25/af_ax25.c
+@@ -62,12 +62,12 @@ static void ax25_free_sock(struct sock *sk)
+  */
+ static void ax25_cb_del(ax25_cb *ax25)
+ {
++	spin_lock_bh(&amp;ax25_list_lock);
+ 	if (!hlist_unhashed(&amp;ax25-&gt;ax25_node)) {
+-		spin_lock_bh(&amp;ax25_list_lock);
+ 		hlist_del_init(&amp;ax25-&gt;ax25_node);
+-		spin_unlock_bh(&amp;ax25_list_lock);
+ 		ax25_cb_put(ax25);
+ 	}
++	spin_unlock_bh(&amp;ax25_list_lock);
+ }
+ 
+ /*
+@@ -81,6 +81,7 @@ static void ax25_kill_by_device(struct net_device *dev)
+ 
+ 	if ((ax25_dev = ax25_dev_ax25dev(dev)) == NULL)
+ 		return;
++	ax25_dev-&gt;device_up = false;
+ 
+ 	spin_lock_bh(&amp;ax25_list_lock);
+ again:
+@@ -91,6 +92,7 @@ static void ax25_kill_by_device(struct net_device *dev)
+ 				spin_unlock_bh(&amp;ax25_list_lock);
+ 				ax25_disconnect(s, ENETUNREACH);
+ 				s-&gt;ax25_dev = NULL;
++				ax25_cb_del(s);
+ 				spin_lock_bh(&amp;ax25_list_lock);
+ 				goto again;
+ 			}
+@@ -103,6 +105,7 @@ static void ax25_kill_by_device(struct net_device *dev)
+ 				dev_put_track(ax25_dev-&gt;dev, &amp;ax25_dev-&gt;dev_tracker);
+ 				ax25_dev_put(ax25_dev);
+ 			}
++			ax25_cb_del(s);
+ 			release_sock(sk);
+ 			spin_lock_bh(&amp;ax25_list_lock);
+ 			sock_put(sk);
+@@ -995,9 +998,11 @@ static int ax25_release(struct socket *sock)
+ 	if (sk-&gt;sk_type == SOCK_SEQPACKET) {
+ 		switch (ax25-&gt;state) {
+ 		case AX25_STATE_0:
+-			release_sock(sk);
+-			ax25_disconnect(ax25, 0);
+-			lock_sock(sk);
++			if (!sock_flag(ax25-&gt;sk, SOCK_DEAD)) {
++				release_sock(sk);
++				ax25_disconnect(ax25, 0);
++				lock_sock(sk);
++			}
+ 			ax25_destroy_socket(ax25);
+ 			break;
+ 
+@@ -1053,11 +1058,13 @@ static int ax25_release(struct socket *sock)
+ 		ax25_destroy_socket(ax25);
+ 	}
+ 	if (ax25_dev) {
+-		del_timer_sync(&amp;ax25-&gt;timer);
+-		del_timer_sync(&amp;ax25-&gt;t1timer);
+-		del_timer_sync(&amp;ax25-&gt;t2timer);
+-		del_timer_sync(&amp;ax25-&gt;t3timer);
+-		del_timer_sync(&amp;ax25-&gt;idletimer);
++		if (!ax25_dev-&gt;device_up) {
++			del_timer_sync(&amp;ax25-&gt;timer);
++			del_timer_sync(&amp;ax25-&gt;t1timer);
++			del_timer_sync(&amp;ax25-&gt;t2timer);
++			del_timer_sync(&amp;ax25-&gt;t3timer);
++			del_timer_sync(&amp;ax25-&gt;idletimer);
++		}
+ 		dev_put_track(ax25_dev-&gt;dev, &amp;ax25_dev-&gt;dev_tracker);
+ 		ax25_dev_put(ax25_dev);
+ 	}
+diff --git a/net/ax25/ax25_dev.c b/net/ax25/ax25_dev.c
+index b80fccbac62a..95a76d571c44 100644
+--- a/net/ax25/ax25_dev.c
++++ b/net/ax25/ax25_dev.c
+@@ -62,6 +62,7 @@ void ax25_dev_device_up(struct net_device *dev)
+ 	ax25_dev-&gt;dev     = dev;
+ 	dev_hold_track(dev, &amp;ax25_dev-&gt;dev_tracker, GFP_ATOMIC);
+ 	ax25_dev-&gt;forward = NULL;
++	ax25_dev-&gt;device_up = true;
+ 
+ 	ax25_dev-&gt;values[AX25_VALUES_IPDEFMODE] = AX25_DEF_IPDEFMODE;
+ 	ax25_dev-&gt;values[AX25_VALUES_AXDEFMODE] = AX25_DEF_AXDEFMODE;
+diff --git a/net/ax25/ax25_subr.c b/net/ax25/ax25_subr.c
+index 3a476e4f6cd0..9ff98f46dc6b 100644
+--- a/net/ax25/ax25_subr.c
++++ b/net/ax25/ax25_subr.c
+@@ -268,7 +268,7 @@ void ax25_disconnect(ax25_cb *ax25, int reason)
+ 		del_timer_sync(&amp;ax25-&gt;t3timer);
+ 		del_timer_sync(&amp;ax25-&gt;idletimer);
+ 	} else {
+-		if (!ax25-&gt;sk || !sock_flag(ax25-&gt;sk, SOCK_DESTROY))
++		if (ax25-&gt;sk &amp;&amp; !sock_flag(ax25-&gt;sk, SOCK_DESTROY))
+ 			ax25_stop_heartbeat(ax25);
+ 		ax25_stop_t1timer(ax25);
+ 		ax25_stop_t2timer(ax25);</pre><hr><pre>commit b413b0cb008646e9f24ce5253cb3cf7ee217aff6
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Wed May 18 19:57:33 2022 +0800
+
+    NFC: hci: fix sleep in atomic context bugs in nfc_hci_hcp_message_tx
+    
+    There are sleep in atomic context bugs when the request to secure
+    element of st21nfca is timeout. The root cause is that kzalloc and
+    alloc_skb with GFP_KERNEL parameter and mutex_lock are called in
+    st21nfca_se_wt_timeout which is a timer handler. The call tree shows
+    the execution paths that could lead to bugs:
+    
+       (Interrupt context)
+    st21nfca_se_wt_timeout
+      nfc_hci_send_event
+        nfc_hci_hcp_message_tx
+          kzalloc(..., GFP_KERNEL) //may sleep
+          alloc_skb(..., GFP_KERNEL) //may sleep
+          mutex_lock() //may sleep
+    
+    This patch moves the operations that may sleep into a work item.
+    The work item will run in another kernel thread which is in
+    process context to execute the bottom half of the interrupt.
+    So it could prevent atomic context from sleeping.
+    
+    Fixes: 2130fb97fecf ("NFC: st21nfca: Adding support for secure element")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Krzysztof Kozlowski &lt;krzysztof.kozlowski@linaro.org&gt;
+    Link: https://lore.kernel.org/r/20220518115733.62111-1-duoming@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/drivers/nfc/st21nfca/se.c b/drivers/nfc/st21nfca/se.c
+index c922f10d0d7b..7e213f8ddc98 100644
+--- a/drivers/nfc/st21nfca/se.c
++++ b/drivers/nfc/st21nfca/se.c
+@@ -241,7 +241,7 @@ int st21nfca_hci_se_io(struct nfc_hci_dev *hdev, u32 se_idx,
+ }
+ EXPORT_SYMBOL(st21nfca_hci_se_io);
+ 
+-static void st21nfca_se_wt_timeout(struct timer_list *t)
++static void st21nfca_se_wt_work(struct work_struct *work)
+ {
+ 	/*
+ 	 * No answer from the secure element
+@@ -254,8 +254,9 @@ static void st21nfca_se_wt_timeout(struct timer_list *t)
+ 	 */
+ 	/* hardware reset managed through VCC_UICC_OUT power supply */
+ 	u8 param = 0x01;
+-	struct st21nfca_hci_info *info = from_timer(info, t,
+-						    se_info.bwi_timer);
++	struct st21nfca_hci_info *info = container_of(work,
++						struct st21nfca_hci_info,
++						se_info.timeout_work);
+ 
+ 	info-&gt;se_info.bwi_active = false;
+ 
+@@ -271,6 +272,13 @@ static void st21nfca_se_wt_timeout(struct timer_list *t)
+ 	info-&gt;se_info.cb(info-&gt;se_info.cb_context, NULL, 0, -ETIME);
+ }
+ 
++static void st21nfca_se_wt_timeout(struct timer_list *t)
++{
++	struct st21nfca_hci_info *info = from_timer(info, t, se_info.bwi_timer);
++
++	schedule_work(&amp;info-&gt;se_info.timeout_work);
++}
++
+ static void st21nfca_se_activation_timeout(struct timer_list *t)
+ {
+ 	struct st21nfca_hci_info *info = from_timer(info, t,
+@@ -360,6 +368,7 @@ int st21nfca_apdu_reader_event_received(struct nfc_hci_dev *hdev,
+ 	switch (event) {
+ 	case ST21NFCA_EVT_TRANSMIT_DATA:
+ 		del_timer_sync(&amp;info-&gt;se_info.bwi_timer);
++		cancel_work_sync(&amp;info-&gt;se_info.timeout_work);
+ 		info-&gt;se_info.bwi_active = false;
+ 		r = nfc_hci_send_event(hdev, ST21NFCA_DEVICE_MGNT_GATE,
+ 				ST21NFCA_EVT_SE_END_OF_APDU_TRANSFER, NULL, 0);
+@@ -389,6 +398,7 @@ void st21nfca_se_init(struct nfc_hci_dev *hdev)
+ 	struct st21nfca_hci_info *info = nfc_hci_get_clientdata(hdev);
+ 
+ 	init_completion(&amp;info-&gt;se_info.req_completion);
++	INIT_WORK(&amp;info-&gt;se_info.timeout_work, st21nfca_se_wt_work);
+ 	/* initialize timers */
+ 	timer_setup(&amp;info-&gt;se_info.bwi_timer, st21nfca_se_wt_timeout, 0);
+ 	info-&gt;se_info.bwi_active = false;
+@@ -416,6 +426,7 @@ void st21nfca_se_deinit(struct nfc_hci_dev *hdev)
+ 	if (info-&gt;se_info.se_active)
+ 		del_timer_sync(&amp;info-&gt;se_info.se_active_timer);
+ 
++	cancel_work_sync(&amp;info-&gt;se_info.timeout_work);
+ 	info-&gt;se_info.bwi_active = false;
+ 	info-&gt;se_info.se_active = false;
+ }
+diff --git a/drivers/nfc/st21nfca/st21nfca.h b/drivers/nfc/st21nfca/st21nfca.h
+index cb6ad916be91..ae6771cc9894 100644
+--- a/drivers/nfc/st21nfca/st21nfca.h
++++ b/drivers/nfc/st21nfca/st21nfca.h
+@@ -141,6 +141,7 @@ struct st21nfca_se_info {
+ 
+ 	se_io_cb_t cb;
+ 	void *cb_context;
++	struct work_struct timeout_work;
+ };
+ 
+ struct st21nfca_hci_info {</pre><hr><pre>commit b8cedb7093b2d1394cae9b86494cba4b62d3a30a
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Wed May 18 18:53:21 2022 +0800
+
+    nfc: pn533: Fix buggy cleanup order
+    
+    When removing the pn533 device (i2c or USB), there is a logic error. The
+    original code first cancels the worker (flush_delayed_work) and then
+    destroys the workqueue (destroy_workqueue), leaving the timer the last
+    one to be deleted (del_timer). This result in a possible race condition
+    in a multi-core preempt-able kernel. That is, if the cleanup
+    (pn53x_common_clean) is concurrently run with the timer handler
+    (pn533_listen_mode_timer), the timer can queue the poll_work to the
+    already destroyed workqueue, causing use-after-free.
+    
+    This patch reorder the cleanup: it uses the del_timer_sync to make sure
+    the handler is finished before the routine will destroy the workqueue.
+    Note that the timer cannot be activated by the worker again.
+    
+    static void pn533_wq_poll(struct work_struct *work)
+    ...
+     rc = pn533_send_poll_frame(dev);
+     if (rc)
+       return;
+    
+     if (cur_mod-&gt;len == 0 &amp;&amp; dev-&gt;poll_mod_count &gt; 1)
+       mod_timer(&amp;dev-&gt;listen_timer, ...);
+    
+    That is, the mod_timer can be called only when pn533_send_poll_frame()
+    returns no error, which is impossible because the device is detaching
+    and the lower driver should return ENODEV code.
+    
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/nfc/pn533/pn533.c b/drivers/nfc/pn533/pn533.c
+index a491db46e3bd..d9f6367b9993 100644
+--- a/drivers/nfc/pn533/pn533.c
++++ b/drivers/nfc/pn533/pn533.c
+@@ -2787,13 +2787,14 @@ void pn53x_common_clean(struct pn533 *priv)
+ {
+ 	struct pn533_cmd *cmd, *n;
+ 
++	/* delete the timer before cleanup the worker */
++	del_timer_sync(&amp;priv-&gt;listen_timer);
++
+ 	flush_delayed_work(&amp;priv-&gt;poll_work);
+ 	destroy_workqueue(priv-&gt;wq);
+ 
+ 	skb_queue_purge(&amp;priv-&gt;resp_q);
+ 
+-	del_timer(&amp;priv-&gt;listen_timer);
+-
+ 	list_for_each_entry_safe(cmd, n, &amp;priv-&gt;cmd_queue, queue) {
+ 		list_del(&amp;cmd-&gt;queue);
+ 		kfree(cmd);</pre><hr><pre>commit 23dd4581350d4ffa23d58976ec46408f8f4c1e16
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue May 17 09:25:30 2022 +0800
+
+    NFC: nci: fix sleep in atomic context bugs caused by nci_skb_alloc
+    
+    There are sleep in atomic context bugs when the request to secure
+    element of st-nci is timeout. The root cause is that nci_skb_alloc
+    with GFP_KERNEL parameter is called in st_nci_se_wt_timeout which is
+    a timer handler. The call paths that could trigger bugs are shown below:
+    
+        (interrupt context 1)
+    st_nci_se_wt_timeout
+      nci_hci_send_event
+        nci_hci_send_data
+          nci_skb_alloc(..., GFP_KERNEL) //may sleep
+    
+       (interrupt context 2)
+    st_nci_se_wt_timeout
+      nci_hci_send_event
+        nci_hci_send_data
+          nci_send_data
+            nci_queue_tx_data_frags
+              nci_skb_alloc(..., GFP_KERNEL) //may sleep
+    
+    This patch changes allocation mode of nci_skb_alloc from GFP_KERNEL to
+    GFP_ATOMIC in order to prevent atomic context sleeping. The GFP_ATOMIC
+    flag makes memory allocation operation could be used in atomic context.
+    
+    Fixes: ed06aeefdac3 ("nfc: st-nci: Rename st21nfcb to st-nci")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Krzysztof Kozlowski &lt;krzysztof.kozlowski@linaro.org&gt;
+    Link: https://lore.kernel.org/r/20220517012530.75714-1-duoming@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/nfc/nci/data.c b/net/nfc/nci/data.c
+index 6055dc9a82aa..aa5e712adf07 100644
+--- a/net/nfc/nci/data.c
++++ b/net/nfc/nci/data.c
+@@ -118,7 +118,7 @@ static int nci_queue_tx_data_frags(struct nci_dev *ndev,
+ 
+ 		skb_frag = nci_skb_alloc(ndev,
+ 					 (NCI_DATA_HDR_SIZE + frag_len),
+-					 GFP_KERNEL);
++					 GFP_ATOMIC);
+ 		if (skb_frag == NULL) {
+ 			rc = -ENOMEM;
+ 			goto free_exit;
+diff --git a/net/nfc/nci/hci.c b/net/nfc/nci/hci.c
+index 19703a649b5a..78c4b6addf15 100644
+--- a/net/nfc/nci/hci.c
++++ b/net/nfc/nci/hci.c
+@@ -153,7 +153,7 @@ static int nci_hci_send_data(struct nci_dev *ndev, u8 pipe,
+ 
+ 	i = 0;
+ 	skb = nci_skb_alloc(ndev, conn_info-&gt;max_pkt_payload_len +
+-			    NCI_DATA_HDR_SIZE, GFP_KERNEL);
++			    NCI_DATA_HDR_SIZE, GFP_ATOMIC);
+ 	if (!skb)
+ 		return -ENOMEM;
+ 
+@@ -184,7 +184,7 @@ static int nci_hci_send_data(struct nci_dev *ndev, u8 pipe,
+ 		if (i &lt; data_len) {
+ 			skb = nci_skb_alloc(ndev,
+ 					    conn_info-&gt;max_pkt_payload_len +
+-					    NCI_DATA_HDR_SIZE, GFP_KERNEL);
++					    NCI_DATA_HDR_SIZE, GFP_ATOMIC);
+ 			if (!skb)
+ 				return -ENOMEM;
+ </pre><hr><pre>commit 2def44d3aec59e38d2701c568d65540783f90f2f
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Mon May 16 17:20:35 2022 +0800
+
+    ASoC: rt5645: Fix errorenous cleanup order
+    
+    There is a logic error when removing rt5645 device as the function
+    rt5645_i2c_remove() first cancel the &amp;rt5645-&gt;jack_detect_work and
+    delete the &amp;rt5645-&gt;btn_check_timer latter. However, since the timer
+    handler rt5645_btn_check_callback() will re-queue the jack_detect_work,
+    this cleanup order is buggy.
+    
+    That is, once the del_timer_sync in rt5645_i2c_remove is concurrently
+    run with the rt5645_btn_check_callback, the canceled jack_detect_work
+    will be rescheduled again, leading to possible use-after-free.
+    
+    This patch fix the issue by placing the del_timer_sync function before
+    the cancel_delayed_work_sync.
+    
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220516092035.28283-1-linma@zju.edu.cn
+    Signed-off-by: Mark Brown &lt;broonie@kernel.org&gt;
+
+diff --git a/sound/soc/codecs/rt5645.c b/sound/soc/codecs/rt5645.c
+index ccdea234a3ba..507aba8de3cc 100644
+--- a/sound/soc/codecs/rt5645.c
++++ b/sound/soc/codecs/rt5645.c
+@@ -4153,9 +4153,14 @@ static int rt5645_i2c_remove(struct i2c_client *i2c)
+ 	if (i2c-&gt;irq)
+ 		free_irq(i2c-&gt;irq, rt5645);
+ 
++	/*
++	 * Since the rt5645_btn_check_callback() can queue jack_detect_work,
++	 * the timer need to be delted first
++	 */
++	del_timer_sync(&amp;rt5645-&gt;btn_check_timer);
++
+ 	cancel_delayed_work_sync(&amp;rt5645-&gt;jack_detect_work);
+ 	cancel_delayed_work_sync(&amp;rt5645-&gt;rcclock_work);
+-	del_timer_sync(&amp;rt5645-&gt;btn_check_timer);
+ 
+ 	regulator_bulk_disable(ARRAY_SIZE(rt5645-&gt;supplies), rt5645-&gt;supplies);
+ </pre><hr><pre>commit 4071bf121d59944d5cd2238de0642f3d7995a997
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Wed May 4 13:58:47 2022 +0800
+
+    NFC: netlink: fix sleep in atomic bug when firmware download timeout
+    
+    There are sleep in atomic bug that could cause kernel panic during
+    firmware download process. The root cause is that nlmsg_new with
+    GFP_KERNEL parameter is called in fw_dnld_timeout which is a timer
+    handler. The call trace is shown below:
+    
+    BUG: sleeping function called from invalid context at include/linux/sched/mm.h:265
+    Call Trace:
+    kmem_cache_alloc_node
+    __alloc_skb
+    nfc_genl_fw_download_done
+    call_timer_fn
+    __run_timers.part.0
+    run_timer_softirq
+    __do_softirq
+    ...
+    
+    The nlmsg_new with GFP_KERNEL parameter may sleep during memory
+    allocation process, and the timer handler is run as the result of
+    a "software interrupt" that should not call any other function
+    that could sleep.
+    
+    This patch changes allocation mode of netlink message from GFP_KERNEL
+    to GFP_ATOMIC in order to prevent sleep in atomic bug. The GFP_ATOMIC
+    flag makes memory allocation operation could be used in atomic context.
+    
+    Fixes: 9674da8759df ("NFC: Add firmware upload netlink command")
+    Fixes: 9ea7187c53f6 ("NFC: netlink: Rename CMD_FW_UPLOAD to CMD_FW_DOWNLOAD")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Krzysztof Kozlowski &lt;krzysztof.kozlowski@linaro.org&gt;
+    Link: https://lore.kernel.org/r/20220504055847.38026-1-duoming@zju.edu.cn
+    Signed-off-by: Paolo Abeni &lt;pabeni@redhat.com&gt;
+
+diff --git a/net/nfc/netlink.c b/net/nfc/netlink.c
+index f184b0db79d4..7c62417ccfd7 100644
+--- a/net/nfc/netlink.c
++++ b/net/nfc/netlink.c
+@@ -1244,7 +1244,7 @@ int nfc_genl_fw_download_done(struct nfc_dev *dev, const char *firmware_name,
+ 	struct sk_buff *msg;
+ 	void *hdr;
+ 
+-	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
++	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_ATOMIC);
+ 	if (!msg)
+ 		return -ENOMEM;
+ 
+@@ -1260,7 +1260,7 @@ int nfc_genl_fw_download_done(struct nfc_dev *dev, const char *firmware_name,
+ 
+ 	genlmsg_end(msg, hdr);
+ 
+-	genlmsg_multicast(&amp;nfc_genl_family, msg, 0, 0, GFP_KERNEL);
++	genlmsg_multicast(&amp;nfc_genl_family, msg, 0, 0, GFP_ATOMIC);
+ 
+ 	return 0;
+ </pre><hr><pre>commit d270453a0d9ec10bb8a802a142fb1b3601a83098
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Fri Apr 29 20:45:51 2022 +0800
+
+    nfc: nfcmrvl: main: reorder destructive operations in nfcmrvl_nci_unregister_dev to avoid bugs
+    
+    There are destructive operations such as nfcmrvl_fw_dnld_abort and
+    gpio_free in nfcmrvl_nci_unregister_dev. The resources such as firmware,
+    gpio and so on could be destructed while the upper layer functions such as
+    nfcmrvl_fw_dnld_start and nfcmrvl_nci_recv_frame is executing, which leads
+    to double-free, use-after-free and null-ptr-deref bugs.
+    
+    There are three situations that could lead to double-free bugs.
+    
+    The first situation is shown below:
+    
+       (Thread 1)                 |      (Thread 2)
+    nfcmrvl_fw_dnld_start         |
+     ...                          |  nfcmrvl_nci_unregister_dev
+     release_firmware()           |   nfcmrvl_fw_dnld_abort
+      kfree(fw) //(1)             |    fw_dnld_over
+                                  |     release_firmware
+      ...                         |      kfree(fw) //(2)
+                                  |     ...
+    
+    The second situation is shown below:
+    
+       (Thread 1)                 |      (Thread 2)
+    nfcmrvl_fw_dnld_start         |
+     ...                          |
+     mod_timer                    |
+     (wait a time)                |
+     fw_dnld_timeout              |  nfcmrvl_nci_unregister_dev
+       fw_dnld_over               |   nfcmrvl_fw_dnld_abort
+        release_firmware          |    fw_dnld_over
+         kfree(fw) //(1)          |     release_firmware
+         ...                      |      kfree(fw) //(2)
+    
+    The third situation is shown below:
+    
+           (Thread 1)               |       (Thread 2)
+    nfcmrvl_nci_recv_frame          |
+     if(..-&gt;fw_download_in_progress)|
+      nfcmrvl_fw_dnld_recv_frame    |
+       queue_work                   |
+                                    |
+    fw_dnld_rx_work                 | nfcmrvl_nci_unregister_dev
+     fw_dnld_over                   |  nfcmrvl_fw_dnld_abort
+      release_firmware              |   fw_dnld_over
+       kfree(fw) //(1)              |    release_firmware
+                                    |     kfree(fw) //(2)
+    
+    The firmware struct is deallocated in position (1) and deallocated
+    in position (2) again.
+    
+    The crash trace triggered by POC is like below:
+    
+    BUG: KASAN: double-free or invalid-free in fw_dnld_over
+    Call Trace:
+      kfree
+      fw_dnld_over
+      nfcmrvl_nci_unregister_dev
+      nci_uart_tty_close
+      tty_ldisc_kill
+      tty_ldisc_hangup
+      __tty_hangup.part.0
+      tty_release
+      ...
+    
+    What's more, there are also use-after-free and null-ptr-deref bugs
+    in nfcmrvl_fw_dnld_start. If we deallocate firmware struct, gpio or
+    set null to the members of priv-&gt;fw_dnld in nfcmrvl_nci_unregister_dev,
+    then, we dereference firmware, gpio or the members of priv-&gt;fw_dnld in
+    nfcmrvl_fw_dnld_start, the UAF or NPD bugs will happen.
+    
+    This patch reorders destructive operations after nci_unregister_device
+    in order to synchronize between cleanup routine and firmware download
+    routine.
+    
+    The nci_unregister_device is well synchronized. If the device is
+    detaching, the firmware download routine will goto error. If firmware
+    download routine is executing, nci_unregister_device will wait until
+    firmware download routine is finished.
+    
+    Fixes: 3194c6870158 ("NFC: nfcmrvl: add firmware download support")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/nfc/nfcmrvl/main.c b/drivers/nfc/nfcmrvl/main.c
+index 2fcf545012b1..1a5284de4341 100644
+--- a/drivers/nfc/nfcmrvl/main.c
++++ b/drivers/nfc/nfcmrvl/main.c
+@@ -183,6 +183,7 @@ void nfcmrvl_nci_unregister_dev(struct nfcmrvl_private *priv)
+ {
+ 	struct nci_dev *ndev = priv-&gt;ndev;
+ 
++	nci_unregister_device(ndev);
+ 	if (priv-&gt;ndev-&gt;nfc_dev-&gt;fw_download_in_progress)
+ 		nfcmrvl_fw_dnld_abort(priv);
+ 
+@@ -191,7 +192,6 @@ void nfcmrvl_nci_unregister_dev(struct nfcmrvl_private *priv)
+ 	if (gpio_is_valid(priv-&gt;config.reset_n_io))
+ 		gpio_free(priv-&gt;config.reset_n_io);
+ 
+-	nci_unregister_device(ndev);
+ 	nci_free_device(ndev);
+ 	kfree(priv);
+ }</pre><hr><pre>commit da5c0f119203ad9728920456a0f52a6d850c01cd
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Fri Apr 29 20:45:50 2022 +0800
+
+    nfc: replace improper check device_is_registered() in netlink related functions
+    
+    The device_is_registered() in nfc core is used to check whether
+    nfc device is registered in netlink related functions such as
+    nfc_fw_download(), nfc_dev_up() and so on. Although device_is_registered()
+    is protected by device_lock, there is still a race condition between
+    device_del() and device_is_registered(). The root cause is that
+    kobject_del() in device_del() is not protected by device_lock.
+    
+       (cleanup task)         |     (netlink task)
+                              |
+    nfc_unregister_device     | nfc_fw_download
+     device_del               |  device_lock
+      ...                     |   if (!device_is_registered)//(1)
+      kobject_del//(2)        |   ...
+     ...                      |  device_unlock
+    
+    The device_is_registered() returns the value of state_in_sysfs and
+    the state_in_sysfs is set to zero in kobject_del(). If we pass check in
+    position (1), then set zero in position (2). As a result, the check
+    in position (1) is useless.
+    
+    This patch uses bool variable instead of device_is_registered() to judge
+    whether the nfc device is registered, which is well synchronized.
+    
+    Fixes: 3e256b8f8dfa ("NFC: add nfc subsystem core")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/nfc/core.c b/net/nfc/core.c
+index dc7a2404efdf..5b286e1e0a6f 100644
+--- a/net/nfc/core.c
++++ b/net/nfc/core.c
+@@ -38,7 +38,7 @@ int nfc_fw_download(struct nfc_dev *dev, const char *firmware_name)
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		goto error;
+ 	}
+@@ -94,7 +94,7 @@ int nfc_dev_up(struct nfc_dev *dev)
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		goto error;
+ 	}
+@@ -142,7 +142,7 @@ int nfc_dev_down(struct nfc_dev *dev)
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		goto error;
+ 	}
+@@ -207,7 +207,7 @@ int nfc_start_poll(struct nfc_dev *dev, u32 im_protocols, u32 tm_protocols)
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		goto error;
+ 	}
+@@ -246,7 +246,7 @@ int nfc_stop_poll(struct nfc_dev *dev)
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		goto error;
+ 	}
+@@ -291,7 +291,7 @@ int nfc_dep_link_up(struct nfc_dev *dev, int target_index, u8 comm_mode)
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		goto error;
+ 	}
+@@ -335,7 +335,7 @@ int nfc_dep_link_down(struct nfc_dev *dev)
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		goto error;
+ 	}
+@@ -401,7 +401,7 @@ int nfc_activate_target(struct nfc_dev *dev, u32 target_idx, u32 protocol)
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		goto error;
+ 	}
+@@ -448,7 +448,7 @@ int nfc_deactivate_target(struct nfc_dev *dev, u32 target_idx, u8 mode)
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		goto error;
+ 	}
+@@ -495,7 +495,7 @@ int nfc_data_exchange(struct nfc_dev *dev, u32 target_idx, struct sk_buff *skb,
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		kfree_skb(skb);
+ 		goto error;
+@@ -552,7 +552,7 @@ int nfc_enable_se(struct nfc_dev *dev, u32 se_idx)
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		goto error;
+ 	}
+@@ -601,7 +601,7 @@ int nfc_disable_se(struct nfc_dev *dev, u32 se_idx)
+ 
+ 	device_lock(&amp;dev-&gt;dev);
+ 
+-	if (!device_is_registered(&amp;dev-&gt;dev)) {
++	if (dev-&gt;shutting_down) {
+ 		rc = -ENODEV;
+ 		goto error;
+ 	}
+@@ -1134,6 +1134,7 @@ int nfc_register_device(struct nfc_dev *dev)
+ 			dev-&gt;rfkill = NULL;
+ 		}
+ 	}
++	dev-&gt;shutting_down = false;
+ 	device_unlock(&amp;dev-&gt;dev);
+ 
+ 	rc = nfc_genl_device_added(dev);
+@@ -1166,12 +1167,10 @@ void nfc_unregister_device(struct nfc_dev *dev)
+ 		rfkill_unregister(dev-&gt;rfkill);
+ 		rfkill_destroy(dev-&gt;rfkill);
+ 	}
++	dev-&gt;shutting_down = true;
+ 	device_unlock(&amp;dev-&gt;dev);
+ 
+ 	if (dev-&gt;ops-&gt;check_presence) {
+-		device_lock(&amp;dev-&gt;dev);
+-		dev-&gt;shutting_down = true;
+-		device_unlock(&amp;dev-&gt;dev);
+ 		del_timer_sync(&amp;dev-&gt;check_pres_timer);
+ 		cancel_work_sync(&amp;dev-&gt;check_pres_work);
+ 	}</pre>
+    <div class="pagination">
+        <a href='6_14.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><span>[15]</span><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_16.html'>Next&gt;&gt;</a>
+    <div>
+</body>

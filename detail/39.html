@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Portland State University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Portland State University</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='39_2.html'>2</a><a href='39_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit ee400a3f1bfe7004a3e14b81c38ccc5583c26295
+Author: Bo Chen &lt;chenbo@pdx.edu&gt;
+Date:   Mon Jul 23 09:01:30 2018 -0700
+
+    e1000: ensure to free old tx/rx rings in set_ringparam()
+    
+    In 'e1000_set_ringparam()', the tx_ring and rx_ring are updated with new value
+    and the old tx/rx rings are freed only when the device is up. There are resource
+    leaks on old tx/rx rings when the device is not up. This bug is reported by COD,
+    a tool for testing kernel module binaries I am building.
+    
+    This patch fixes the bug by always calling 'kfree()' on old tx/rx rings in
+    'e1000_set_ringparam()'.
+    
+    Signed-off-by: Bo Chen &lt;chenbo@pdx.edu&gt;
+    Reviewed-by: Alexander Duyck &lt;alexander.h.duyck@intel.com&gt;
+    Tested-by: Aaron Brown &lt;aaron.f.brown@intel.com&gt;
+    Signed-off-by: Jeff Kirsher &lt;jeffrey.t.kirsher@intel.com&gt;
+
+diff --git a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
+index c1e4e94f100f..2569a168334c 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
++++ b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
+@@ -624,14 +624,14 @@ static int e1000_set_ringparam(struct net_device *netdev,
+ 		adapter-&gt;tx_ring = tx_old;
+ 		e1000_free_all_rx_resources(adapter);
+ 		e1000_free_all_tx_resources(adapter);
+-		kfree(tx_old);
+-		kfree(rx_old);
+ 		adapter-&gt;rx_ring = rxdr;
+ 		adapter-&gt;tx_ring = txdr;
+ 		err = e1000_up(adapter);
+ 		if (err)
+ 			goto err_setup;
+ 	}
++	kfree(tx_old);
++	kfree(rx_old);
+ 
+ 	clear_bit(__E1000_RESETTING, &amp;adapter-&gt;flags);
+ 	return 0;</pre><hr><pre>commit cf1acec008f8d7761aa3fd7c4bca7e17b2d2512d
+Author: Bo Chen &lt;chenbo@pdx.edu&gt;
+Date:   Mon Jul 23 09:01:29 2018 -0700
+
+    e1000: check on netif_running() before calling e1000_up()
+    
+    When the device is not up, the call to 'e1000_up()' from the error handling path
+    of 'e1000_set_ringparam()' causes a kernel oops with a null-pointer
+    dereference. The null-pointer dereference is triggered in function
+    'e1000_alloc_rx_buffers()' at line 'buffer_info = &amp;rx_ring-&gt;buffer_info[i]'.
+    
+    This bug was reported by COD, a tool for testing kernel module binaries I am
+    building. This bug was also detected by KFI from Dr. Kai Cong.
+    
+    This patch fixes the bug by checking on 'netif_running()' before calling
+    'e1000_up()' in 'e1000_set_ringparam()'.
+    
+    Signed-off-by: Bo Chen &lt;chenbo@pdx.edu&gt;
+    Acked-by: Alexander Duyck &lt;alexander.h.duyck@intel.com&gt;
+    Tested-by: Aaron Brown &lt;aaron.f.brown@intel.com&gt;
+    Signed-off-by: Jeff Kirsher &lt;jeffrey.t.kirsher@intel.com&gt;
+
+diff --git a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
+index bdb3f8e65ed4..c1e4e94f100f 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
++++ b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
+@@ -644,7 +644,8 @@ static int e1000_set_ringparam(struct net_device *netdev,
+ err_alloc_rx:
+ 	kfree(txdr);
+ err_alloc_tx:
+-	e1000_up(adapter);
++	if (netif_running(adapter-&gt;netdev))
++		e1000_up(adapter);
+ err_setup:
+ 	clear_bit(__E1000_RESETTING, &amp;adapter-&gt;flags);
+ 	return err;</pre><hr><pre>commit a3aa60d511746bd6c0d0366d4eb90a7998bcde8b
+Author: Bo Chen &lt;chenbo@pdx.edu&gt;
+Date:   Thu May 31 15:35:18 2018 -0700
+
+    ALSA: hda - Handle kzalloc() failure in snd_hda_attach_pcm_stream()
+    
+    When 'kzalloc()' fails in 'snd_hda_attach_pcm_stream()', a new pcm instance is
+    created without setting its operators via 'snd_pcm_set_ops()'. Following
+    operations on the new pcm instance can trigger kernel null pointer dereferences
+    and cause kernel oops.
+    
+    This bug was found with my work on building a gray-box fault-injection tool for
+    linux-kernel-module binaries. A kernel null pointer dereference was confirmed
+    from line 'substream-&gt;ops-&gt;open()' in function 'snd_pcm_open_substream()' in
+    file 'sound/core/pcm_native.c'.
+    
+    This patch fixes the bug by calling 'snd_device_free()' in the error handling
+    path of 'kzalloc()', which removes the new pcm instance from the snd card before
+    returns with an error code.
+    
+    Signed-off-by: Bo Chen &lt;chenbo@pdx.edu&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/hda_controller.c b/sound/pci/hda/hda_controller.c
+index d1eb14842340..a12e594d4e3b 100644
+--- a/sound/pci/hda/hda_controller.c
++++ b/sound/pci/hda/hda_controller.c
+@@ -748,8 +748,10 @@ int snd_hda_attach_pcm_stream(struct hda_bus *_bus, struct hda_codec *codec,
+ 		return err;
+ 	strlcpy(pcm-&gt;name, cpcm-&gt;name, sizeof(pcm-&gt;name));
+ 	apcm = kzalloc(sizeof(*apcm), GFP_KERNEL);
+-	if (apcm == NULL)
++	if (apcm == NULL) {
++		snd_device_free(chip-&gt;card, pcm);
+ 		return -ENOMEM;
++	}
+ 	apcm-&gt;chip = chip;
+ 	apcm-&gt;pcm = pcm;
+ 	apcm-&gt;codec = codec;</pre><hr><pre>commit a45675796a0763f5e0ffb75496c3865e961560d3
+Author: Bo Chen &lt;chenbo@pdx.edu&gt;
+Date:   Thu May 24 12:48:35 2018 -0700
+
+    8139too: Remove unnecessary netif_napi_del()
+    
+    The call to free_netdev() in __rtl8139_cleanup_dev() clears the network device
+    napi list, and explicit calls to netif_napi_del() are unnecessary.
+    
+    Signed-off-by: Bo Chen &lt;chenbo@pdx.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/realtek/8139too.c b/drivers/net/ethernet/realtek/8139too.c
+index d118da5a10a2..ffd68a7bc9e1 100644
+--- a/drivers/net/ethernet/realtek/8139too.c
++++ b/drivers/net/ethernet/realtek/8139too.c
+@@ -1104,7 +1104,6 @@ static int rtl8139_init_one(struct pci_dev *pdev,
+ 	return 0;
+ 
+ err_out:
+-	netif_napi_del(&amp;tp-&gt;napi);
+ 	__rtl8139_cleanup_dev (dev);
+ 	pci_disable_device (pdev);
+ 	return i;
+@@ -1119,7 +1118,6 @@ static void rtl8139_remove_one(struct pci_dev *pdev)
+ 	assert (dev != NULL);
+ 
+ 	cancel_delayed_work_sync(&amp;tp-&gt;thread);
+-	netif_napi_del(&amp;tp-&gt;napi);
+ 
+ 	unregister_netdev (dev);
+ </pre><hr><pre>commit d7db318651d5430eb79eceef1e6aa9b084ae78e6
+Author: Bo Chen &lt;chenbo@pdx.edu&gt;
+Date:   Mon May 21 14:44:49 2018 -0700
+
+    pcnet32: add an error handling path in pcnet32_probe_pci()
+    
+    Make sure to invoke pci_disable_device() when errors occur in
+    pcnet32_probe_pci().
+    
+    Signed-off-by: Bo Chen &lt;chenbo@pdx.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/amd/pcnet32.c b/drivers/net/ethernet/amd/pcnet32.c
+index a561705f232c..be198cc0b10c 100644
+--- a/drivers/net/ethernet/amd/pcnet32.c
++++ b/drivers/net/ethernet/amd/pcnet32.c
+@@ -1552,22 +1552,26 @@ pcnet32_probe_pci(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 	if (!ioaddr) {
+ 		if (pcnet32_debug &amp; NETIF_MSG_PROBE)
+ 			pr_err("card has no PCI IO resources, aborting\n");
+-		return -ENODEV;
++		err = -ENODEV;
++		goto err_disable_dev;
+ 	}
+ 
+ 	err = pci_set_dma_mask(pdev, PCNET32_DMA_MASK);
+ 	if (err) {
+ 		if (pcnet32_debug &amp; NETIF_MSG_PROBE)
+ 			pr_err("architecture does not support 32bit PCI busmaster DMA\n");
+-		return err;
++		goto err_disable_dev;
+ 	}
+ 	if (!request_region(ioaddr, PCNET32_TOTAL_SIZE, "pcnet32_probe_pci")) {
+ 		if (pcnet32_debug &amp; NETIF_MSG_PROBE)
+ 			pr_err("io address range already allocated\n");
+-		return -EBUSY;
++		err = -EBUSY;
++		goto err_disable_dev;
+ 	}
+ 
+ 	err = pcnet32_probe1(ioaddr, 1, pdev);
++
++err_disable_dev:
+ 	if (err &lt; 0)
+ 		pci_disable_device(pdev);
+ </pre><hr><pre>commit bd448d4d0a1bd88dc6fdc41217b2c25383fa8529
+Author: Gokul Caushik &lt;gcaushik@pdx.edu&gt;
+Date:   Thu Jul 19 18:04:42 2012 -0700
+
+    x86, boot: Exclude cmdline.c if you can't use it
+    
+    CONFIG_EARLY_PRINTK is the only feature that might use command line
+    parsing in the decompression stage.  If it is disabled then we can
+    exclude the related code to save space. This can result in an estimated
+    space savings of 2240 bytes from the compressed kernel image.
+    
+    Signed-off-by: Joe Millenbach &lt;jmillenbach@gmail.com&gt;
+    Link: http://lkml.kernel.org/r/1342746282-28497-8-git-send-email-jmillenbach@gmail.com
+    Signed-off-by: Gokul Caushik &lt;caushik1@gmail.com&gt;
+    Reviewed-by: Josh Triplett &lt;josh@joshtriplett.org&gt;
+    Signed-off-by: H. Peter Anvin &lt;hpa@zytor.com&gt;
+
+diff --git a/arch/x86/boot/compressed/cmdline.c b/arch/x86/boot/compressed/cmdline.c
+index cb62f786990d..10f6b1178c68 100644
+--- a/arch/x86/boot/compressed/cmdline.c
++++ b/arch/x86/boot/compressed/cmdline.c
+@@ -1,5 +1,7 @@
+ #include "misc.h"
+ 
++#ifdef CONFIG_EARLY_PRINTK
++
+ static unsigned long fs;
+ static inline void set_fs(unsigned long seg)
+ {
+@@ -19,3 +21,5 @@ int cmdline_find_option_bool(const char *option)
+ {
+ 	return __cmdline_find_option_bool(real_mode-&gt;hdr.cmd_line_ptr, option);
+ }
++
++#endif
+diff --git a/arch/x86/boot/compressed/misc.h b/arch/x86/boot/compressed/misc.h
+index 3ffee6e0c54c..0e6dc0ee0eea 100644
+--- a/arch/x86/boot/compressed/misc.h
++++ b/arch/x86/boot/compressed/misc.h
+@@ -38,18 +38,19 @@ static inline void debug_putstr(const char *s)
+ 
+ #endif
+ 
++#ifdef CONFIG_EARLY_PRINTK
++
+ /* cmdline.c */
+ int cmdline_find_option(const char *option, char *buffer, int bufsize);
+ int cmdline_find_option_bool(const char *option);
+ 
+ /* early_serial_console.c */
+-#ifdef CONFIG_EARLY_PRINTK
+-
+ extern int early_serial_base;
+ void console_init(void);
+ 
+ #else
+ 
++/* early_serial_console.c */
+ static const int early_serial_base;
+ static inline void console_init(void)
+ { }</pre><hr><pre>commit acbef459a663a8349ceb46b5a11ede50fa7909c7
+Author: Karl Hegbloom &lt;hegbloom@pdx.edu&gt;
+Date:   Sun Jun 19 00:50:47 2005 -0700
+
+    [PATCH] kbuild: make 'cscope -q' play well with cscope.el
+    
+    I tried the Linux Makefile 'make cscope' target, and found that the
+    generated database is not compatible with 'cscope.el' under XEmacs.
+    The thing is that 'cscope.el' does not allow setting the command line
+    options to the 'cscope' commands it runs, and it errors with a message
+    about the options not matching the ones used to generate the index.
+    
+    It turns out the cscope designers already thought of this.  The
+    options can be written into the "cscope.files".  The included patch
+    moves the "-q" and "-k" options from the 'cmd_cscope' to the
+    'cmd_cscope-file', echoing them into the top of the files listing.
+    
+    Now the index is generated with the "-q" option, and when 'cscope.el'
+    performs it's search, it uses that argument as well.  Lookups are fast
+    and everyone is happy.
+    
+    Signed-off-by: Sam Ravnborg &lt;sam@ravnborg.org&gt;
+
+diff --git a/Makefile b/Makefile
+index 9cf07e7b9f88..8294cd73b3aa 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1177,10 +1177,10 @@ define all-sources
+ endef
+ 
+ quiet_cmd_cscope-file = FILELST cscope.files
+-      cmd_cscope-file = $(all-sources) &gt; cscope.files
++      cmd_cscope-file = (echo \-k; echo \-q; $(all-sources)) &gt; cscope.files
+ 
+ quiet_cmd_cscope = MAKE    cscope.out
+-      cmd_cscope = cscope -k -b -q
++      cmd_cscope = cscope -b
+ 
+ cscope: FORCE
+ 	$(call cmd,cscope-file)</pre><hr><pre>commit 63a4eca57cacd9043da71287590525261563a1f2
+Author: Bart Massey &lt;bart@cs.pdx.edu&gt;
+Date:   Mon Sep 21 11:48:52 2009 -0700
+
+    Staging: comedi: ni_labpc_cs: wrapped long comments
+    
+    Signed-off-by: Bart Massey &lt;bart@cs.pdx.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@suse.de&gt;
+
+diff --git a/drivers/staging/comedi/drivers/ni_labpc_cs.c b/drivers/staging/comedi/drivers/ni_labpc_cs.c
+index 300ecb2ac9ec..0b963bb3328b 100644
+--- a/drivers/staging/comedi/drivers/ni_labpc_cs.c
++++ b/drivers/staging/comedi/drivers/ni_labpc_cs.c
+@@ -83,7 +83,8 @@ static int labpc_attach(struct comedi_device *dev, struct comedi_devconfig *it);
+ static const struct labpc_board_struct labpc_cs_boards[] = {
+ 	{
+ 	 .name = "daqcard-1200",
+-	 .device_id = 0x103,	/*  0x10b is manufacturer id, 0x103 is device id */
++	 .device_id = 0x103,	/* 0x10b is manufacturer id,
++				   0x103 is device id */
+ 	 .ai_speed = 10000,
+ 	 .bustype = pcmcia_bustype,
+ 	 .register_layout = labpc_1200_layout,</pre><hr><pre>commit 92c4bad75cef701af881c8caffa1b02f7891a295
+Author: Bart Massey &lt;bart@cs.pdx.edu&gt;
+Date:   Mon Sep 21 11:38:07 2009 -0700
+
+    Staging: comedi: ni_labpc_cs: removed null check from kfree
+    
+    Signed-off-by: Bart Massey &lt;bart@cs.pdx.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@suse.de&gt;
+
+diff --git a/drivers/staging/comedi/drivers/ni_labpc_cs.c b/drivers/staging/comedi/drivers/ni_labpc_cs.c
+index bf6ce0284af3..300ecb2ac9ec 100644
+--- a/drivers/staging/comedi/drivers/ni_labpc_cs.c
++++ b/drivers/staging/comedi/drivers/ni_labpc_cs.c
+@@ -272,9 +272,8 @@ static void labpc_cs_detach(struct pcmcia_device *link)
+ 		labpc_release(link);
+ 	}
+ 
+-	/* This points to the parent local_info_t struct */
+-	if (link-&gt;priv)
+-		kfree(link-&gt;priv);
++	/* This points to the parent local_info_t struct (may be null) */
++	kfree(link-&gt;priv);
+ 
+ }				/* labpc_cs_detach */
+ </pre><hr><pre>commit 962331810fffda3e9ee474fbd9d748ee32ecc1f6
+Author: Bart Massey &lt;bart@cs.pdx.edu&gt;
+Date:   Mon Sep 21 11:33:06 2009 -0700
+
+    Staging: comedi: ni_labpc_cs: removed null initialization of static
+    
+    Signed-off-by: Bart Massey &lt;bart@cs.pdx.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@suse.de&gt;
+
+diff --git a/drivers/staging/comedi/drivers/ni_labpc_cs.c b/drivers/staging/comedi/drivers/ni_labpc_cs.c
+index db6e05e2ebba..bf6ce0284af3 100644
+--- a/drivers/staging/comedi/drivers/ni_labpc_cs.c
++++ b/drivers/staging/comedi/drivers/ni_labpc_cs.c
+@@ -76,7 +76,7 @@ NI manuals:
+ #include &lt;pcmcia/cisreg.h&gt;
+ #include &lt;pcmcia/ds.h&gt;
+ 
+-static struct pcmcia_device *pcmcia_cur_dev = NULL;
++static struct pcmcia_device *pcmcia_cur_dev;
+ 
+ static int labpc_attach(struct comedi_device *dev, struct comedi_devconfig *it);
+ </pre>
+    <div class="pagination">
+        <span>[1]</span><a href='39_2.html'>2</a><a href='39_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

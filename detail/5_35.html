@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_34.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><span>[35]</span><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_36.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit b5072ea0910e5c8c79b8313e0ef70ca763983dbf
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Oct 16 18:09:42 2006 -0400
+
+    [SCSI] libiscsi: fix logout pdu processing
+    
+    According to the iscsi RFC, we cannot send other requests if
+    we have sent a logout pdu. This patch enforces this requirement
+    by blocking the session and suspending the send thread. Userspace
+    decides if we restart the connection or if we just free everything.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index f5a9560b357f..2865ebd557ef 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -578,6 +578,27 @@ void iscsi_conn_failure(struct iscsi_conn *conn, enum iscsi_err err)
+ }
+ EXPORT_SYMBOL_GPL(iscsi_conn_failure);
+ 
++static int iscsi_xmit_imm_task(struct iscsi_conn *conn)
++{
++	struct iscsi_hdr *hdr = conn-&gt;mtask-&gt;hdr;
++	int rc, was_logout = 0;
++
++	if ((hdr-&gt;opcode &amp; ISCSI_OPCODE_MASK) == ISCSI_OP_LOGOUT) {
++		conn-&gt;session-&gt;state = ISCSI_STATE_IN_RECOVERY;
++		iscsi_block_session(session_to_cls(conn-&gt;session));
++		was_logout = 1;
++	}
++	rc = conn-&gt;session-&gt;tt-&gt;xmit_mgmt_task(conn, conn-&gt;mtask);
++	if (rc)
++		return rc;
++
++	if (was_logout) {
++		set_bit(ISCSI_SUSPEND_BIT, &amp;conn-&gt;suspend_tx);
++		return -ENODATA;
++	}
++	return 0;
++}
++
+ /**
+  * iscsi_data_xmit - xmit any command into the scheduled connection
+  * @conn: iscsi connection
+@@ -623,7 +644,7 @@ static int iscsi_data_xmit(struct iscsi_conn *conn)
+ 		conn-&gt;ctask = NULL;
+ 	}
+ 	if (conn-&gt;mtask) {
+-		rc = tt-&gt;xmit_mgmt_task(conn, conn-&gt;mtask);
++		rc = iscsi_xmit_imm_task(conn);
+ 	        if (rc)
+ 		        goto again;
+ 		/* done with this in-progress mtask */
+@@ -638,7 +659,7 @@ static int iscsi_data_xmit(struct iscsi_conn *conn)
+ 			list_add_tail(&amp;conn-&gt;mtask-&gt;running,
+ 				      &amp;conn-&gt;mgmt_run_list);
+ 			spin_unlock_bh(&amp;conn-&gt;session-&gt;lock);
+-			rc = tt-&gt;xmit_mgmt_task(conn, conn-&gt;mtask);
++			rc = iscsi_xmit_imm_task(conn);
+ 		        if (rc)
+ 			        goto again;
+ 	        }</pre><hr><pre>commit 5831c737f724aa6a655a908d202221f079f30036
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Oct 16 18:09:41 2006 -0400
+
+    [SCSI] libiscsi: fix aen support
+    
+    We have been dropping the pdu. We should just send it to userspace
+    and let it handle it.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index e3a2ec253cf1..f5a9560b357f 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -481,8 +481,8 @@ int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 			break;
+ 		case ISCSI_OP_ASYNC_EVENT:
+ 			conn-&gt;exp_statsn = be32_to_cpu(hdr-&gt;statsn) + 1;
+-			/* we need sth like iscsi_async_event_rsp() */
+-			rc = ISCSI_ERR_BAD_OPCODE;
++			if (iscsi_recv_pdu(conn-&gt;cls_conn, hdr, data, datalen))
++				rc = ISCSI_ERR_CONN_FAILED;
+ 			break;
+ 		default:
+ 			rc = ISCSI_ERR_BAD_OPCODE;</pre><hr><pre>commit cd529a46e17b43976d05c1e2ece2676ec7941cc8
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Oct 16 18:09:40 2006 -0400
+
+    [SCSI] libiscsi: fix missed iscsi_task_put in xmit error path
+    
+    from bhalevy@gmail.com:
+    
+    It looks like change 652 to libiscsi.c added some dead code around line
+    670
+                    if (rc) {
+                            spin_unlock_bh(&amp;conn-&gt;session-&gt;lock);
+                            goto again;
+                    }
+    
+    since 5 lines above we goto again if (rc).
+    
+    It looks like the previous if (rc) should go away if we want to put the
+    ctask before
+    breaking out of the while loop with "goto again" (see following patch).
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 1000fe936791..e3a2ec253cf1 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -661,8 +661,6 @@ static int iscsi_data_xmit(struct iscsi_conn *conn)
+ 		spin_unlock_bh(&amp;conn-&gt;session-&gt;lock);
+ 
+ 		rc = tt-&gt;xmit_cmd_task(conn, conn-&gt;ctask);
+-		if (rc)
+-			goto again;
+ 
+ 		spin_lock_bh(&amp;conn-&gt;session-&gt;lock);
+ 		__iscsi_put_ctask(conn-&gt;ctask);</pre><hr><pre>commit 98644047916c24258fb47c3dab2bed8a44f53b83
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Oct 16 18:09:39 2006 -0400
+
+    [SCSI] libiscsi: fix oops in connection create failure path
+    
+    If connection creation fails we end up calling list_del
+    on a invalid struct. This then causes an oops. We are not
+    acutally using the lists (old MCS code we thought might
+    be useful elsewhere) so this patch just removes that
+    code.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index c542d0e95e68..1000fe936791 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -778,6 +778,10 @@ int iscsi_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 	}
+ 
+ 	conn = session-&gt;leadconn;
++	if (!conn) {
++		reason = FAILURE_SESSION_FREED;
++		goto fault;
++	}
+ 
+ 	if (!__kfifo_get(session-&gt;cmdpool.queue, (void*)&amp;ctask,
+ 			 sizeof(void*))) {
+@@ -1377,7 +1381,6 @@ iscsi_session_setup(struct iscsi_transport *iscsit,
+ 	}
+ 
+ 	spin_lock_init(&amp;session-&gt;lock);
+-	INIT_LIST_HEAD(&amp;session-&gt;connections);
+ 
+ 	/* initialize immediate command pool */
+ 	if (iscsi_pool_init(&amp;session-&gt;mgmtpool, session-&gt;mgmtpool_max,
+@@ -1580,16 +1583,11 @@ void iscsi_conn_teardown(struct iscsi_cls_conn *cls_conn)
+ 	kfree(conn-&gt;persistent_address);
+ 	__kfifo_put(session-&gt;mgmtpool.queue, (void*)&amp;conn-&gt;login_mtask,
+ 		    sizeof(void*));
+-	list_del(&amp;conn-&gt;item);
+-	if (list_empty(&amp;session-&gt;connections))
++	if (session-&gt;leadconn == conn) {
+ 		session-&gt;leadconn = NULL;
+-	if (session-&gt;leadconn &amp;&amp; session-&gt;leadconn == conn)
+-		session-&gt;leadconn = container_of(session-&gt;connections.next,
+-			struct iscsi_conn, item);
+-
+-	if (session-&gt;leadconn == NULL)
+ 		/* no connections exits.. reset sequencing */
+ 		session-&gt;cmdsn = session-&gt;max_cmdsn = session-&gt;exp_cmdsn = 1;
++	}
+ 	spin_unlock_bh(&amp;session-&gt;lock);
+ 
+ 	kfifo_free(conn-&gt;immqueue);
+@@ -1777,32 +1775,12 @@ int iscsi_conn_bind(struct iscsi_cls_session *cls_session,
+ 		    struct iscsi_cls_conn *cls_conn, int is_leading)
+ {
+ 	struct iscsi_session *session = class_to_transport_session(cls_session);
+-	struct iscsi_conn *tmp = ERR_PTR(-EEXIST), *conn = cls_conn-&gt;dd_data;
++	struct iscsi_conn *conn = cls_conn-&gt;dd_data;
+ 
+-	/* lookup for existing connection */
+ 	spin_lock_bh(&amp;session-&gt;lock);
+-	list_for_each_entry(tmp, &amp;session-&gt;connections, item) {
+-		if (tmp == conn) {
+-			if (conn-&gt;c_stage != ISCSI_CONN_STOPPED ||
+-			    conn-&gt;stop_stage == STOP_CONN_TERM) {
+-				printk(KERN_ERR "iscsi: can't bind "
+-				       "non-stopped connection (%d:%d)\n",
+-				       conn-&gt;c_stage, conn-&gt;stop_stage);
+-				spin_unlock_bh(&amp;session-&gt;lock);
+-				return -EIO;
+-			}
+-			break;
+-		}
+-	}
+-	if (tmp != conn) {
+-		/* bind new iSCSI connection to session */
+-		conn-&gt;session = session;
+-		list_add(&amp;conn-&gt;item, &amp;session-&gt;connections);
+-	}
+-	spin_unlock_bh(&amp;session-&gt;lock);
+-
+ 	if (is_leading)
+ 		session-&gt;leadconn = conn;
++	spin_unlock_bh(&amp;session-&gt;lock);
+ 
+ 	/*
+ 	 * Unblock xmitworker(), Login Phase will pass through.
+diff --git a/include/scsi/libiscsi.h b/include/scsi/libiscsi.h
+index 401192e56e50..61eebec00a7b 100644
+--- a/include/scsi/libiscsi.h
++++ b/include/scsi/libiscsi.h
+@@ -136,7 +136,6 @@ struct iscsi_conn {
+ 
+ 	/* control data */
+ 	int			id;		/* CID */
+-	struct list_head	item;		/* maintains list of conns */
+ 	int			c_stage;	/* connection state */
+ 	/*
+ 	 * Preallocated buffer for pdus that have data but do not
+@@ -235,10 +234,8 @@ struct iscsi_session {
+ 						 * - mgmtpool,		   *
+ 						 * - r2tpool		   */
+ 	int			state;		/* session state           */
+-	struct list_head	item;
+ 	int			age;		/* counts session re-opens */
+ 
+-	struct list_head	connections;	/* list of connections */
+ 	int			cmds_max;	/* size of cmds array */
+ 	struct iscsi_cmd_task	**cmds;		/* Original Cmds arr */
+ 	struct iscsi_queue	cmdpool;	/* PDU's pool */</pre><hr><pre>commit 43a145a3440c5c5f24ff2888801e40e2242187e6
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon Oct 16 18:09:38 2006 -0400
+
+    [SCSI] iscsi class: fix slab corruption during restart
+    
+    The transport class recv mempools are causing slab corruption.
+    We could hack around netlink's lack of mempool support like dm,
+    but it is just too ulgy (dm's hack is ugly enough :) when you need
+    to support broadcast.
+    
+    This patch removes the recv pools. We have not used them even when
+    we were allocting 20 MB per session and the system only had 64 MBs.
+    And we have no pools on the send side and have been ok there. When
+    Peter's work gets merged we can use that since the network guys
+    are in favor of that approach and are not going to add mempools
+    everywhere.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 7b0019cccce3..2d3baa99ca25 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -21,7 +21,6 @@
+  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+  */
+ #include &lt;linux/module.h&gt;
+-#include &lt;linux/mempool.h&gt;
+ #include &lt;linux/mutex.h&gt;
+ #include &lt;net/tcp.h&gt;
+ #include &lt;scsi/scsi.h&gt;
+@@ -149,30 +148,6 @@ static DECLARE_TRANSPORT_CLASS(iscsi_connection_class,
+ static struct sock *nls;
+ static DEFINE_MUTEX(rx_queue_mutex);
+ 
+-struct mempool_zone {
+-	mempool_t *pool;
+-	atomic_t allocated;
+-	int size;
+-	int hiwat;
+-	struct list_head freequeue;
+-	spinlock_t freelock;
+-};
+-
+-static struct mempool_zone *z_reply;
+-
+-/*
+- * Z_MAX_* - actual mempool size allocated at the mempool_zone_init() time
+- * Z_HIWAT_* - zone's high watermark when if_error bit will be set to -ENOMEM
+- *             so daemon will notice OOM on NETLINK tranposrt level and will
+- *             be able to predict or change operational behavior
+- */
+-#define Z_MAX_REPLY	8
+-#define Z_HIWAT_REPLY	6
+-#define Z_MAX_PDU	8
+-#define Z_HIWAT_PDU	6
+-#define Z_MAX_ERROR	16
+-#define Z_HIWAT_ERROR	12
+-
+ static LIST_HEAD(sesslist);
+ static DEFINE_SPINLOCK(sesslock);
+ static LIST_HEAD(connlist);
+@@ -414,59 +389,11 @@ int iscsi_destroy_session(struct iscsi_cls_session *session)
+ }
+ EXPORT_SYMBOL_GPL(iscsi_destroy_session);
+ 
+-static void mempool_zone_destroy(struct mempool_zone *zp)
+-{
+-	mempool_destroy(zp-&gt;pool);
+-	kfree(zp);
+-}
+-
+-static void*
+-mempool_zone_alloc_skb(gfp_t gfp_mask, void *pool_data)
+-{
+-	struct mempool_zone *zone = pool_data;
+-
+-	return alloc_skb(zone-&gt;size, gfp_mask);
+-}
+-
+-static void
+-mempool_zone_free_skb(void *element, void *pool_data)
+-{
+-	kfree_skb(element);
+-}
+-
+-static struct mempool_zone *
+-mempool_zone_init(unsigned max, unsigned size, unsigned hiwat)
+-{
+-	struct mempool_zone *zp;
+-
+-	zp = kzalloc(sizeof(*zp), GFP_KERNEL);
+-	if (!zp)
+-		return NULL;
+-
+-	zp-&gt;size = size;
+-	zp-&gt;hiwat = hiwat;
+-	INIT_LIST_HEAD(&amp;zp-&gt;freequeue);
+-	spin_lock_init(&amp;zp-&gt;freelock);
+-	atomic_set(&amp;zp-&gt;allocated, 0);
+-
+-	zp-&gt;pool = mempool_create(max, mempool_zone_alloc_skb,
+-				  mempool_zone_free_skb, zp);
+-	if (!zp-&gt;pool) {
+-		kfree(zp);
+-		return NULL;
+-	}
+-
+-	return zp;
+-}
+-
+ static void iscsi_conn_release(struct device *dev)
+ {
+ 	struct iscsi_cls_conn *conn = iscsi_dev_to_conn(dev);
+ 	struct device *parent = conn-&gt;dev.parent;
+ 
+-	mempool_zone_destroy(conn-&gt;z_pdu);
+-	mempool_zone_destroy(conn-&gt;z_error);
+-
+ 	kfree(conn);
+ 	put_device(parent);
+ }
+@@ -476,31 +403,6 @@ static int iscsi_is_conn_dev(const struct device *dev)
+ 	return dev-&gt;release == iscsi_conn_release;
+ }
+ 
+-static int iscsi_create_event_pools(struct iscsi_cls_conn *conn)
+-{
+-	conn-&gt;z_pdu = mempool_zone_init(Z_MAX_PDU,
+-			NLMSG_SPACE(sizeof(struct iscsi_uevent) +
+-				    sizeof(struct iscsi_hdr) +
+-				    DEFAULT_MAX_RECV_DATA_SEGMENT_LENGTH),
+-			Z_HIWAT_PDU);
+-	if (!conn-&gt;z_pdu) {
+-		dev_printk(KERN_ERR, &amp;conn-&gt;dev, "iscsi: can not allocate "
+-			   "pdu zone for new conn\n");
+-		return -ENOMEM;
+-	}
+-
+-	conn-&gt;z_error = mempool_zone_init(Z_MAX_ERROR,
+-			NLMSG_SPACE(sizeof(struct iscsi_uevent)),
+-			Z_HIWAT_ERROR);
+-	if (!conn-&gt;z_error) {
+-		dev_printk(KERN_ERR, &amp;conn-&gt;dev, "iscsi: can not allocate "
+-			   "error zone for new conn\n");
+-		mempool_zone_destroy(conn-&gt;z_pdu);
+-		return -ENOMEM;
+-	}
+-	return 0;
+-}
+-
+ /**
+  * iscsi_create_conn - create iscsi class connection
+  * @session: iscsi cls session
+@@ -533,12 +435,9 @@ iscsi_create_conn(struct iscsi_cls_session *session, uint32_t cid)
+ 	conn-&gt;transport = transport;
+ 	conn-&gt;cid = cid;
+ 
+-	if (iscsi_create_event_pools(conn))
+-		goto free_conn;
+-
+ 	/* this is released in the dev's release function */
+ 	if (!get_device(&amp;session-&gt;dev))
+-		goto free_conn_pools;
++		goto free_conn;
+ 
+ 	snprintf(conn-&gt;dev.bus_id, BUS_ID_SIZE, "connection%d:%u",
+ 		 session-&gt;sid, cid);
+@@ -555,8 +454,6 @@ iscsi_create_conn(struct iscsi_cls_session *session, uint32_t cid)
+ 
+ release_parent_ref:
+ 	put_device(&amp;session-&gt;dev);
+-free_conn_pools:
+-
+ free_conn:
+ 	kfree(conn);
+ 	return NULL;
+@@ -599,81 +496,31 @@ iscsi_if_transport_lookup(struct iscsi_transport *tt)
+ 	return NULL;
+ }
+ 
+-static inline struct list_head *skb_to_lh(struct sk_buff *skb)
+-{
+-	return (struct list_head *)&amp;skb-&gt;cb;
+-}
+-
+-static void
+-mempool_zone_complete(struct mempool_zone *zone)
+-{
+-	unsigned long flags;
+-	struct list_head *lh, *n;
+-
+-	spin_lock_irqsave(&amp;zone-&gt;freelock, flags);
+-	list_for_each_safe(lh, n, &amp;zone-&gt;freequeue) {
+-		struct sk_buff *skb = (struct sk_buff *)((char *)lh -
+-				offsetof(struct sk_buff, cb));
+-		if (!skb_shared(skb)) {
+-			list_del(skb_to_lh(skb));
+-			mempool_free(skb, zone-&gt;pool);
+-			atomic_dec(&amp;zone-&gt;allocated);
+-		}
+-	}
+-	spin_unlock_irqrestore(&amp;zone-&gt;freelock, flags);
+-}
+-
+-static struct sk_buff*
+-mempool_zone_get_skb(struct mempool_zone *zone)
+-{
+-	struct sk_buff *skb;
+-
+-	skb = mempool_alloc(zone-&gt;pool, GFP_ATOMIC);
+-	if (skb)
+-		atomic_inc(&amp;zone-&gt;allocated);
+-	return skb;
+-}
+-
+ static int
+-iscsi_broadcast_skb(struct mempool_zone *zone, struct sk_buff *skb, gfp_t gfp)
++iscsi_broadcast_skb(struct sk_buff *skb, gfp_t gfp)
+ {
+-	unsigned long flags;
+ 	int rc;
+ 
+-	skb_get(skb);
+ 	rc = netlink_broadcast(nls, skb, 0, 1, gfp);
+ 	if (rc &lt; 0) {
+-		mempool_free(skb, zone-&gt;pool);
+ 		printk(KERN_ERR "iscsi: can not broadcast skb (%d)\n", rc);
+ 		return rc;
+ 	}
+ 
+-	spin_lock_irqsave(&amp;zone-&gt;freelock, flags);
+-	INIT_LIST_HEAD(skb_to_lh(skb));
+-	list_add(skb_to_lh(skb), &amp;zone-&gt;freequeue);
+-	spin_unlock_irqrestore(&amp;zone-&gt;freelock, flags);
+ 	return 0;
+ }
+ 
+ static int
+-iscsi_unicast_skb(struct mempool_zone *zone, struct sk_buff *skb, int pid)
++iscsi_unicast_skb(struct sk_buff *skb, int pid)
+ {
+-	unsigned long flags;
+ 	int rc;
+ 
+-	skb_get(skb);
+ 	rc = netlink_unicast(nls, skb, pid, MSG_DONTWAIT);
+ 	if (rc &lt; 0) {
+-		mempool_free(skb, zone-&gt;pool);
+ 		printk(KERN_ERR "iscsi: can not unicast skb (%d)\n", rc);
+ 		return rc;
+ 	}
+ 
+-	spin_lock_irqsave(&amp;zone-&gt;freelock, flags);
+-	INIT_LIST_HEAD(skb_to_lh(skb));
+-	list_add(skb_to_lh(skb), &amp;zone-&gt;freequeue);
+-	spin_unlock_irqrestore(&amp;zone-&gt;freelock, flags);
+-
+ 	return 0;
+ }
+ 
+@@ -692,9 +539,7 @@ int iscsi_recv_pdu(struct iscsi_cls_conn *conn, struct iscsi_hdr *hdr,
+ 	if (!priv)
+ 		return -EINVAL;
+ 
+-	mempool_zone_complete(conn-&gt;z_pdu);
+-
+-	skb = mempool_zone_get_skb(conn-&gt;z_pdu);
++	skb = alloc_skb(len, GFP_ATOMIC);
+ 	if (!skb) {
+ 		iscsi_conn_error(conn, ISCSI_ERR_CONN_FAILED);
+ 		dev_printk(KERN_ERR, &amp;conn-&gt;dev, "iscsi: can not deliver "
+@@ -707,15 +552,13 @@ int iscsi_recv_pdu(struct iscsi_cls_conn *conn, struct iscsi_hdr *hdr,
+ 	memset(ev, 0, sizeof(*ev));
+ 	ev-&gt;transport_handle = iscsi_handle(conn-&gt;transport);
+ 	ev-&gt;type = ISCSI_KEVENT_RECV_PDU;
+-	if (atomic_read(&amp;conn-&gt;z_pdu-&gt;allocated) &gt;= conn-&gt;z_pdu-&gt;hiwat)
+-		ev-&gt;iferror = -ENOMEM;
+ 	ev-&gt;r.recv_req.cid = conn-&gt;cid;
+ 	ev-&gt;r.recv_req.sid = iscsi_conn_get_sid(conn);
+ 	pdu = (char*)ev + sizeof(*ev);
+ 	memcpy(pdu, hdr, sizeof(struct iscsi_hdr));
+ 	memcpy(pdu + sizeof(struct iscsi_hdr), data, data_size);
+ 
+-	return iscsi_unicast_skb(conn-&gt;z_pdu, skb, priv-&gt;daemon_pid);
++	return iscsi_unicast_skb(skb, priv-&gt;daemon_pid);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_recv_pdu);
+ 
+@@ -731,9 +574,7 @@ void iscsi_conn_error(struct iscsi_cls_conn *conn, enum iscsi_err error)
+ 	if (!priv)
+ 		return;
+ 
+-	mempool_zone_complete(conn-&gt;z_error);
+-
+-	skb = mempool_zone_get_skb(conn-&gt;z_error);
++	skb = alloc_skb(len, GFP_ATOMIC);
+ 	if (!skb) {
+ 		dev_printk(KERN_ERR, &amp;conn-&gt;dev, "iscsi: gracefully ignored "
+ 			  "conn error (%d)\n", error);
+@@ -744,13 +585,11 @@ void iscsi_conn_error(struct iscsi_cls_conn *conn, enum iscsi_err error)
+ 	ev = NLMSG_DATA(nlh);
+ 	ev-&gt;transport_handle = iscsi_handle(conn-&gt;transport);
+ 	ev-&gt;type = ISCSI_KEVENT_CONN_ERROR;
+-	if (atomic_read(&amp;conn-&gt;z_error-&gt;allocated) &gt;= conn-&gt;z_error-&gt;hiwat)
+-		ev-&gt;iferror = -ENOMEM;
+ 	ev-&gt;r.connerror.error = error;
+ 	ev-&gt;r.connerror.cid = conn-&gt;cid;
+ 	ev-&gt;r.connerror.sid = iscsi_conn_get_sid(conn);
+ 
+-	iscsi_broadcast_skb(conn-&gt;z_error, skb, GFP_ATOMIC);
++	iscsi_broadcast_skb(skb, GFP_ATOMIC);
+ 
+ 	dev_printk(KERN_INFO, &amp;conn-&gt;dev, "iscsi: detected conn error (%d)\n",
+ 		   error);
+@@ -767,9 +606,7 @@ iscsi_if_send_reply(int pid, int seq, int type, int done, int multi,
+ 	int flags = multi ? NLM_F_MULTI : 0;
+ 	int t = done ? NLMSG_DONE : type;
+ 
+-	mempool_zone_complete(z_reply);
+-
+-	skb = mempool_zone_get_skb(z_reply);
++	skb = alloc_skb(len, GFP_ATOMIC);
+ 	/*
+ 	 * FIXME:
+ 	 * user is supposed to react on iferror == -ENOMEM;
+@@ -780,7 +617,7 @@ iscsi_if_send_reply(int pid, int seq, int type, int done, int multi,
+ 	nlh = __nlmsg_put(skb, pid, seq, t, (len - sizeof(*nlh)), 0);
+ 	nlh-&gt;nlmsg_flags = flags;
+ 	memcpy(NLMSG_DATA(nlh), payload, size);
+-	return iscsi_unicast_skb(z_reply, skb, pid);
++	return iscsi_unicast_skb(skb, pid);
+ }
+ 
+ static int
+@@ -810,9 +647,7 @@ iscsi_if_get_stats(struct iscsi_transport *transport, struct nlmsghdr *nlh)
+ 	do {
+ 		int actual_size;
+ 
+-		mempool_zone_complete(conn-&gt;z_pdu);
+-
+-		skbstat = mempool_zone_get_skb(conn-&gt;z_pdu);
++		skbstat = alloc_skb(len, GFP_ATOMIC);
+ 		if (!skbstat) {
+ 			dev_printk(KERN_ERR, &amp;conn-&gt;dev, "iscsi: can not "
+ 				   "deliver stats: OOM\n");
+@@ -825,8 +660,6 @@ iscsi_if_get_stats(struct iscsi_transport *transport, struct nlmsghdr *nlh)
+ 		memset(evstat, 0, sizeof(*evstat));
+ 		evstat-&gt;transport_handle = iscsi_handle(conn-&gt;transport);
+ 		evstat-&gt;type = nlh-&gt;nlmsg_type;
+-		if (atomic_read(&amp;conn-&gt;z_pdu-&gt;allocated) &gt;= conn-&gt;z_pdu-&gt;hiwat)
+-			evstat-&gt;iferror = -ENOMEM;
+ 		evstat-&gt;u.get_stats.cid =
+ 			ev-&gt;u.get_stats.cid;
+ 		evstat-&gt;u.get_stats.sid =
+@@ -845,7 +678,7 @@ iscsi_if_get_stats(struct iscsi_transport *transport, struct nlmsghdr *nlh)
+ 		skb_trim(skbstat, NLMSG_ALIGN(actual_size));
+ 		nlhstat-&gt;nlmsg_len = actual_size;
+ 
+-		err = iscsi_unicast_skb(conn-&gt;z_pdu, skbstat, priv-&gt;daemon_pid);
++		err = iscsi_unicast_skb(skbstat, priv-&gt;daemon_pid);
+ 	} while (err &lt; 0 &amp;&amp; err != -ECONNREFUSED);
+ 
+ 	return err;
+@@ -876,9 +709,7 @@ int iscsi_if_destroy_session_done(struct iscsi_cls_conn *conn)
+ 	session = iscsi_dev_to_session(conn-&gt;dev.parent);
+ 	shost = iscsi_session_to_shost(session);
+ 
+-	mempool_zone_complete(conn-&gt;z_pdu);
+-
+-	skb = mempool_zone_get_skb(conn-&gt;z_pdu);
++	skb = alloc_skb(len, GFP_KERNEL);
+ 	if (!skb) {
+ 		dev_printk(KERN_ERR, &amp;conn-&gt;dev, "Cannot notify userspace of "
+ 			  "session creation event\n");
+@@ -896,7 +727,7 @@ int iscsi_if_destroy_session_done(struct iscsi_cls_conn *conn)
+ 	 * this will occur if the daemon is not up, so we just warn
+ 	 * the user and when the daemon is restarted it will handle it
+ 	 */
+-	rc = iscsi_broadcast_skb(conn-&gt;z_pdu, skb, GFP_KERNEL);
++	rc = iscsi_broadcast_skb(skb, GFP_KERNEL);
+ 	if (rc &lt; 0)
+ 		dev_printk(KERN_ERR, &amp;conn-&gt;dev, "Cannot notify userspace of "
+ 			  "session destruction event. Check iscsi daemon\n");
+@@ -939,9 +770,7 @@ int iscsi_if_create_session_done(struct iscsi_cls_conn *conn)
+ 	session = iscsi_dev_to_session(conn-&gt;dev.parent);
+ 	shost = iscsi_session_to_shost(session);
+ 
+-	mempool_zone_complete(conn-&gt;z_pdu);
+-
+-	skb = mempool_zone_get_skb(conn-&gt;z_pdu);
++	skb = alloc_skb(len, GFP_KERNEL);
+ 	if (!skb) {
+ 		dev_printk(KERN_ERR, &amp;conn-&gt;dev, "Cannot notify userspace of "
+ 			  "session creation event\n");
+@@ -959,7 +788,7 @@ int iscsi_if_create_session_done(struct iscsi_cls_conn *conn)
+ 	 * this will occur if the daemon is not up, so we just warn
+ 	 * the user and when the daemon is restarted it will handle it
+ 	 */
+-	rc = iscsi_broadcast_skb(conn-&gt;z_pdu, skb, GFP_KERNEL);
++	rc = iscsi_broadcast_skb(skb, GFP_KERNEL);
+ 	if (rc &lt; 0)
+ 		dev_printk(KERN_ERR, &amp;conn-&gt;dev, "Cannot notify userspace of "
+ 			  "session creation event. Check iscsi daemon\n");
+@@ -1278,9 +1107,6 @@ iscsi_if_rx(struct sock *sk, int len)
+ 				err = iscsi_if_send_reply(
+ 					NETLINK_CREDS(skb)-&gt;pid, nlh-&gt;nlmsg_seq,
+ 					nlh-&gt;nlmsg_type, 0, 0, ev, sizeof(*ev));
+-				if (atomic_read(&amp;z_reply-&gt;allocated) &gt;=
+-						z_reply-&gt;hiwat)
+-					ev-&gt;iferror = -ENOMEM;
+ 			} while (err &lt; 0 &amp;&amp; err != -ECONNREFUSED);
+ 			skb_pull(skb, rlen);
+ 		}
+@@ -1584,32 +1410,6 @@ int iscsi_unregister_transport(struct iscsi_transport *tt)
+ }
+ EXPORT_SYMBOL_GPL(iscsi_unregister_transport);
+ 
+-static int
+-iscsi_rcv_nl_event(struct notifier_block *this, unsigned long event, void *ptr)
+-{
+-	struct netlink_notify *n = ptr;
+-
+-	if (event == NETLINK_URELEASE &amp;&amp;
+-	    n-&gt;protocol == NETLINK_ISCSI &amp;&amp; n-&gt;pid) {
+-		struct iscsi_cls_conn *conn;
+-		unsigned long flags;
+-
+-		mempool_zone_complete(z_reply);
+-		spin_lock_irqsave(&amp;connlock, flags);
+-		list_for_each_entry(conn, &amp;connlist, conn_list) {
+-			mempool_zone_complete(conn-&gt;z_error);
+-			mempool_zone_complete(conn-&gt;z_pdu);
+-		}
+-		spin_unlock_irqrestore(&amp;connlock, flags);
+-	}
+-
+-	return NOTIFY_DONE;
+-}
+-
+-static struct notifier_block iscsi_nl_notifier = {
+-	.notifier_call	= iscsi_rcv_nl_event,
+-};
+-
+ static __init int iscsi_transport_init(void)
+ {
+ 	int err;
+@@ -1633,25 +1433,15 @@ static __init int iscsi_transport_init(void)
+ 	if (err)
+ 		goto unregister_conn_class;
+ 
+-	err = netlink_register_notifier(&amp;iscsi_nl_notifier);
+-	if (err)
+-		goto unregister_session_class;
+-
+ 	nls = netlink_kernel_create(NETLINK_ISCSI, 1, iscsi_if_rx,
+ 			THIS_MODULE);
+ 	if (!nls) {
+ 		err = -ENOBUFS;
+-		goto unregister_notifier;
++		goto unregister_session_class;
+ 	}
+ 
+-	z_reply = mempool_zone_init(Z_MAX_REPLY,
+-		NLMSG_SPACE(sizeof(struct iscsi_uevent)), Z_HIWAT_REPLY);
+-	if (z_reply)
+-		return 0;
++	return 0;
+ 
+-	sock_release(nls-&gt;sk_socket);
+-unregister_notifier:
+-	netlink_unregister_notifier(&amp;iscsi_nl_notifier);
+ unregister_session_class:
+ 	transport_class_unregister(&amp;iscsi_session_class);
+ unregister_conn_class:
+@@ -1665,9 +1455,7 @@ static __init int iscsi_transport_init(void)
+ 
+ static void __exit iscsi_transport_exit(void)
+ {
+-	mempool_zone_destroy(z_reply);
+ 	sock_release(nls-&gt;sk_socket);
+-	netlink_unregister_notifier(&amp;iscsi_nl_notifier);
+ 	transport_class_unregister(&amp;iscsi_connection_class);
+ 	transport_class_unregister(&amp;iscsi_session_class);
+ 	transport_class_unregister(&amp;iscsi_host_class);
+diff --git a/include/scsi/scsi_transport_iscsi.h b/include/scsi/scsi_transport_iscsi.h
+index 39e833260bd0..4b95c89c95c9 100644
+--- a/include/scsi/scsi_transport_iscsi.h
++++ b/include/scsi/scsi_transport_iscsi.h
+@@ -29,7 +29,6 @@
+ struct scsi_transport_template;
+ struct iscsi_transport;
+ struct Scsi_Host;
+-struct mempool_zone;
+ struct iscsi_cls_conn;
+ struct iscsi_conn;
+ struct iscsi_cmd_task;
+@@ -157,9 +156,6 @@ struct iscsi_cls_conn {
+ 
+ 	int active;			/* must be accessed with the connlock */
+ 	struct device dev;		/* sysfs transport/container device */
+-	struct mempool_zone *z_error;
+-	struct mempool_zone *z_pdu;
+-	struct list_head freequeue;
+ };
+ 
+ #define iscsi_dev_to_conn(_dev) \</pre><hr><pre>commit f70cfa9bef432d7aeb4e35c093ac27fd6f071d7e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sat Sep 30 20:42:31 2006 -0400
+
+    [SCSI] scsi_devinfo: scsi2 HP and Hitachi entries
+    
+    When SCSI-2 they can support luns past 7 and sparse luns.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_devinfo.c b/drivers/scsi/scsi_devinfo.c
+index dc1e1eb8c526..ce63044b1ec8 100644
+--- a/drivers/scsi/scsi_devinfo.c
++++ b/drivers/scsi/scsi_devinfo.c
+@@ -162,6 +162,11 @@ static struct {
+ 	{"HITACHI", "DF600", "*", BLIST_SPARSELUN},
+ 	{"HITACHI", "DISK-SUBSYSTEM", "*", BLIST_ATTACH_PQ3 | BLIST_SPARSELUN | BLIST_LARGELUN},
+ 	{"HITACHI", "OPEN-E", "*", BLIST_ATTACH_PQ3 | BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HITACHI", "OP-C-", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HITACHI", "3380-", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HITACHI", "3390-", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HITACHI", "6586-", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HITACHI", "6588-", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
+ 	{"HP", "A6189A", NULL, BLIST_SPARSELUN | BLIST_LARGELUN},	/* HP VA7400 */
+ 	{"HP", "OPEN-", "*", BLIST_REPORTLUN2}, /* HP XP Arrays */
+ 	{"HP", "NetRAID-4M", NULL, BLIST_FORCELUN},
+@@ -169,6 +174,14 @@ static struct {
+ 	{"HP", "C1557A", NULL, BLIST_FORCELUN},
+ 	{"HP", "C3323-300", "4269", BLIST_NOTQ},
+ 	{"HP", "C5713A", NULL, BLIST_NOREPORTLUN},
++	{"HP", "DF400", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HP", "DF500", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HP", "DF600", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HP", "OP-C-", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HP", "3380-", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HP", "3390-", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HP", "6586-", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
++	{"HP", "6588-", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
+ 	{"IBM", "AuSaV1S2", NULL, BLIST_FORCELUN},
+ 	{"IBM", "ProFibre 4000R", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
+ 	{"IBM", "2105", NULL, BLIST_RETRY_HWERROR},</pre><hr><pre>commit 12427d99489966185dc12a0b6f725d682a3277ca
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sat Sep 30 20:42:30 2006 -0400
+
+    [SCSI] scsi_devinfo: add nec iStorage
+    
+    support the report luns opcode
+    .
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_devinfo.c b/drivers/scsi/scsi_devinfo.c
+index f6aadbd9b95f..dc1e1eb8c526 100644
+--- a/drivers/scsi/scsi_devinfo.c
++++ b/drivers/scsi/scsi_devinfo.c
+@@ -189,6 +189,7 @@ static struct {
+ 	{"NAKAMICH", "MJ-4.8S", NULL, BLIST_FORCELUN | BLIST_SINGLELUN},
+ 	{"NAKAMICH", "MJ-5.16S", NULL, BLIST_FORCELUN | BLIST_SINGLELUN},
+ 	{"NEC", "PD-1 ODX654P", NULL, BLIST_FORCELUN | BLIST_SINGLELUN},
++	{"NEC", "iStorage", NULL, BLIST_REPORTLUN2},
+ 	{"NRC", "MBR-7", NULL, BLIST_FORCELUN | BLIST_SINGLELUN},
+ 	{"NRC", "MBR-7.4", NULL, BLIST_FORCELUN | BLIST_SINGLELUN},
+ 	{"PIONEER", "CD-ROM DRM-600", NULL, BLIST_FORCELUN | BLIST_SINGLELUN},</pre><hr><pre>commit 5f619c5ba509994c9203bfd18f5246b4457e2c22
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sat Sep 30 20:42:29 2006 -0400
+
+    [SCSI] scsi_devinfo: add Tornado
+    
+    This is from RHEL4. I do not have any info from our bugzilla. All
+    I could find was something like this thread
+    http://lkml.org/lkml/2005/1/7/346
+    
+    Report lun for linux does not work. It may be our lun format code or
+    it may be the device. It is probably not worth it to add anything
+    special for this device, so the patch just adds BLIST_NOREPORTLUN.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_devinfo.c b/drivers/scsi/scsi_devinfo.c
+index cbf733b4e8ae..f6aadbd9b95f 100644
+--- a/drivers/scsi/scsi_devinfo.c
++++ b/drivers/scsi/scsi_devinfo.c
+@@ -211,6 +211,7 @@ static struct {
+ 	{"SUN", "T300", "*", BLIST_SPARSELUN},
+ 	{"SUN", "T4", "*", BLIST_SPARSELUN},
+ 	{"TEXEL", "CD-ROM", "1.06", BLIST_BORKEN},
++	{"Tornado-", "F4", "*", BLIST_NOREPORTLUN},
+ 	{"TOSHIBA", "CDROM", NULL, BLIST_ISROM},
+ 	{"TOSHIBA", "CD-ROM", NULL, BLIST_ISROM},
+ 	{"USB2.0", "SMARTMEDIA/XD", NULL, BLIST_FORCELUN | BLIST_INQUIRY_36},</pre><hr><pre>commit 3441afc672bc9bfc137ae7717ac1db4b9c28cc8b
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sat Sep 30 20:42:28 2006 -0400
+
+    [SCSI] scsi_devinfo: add EMC Invista
+    
+    This is from RHEL4. This box can support
+    scsi2 and can also support BLIST_SPARSELUN | BLIST_LARGELUN.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_devinfo.c b/drivers/scsi/scsi_devinfo.c
+index 3d0429bc14ab..cbf733b4e8ae 100644
+--- a/drivers/scsi/scsi_devinfo.c
++++ b/drivers/scsi/scsi_devinfo.c
+@@ -150,6 +150,7 @@ static struct {
+ 	{"DELL", "PERCRAID", NULL, BLIST_FORCELUN},
+ 	{"DGC", "RAID", NULL, BLIST_SPARSELUN},	/* Dell PV 650F, storage on LUN 0 */
+ 	{"DGC", "DISK", NULL, BLIST_SPARSELUN},	/* Dell PV 650F, no storage on LUN 0 */
++	{"EMC",  "Invista", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
+ 	{"EMC", "SYMMETRIX", NULL, BLIST_SPARSELUN | BLIST_LARGELUN | BLIST_FORCELUN},
+ 	{"EMULEX", "MD21/S2     ESDI", NULL, BLIST_SINGLELUN},
+ 	{"FSC", "CentricStor", "*", BLIST_SPARSELUN | BLIST_LARGELUN},</pre><hr><pre>commit 01dfc7fc56f4b7ec0e5344ab44fcf673ebfbf7fa
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu Aug 31 18:09:35 2006 -0400
+
+    [SCSI] iscsi class: update version
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 2ecd14188574..7b0019cccce3 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -34,7 +34,7 @@
+ #define ISCSI_SESSION_ATTRS 11
+ #define ISCSI_CONN_ATTRS 11
+ #define ISCSI_HOST_ATTRS 0
+-#define ISCSI_TRANSPORT_VERSION "1.1-646"
++#define ISCSI_TRANSPORT_VERSION "2.0-685"
+ 
+ struct iscsi_internal {
+ 	int daemon_pid;</pre>
+    <div class="pagination">
+        <a href='5_34.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><span>[35]</span><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_36.html'>Next&gt;&gt;</a>
+    <div>
+</body>

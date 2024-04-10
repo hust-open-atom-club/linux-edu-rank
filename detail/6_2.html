@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><span>[2]</span><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_3.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit b9b683844b01d171a72b9c0419a2d760d946ee12
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Wed Feb 21 12:37:13 2024 +0800
+
+    media: go7007: fix a memleak in go7007_load_encoder
+    
+    In go7007_load_encoder, bounce(i.e. go-&gt;boot_fw), is allocated without
+    a deallocation thereafter. After the following call chain:
+    
+    saa7134_go7007_init
+      |-&gt; go7007_boot_encoder
+            |-&gt; go7007_load_encoder
+      |-&gt; kfree(go)
+    
+    go is freed and thus bounce is leaked.
+    
+    Fixes: 95ef39403f89 ("[media] go7007: remember boot firmware")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+
+diff --git a/drivers/media/usb/go7007/go7007-driver.c b/drivers/media/usb/go7007/go7007-driver.c
+index 0c24e2984304..eb03f98b2ef1 100644
+--- a/drivers/media/usb/go7007/go7007-driver.c
++++ b/drivers/media/usb/go7007/go7007-driver.c
+@@ -80,7 +80,7 @@ static int go7007_load_encoder(struct go7007 *go)
+ 	const struct firmware *fw_entry;
+ 	char fw_name[] = "go7007/go7007fw.bin";
+ 	void *bounce;
+-	int fw_len, rv = 0;
++	int fw_len;
+ 	u16 intr_val, intr_data;
+ 
+ 	if (go-&gt;boot_fw == NULL) {
+@@ -109,9 +109,11 @@ static int go7007_load_encoder(struct go7007 *go)
+ 	    go7007_read_interrupt(go, &amp;intr_val, &amp;intr_data) &lt; 0 ||
+ 			(intr_val &amp; ~0x1) != 0x5a5a) {
+ 		v4l2_err(go, "error transferring firmware\n");
+-		rv = -1;
++		kfree(go-&gt;boot_fw);
++		go-&gt;boot_fw = NULL;
++		return -1;
+ 	}
+-	return rv;
++	return 0;
+ }
+ 
+ MODULE_FIRMWARE("go7007/go7007fw.bin");</pre><hr><pre>commit 8c64f4cdf4e6cc5682c52523713af8c39c94e6d5
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Sat Feb 3 14:40:43 2024 +0100
+
+    media: edia: dvbdev: fix a use-after-free
+    
+    In dvb_register_device, *pdvbdev is set equal to dvbdev, which is freed
+    in several error-handling paths. However, *pdvbdev is not set to NULL
+    after dvbdev's deallocation, causing use-after-frees in many places,
+    for example, in the following call chain:
+    
+    budget_register
+      |-&gt; dvb_dmxdev_init
+            |-&gt; dvb_register_device
+      |-&gt; dvb_dmxdev_release
+            |-&gt; dvb_unregister_device
+                  |-&gt; dvb_remove_device
+                        |-&gt; dvb_device_put
+                              |-&gt; kref_put
+    
+    When calling dvb_unregister_device, dmxdev-&gt;dvbdev (i.e. *pdvbdev in
+    dvb_register_device) could point to memory that had been freed in
+    dvb_register_device. Thereafter, this pointer is transferred to
+    kref_put and triggering a use-after-free.
+    
+    Link: https://lore.kernel.org/linux-media/20240203134046.3120099-1-alexious@zju.edu.cn
+    Fixes: b61901024776 ("V4L/DVB (5244): Dvbdev: fix illegal re-usage of fileoperations struct")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@kernel.org&gt;
+
+diff --git a/drivers/media/dvb-core/dvbdev.c b/drivers/media/dvb-core/dvbdev.c
+index 49f0eb7d0b9d..733d0bc4b4cc 100644
+--- a/drivers/media/dvb-core/dvbdev.c
++++ b/drivers/media/dvb-core/dvbdev.c
+@@ -490,6 +490,7 @@ int dvb_register_device(struct dvb_adapter *adap, struct dvb_device **pdvbdev,
+ 		dvbdevfops = kmemdup(template-&gt;fops, sizeof(*dvbdevfops), GFP_KERNEL);
+ 		if (!dvbdevfops) {
+ 			kfree(dvbdev);
++			*pdvbdev = NULL;
+ 			mutex_unlock(&amp;dvbdev_register_lock);
+ 			return -ENOMEM;
+ 		}
+@@ -498,6 +499,7 @@ int dvb_register_device(struct dvb_adapter *adap, struct dvb_device **pdvbdev,
+ 		if (!new_node) {
+ 			kfree(dvbdevfops);
+ 			kfree(dvbdev);
++			*pdvbdev = NULL;
+ 			mutex_unlock(&amp;dvbdev_register_lock);
+ 			return -ENOMEM;
+ 		}
+@@ -531,6 +533,7 @@ int dvb_register_device(struct dvb_adapter *adap, struct dvb_device **pdvbdev,
+ 		}
+ 		list_del(&amp;dvbdev-&gt;list_head);
+ 		kfree(dvbdev);
++		*pdvbdev = NULL;
+ 		up_write(&amp;minor_rwsem);
+ 		mutex_unlock(&amp;dvbdev_register_lock);
+ 		return -EINVAL;
+@@ -553,6 +556,7 @@ int dvb_register_device(struct dvb_adapter *adap, struct dvb_device **pdvbdev,
+ 		dvb_media_device_free(dvbdev);
+ 		list_del(&amp;dvbdev-&gt;list_head);
+ 		kfree(dvbdev);
++		*pdvbdev = NULL;
+ 		mutex_unlock(&amp;dvbdev_register_lock);
+ 		return ret;
+ 	}
+@@ -571,6 +575,7 @@ int dvb_register_device(struct dvb_adapter *adap, struct dvb_device **pdvbdev,
+ 		dvb_media_device_free(dvbdev);
+ 		list_del(&amp;dvbdev-&gt;list_head);
+ 		kfree(dvbdev);
++		*pdvbdev = NULL;
+ 		mutex_unlock(&amp;dvbdev_register_lock);
+ 		return PTR_ERR(clsdev);
+ 	}</pre><hr><pre>commit 5f0e4aede01cb01fa633171f0533affd25328c3a
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Fri Jan 26 15:53:34 2024 +0800
+
+    wifi: libertas: fix some memleaks in lbs_allocate_cmd_buffer()
+    
+    In the for statement of lbs_allocate_cmd_buffer(), if the allocation of
+    cmdarray[i].cmdbuf fails, both cmdarray and cmdarray[i].cmdbuf needs to
+    be freed. Otherwise, there will be memleaks in lbs_allocate_cmd_buffer().
+    
+    Fixes: 876c9d3aeb98 ("[PATCH] Marvell Libertas 8388 802.11b/g USB driver")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@kernel.org&gt;
+    Link: https://msgid.link/20240126075336.2825608-1-alexious@zju.edu.cn
+
+diff --git a/drivers/net/wireless/marvell/libertas/cmd.c b/drivers/net/wireless/marvell/libertas/cmd.c
+index 104d2b6dc9af..5a525da434c2 100644
+--- a/drivers/net/wireless/marvell/libertas/cmd.c
++++ b/drivers/net/wireless/marvell/libertas/cmd.c
+@@ -1132,7 +1132,7 @@ int lbs_allocate_cmd_buffer(struct lbs_private *priv)
+ 		if (!cmdarray[i].cmdbuf) {
+ 			lbs_deb_host("ALLOC_CMD_BUF: ptempvirtualaddr is NULL\n");
+ 			ret = -1;
+-			goto done;
++			goto free_cmd_array;
+ 		}
+ 	}
+ 
+@@ -1140,8 +1140,17 @@ int lbs_allocate_cmd_buffer(struct lbs_private *priv)
+ 		init_waitqueue_head(&amp;cmdarray[i].cmdwait_q);
+ 		lbs_cleanup_and_insert_cmd(priv, &amp;cmdarray[i]);
+ 	}
+-	ret = 0;
++	return 0;
+ 
++free_cmd_array:
++	for (i = 0; i &lt; LBS_NUM_CMD_BUFFERS; i++) {
++		if (cmdarray[i].cmdbuf) {
++			kfree(cmdarray[i].cmdbuf);
++			cmdarray[i].cmdbuf = NULL;
++		}
++	}
++	kfree(priv-&gt;cmd_array);
++	priv-&gt;cmd_array = NULL;
+ done:
+ 	return ret;
+ }</pre><hr><pre>commit 8f94b49a5b5d386c038e355bef6347298aabd211
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Thu Feb 1 20:48:44 2024 +0800
+
+    media: v4l2-mem2mem: fix a memleak in v4l2_m2m_register_entity
+    
+    The entity-&gt;name (i.e. name) is allocated in v4l2_m2m_register_entity
+    but isn't freed in its following error-handling paths. This patch
+    adds such deallocation to prevent memleak of entity-&gt;name.
+    
+    Fixes: be2fff656322 ("media: add helpers for memory-to-memory media controller")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+
+diff --git a/drivers/media/v4l2-core/v4l2-mem2mem.c b/drivers/media/v4l2-core/v4l2-mem2mem.c
+index 9e983176542b..75517134a5e9 100644
+--- a/drivers/media/v4l2-core/v4l2-mem2mem.c
++++ b/drivers/media/v4l2-core/v4l2-mem2mem.c
+@@ -1087,11 +1087,17 @@ static int v4l2_m2m_register_entity(struct media_device *mdev,
+ 	entity-&gt;function = function;
+ 
+ 	ret = media_entity_pads_init(entity, num_pads, pads);
+-	if (ret)
++	if (ret) {
++		kfree(entity-&gt;name);
++		entity-&gt;name = NULL;
+ 		return ret;
++	}
+ 	ret = media_device_register_entity(mdev, entity);
+-	if (ret)
++	if (ret) {
++		kfree(entity-&gt;name);
++		entity-&gt;name = NULL;
+ 		return ret;
++	}
+ 
+ 	return 0;
+ }</pre><hr><pre>commit 8cf9c5051076e0eb958f4361d50d8b0c3ee6691c
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Thu Feb 1 20:47:53 2024 +0800
+
+    media: v4l2-tpg: fix some memleaks in tpg_alloc
+    
+    In tpg_alloc, resources should be deallocated in each and every
+    error-handling paths, since they are allocated in for statements.
+    Otherwise there would be memleaks because tpg_free is called only when
+    tpg_alloc return 0.
+    
+    Fixes: 63881df94d3e ("[media] vivid: add the Test Pattern Generator")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+
+diff --git a/drivers/media/common/v4l2-tpg/v4l2-tpg-core.c b/drivers/media/common/v4l2-tpg/v4l2-tpg-core.c
+index a366566f22c3..642c48e8c1f5 100644
+--- a/drivers/media/common/v4l2-tpg/v4l2-tpg-core.c
++++ b/drivers/media/common/v4l2-tpg/v4l2-tpg-core.c
+@@ -113,6 +113,7 @@ int tpg_alloc(struct tpg_data *tpg, unsigned max_w)
+ {
+ 	unsigned pat;
+ 	unsigned plane;
++	int ret = 0;
+ 
+ 	tpg-&gt;max_line_width = max_w;
+ 	for (pat = 0; pat &lt; TPG_MAX_PAT_LINES; pat++) {
+@@ -121,14 +122,18 @@ int tpg_alloc(struct tpg_data *tpg, unsigned max_w)
+ 
+ 			tpg-&gt;lines[pat][plane] =
+ 				vzalloc(array3_size(max_w, 2, pixelsz));
+-			if (!tpg-&gt;lines[pat][plane])
+-				return -ENOMEM;
++			if (!tpg-&gt;lines[pat][plane]) {
++				ret = -ENOMEM;
++				goto free_lines;
++			}
+ 			if (plane == 0)
+ 				continue;
+ 			tpg-&gt;downsampled_lines[pat][plane] =
+ 				vzalloc(array3_size(max_w, 2, pixelsz));
+-			if (!tpg-&gt;downsampled_lines[pat][plane])
+-				return -ENOMEM;
++			if (!tpg-&gt;downsampled_lines[pat][plane]) {
++				ret = -ENOMEM;
++				goto free_lines;
++			}
+ 		}
+ 	}
+ 	for (plane = 0; plane &lt; TPG_MAX_PLANES; plane++) {
+@@ -136,18 +141,45 @@ int tpg_alloc(struct tpg_data *tpg, unsigned max_w)
+ 
+ 		tpg-&gt;contrast_line[plane] =
+ 			vzalloc(array_size(pixelsz, max_w));
+-		if (!tpg-&gt;contrast_line[plane])
+-			return -ENOMEM;
++		if (!tpg-&gt;contrast_line[plane]) {
++			ret = -ENOMEM;
++			goto free_contrast_line;
++		}
+ 		tpg-&gt;black_line[plane] =
+ 			vzalloc(array_size(pixelsz, max_w));
+-		if (!tpg-&gt;black_line[plane])
+-			return -ENOMEM;
++		if (!tpg-&gt;black_line[plane]) {
++			ret = -ENOMEM;
++			goto free_contrast_line;
++		}
+ 		tpg-&gt;random_line[plane] =
+ 			vzalloc(array3_size(max_w, 2, pixelsz));
+-		if (!tpg-&gt;random_line[plane])
+-			return -ENOMEM;
++		if (!tpg-&gt;random_line[plane]) {
++			ret = -ENOMEM;
++			goto free_contrast_line;
++		}
+ 	}
+ 	return 0;
++
++free_contrast_line:
++	for (plane = 0; plane &lt; TPG_MAX_PLANES; plane++) {
++		vfree(tpg-&gt;contrast_line[plane]);
++		vfree(tpg-&gt;black_line[plane]);
++		vfree(tpg-&gt;random_line[plane]);
++		tpg-&gt;contrast_line[plane] = NULL;
++		tpg-&gt;black_line[plane] = NULL;
++		tpg-&gt;random_line[plane] = NULL;
++	}
++free_lines:
++	for (pat = 0; pat &lt; TPG_MAX_PAT_LINES; pat++)
++		for (plane = 0; plane &lt; TPG_MAX_PLANES; plane++) {
++			vfree(tpg-&gt;lines[pat][plane]);
++			tpg-&gt;lines[pat][plane] = NULL;
++			if (plane == 0)
++				continue;
++			vfree(tpg-&gt;downsampled_lines[pat][plane]);
++			tpg-&gt;downsampled_lines[pat][plane] = NULL;
++		}
++	return ret;
+ }
+ EXPORT_SYMBOL_GPL(tpg_alloc);
+ </pre><hr><pre>commit b09b58e31b0f43d76f79b9943da3fb7c2843dcbb
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Thu Feb 1 20:47:13 2024 +0800
+
+    octeontx2-pf: Fix a memleak otx2_sq_init
+    
+    When qmem_alloc and pfvf-&gt;hw_ops-&gt;sq_aq_init fails, sq-&gt;sg should be
+    freed to prevent memleak.
+    
+    Fixes: c9c12d339d93 ("octeontx2-pf: Add support for PTP clock")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Acked-by: Jiri Pirko &lt;jiri@nvidia.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/marvell/octeontx2/nic/otx2_common.c b/drivers/net/ethernet/marvell/octeontx2/nic/otx2_common.c
+index 7ca6941ea0b9..02d0b707aea5 100644
+--- a/drivers/net/ethernet/marvell/octeontx2/nic/otx2_common.c
++++ b/drivers/net/ethernet/marvell/octeontx2/nic/otx2_common.c
+@@ -951,8 +951,11 @@ int otx2_sq_init(struct otx2_nic *pfvf, u16 qidx, u16 sqb_aura)
+ 	if (pfvf-&gt;ptp &amp;&amp; qidx &lt; pfvf-&gt;hw.tx_queues) {
+ 		err = qmem_alloc(pfvf-&gt;dev, &amp;sq-&gt;timestamps, qset-&gt;sqe_cnt,
+ 				 sizeof(*sq-&gt;timestamps));
+-		if (err)
++		if (err) {
++			kfree(sq-&gt;sg);
++			sq-&gt;sg = NULL;
+ 			return err;
++		}
+ 	}
+ 
+ 	sq-&gt;head = 0;
+@@ -968,7 +971,14 @@ int otx2_sq_init(struct otx2_nic *pfvf, u16 qidx, u16 sqb_aura)
+ 	sq-&gt;stats.bytes = 0;
+ 	sq-&gt;stats.pkts = 0;
+ 
+-	return pfvf-&gt;hw_ops-&gt;sq_aq_init(pfvf, qidx, sqb_aura);
++	err = pfvf-&gt;hw_ops-&gt;sq_aq_init(pfvf, qidx, sqb_aura);
++	if (err) {
++		kfree(sq-&gt;sg);
++		sq-&gt;sg = NULL;
++		return err;
++	}
++
++	return 0;
+ 
+ }
+ </pre><hr><pre>commit f3616173bf9be9bf39d131b120d6eea4e6324cb5
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Thu Feb 1 20:41:05 2024 +0800
+
+    atm: idt77252: fix a memleak in open_card_ubr0
+    
+    When alloc_scq fails, card-&gt;vcs[0] (i.e. vc) should be freed. Otherwise,
+    in the following call chain:
+    
+    idt77252_init_one
+      |-&gt; idt77252_dev_open
+            |-&gt; open_card_ubr0
+                  |-&gt; alloc_scq [failed]
+      |-&gt; deinit_card
+            |-&gt; vfree(card-&gt;vcs);
+    
+    card-&gt;vcs is freed and card-&gt;vcs[0] is leaked.
+    
+    Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Reviewed-by: Jiri Pirko &lt;jiri@nvidia.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/atm/idt77252.c b/drivers/atm/idt77252.c
+index e327a0229dc1..e7f713cd70d3 100644
+--- a/drivers/atm/idt77252.c
++++ b/drivers/atm/idt77252.c
+@@ -2930,6 +2930,8 @@ open_card_ubr0(struct idt77252_dev *card)
+ 	vc-&gt;scq = alloc_scq(card, vc-&gt;class);
+ 	if (!vc-&gt;scq) {
+ 		printk("%s: can't get SCQ.\n", card-&gt;name);
++		kfree(card-&gt;vcs[0]);
++		card-&gt;vcs[0] = NULL;
+ 		return -ENOMEM;
+ 	}
+ </pre><hr><pre>commit dc9ceb90c4b42c6e5c6757df1d6257110433788e
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Wed Jan 17 09:14:19 2024 +0100
+
+    media: ir_toy: fix a memleak in irtoy_tx
+    
+    When irtoy_command fails, buf should be freed since it is allocated by
+    irtoy_tx, or there is a memleak.
+    
+    Fixes: 4114978dcd24 ("media: ir_toy: prevent device from hanging during transmit")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Sean Young &lt;sean@mess.org&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@kernel.org&gt;
+
+diff --git a/drivers/media/rc/ir_toy.c b/drivers/media/rc/ir_toy.c
+index 196806709259..69e630d85262 100644
+--- a/drivers/media/rc/ir_toy.c
++++ b/drivers/media/rc/ir_toy.c
+@@ -332,6 +332,7 @@ static int irtoy_tx(struct rc_dev *rc, uint *txbuf, uint count)
+ 			    sizeof(COMMAND_SMODE_EXIT), STATE_COMMAND_NO_RESP);
+ 	if (err) {
+ 		dev_err(irtoy-&gt;dev, "exit sample mode: %d\n", err);
++		kfree(buf);
+ 		return err;
+ 	}
+ 
+@@ -339,6 +340,7 @@ static int irtoy_tx(struct rc_dev *rc, uint *txbuf, uint count)
+ 			    sizeof(COMMAND_SMODE_ENTER), STATE_COMMAND);
+ 	if (err) {
+ 		dev_err(irtoy-&gt;dev, "enter sample mode: %d\n", err);
++		kfree(buf);
+ 		return err;
+ 	}
+ </pre><hr><pre>commit 5dee6d6923458e26966717f2a3eae7d09fc10bf6
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Mon Jan 29 17:10:17 2024 +0800
+
+    net: ipv4: fix a memleak in ip_setup_cork
+    
+    When inetdev_valid_mtu fails, cork-&gt;opt should be freed if it is
+    allocated in ip_setup_cork. Otherwise there could be a memleak.
+    
+    Fixes: 501a90c94510 ("inet: protect against too small mtu values.")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Reviewed-by: Eric Dumazet &lt;edumazet@google.com&gt;
+    Link: https://lore.kernel.org/r/20240129091017.2938835-1-alexious@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/ipv4/ip_output.c b/net/ipv4/ip_output.c
+index b06f678b03a1..41537d18eecf 100644
+--- a/net/ipv4/ip_output.c
++++ b/net/ipv4/ip_output.c
+@@ -1287,6 +1287,12 @@ static int ip_setup_cork(struct sock *sk, struct inet_cork *cork,
+ 	if (unlikely(!rt))
+ 		return -EFAULT;
+ 
++	cork-&gt;fragsize = ip_sk_use_pmtu(sk) ?
++			 dst_mtu(&amp;rt-&gt;dst) : READ_ONCE(rt-&gt;dst.dev-&gt;mtu);
++
++	if (!inetdev_valid_mtu(cork-&gt;fragsize))
++		return -ENETUNREACH;
++
+ 	/*
+ 	 * setup for corking.
+ 	 */
+@@ -1303,12 +1309,6 @@ static int ip_setup_cork(struct sock *sk, struct inet_cork *cork,
+ 		cork-&gt;addr = ipc-&gt;addr;
+ 	}
+ 
+-	cork-&gt;fragsize = ip_sk_use_pmtu(sk) ?
+-			 dst_mtu(&amp;rt-&gt;dst) : READ_ONCE(rt-&gt;dst.dev-&gt;mtu);
+-
+-	if (!inetdev_valid_mtu(cork-&gt;fragsize))
+-		return -ENETUNREACH;
+-
+ 	cork-&gt;gso_size = ipc-&gt;gso_size;
+ 
+ 	cork-&gt;dst = &amp;rt-&gt;dst;</pre><hr><pre>commit 809aa64ebff51eb170ee31a95f83b2d21efa32e2
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Fri Jan 12 16:55:23 2024 +0800
+
+    IB/hfi1: Fix a memleak in init_credit_return
+    
+    When dma_alloc_coherent fails to allocate dd-&gt;cr_base[i].va,
+    init_credit_return should deallocate dd-&gt;cr_base and
+    dd-&gt;cr_base[i] that allocated before. Or those resources
+    would be never freed and a memleak is triggered.
+    
+    Fixes: 7724105686e7 ("IB/hfi1: add driver files")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20240112085523.3731720-1-alexious@zju.edu.cn
+    Acked-by: Dennis Dalessandro &lt;dennis.dalessandro@cornelisnetworks.com&gt;
+    Signed-off-by: Leon Romanovsky &lt;leon@kernel.org&gt;
+
+diff --git a/drivers/infiniband/hw/hfi1/pio.c b/drivers/infiniband/hw/hfi1/pio.c
+index 68c621ff59d0..5a91cbda4aee 100644
+--- a/drivers/infiniband/hw/hfi1/pio.c
++++ b/drivers/infiniband/hw/hfi1/pio.c
+@@ -2086,7 +2086,7 @@ int init_credit_return(struct hfi1_devdata *dd)
+ 				   "Unable to allocate credit return DMA range for NUMA %d\n",
+ 				   i);
+ 			ret = -ENOMEM;
+-			goto done;
++			goto free_cr_base;
+ 		}
+ 	}
+ 	set_dev_node(&amp;dd-&gt;pcidev-&gt;dev, dd-&gt;node);
+@@ -2094,6 +2094,10 @@ int init_credit_return(struct hfi1_devdata *dd)
+ 	ret = 0;
+ done:
+ 	return ret;
++
++free_cr_base:
++	free_credit_return(dd);
++	goto done;
+ }
+ 
+ void free_credit_return(struct hfi1_devdata *dd)</pre>
+    <div class="pagination">
+        <a href='6.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><span>[2]</span><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_3.html'>Next&gt;&gt;</a>
+    <div>
+</body>

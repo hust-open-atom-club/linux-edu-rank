@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6_16.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><span>[17]</span><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_18.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 806c7b53414934ba2a39449b31fd1a038e500273
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sun Apr 17 21:54:07 2022 +0800
+
+    drivers: staging: rtl8192u: Fix deadlock in ieee80211_beacons_stop()
+    
+    There is a deadlock in ieee80211_beacons_stop(), which is shown below:
+    
+       (Thread 1)              |      (Thread 2)
+                               | ieee80211_send_beacon()
+    ieee80211_beacons_stop()   |  mod_timer()
+     spin_lock_irqsave() //(1) |  (wait a time)
+     ...                       | ieee80211_send_beacon_cb()
+     del_timer_sync()          |  spin_lock_irqsave() //(2)
+     (wait timer to stop)      |  ...
+    
+    We hold ieee-&gt;beacon_lock in position (1) of thread 1 and use
+    del_timer_sync() to wait timer to stop, but timer handler
+    also need ieee-&gt;beacon_lock in position (2) of thread 2.
+    As a result, ieee80211_beacons_stop() will block forever.
+    
+    This patch extracts del_timer_sync() from the protection of
+    spin_lock_irqsave(), which could let timer handler to obtain
+    the needed lock.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220417135407.109536-1-duoming@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/rtl8192u/ieee80211/ieee80211_softmac.c b/drivers/staging/rtl8192u/ieee80211/ieee80211_softmac.c
+index 4e8fbd2410a1..f0ee018b8106 100644
+--- a/drivers/staging/rtl8192u/ieee80211/ieee80211_softmac.c
++++ b/drivers/staging/rtl8192u/ieee80211/ieee80211_softmac.c
+@@ -528,9 +528,9 @@ static void ieee80211_beacons_stop(struct ieee80211_device *ieee)
+ 	spin_lock_irqsave(&amp;ieee-&gt;beacon_lock, flags);
+ 
+ 	ieee-&gt;beacon_txing = 0;
+-	del_timer_sync(&amp;ieee-&gt;beacon_timer);
+ 
+ 	spin_unlock_irqrestore(&amp;ieee-&gt;beacon_lock, flags);
++	del_timer_sync(&amp;ieee-&gt;beacon_timer);
+ }
+ 
+ void ieee80211_stop_send_beacons(struct ieee80211_device *ieee)</pre><hr><pre>commit 679ab61bf5f5f519377d812afb4fb93634782c74
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Mon Apr 18 23:33:22 2022 +0800
+
+    RDMA/irdma: Fix deadlock in irdma_cleanup_cm_core()
+    
+    There is a deadlock in irdma_cleanup_cm_core(), which is shown below:
+    
+       (Thread 1)              |      (Thread 2)
+                               | irdma_schedule_cm_timer()
+    irdma_cleanup_cm_core()    |  add_timer()
+     spin_lock_irqsave() //(1) |  (wait a time)
+     ...                       | irdma_cm_timer_tick()
+     del_timer_sync()          |  spin_lock_irqsave() //(2)
+     (wait timer to stop)      |  ...
+    
+    We hold cm_core-&gt;ht_lock in position (1) of thread 1 and use
+    del_timer_sync() to wait timer to stop, but timer handler also need
+    cm_core-&gt;ht_lock in position (2) of thread 2.  As a result,
+    irdma_cleanup_cm_core() will block forever.
+    
+    This patch removes the check of timer_pending() in
+    irdma_cleanup_cm_core(), because the del_timer_sync() function will just
+    return directly if there isn't a pending timer. As a result, the lock is
+    redundant, because there is no resource it could protect.
+    
+    Link: https://lore.kernel.org/r/20220418153322.42524-1-duoming@zju.edu.cn
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Shiraz Saleem &lt;shiraz.saleem@intel.com&gt;
+    Signed-off-by: Jason Gunthorpe &lt;jgg@nvidia.com&gt;
+
+diff --git a/drivers/infiniband/hw/irdma/cm.c b/drivers/infiniband/hw/irdma/cm.c
+index dedb3b7edd8d..a98d962e5efb 100644
+--- a/drivers/infiniband/hw/irdma/cm.c
++++ b/drivers/infiniband/hw/irdma/cm.c
+@@ -3246,15 +3246,10 @@ int irdma_setup_cm_core(struct irdma_device *iwdev, u8 rdma_ver)
+  */
+ void irdma_cleanup_cm_core(struct irdma_cm_core *cm_core)
+ {
+-	unsigned long flags;
+-
+ 	if (!cm_core)
+ 		return;
+ 
+-	spin_lock_irqsave(&amp;cm_core-&gt;ht_lock, flags);
+-	if (timer_pending(&amp;cm_core-&gt;tcp_timer))
+-		del_timer_sync(&amp;cm_core-&gt;tcp_timer);
+-	spin_unlock_irqrestore(&amp;cm_core-&gt;ht_lock, flags);
++	del_timer_sync(&amp;cm_core-&gt;tcp_timer);
+ 
+ 	destroy_workqueue(cm_core-&gt;event_wq);
+ 	cm_core-&gt;dev-&gt;ws_reset(&amp;cm_core-&gt;iwdev-&gt;vsi);</pre><hr><pre>commit ef27324e2cb7bb24542d6cb2571740eefe6b00dc
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Wed Apr 13 00:04:30 2022 +0800
+
+    nfc: nci: add flush_workqueue to prevent uaf
+    
+    Our detector found a concurrent use-after-free bug when detaching an
+    NCI device. The main reason for this bug is the unexpected scheduling
+    between the used delayed mechanism (timer and workqueue).
+    
+    The race can be demonstrated below:
+    
+    Thread-1                           Thread-2
+                                     | nci_dev_up()
+                                     |   nci_open_device()
+                                     |     __nci_request(nci_reset_req)
+                                     |       nci_send_cmd
+                                     |         queue_work(cmd_work)
+    nci_unregister_device()          |
+      nci_close_device()             | ...
+        del_timer_sync(cmd_timer)[1] |
+    ...                              | Worker
+    nci_free_device()                | nci_cmd_work()
+      kfree(ndev)[3]                 |   mod_timer(cmd_timer)[2]
+    
+    In short, the cleanup routine thought that the cmd_timer has already
+    been detached by [1] but the mod_timer can re-attach the timer [2], even
+    it is already released [3], resulting in UAF.
+    
+    This UAF is easy to trigger, crash trace by POC is like below
+    
+    [   66.703713] ==================================================================
+    [   66.703974] BUG: KASAN: use-after-free in enqueue_timer+0x448/0x490
+    [   66.703974] Write of size 8 at addr ffff888009fb7058 by task kworker/u4:1/33
+    [   66.703974]
+    [   66.703974] CPU: 1 PID: 33 Comm: kworker/u4:1 Not tainted 5.18.0-rc2 #5
+    [   66.703974] Workqueue: nfc2_nci_cmd_wq nci_cmd_work
+    [   66.703974] Call Trace:
+    [   66.703974]  &lt;TASK&gt;
+    [   66.703974]  dump_stack_lvl+0x57/0x7d
+    [   66.703974]  print_report.cold+0x5e/0x5db
+    [   66.703974]  ? enqueue_timer+0x448/0x490
+    [   66.703974]  kasan_report+0xbe/0x1c0
+    [   66.703974]  ? enqueue_timer+0x448/0x490
+    [   66.703974]  enqueue_timer+0x448/0x490
+    [   66.703974]  __mod_timer+0x5e6/0xb80
+    [   66.703974]  ? mark_held_locks+0x9e/0xe0
+    [   66.703974]  ? try_to_del_timer_sync+0xf0/0xf0
+    [   66.703974]  ? lockdep_hardirqs_on_prepare+0x17b/0x410
+    [   66.703974]  ? queue_work_on+0x61/0x80
+    [   66.703974]  ? lockdep_hardirqs_on+0xbf/0x130
+    [   66.703974]  process_one_work+0x8bb/0x1510
+    [   66.703974]  ? lockdep_hardirqs_on_prepare+0x410/0x410
+    [   66.703974]  ? pwq_dec_nr_in_flight+0x230/0x230
+    [   66.703974]  ? rwlock_bug.part.0+0x90/0x90
+    [   66.703974]  ? _raw_spin_lock_irq+0x41/0x50
+    [   66.703974]  worker_thread+0x575/0x1190
+    [   66.703974]  ? process_one_work+0x1510/0x1510
+    [   66.703974]  kthread+0x2a0/0x340
+    [   66.703974]  ? kthread_complete_and_exit+0x20/0x20
+    [   66.703974]  ret_from_fork+0x22/0x30
+    [   66.703974]  &lt;/TASK&gt;
+    [   66.703974]
+    [   66.703974] Allocated by task 267:
+    [   66.703974]  kasan_save_stack+0x1e/0x40
+    [   66.703974]  __kasan_kmalloc+0x81/0xa0
+    [   66.703974]  nci_allocate_device+0xd3/0x390
+    [   66.703974]  nfcmrvl_nci_register_dev+0x183/0x2c0
+    [   66.703974]  nfcmrvl_nci_uart_open+0xf2/0x1dd
+    [   66.703974]  nci_uart_tty_ioctl+0x2c3/0x4a0
+    [   66.703974]  tty_ioctl+0x764/0x1310
+    [   66.703974]  __x64_sys_ioctl+0x122/0x190
+    [   66.703974]  do_syscall_64+0x3b/0x90
+    [   66.703974]  entry_SYSCALL_64_after_hwframe+0x44/0xae
+    [   66.703974]
+    [   66.703974] Freed by task 406:
+    [   66.703974]  kasan_save_stack+0x1e/0x40
+    [   66.703974]  kasan_set_track+0x21/0x30
+    [   66.703974]  kasan_set_free_info+0x20/0x30
+    [   66.703974]  __kasan_slab_free+0x108/0x170
+    [   66.703974]  kfree+0xb0/0x330
+    [   66.703974]  nfcmrvl_nci_unregister_dev+0x90/0xd0
+    [   66.703974]  nci_uart_tty_close+0xdf/0x180
+    [   66.703974]  tty_ldisc_kill+0x73/0x110
+    [   66.703974]  tty_ldisc_hangup+0x281/0x5b0
+    [   66.703974]  __tty_hangup.part.0+0x431/0x890
+    [   66.703974]  tty_release+0x3a8/0xc80
+    [   66.703974]  __fput+0x1f0/0x8c0
+    [   66.703974]  task_work_run+0xc9/0x170
+    [   66.703974]  exit_to_user_mode_prepare+0x194/0x1a0
+    [   66.703974]  syscall_exit_to_user_mode+0x19/0x50
+    [   66.703974]  do_syscall_64+0x48/0x90
+    [   66.703974]  entry_SYSCALL_64_after_hwframe+0x44/0xae
+    
+    To fix the UAF, this patch adds flush_workqueue() to ensure the
+    nci_cmd_work is finished before the following del_timer_sync.
+    This combination will promise the timer is actually detached.
+    
+    Fixes: 6a2968aaf50c ("NFC: basic NCI protocol implementation")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Krzysztof Kozlowski &lt;krzysztof.kozlowski@linaro.org&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/nfc/nci/core.c b/net/nfc/nci/core.c
+index d2537383a3e8..6a193cce2a75 100644
+--- a/net/nfc/nci/core.c
++++ b/net/nfc/nci/core.c
+@@ -560,6 +560,10 @@ static int nci_close_device(struct nci_dev *ndev)
+ 	mutex_lock(&amp;ndev-&gt;req_lock);
+ 
+ 	if (!test_and_clear_bit(NCI_UP, &amp;ndev-&gt;flags)) {
++		/* Need to flush the cmd wq in case
++		 * there is a queued/running cmd_work
++		 */
++		flush_workqueue(ndev-&gt;cmd_wq);
+ 		del_timer_sync(&amp;ndev-&gt;cmd_timer);
+ 		del_timer_sync(&amp;ndev-&gt;data_timer);
+ 		mutex_unlock(&amp;ndev-&gt;req_lock);</pre><hr><pre>commit 1b0e81416a24d6e9b8c2341e22e8bf48f8b8bfc9
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Tue Apr 12 13:32:08 2022 +0800
+
+    NFC: NULL out the dev-&gt;rfkill to prevent UAF
+    
+    Commit 3e3b5dfcd16a ("NFC: reorder the logic in nfc_{un,}register_device")
+    assumes the device_is_registered() in function nfc_dev_up() will help
+    to check when the rfkill is unregistered. However, this check only
+    take effect when device_del(&amp;dev-&gt;dev) is done in nfc_unregister_device().
+    Hence, the rfkill object is still possible be dereferenced.
+    
+    The crash trace in latest kernel (5.18-rc2):
+    
+    [   68.760105] ==================================================================
+    [   68.760330] BUG: KASAN: use-after-free in __lock_acquire+0x3ec1/0x6750
+    [   68.760756] Read of size 8 at addr ffff888009c93018 by task fuzz/313
+    [   68.760756]
+    [   68.760756] CPU: 0 PID: 313 Comm: fuzz Not tainted 5.18.0-rc2 #4
+    [   68.760756] Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS rel-1.14.0-0-g155821a1990b-prebuilt.qemu.org 04/01/2014
+    [   68.760756] Call Trace:
+    [   68.760756]  &lt;TASK&gt;
+    [   68.760756]  dump_stack_lvl+0x57/0x7d
+    [   68.760756]  print_report.cold+0x5e/0x5db
+    [   68.760756]  ? __lock_acquire+0x3ec1/0x6750
+    [   68.760756]  kasan_report+0xbe/0x1c0
+    [   68.760756]  ? __lock_acquire+0x3ec1/0x6750
+    [   68.760756]  __lock_acquire+0x3ec1/0x6750
+    [   68.760756]  ? lockdep_hardirqs_on_prepare+0x410/0x410
+    [   68.760756]  ? register_lock_class+0x18d0/0x18d0
+    [   68.760756]  lock_acquire+0x1ac/0x4f0
+    [   68.760756]  ? rfkill_blocked+0xe/0x60
+    [   68.760756]  ? lockdep_hardirqs_on_prepare+0x410/0x410
+    [   68.760756]  ? mutex_lock_io_nested+0x12c0/0x12c0
+    [   68.760756]  ? nla_get_range_signed+0x540/0x540
+    [   68.760756]  ? _raw_spin_lock_irqsave+0x4e/0x50
+    [   68.760756]  _raw_spin_lock_irqsave+0x39/0x50
+    [   68.760756]  ? rfkill_blocked+0xe/0x60
+    [   68.760756]  rfkill_blocked+0xe/0x60
+    [   68.760756]  nfc_dev_up+0x84/0x260
+    [   68.760756]  nfc_genl_dev_up+0x90/0xe0
+    [   68.760756]  genl_family_rcv_msg_doit+0x1f4/0x2f0
+    [   68.760756]  ? genl_family_rcv_msg_attrs_parse.constprop.0+0x230/0x230
+    [   68.760756]  ? security_capable+0x51/0x90
+    [   68.760756]  genl_rcv_msg+0x280/0x500
+    [   68.760756]  ? genl_get_cmd+0x3c0/0x3c0
+    [   68.760756]  ? lock_acquire+0x1ac/0x4f0
+    [   68.760756]  ? nfc_genl_dev_down+0xe0/0xe0
+    [   68.760756]  ? lockdep_hardirqs_on_prepare+0x410/0x410
+    [   68.760756]  netlink_rcv_skb+0x11b/0x340
+    [   68.760756]  ? genl_get_cmd+0x3c0/0x3c0
+    [   68.760756]  ? netlink_ack+0x9c0/0x9c0
+    [   68.760756]  ? netlink_deliver_tap+0x136/0xb00
+    [   68.760756]  genl_rcv+0x1f/0x30
+    [   68.760756]  netlink_unicast+0x430/0x710
+    [   68.760756]  ? memset+0x20/0x40
+    [   68.760756]  ? netlink_attachskb+0x740/0x740
+    [   68.760756]  ? __build_skb_around+0x1f4/0x2a0
+    [   68.760756]  netlink_sendmsg+0x75d/0xc00
+    [   68.760756]  ? netlink_unicast+0x710/0x710
+    [   68.760756]  ? netlink_unicast+0x710/0x710
+    [   68.760756]  sock_sendmsg+0xdf/0x110
+    [   68.760756]  __sys_sendto+0x19e/0x270
+    [   68.760756]  ? __ia32_sys_getpeername+0xa0/0xa0
+    [   68.760756]  ? fd_install+0x178/0x4c0
+    [   68.760756]  ? fd_install+0x195/0x4c0
+    [   68.760756]  ? kernel_fpu_begin_mask+0x1c0/0x1c0
+    [   68.760756]  __x64_sys_sendto+0xd8/0x1b0
+    [   68.760756]  ? lockdep_hardirqs_on+0xbf/0x130
+    [   68.760756]  ? syscall_enter_from_user_mode+0x1d/0x50
+    [   68.760756]  do_syscall_64+0x3b/0x90
+    [   68.760756]  entry_SYSCALL_64_after_hwframe+0x44/0xae
+    [   68.760756] RIP: 0033:0x7f67fb50e6b3
+    ...
+    [   68.760756] RSP: 002b:00007f67fa91fe90 EFLAGS: 00000293 ORIG_RAX: 000000000000002c
+    [   68.760756] RAX: ffffffffffffffda RBX: 0000000000000000 RCX: 00007f67fb50e6b3
+    [   68.760756] RDX: 000000000000001c RSI: 0000559354603090 RDI: 0000000000000003
+    [   68.760756] RBP: 00007f67fa91ff00 R08: 00007f67fa91fedc R09: 000000000000000c
+    [   68.760756] R10: 0000000000000000 R11: 0000000000000293 R12: 00007ffe824d496e
+    [   68.760756] R13: 00007ffe824d496f R14: 00007f67fa120000 R15: 0000000000000003
+    
+    [   68.760756]  &lt;/TASK&gt;
+    [   68.760756]
+    [   68.760756] Allocated by task 279:
+    [   68.760756]  kasan_save_stack+0x1e/0x40
+    [   68.760756]  __kasan_kmalloc+0x81/0xa0
+    [   68.760756]  rfkill_alloc+0x7f/0x280
+    [   68.760756]  nfc_register_device+0xa3/0x1a0
+    [   68.760756]  nci_register_device+0x77a/0xad0
+    [   68.760756]  nfcmrvl_nci_register_dev+0x20b/0x2c0
+    [   68.760756]  nfcmrvl_nci_uart_open+0xf2/0x1dd
+    [   68.760756]  nci_uart_tty_ioctl+0x2c3/0x4a0
+    [   68.760756]  tty_ioctl+0x764/0x1310
+    [   68.760756]  __x64_sys_ioctl+0x122/0x190
+    [   68.760756]  do_syscall_64+0x3b/0x90
+    [   68.760756]  entry_SYSCALL_64_after_hwframe+0x44/0xae
+    [   68.760756]
+    [   68.760756] Freed by task 314:
+    [   68.760756]  kasan_save_stack+0x1e/0x40
+    [   68.760756]  kasan_set_track+0x21/0x30
+    [   68.760756]  kasan_set_free_info+0x20/0x30
+    [   68.760756]  __kasan_slab_free+0x108/0x170
+    [   68.760756]  kfree+0xb0/0x330
+    [   68.760756]  device_release+0x96/0x200
+    [   68.760756]  kobject_put+0xf9/0x1d0
+    [   68.760756]  nfc_unregister_device+0x77/0x190
+    [   68.760756]  nfcmrvl_nci_unregister_dev+0x88/0xd0
+    [   68.760756]  nci_uart_tty_close+0xdf/0x180
+    [   68.760756]  tty_ldisc_kill+0x73/0x110
+    [   68.760756]  tty_ldisc_hangup+0x281/0x5b0
+    [   68.760756]  __tty_hangup.part.0+0x431/0x890
+    [   68.760756]  tty_release+0x3a8/0xc80
+    [   68.760756]  __fput+0x1f0/0x8c0
+    [   68.760756]  task_work_run+0xc9/0x170
+    [   68.760756]  exit_to_user_mode_prepare+0x194/0x1a0
+    [   68.760756]  syscall_exit_to_user_mode+0x19/0x50
+    [   68.760756]  do_syscall_64+0x48/0x90
+    [   68.760756]  entry_SYSCALL_64_after_hwframe+0x44/0xae
+    
+    This patch just add the null out of dev-&gt;rfkill to make sure such
+    dereference cannot happen. This is safe since the device_lock() already
+    protect the check/write from data race.
+    
+    Fixes: 3e3b5dfcd16a ("NFC: reorder the logic in nfc_{un,}register_device")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Krzysztof Kozlowski &lt;krzysztof.kozlowski@linaro.org&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/nfc/core.c b/net/nfc/core.c
+index dc7a2404efdf..67524982b89b 100644
+--- a/net/nfc/core.c
++++ b/net/nfc/core.c
+@@ -1165,6 +1165,7 @@ void nfc_unregister_device(struct nfc_dev *dev)
+ 	if (dev-&gt;rfkill) {
+ 		rfkill_unregister(dev-&gt;rfkill);
+ 		rfkill_destroy(dev-&gt;rfkill);
++		dev-&gt;rfkill = NULL;
+ 	}
+ 	device_unlock(&amp;dev-&gt;dev);
+ </pre><hr><pre>commit eb5adc70754d26a260f8b42d39db42da0d0af500
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Thu Apr 7 23:44:30 2022 +0800
+
+    arch: xtensa: platforms: Fix deadlock in rs_close()
+    
+    There is a deadlock in rs_close(), which is shown
+    below:
+    
+       (Thread 1)              |      (Thread 2)
+                               | rs_open()
+    rs_close()                 |  mod_timer()
+     spin_lock_bh() //(1)      |  (wait a time)
+     ...                       | rs_poll()
+     del_timer_sync()          |  spin_lock() //(2)
+     (wait timer to stop)      |  ...
+    
+    We hold timer_lock in position (1) of thread 1 and
+    use del_timer_sync() to wait timer to stop, but timer handler
+    also need timer_lock in position (2) of thread 2.
+    As a result, rs_close() will block forever.
+    
+    This patch deletes the redundant timer_lock in order to
+    prevent the deadlock. Because there is no race condition
+    between rs_close, rs_open and rs_poll.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Message-Id: &lt;20220407154430.22387-1-duoming@zju.edu.cn&gt;
+    Signed-off-by: Max Filippov &lt;jcmvbkbc@gmail.com&gt;
+
+diff --git a/arch/xtensa/platforms/iss/console.c b/arch/xtensa/platforms/iss/console.c
+index 81d7c7e8f7e9..10b79d3c74e0 100644
+--- a/arch/xtensa/platforms/iss/console.c
++++ b/arch/xtensa/platforms/iss/console.c
+@@ -36,24 +36,19 @@ static void rs_poll(struct timer_list *);
+ static struct tty_driver *serial_driver;
+ static struct tty_port serial_port;
+ static DEFINE_TIMER(serial_timer, rs_poll);
+-static DEFINE_SPINLOCK(timer_lock);
+ 
+ static int rs_open(struct tty_struct *tty, struct file * filp)
+ {
+-	spin_lock_bh(&amp;timer_lock);
+ 	if (tty-&gt;count == 1)
+ 		mod_timer(&amp;serial_timer, jiffies + SERIAL_TIMER_VALUE);
+-	spin_unlock_bh(&amp;timer_lock);
+ 
+ 	return 0;
+ }
+ 
+ static void rs_close(struct tty_struct *tty, struct file * filp)
+ {
+-	spin_lock_bh(&amp;timer_lock);
+ 	if (tty-&gt;count == 1)
+ 		del_timer_sync(&amp;serial_timer);
+-	spin_unlock_bh(&amp;timer_lock);
+ }
+ 
+ 
+@@ -73,8 +68,6 @@ static void rs_poll(struct timer_list *unused)
+ 	int rd = 1;
+ 	unsigned char c;
+ 
+-	spin_lock(&amp;timer_lock);
+-
+ 	while (simc_poll(0)) {
+ 		rd = simc_read(0, &amp;c, 1);
+ 		if (rd &lt;= 0)
+@@ -87,7 +80,6 @@ static void rs_poll(struct timer_list *unused)
+ 		tty_flip_buffer_push(port);
+ 	if (rd)
+ 		mod_timer(&amp;serial_timer, jiffies + SERIAL_TIMER_VALUE);
+-	spin_unlock(&amp;timer_lock);
+ }
+ 
+ </pre><hr><pre>commit 0fcddf9c7c10202946d5b19409efbdff744fba88
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sat Apr 9 15:21:35 2022 +0800
+
+    drivers: staging: rtl8192eu: Fix deadlock in rtw_joinbss_event_prehandle
+    
+    There is a deadlock in rtw_joinbss_event_prehandle(), which is shown below:
+    
+       (Thread 1)                |      (Thread 2)
+                                 | _set_timer()
+    rtw_joinbss_event_prehandle()|  mod_timer()
+     spin_lock_bh() //(1)        |  (wait a time)
+     ...                         | rtw_join_timeout_handler()
+                                 |  _rtw_join_timeout_handler()
+     del_timer_sync()            |   spin_lock_bh() //(2)
+     (wait timer to stop)        |   ...
+    
+    We hold pmlmepriv-&gt;lock in position (1) of thread 1 and
+    use del_timer_sync() to wait timer to stop, but timer handler
+    also need pmlmepriv-&gt;lock in position (2) of thread 2.
+    As a result, rtw_joinbss_event_prehandle() will block forever.
+    
+    This patch extracts del_timer_sync() from the protection of
+    spin_lock_bh(), which could let timer handler to obtain
+    the needed lock. What`s more, we change spin_lock_bh() to
+    spin_lock_irq() in _rtw_join_timeout_handler() in order to
+    prevent deadlock.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220409072135.74248-1-duoming@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/r8188eu/core/rtw_mlme.c b/drivers/staging/r8188eu/core/rtw_mlme.c
+index aa39f07847c2..3e9882f89f76 100644
+--- a/drivers/staging/r8188eu/core/rtw_mlme.c
++++ b/drivers/staging/r8188eu/core/rtw_mlme.c
+@@ -1070,8 +1070,10 @@ void rtw_joinbss_event_prehandle(struct adapter *adapter, u8 *pbuf)
+ 				rtw_indicate_connect(adapter);
+ 			}
+ 
++			spin_unlock_bh(&amp;pmlmepriv-&gt;lock);
+ 			/* s5. Cancel assoc_timer */
+ 			del_timer_sync(&amp;pmlmepriv-&gt;assoc_timer);
++			spin_lock_bh(&amp;pmlmepriv-&gt;lock);
+ 		} else {
+ 			spin_unlock_bh(&amp;pmlmepriv-&gt;scanned_queue.lock);
+ 			goto ignore_joinbss_callback;
+@@ -1315,7 +1317,7 @@ void _rtw_join_timeout_handler (struct adapter *adapter)
+ 	if (adapter-&gt;bDriverStopped || adapter-&gt;bSurpriseRemoved)
+ 		return;
+ 
+-	spin_lock_bh(&amp;pmlmepriv-&gt;lock);
++	spin_lock_irq(&amp;pmlmepriv-&gt;lock);
+ 
+ 	if (rtw_to_roaming(adapter) &gt; 0) { /* join timeout caused by roaming */
+ 		while (1) {
+@@ -1334,7 +1336,7 @@ void _rtw_join_timeout_handler (struct adapter *adapter)
+ 		rtw_indicate_disconnect(adapter);
+ 		free_scanqueue(pmlmepriv);/*  */
+ 	}
+-	spin_unlock_bh(&amp;pmlmepriv-&gt;lock);
++	spin_unlock_irq(&amp;pmlmepriv-&gt;lock);
+ 
+ }
+ </pre><hr><pre>commit 041879b12ddb0c6c83ed9c0bdd10dc82a056f2fc
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sat Apr 9 14:49:53 2022 +0800
+
+    drivers: staging: rtl8192bs: Fix deadlock in rtw_joinbss_event_prehandle()
+    
+    There is a deadlock in rtw_joinbss_event_prehandle(), which is shown
+    below:
+    
+       (Thread 1)                |      (Thread 2)
+                                 | _set_timer()
+    rtw_joinbss_event_prehandle()|  mod_timer()
+     spin_lock_bh() //(1)        |  (wait a time)
+     ...                         | _rtw_join_timeout_handler()
+     del_timer_sync()            |  spin_lock_bh() //(2)
+     (wait timer to stop)        |  ...
+    
+    We hold pmlmepriv-&gt;lock in position (1) of thread 1 and
+    use del_timer_sync() to wait timer to stop, but timer handler
+    also need pmlmepriv-&gt;lock in position (2) of thread 2.
+    As a result, rtw_joinbss_event_prehandle() will block forever.
+    
+    This patch extracts del_timer_sync() from the protection of
+    spin_lock_bh(), which could let timer handler to obtain
+    the needed lock. What`s more, we change spin_lock_bh() to
+    spin_lock_irq() in _rtw_join_timeout_handler() in order to
+    prevent deadlock.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220409064953.67420-1-duoming@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/rtl8723bs/core/rtw_mlme.c b/drivers/staging/rtl8723bs/core/rtw_mlme.c
+index f7db483a5641..f2242cf2dfb4 100644
+--- a/drivers/staging/rtl8723bs/core/rtw_mlme.c
++++ b/drivers/staging/rtl8723bs/core/rtw_mlme.c
+@@ -1240,8 +1240,10 @@ void rtw_joinbss_event_prehandle(struct adapter *adapter, u8 *pbuf)
+ 
+ 			spin_unlock_bh(&amp;pmlmepriv-&gt;scanned_queue.lock);
+ 
++			spin_unlock_bh(&amp;pmlmepriv-&gt;lock);
+ 			/* s5. Cancel assoc_timer */
+ 			del_timer_sync(&amp;pmlmepriv-&gt;assoc_timer);
++			spin_lock_bh(&amp;pmlmepriv-&gt;lock);
+ 		} else {
+ 			spin_unlock_bh(&amp;(pmlmepriv-&gt;scanned_queue.lock));
+ 		}
+@@ -1547,7 +1549,7 @@ void _rtw_join_timeout_handler(struct timer_list *t)
+ 	if (adapter-&gt;bDriverStopped || adapter-&gt;bSurpriseRemoved)
+ 		return;
+ 
+-	spin_lock_bh(&amp;pmlmepriv-&gt;lock);
++	spin_lock_irq(&amp;pmlmepriv-&gt;lock);
+ 
+ 	if (rtw_to_roam(adapter) &gt; 0) { /* join timeout caused by roaming */
+ 		while (1) {
+@@ -1575,7 +1577,7 @@ void _rtw_join_timeout_handler(struct timer_list *t)
+ 
+ 	}
+ 
+-	spin_unlock_bh(&amp;pmlmepriv-&gt;lock);
++	spin_unlock_irq(&amp;pmlmepriv-&gt;lock);
+ }
+ 
+ /*</pre><hr><pre>commit cc7ad0d77b51c872d629bcd98aea463a3c4109e7
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sat Apr 9 14:18:35 2022 +0800
+
+    drivers: staging: rtl8723bs: Fix deadlock in rtw_surveydone_event_callback()
+    
+    There is a deadlock in rtw_surveydone_event_callback(),
+    which is shown below:
+    
+       (Thread 1)                  |      (Thread 2)
+                                   | _set_timer()
+    rtw_surveydone_event_callback()|  mod_timer()
+     spin_lock_bh() //(1)          |  (wait a time)
+     ...                           | rtw_scan_timeout_handler()
+     del_timer_sync()              |  spin_lock_bh() //(2)
+     (wait timer to stop)          |  ...
+    
+    We hold pmlmepriv-&gt;lock in position (1) of thread 1 and use
+    del_timer_sync() to wait timer to stop, but timer handler
+    also need pmlmepriv-&gt;lock in position (2) of thread 2.
+    As a result, rtw_surveydone_event_callback() will block forever.
+    
+    This patch extracts del_timer_sync() from the protection of
+    spin_lock_bh(), which could let timer handler to obtain
+    the needed lock. What`s more, we change spin_lock_bh() in
+    rtw_scan_timeout_handler() to spin_lock_irq(). Otherwise,
+    spin_lock_bh() will also cause deadlock() in timer handler.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20220409061836.60529-1-duoming@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/rtl8723bs/core/rtw_mlme.c b/drivers/staging/rtl8723bs/core/rtw_mlme.c
+index a45df775d535..f7db483a5641 100644
+--- a/drivers/staging/rtl8723bs/core/rtw_mlme.c
++++ b/drivers/staging/rtl8723bs/core/rtw_mlme.c
+@@ -751,7 +751,9 @@ void rtw_surveydone_event_callback(struct adapter	*adapter, u8 *pbuf)
+ 	}
+ 
+ 	if (check_fwstate(pmlmepriv, _FW_UNDER_SURVEY)) {
++		spin_unlock_bh(&amp;pmlmepriv-&gt;lock);
+ 		del_timer_sync(&amp;pmlmepriv-&gt;scan_to_timer);
++		spin_lock_bh(&amp;pmlmepriv-&gt;lock);
+ 		_clr_fwstate_(pmlmepriv, _FW_UNDER_SURVEY);
+ 	}
+ 
+@@ -1586,11 +1588,11 @@ void rtw_scan_timeout_handler(struct timer_list *t)
+ 						  mlmepriv.scan_to_timer);
+ 	struct	mlme_priv *pmlmepriv = &amp;adapter-&gt;mlmepriv;
+ 
+-	spin_lock_bh(&amp;pmlmepriv-&gt;lock);
++	spin_lock_irq(&amp;pmlmepriv-&gt;lock);
+ 
+ 	_clr_fwstate_(pmlmepriv, _FW_UNDER_SURVEY);
+ 
+-	spin_unlock_bh(&amp;pmlmepriv-&gt;lock);
++	spin_unlock_irq(&amp;pmlmepriv-&gt;lock);
+ 
+ 	rtw_indicate_scan_done(adapter, true);
+ }</pre><hr><pre>commit ec4eb8a86ade4d22633e1da2a7d85a846b7d1798
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue Apr 5 21:22:06 2022 +0800
+
+    drivers: net: slip: fix NPD bug in sl_tx_timeout()
+    
+    When a slip driver is detaching, the slip_close() will act to
+    cleanup necessary resources and sl-&gt;tty is set to NULL in
+    slip_close(). Meanwhile, the packet we transmit is blocked,
+    sl_tx_timeout() will be called. Although slip_close() and
+    sl_tx_timeout() use sl-&gt;lock to synchronize, we don`t judge
+    whether sl-&gt;tty equals to NULL in sl_tx_timeout() and the
+    null pointer dereference bug will happen.
+    
+       (Thread 1)                 |      (Thread 2)
+                                  | slip_close()
+                                  |   spin_lock_bh(&amp;sl-&gt;lock)
+                                  |   ...
+    ...                           |   sl-&gt;tty = NULL //(1)
+    sl_tx_timeout()               |   spin_unlock_bh(&amp;sl-&gt;lock)
+      spin_lock(&amp;sl-&gt;lock);       |
+      ...                         |   ...
+      tty_chars_in_buffer(sl-&gt;tty)|
+        if (tty-&gt;ops-&gt;..) //(2)   |
+        ...                       |   synchronize_rcu()
+    
+    We set NULL to sl-&gt;tty in position (1) and dereference sl-&gt;tty
+    in position (2).
+    
+    This patch adds check in sl_tx_timeout(). If sl-&gt;tty equals to
+    NULL, sl_tx_timeout() will goto out.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Jiri Slaby &lt;jirislaby@kernel.org&gt;
+    Link: https://lore.kernel.org/r/20220405132206.55291-1-duoming@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/drivers/net/slip/slip.c b/drivers/net/slip/slip.c
+index 88396ff99f03..6865d32270e5 100644
+--- a/drivers/net/slip/slip.c
++++ b/drivers/net/slip/slip.c
+@@ -469,7 +469,7 @@ static void sl_tx_timeout(struct net_device *dev, unsigned int txqueue)
+ 	spin_lock(&amp;sl-&gt;lock);
+ 
+ 	if (netif_queue_stopped(dev)) {
+-		if (!netif_running(dev))
++		if (!netif_running(dev) || !sl-&gt;tty)
+ 			goto out;
+ 
+ 		/* May be we must check transmitter timeout here ?</pre><hr><pre>commit 82e31755e55fbcea6a9dfaae5fe4860ade17cbc0
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Mon Mar 28 21:00:15 2022 +0800
+
+    ax25: Fix UAF bugs in ax25 timers
+    
+    There are race conditions that may lead to UAF bugs in
+    ax25_heartbeat_expiry(), ax25_t1timer_expiry(), ax25_t2timer_expiry(),
+    ax25_t3timer_expiry() and ax25_idletimer_expiry(), when we call
+    ax25_release() to deallocate ax25_dev.
+    
+    One of the UAF bugs caused by ax25_release() is shown below:
+    
+          (Thread 1)                    |      (Thread 2)
+    ax25_dev_device_up() //(1)          |
+    ...                                 | ax25_kill_by_device()
+    ax25_bind()          //(2)          |
+    ax25_connect()                      | ...
+     ax25_std_establish_data_link()     |
+      ax25_start_t1timer()              | ax25_dev_device_down() //(3)
+       mod_timer(&amp;ax25-&gt;t1timer,..)     |
+                                        | ax25_release()
+       (wait a time)                    |  ...
+                                        |  ax25_dev_put(ax25_dev) //(4)FREE
+       ax25_t1timer_expiry()            |
+        ax25-&gt;ax25_dev-&gt;values[..] //USE|  ...
+         ...                            |
+    
+    We increase the refcount of ax25_dev in position (1) and (2), and
+    decrease the refcount of ax25_dev in position (3) and (4).
+    The ax25_dev will be freed in position (4) and be used in
+    ax25_t1timer_expiry().
+    
+    The fail log is shown below:
+    ==============================================================
+    
+    [  106.116942] BUG: KASAN: use-after-free in ax25_t1timer_expiry+0x1c/0x60
+    [  106.116942] Read of size 8 at addr ffff88800bda9028 by task swapper/0/0
+    [  106.116942] CPU: 0 PID: 0 Comm: swapper/0 Not tainted 5.17.0-06123-g0905eec574
+    [  106.116942] Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS rel-14
+    [  106.116942] Call Trace:
+    ...
+    [  106.116942]  ax25_t1timer_expiry+0x1c/0x60
+    [  106.116942]  call_timer_fn+0x122/0x3d0
+    [  106.116942]  __run_timers.part.0+0x3f6/0x520
+    [  106.116942]  run_timer_softirq+0x4f/0xb0
+    [  106.116942]  __do_softirq+0x1c2/0x651
+    ...
+    
+    This patch adds del_timer_sync() in ax25_release(), which could ensure
+    that all timers stop before we deallocate ax25_dev.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: Paolo Abeni &lt;pabeni@redhat.com&gt;
+
+diff --git a/net/ax25/af_ax25.c b/net/ax25/af_ax25.c
+index f5686c463bc0..363d47f94532 100644
+--- a/net/ax25/af_ax25.c
++++ b/net/ax25/af_ax25.c
+@@ -1053,6 +1053,11 @@ static int ax25_release(struct socket *sock)
+ 		ax25_destroy_socket(ax25);
+ 	}
+ 	if (ax25_dev) {
++		del_timer_sync(&amp;ax25-&gt;timer);
++		del_timer_sync(&amp;ax25-&gt;t1timer);
++		del_timer_sync(&amp;ax25-&gt;t2timer);
++		del_timer_sync(&amp;ax25-&gt;t3timer);
++		del_timer_sync(&amp;ax25-&gt;idletimer);
+ 		dev_put_track(ax25_dev-&gt;dev, &amp;ax25_dev-&gt;dev_tracker);
+ 		ax25_dev_put(ax25_dev);
+ 	}</pre>
+    <div class="pagination">
+        <a href='6_16.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><span>[17]</span><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_18.html'>Next&gt;&gt;</a>
+    <div>
+</body>

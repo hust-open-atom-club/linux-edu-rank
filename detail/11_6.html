@@ -1,0 +1,4471 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Peking University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Peking University</h1>
+    <div class="pagination">
+        <a href='11_5.html'>&lt;&lt;Prev</a><a href='11.html'>1</a><a href='11_2.html'>2</a><a href='11_3.html'>3</a><a href='11_4.html'>4</a><a href='11_5.html'>5</a><span>[6]</span><a href='11_7.html'>7</a><a href='11_8.html'>8</a><a href='11_9.html'>9</a><a href='11_10.html'>10</a><a href='11_7.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 0bfdc8e121fd61adbc03848af3ca15fcbef2d1d8
+Author: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Tue Mar 29 22:17:42 2011 +0800
+
+    unicore32 fix: remove arch-specific futex support
+    
+    The futex functions in unicore32 are not used and verified,
+    so just replaced by asm-generic version.
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Acked-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/Makefile b/arch/unicore32/Makefile
+index e08d6d370a8a..76a8beec7d03 100644
+--- a/arch/unicore32/Makefile
++++ b/arch/unicore32/Makefile
+@@ -48,7 +48,7 @@ ASM_GENERIC_HEADERS	+= bitsperlong.h bug.h bugs.h
+ ASM_GENERIC_HEADERS	+= cputime.h current.h
+ ASM_GENERIC_HEADERS	+= device.h div64.h
+ ASM_GENERIC_HEADERS	+= emergency-restart.h errno.h
+-ASM_GENERIC_HEADERS	+= fb.h fcntl.h ftrace.h
++ASM_GENERIC_HEADERS	+= fb.h fcntl.h ftrace.h futex.h
+ ASM_GENERIC_HEADERS	+= hardirq.h hw_irq.h
+ ASM_GENERIC_HEADERS	+= ioctl.h ioctls.h ipcbuf.h irq_regs.h
+ ASM_GENERIC_HEADERS	+= kdebug.h kmap_types.h
+diff --git a/arch/unicore32/include/asm/futex.h b/arch/unicore32/include/asm/futex.h
+deleted file mode 100644
+index 07dea6170558..000000000000
+--- a/arch/unicore32/include/asm/futex.h
++++ /dev/null
+@@ -1,143 +0,0 @@
+-/*
+- * linux/arch/unicore32/include/asm/futex.h
+- *
+- * Code specific to PKUnity SoC and UniCore ISA
+- *
+- * Copyright (C) 2001-2010 GUAN Xue-tao
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License version 2 as
+- * published by the Free Software Foundation.
+- */
+-
+-#ifndef __UNICORE_FUTEX_H__
+-#define __UNICORE_FUTEX_H__
+-
+-#ifdef __KERNEL__
+-
+-#include &lt;linux/futex.h&gt;
+-#include &lt;linux/preempt.h&gt;
+-#include &lt;linux/uaccess.h&gt;
+-#include &lt;linux/errno.h&gt;
+-
+-#define __futex_atomic_op(insn, ret, oldval, uaddr, oparg)	\
+-	__asm__ __volatile__(					\
+-	"1:	ldw.u	%1, [%2]\n"				\
+-	"	" insn "\n"					\
+-	"2:	stw.u	%0, [%2]\n"				\
+-	"	mov	%0, #0\n"				\
+-	"3:\n"							\
+-	"	.pushsection __ex_table,\"a\"\n"		\
+-	"	.align	3\n"					\
+-	"	.long	1b, 4f, 2b, 4f\n"			\
+-	"	.popsection\n"					\
+-	"	.pushsection .fixup,\"ax\"\n"			\
+-	"4:	mov	%0, %4\n"				\
+-	"	b	3b\n"					\
+-	"	.popsection"					\
+-	: "=&amp;r" (ret), "=&amp;r" (oldval)				\
+-	: "r" (uaddr), "r" (oparg), "Ir" (-EFAULT)		\
+-	: "cc", "memory")
+-
+-static inline int
+-futex_atomic_op_inuser(int encoded_op, int __user *uaddr)
+-{
+-	int op = (encoded_op &gt;&gt; 28) &amp; 7;
+-	int cmp = (encoded_op &gt;&gt; 24) &amp; 15;
+-	int oparg = (encoded_op &lt;&lt; 8) &gt;&gt; 20;
+-	int cmparg = (encoded_op &lt;&lt; 20) &gt;&gt; 20;
+-	int oldval = 0, ret;
+-
+-	if (encoded_op &amp; (FUTEX_OP_OPARG_SHIFT &lt;&lt; 28))
+-		oparg = 1 &lt;&lt; oparg;
+-
+-	if (!access_ok(VERIFY_WRITE, uaddr, sizeof(int)))
+-		return -EFAULT;
+-
+-	pagefault_disable();	/* implies preempt_disable() */
+-
+-	switch (op) {
+-	case FUTEX_OP_SET:
+-		__futex_atomic_op("mov	%0, %3", ret, oldval, uaddr, oparg);
+-		break;
+-	case FUTEX_OP_ADD:
+-		__futex_atomic_op("add	%0, %1, %3", ret, oldval, uaddr, oparg);
+-		break;
+-	case FUTEX_OP_OR:
+-		__futex_atomic_op("or	%0, %1, %3", ret, oldval, uaddr, oparg);
+-		break;
+-	case FUTEX_OP_ANDN:
+-		__futex_atomic_op("and	%0, %1, %3",
+-				ret, oldval, uaddr, ~oparg);
+-		break;
+-	case FUTEX_OP_XOR:
+-		__futex_atomic_op("xor	%0, %1, %3", ret, oldval, uaddr, oparg);
+-		break;
+-	default:
+-		ret = -ENOSYS;
+-	}
+-
+-	pagefault_enable();	/* subsumes preempt_enable() */
+-
+-	if (!ret) {
+-		switch (cmp) {
+-		case FUTEX_OP_CMP_EQ:
+-			ret = (oldval == cmparg);
+-			break;
+-		case FUTEX_OP_CMP_NE:
+-			ret = (oldval != cmparg);
+-			break;
+-		case FUTEX_OP_CMP_LT:
+-			ret = (oldval &lt;  cmparg);
+-			break;
+-		case FUTEX_OP_CMP_GE:
+-			ret = (oldval &gt;= cmparg);
+-			break;
+-		case FUTEX_OP_CMP_LE:
+-			ret = (oldval &lt;= cmparg);
+-			break;
+-		case FUTEX_OP_CMP_GT:
+-			ret = (oldval &gt;  cmparg);
+-			break;
+-		default:
+-			ret = -ENOSYS;
+-		}
+-	}
+-	return ret;
+-}
+-
+-static inline int
+-futex_atomic_cmpxchg_inatomic(int __user *uaddr, int oldval, int newval)
+-{
+-	int val;
+-
+-	if (!access_ok(VERIFY_WRITE, uaddr, sizeof(int)))
+-		return -EFAULT;
+-
+-	pagefault_disable();	/* implies preempt_disable() */
+-
+-	__asm__ __volatile__("@futex_atomic_cmpxchg_inatomic\n"
+-	"1:	ldw.u	%0, [%3]\n"
+-	"	cmpxor.a	%0, %1\n"
+-	"	bne	3f\n"
+-	"2:	stw.u	%2, [%3]\n"
+-	"3:\n"
+-	"	.pushsection __ex_table,\"a\"\n"
+-	"	.align	3\n"
+-	"	.long	1b, 4f, 2b, 4f\n"
+-	"	.popsection\n"
+-	"	.pushsection .fixup,\"ax\"\n"
+-	"4:	mov	%0, %4\n"
+-	"	b	3b\n"
+-	"	.popsection"
+-	: "=&amp;r" (val)
+-	: "r" (oldval), "r" (newval), "r" (uaddr), "Ir" (-EFAULT)
+-	: "cc", "memory");
+-
+-	pagefault_enable();	/* subsumes preempt_enable() */
+-
+-	return val;
+-}
+-
+-#endif /* __KERNEL__ */
+-#endif /* __UNICORE_FUTEX_H__ */</pre><hr><pre>commit df93878c9623146de8050308d65bcfeea4fb0aca
+Author: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Tue Mar 29 21:30:04 2011 +0800
+
+    unicore32 ldscript fix: add cacheline parameter to PERCPU() macro
+    
+    Also, adjust cacheline parameter of RW_DATA_SECTION and EXCEPTION_TABLE
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Acked-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/kernel/vmlinux.lds.S b/arch/unicore32/kernel/vmlinux.lds.S
+index 0b4eb89729e7..9bf7f7af52c5 100644
+--- a/arch/unicore32/kernel/vmlinux.lds.S
++++ b/arch/unicore32/kernel/vmlinux.lds.S
+@@ -14,6 +14,7 @@
+ #include &lt;asm/thread_info.h&gt;
+ #include &lt;asm/memory.h&gt;
+ #include &lt;asm/page.h&gt;
++#include &lt;asm/cache.h&gt;
+ 
+ OUTPUT_ARCH(unicore32)
+ ENTRY(stext)
+@@ -29,7 +30,7 @@ SECTIONS
+ 	HEAD_TEXT_SECTION
+ 	INIT_TEXT_SECTION(PAGE_SIZE)
+ 	INIT_DATA_SECTION(16)
+-	PERCPU(PAGE_SIZE)
++	PERCPU(L1_CACHE_BYTES, PAGE_SIZE)
+ 	__init_end = .;
+ 
+ 	_stext = .;
+@@ -45,10 +46,10 @@ SECTIONS
+ 
+ 	_sdata = .;
+ 	RO_DATA_SECTION(PAGE_SIZE)
+-	RW_DATA_SECTION(32, PAGE_SIZE, THREAD_SIZE)
++	RW_DATA_SECTION(L1_CACHE_BYTES, PAGE_SIZE, THREAD_SIZE)
+ 	_edata = .;
+ 
+-	EXCEPTION_TABLE(32)
++	EXCEPTION_TABLE(L1_CACHE_BYTES)
+ 	NOTES
+ 
+ 	BSS_SECTION(0, 0, 0)</pre><hr><pre>commit 289d6b0e287e0acd85f3e6b7ea6c2cb5c234909a
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Fri Mar 4 20:00:11 2011 +0800
+
+    unicore32: rewrite arch-specific tlb.h to use asm-generic version
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+
+diff --git a/arch/unicore32/include/asm/tlb.h b/arch/unicore32/include/asm/tlb.h
+index 02ee40e47a0d..9cca15cdae94 100644
+--- a/arch/unicore32/include/asm/tlb.h
++++ b/arch/unicore32/include/asm/tlb.h
+@@ -12,87 +12,17 @@
+ #ifndef __UNICORE_TLB_H__
+ #define __UNICORE_TLB_H__
+ 
+-#include &lt;asm/cacheflush.h&gt;
+-#include &lt;asm/tlbflush.h&gt;
+-#include &lt;asm/pgalloc.h&gt;
+-
+-/*
+- * TLB handling.  This allows us to remove pages from the page
+- * tables, and efficiently handle the TLB issues.
+- */
+-struct mmu_gather {
+-	struct mm_struct	*mm;
+-	unsigned int		fullmm;
+-	unsigned long		range_start;
+-	unsigned long		range_end;
+-};
+-
+-DECLARE_PER_CPU(struct mmu_gather, mmu_gathers);
+-
+-static inline struct mmu_gather *
+-tlb_gather_mmu(struct mm_struct *mm, unsigned int full_mm_flush)
+-{
+-	struct mmu_gather *tlb = &amp;get_cpu_var(mmu_gathers);
+-
+-	tlb-&gt;mm = mm;
+-	tlb-&gt;fullmm = full_mm_flush;
+-
+-	return tlb;
+-}
+-
+-static inline void
+-tlb_finish_mmu(struct mmu_gather *tlb, unsigned long start, unsigned long end)
+-{
+-	if (tlb-&gt;fullmm)
+-		flush_tlb_mm(tlb-&gt;mm);
+-
+-	/* keep the page table cache within bounds */
+-	check_pgt_cache();
+-
+-	put_cpu_var(mmu_gathers);
+-}
+-
+-/*
+- * Memorize the range for the TLB flush.
+- */
+-static inline void
+-tlb_remove_tlb_entry(struct mmu_gather *tlb, pte_t *ptep, unsigned long addr)
+-{
+-	if (!tlb-&gt;fullmm) {
+-		if (addr &lt; tlb-&gt;range_start)
+-			tlb-&gt;range_start = addr;
+-		if (addr + PAGE_SIZE &gt; tlb-&gt;range_end)
+-			tlb-&gt;range_end = addr + PAGE_SIZE;
+-	}
+-}
+-
+-/*
+- * In the case of tlb vma handling, we can optimise these away in the
+- * case where we're doing a full MM flush.  When we're doing a munmap,
+- * the vmas are adjusted to only cover the region to be torn down.
+- */
+-static inline void
+-tlb_start_vma(struct mmu_gather *tlb, struct vm_area_struct *vma)
+-{
+-	if (!tlb-&gt;fullmm) {
+-		flush_cache_range(vma, vma-&gt;vm_start, vma-&gt;vm_end);
+-		tlb-&gt;range_start = TASK_SIZE;
+-		tlb-&gt;range_end = 0;
+-	}
+-}
+-
+-static inline void
+-tlb_end_vma(struct mmu_gather *tlb, struct vm_area_struct *vma)
+-{
+-	if (!tlb-&gt;fullmm &amp;&amp; tlb-&gt;range_end &gt; 0)
+-		flush_tlb_range(vma, tlb-&gt;range_start, tlb-&gt;range_end);
+-}
+-
+-#define tlb_remove_page(tlb, page)	free_page_and_swap_cache(page)
+-#define pte_free_tlb(tlb, ptep, addr)	pte_free((tlb)-&gt;mm, ptep)
+-#define pmd_free_tlb(tlb, pmdp, addr)	pmd_free((tlb)-&gt;mm, pmdp)
+-#define pud_free_tlb(tlb, x, addr)      do { } while (0)
+-
+-#define tlb_migrate_finish(mm)		do { } while (0)
++#define tlb_start_vma(tlb, vma)				do { } while (0)
++#define tlb_end_vma(tlb, vma)				do { } while (0)
++#define __tlb_remove_tlb_entry(tlb, ptep, address)	do { } while (0)
++#define tlb_flush(tlb) flush_tlb_mm((tlb)-&gt;mm)
++
++#define __pte_free_tlb(tlb, pte, addr)				\
++	do {							\
++		pgtable_page_dtor(pte);				\
++		tlb_remove_page((tlb), (pte));			\
++	} while (0)
++
++#include &lt;asm-generic/tlb.h&gt;
+ 
+ #endif</pre><hr><pre>commit 1cf46c42d7688a2e09de87fc9201b0e9a0961866
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Fri Mar 4 18:07:48 2011 +0800
+
+    unicore32: modify io_p2v and io_v2p macros, and adjust PKUNITY_mmio_BASEs
+    
+    1. remove __REG macro
+    2. add (void __iomem *) to io_p2v macro
+    3. add (phys_addr_t) to io_v2p macro
+    4. add PKUNITY_AHB_BASE and PKUNITY_APB_BASE definitions
+    5. modify all PKUNITY_mmio_BASEs from physical addr to virtual addr
+    6. adjust prefix macro for all usage of PKUNITY_mmio_BASEs
+      -- by advice with Arnd Bergmann
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Reviewed-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/include/asm/io.h b/arch/unicore32/include/asm/io.h
+index 2483fcbadbe4..4bd87f3d13d4 100644
+--- a/arch/unicore32/include/asm/io.h
++++ b/arch/unicore32/include/asm/io.h
+@@ -18,7 +18,7 @@
+ #include &lt;asm/memory.h&gt;
+ #include &lt;asm/system.h&gt;
+ 
+-#define PCI_IOBASE	io_p2v(PKUNITY_PCILIO_BASE)
++#define PCI_IOBASE	PKUNITY_PCILIO_BASE
+ #include &lt;asm-generic/io.h&gt;
+ 
+ /*
+diff --git a/arch/unicore32/include/mach/PKUnity.h b/arch/unicore32/include/mach/PKUnity.h
+index 940e9ed0941c..a18bdc3810e6 100644
+--- a/arch/unicore32/include/mach/PKUnity.h
++++ b/arch/unicore32/include/mach/PKUnity.h
+@@ -22,83 +22,87 @@
+  */
+ #define PKUNITY_SDRAM_BASE		0x00000000 /* 0x00000000 - 0x7FFFFFFF 2GB */
+ #define PKUNITY_MMIO_BASE		0x80000000 /* 0x80000000 - 0xFFFFFFFF 2GB */
+-#define PKUNITY_PCI_BASE		0x80000000 /* 0x80000000 - 0xBFFFFFFF 1GB */
+-#include "regs-pci.h"
+-#define PKUNITY_BOOT_ROM2_BASE		0xF4000000 /* 0xF4000000 - 0xF7FFFFFF 64MB */
+-#define PKUNITY_BOOT_SRAM2_BASE		0xF8000000 /* 0xF8000000 - 0xFBFFFFFF 64MB */
+-#define PKUNITY_BOOT_FLASH_BASE		0xFC000000 /* 0xFC000000 - 0xFFFFFFFF 64MB */
+ 
+ /*
+  * PKUNITY Memory Map Addresses: 0x0D000000 - 0x0EFFFFFF (32MB)
++ *	0x0D000000 - 0x0DFFFFFF 16MB: for UVC
++ *	0x0E000000 - 0x0EFFFFFF 16MB: for UNIGFX
+  */
+-#define PKUNITY_UVC_MMAP_BASE		0x0D000000 /* 0x0D000000 - 0x0DFFFFFF 16MB */
++#define PKUNITY_UVC_MMAP_BASE		0x0D000000
+ #define PKUNITY_UVC_MMAP_SIZE		0x01000000 /* 16MB */
+-#define PKUNITY_UNIGFX_MMAP_BASE        0x0E000000 /* 0x0E000000 - 0x0EFFFFFF 16MB */
++#define PKUNITY_UNIGFX_MMAP_BASE        0x0E000000
+ #define PKUNITY_UNIGFX_MMAP_SIZE        0x01000000 /* 16MB */
+ 
+ /*
+  * PKUNITY System Bus Addresses (PCI): 0x80000000 - 0xBFFFFFFF (1GB)
++ * 0x80000000 - 0x8000000B 12B    PCI Configuration regs
++ * 0x80010000 - 0x80010250 592B   PCI Bridge Base
++ * 0x80030000 - 0x8003FFFF 64KB   PCI Legacy IO
++ * 0x90000000 - 0x97FFFFFF 128MB  PCI AHB-PCI MEM-mapping
++ * 0x98000000 - 0x9FFFFFFF 128MB  PCI PCI-AHB MEM-mapping
+  */
+-/* PCI Configuration regs */
+-#define PKUNITY_PCICFG_BASE             0x80000000 /* 0x80000000 - 0x8000000B 12B */
+-/* PCI Bridge Base */
+-#define PKUNITY_PCIBRI_BASE             0x80010000 /* 0x80010000 - 0x80010250 592B */
+-/* PCI Legacy IO */
+-#define PKUNITY_PCILIO_BASE             0x80030000 /* 0x80030000 - 0x8003FFFF 64KB */
+-/* PCI AHB-PCI MEM-mapping */
+-#define PKUNITY_PCIMEM_BASE             0x90000000 /* 0x90000000 - 0x97FFFFFF 128MB */
+-/* PCI PCI-AHB MEM-mapping */
+-#define PKUNITY_PCIAHB_BASE             0x98000000 /* 0x98000000 - 0x9FFFFFFF 128MB */
++#define PKUNITY_PCI_BASE		io_p2v(0x80000000) /* 0x80000000 - 0xBFFFFFFF 1GB */
++#include "regs-pci.h"
++
++#define PKUNITY_PCICFG_BASE		(PKUNITY_PCI_BASE + 0x0)
++#define PKUNITY_PCIBRI_BASE		(PKUNITY_PCI_BASE + 0x00010000)
++#define PKUNITY_PCILIO_BASE		(PKUNITY_PCI_BASE + 0x00030000)
++#define PKUNITY_PCIMEM_BASE		(PKUNITY_PCI_BASE + 0x10000000)
++#define PKUNITY_PCIAHB_BASE		(PKUNITY_PCI_BASE + 0x18000000)
+ 
+ /*
+  * PKUNITY System Bus Addresses (AHB): 0xC0000000 - 0xEDFFFFFF (640MB)
+  */
++#define PKUNITY_AHB_BASE		io_p2v(0xC0000000)
++
+ /* AHB-0 is DDR2 SDRAM */
+ /* AHB-1 is PCI Space */
+-#define PKUNITY_ARBITER_BASE		0xC0000000 /* AHB-2 */
+-#define PKUNITY_DDR2CTRL_BASE		0xC0100000 /* AHB-3 */
+-#define PKUNITY_DMAC_BASE		0xC0200000 /* AHB-4 */
++#define PKUNITY_ARBITER_BASE		(PKUNITY_AHB_BASE + 0x000000) /* AHB-2 */
++#define PKUNITY_DDR2CTRL_BASE		(PKUNITY_AHB_BASE + 0x100000) /* AHB-3 */
++#define PKUNITY_DMAC_BASE		(PKUNITY_AHB_BASE + 0x200000) /* AHB-4 */
+ #include "regs-dmac.h"
+-#define PKUNITY_UMAL_BASE		0xC0300000 /* AHB-5 */
++#define PKUNITY_UMAL_BASE		(PKUNITY_AHB_BASE + 0x300000) /* AHB-5 */
+ #include "regs-umal.h"
+-#define PKUNITY_USB_BASE		0xC0400000 /* AHB-6 */
+-#define PKUNITY_SATA_BASE		0xC0500000 /* AHB-7 */
+-#define PKUNITY_SMC_BASE		0xC0600000 /* AHB-8 */
++#define PKUNITY_USB_BASE		(PKUNITY_AHB_BASE + 0x400000) /* AHB-6 */
++#define PKUNITY_SATA_BASE		(PKUNITY_AHB_BASE + 0x500000) /* AHB-7 */
++#define PKUNITY_SMC_BASE		(PKUNITY_AHB_BASE + 0x600000) /* AHB-8 */
+ /* AHB-9 is for APB bridge */
+-#define PKUNITY_MME_BASE		0xC0700000 /* AHB-10 */
+-#define PKUNITY_UNIGFX_BASE		0xC0800000 /* AHB-11 */
++#define PKUNITY_MME_BASE		(PKUNITY_AHB_BASE + 0x700000) /* AHB-10 */
++#define PKUNITY_UNIGFX_BASE		(PKUNITY_AHB_BASE + 0x800000) /* AHB-11 */
+ #include "regs-unigfx.h"
+-#define PKUNITY_NAND_BASE		0xC0900000 /* AHB-12 */
++#define PKUNITY_NAND_BASE		(PKUNITY_AHB_BASE + 0x900000) /* AHB-12 */
+ #include "regs-nand.h"
+-#define PKUNITY_H264D_BASE		0xC0A00000 /* AHB-13 */
+-#define PKUNITY_H264E_BASE		0xC0B00000 /* AHB-14 */
++#define PKUNITY_H264D_BASE		(PKUNITY_AHB_BASE + 0xA00000) /* AHB-13 */
++#define PKUNITY_H264E_BASE		(PKUNITY_AHB_BASE + 0xB00000) /* AHB-14 */
+ 
+ /*
+  * PKUNITY Peripheral Bus Addresses (APB): 0xEE000000 - 0xEFFFFFFF (128MB)
+  */
+-#define PKUNITY_UART0_BASE		0xEE000000 /* APB-0 */
+-#define PKUNITY_UART1_BASE		0xEE100000 /* APB-1 */
++#define PKUNITY_APB_BASE		io_p2v(0xEE000000)
++
++#define PKUNITY_UART0_BASE		(PKUNITY_APB_BASE + 0x000000) /* APB-0 */
++#define PKUNITY_UART1_BASE		(PKUNITY_APB_BASE + 0x100000) /* APB-1 */
+ #include "regs-uart.h"
+-#define PKUNITY_I2C_BASE		0xEE200000 /* APB-2 */
++#define PKUNITY_I2C_BASE		(PKUNITY_APB_BASE + 0x200000) /* APB-2 */
+ #include "regs-i2c.h"
+-#define PKUNITY_SPI_BASE		0xEE300000 /* APB-3 */
++#define PKUNITY_SPI_BASE		(PKUNITY_APB_BASE + 0x300000) /* APB-3 */
+ #include "regs-spi.h"
+-#define PKUNITY_AC97_BASE		0xEE400000 /* APB-4 */
++#define PKUNITY_AC97_BASE		(PKUNITY_APB_BASE + 0x400000) /* APB-4 */
+ #include "regs-ac97.h"
+-#define PKUNITY_GPIO_BASE		0xEE500000 /* APB-5 */
++#define PKUNITY_GPIO_BASE		(PKUNITY_APB_BASE + 0x500000) /* APB-5 */
+ #include "regs-gpio.h"
+-#define PKUNITY_INTC_BASE		0xEE600000 /* APB-6 */
++#define PKUNITY_INTC_BASE		(PKUNITY_APB_BASE + 0x600000) /* APB-6 */
+ #include "regs-intc.h"
+-#define PKUNITY_RTC_BASE		0xEE700000 /* APB-7 */
++#define PKUNITY_RTC_BASE		(PKUNITY_APB_BASE + 0x700000) /* APB-7 */
+ #include "regs-rtc.h"
+-#define PKUNITY_OST_BASE		0xEE800000 /* APB-8 */
++#define PKUNITY_OST_BASE		(PKUNITY_APB_BASE + 0x800000) /* APB-8 */
+ #include "regs-ost.h"
+-#define PKUNITY_RESETC_BASE		0xEE900000 /* APB-9 */
++#define PKUNITY_RESETC_BASE		(PKUNITY_APB_BASE + 0x900000) /* APB-9 */
+ #include "regs-resetc.h"
+-#define PKUNITY_PM_BASE			0xEEA00000 /* APB-10 */
++#define PKUNITY_PM_BASE			(PKUNITY_APB_BASE + 0xA00000) /* APB-10 */
+ #include "regs-pm.h"
+-#define PKUNITY_PS2_BASE		0xEEB00000 /* APB-11 */
++#define PKUNITY_PS2_BASE		(PKUNITY_APB_BASE + 0xB00000) /* APB-11 */
+ #include "regs-ps2.h"
+-#define PKUNITY_SDC_BASE		0xEEC00000 /* APB-12 */
++#define PKUNITY_SDC_BASE		(PKUNITY_APB_BASE + 0xC00000) /* APB-12 */
+ #include "regs-sdc.h"
+ 
+diff --git a/arch/unicore32/include/mach/hardware.h b/arch/unicore32/include/mach/hardware.h
+index b71405ab6de6..930bea6e129a 100644
+--- a/arch/unicore32/include/mach/hardware.h
++++ b/arch/unicore32/include/mach/hardware.h
+@@ -17,17 +17,16 @@
+ 
+ #include "PKUnity.h"
+ 
++#ifndef __ASSEMBLY__
++#define io_p2v(x)	(void __iomem *)((x) - PKUNITY_MMIO_BASE)
++#define io_v2p(x)	(phys_addr_t)((x) + PKUNITY_MMIO_BASE)
++#else
+ #define io_p2v(x)	((x) - PKUNITY_MMIO_BASE)
+ #define io_v2p(x)	((x) + PKUNITY_MMIO_BASE)
+-
+-#ifndef __ASSEMBLY__
+-
+-# define __REG(x)	(void __iomem *)io_p2v(x)
+-
+ #endif
+ 
+ #define PCIBIOS_MIN_IO			0x4000 /* should lower than 64KB */
+-#define PCIBIOS_MIN_MEM			PKUNITY_PCIMEM_BASE
++#define PCIBIOS_MIN_MEM			io_v2p(PKUNITY_PCIMEM_BASE)
+ 
+ /*
+  * We override the standard dma-mask routines for bouncing.
+diff --git a/arch/unicore32/include/mach/memory.h b/arch/unicore32/include/mach/memory.h
+index b774eff3ea65..0bf21c944710 100644
+--- a/arch/unicore32/include/mach/memory.h
++++ b/arch/unicore32/include/mach/memory.h
+@@ -45,8 +45,8 @@ void puv3_pci_adjust_zones(unsigned long *size, unsigned long *holes);
+ #define is_pcibus_device(dev)	(dev &amp;&amp;			\
+ 				(strncmp(dev-&gt;bus-&gt;name, "pci", 3) == 0))
+ 
+-#define __virt_to_pcibus(x)     (__virt_to_phys(x) + PKUNITY_PCIAHB_BASE)
+-#define __pcibus_to_virt(x)     __phys_to_virt((x) - PKUNITY_PCIAHB_BASE)
++#define __virt_to_pcibus(x)     (__virt_to_phys((x) + PKUNITY_PCIAHB_BASE))
++#define __pcibus_to_virt(x)     (__phys_to_virt(x) - PKUNITY_PCIAHB_BASE)
+ 
+ /* kuser area */
+ #define KUSER_VECPAGE_BASE	(KUSER_BASE + UL(0x3fff0000))
+diff --git a/arch/unicore32/include/mach/regs-ac97.h b/arch/unicore32/include/mach/regs-ac97.h
+index ce299bf4adae..b7563e9d6503 100644
+--- a/arch/unicore32/include/mach/regs-ac97.h
++++ b/arch/unicore32/include/mach/regs-ac97.h
+@@ -2,16 +2,16 @@
+  * PKUnity AC97 Registers
+  */
+ 
+-#define PKUNITY_AC97_CONR		__REG(PKUNITY_AC97_BASE + 0x0000)
+-#define PKUNITY_AC97_OCR		__REG(PKUNITY_AC97_BASE + 0x0004)
+-#define PKUNITY_AC97_ICR		__REG(PKUNITY_AC97_BASE + 0x0008)
+-#define PKUNITY_AC97_CRAC		__REG(PKUNITY_AC97_BASE + 0x000C)
+-#define PKUNITY_AC97_INTR		__REG(PKUNITY_AC97_BASE + 0x0010)
+-#define PKUNITY_AC97_INTRSTAT		__REG(PKUNITY_AC97_BASE + 0x0014)
+-#define PKUNITY_AC97_INTRCLEAR		__REG(PKUNITY_AC97_BASE + 0x0018)
+-#define PKUNITY_AC97_ENABLE		__REG(PKUNITY_AC97_BASE + 0x001C)
+-#define PKUNITY_AC97_OUT_FIFO		__REG(PKUNITY_AC97_BASE + 0x0020)
+-#define PKUNITY_AC97_IN_FIFO		__REG(PKUNITY_AC97_BASE + 0x0030)
++#define PKUNITY_AC97_CONR		(PKUNITY_AC97_BASE + 0x0000)
++#define PKUNITY_AC97_OCR		(PKUNITY_AC97_BASE + 0x0004)
++#define PKUNITY_AC97_ICR		(PKUNITY_AC97_BASE + 0x0008)
++#define PKUNITY_AC97_CRAC		(PKUNITY_AC97_BASE + 0x000C)
++#define PKUNITY_AC97_INTR		(PKUNITY_AC97_BASE + 0x0010)
++#define PKUNITY_AC97_INTRSTAT		(PKUNITY_AC97_BASE + 0x0014)
++#define PKUNITY_AC97_INTRCLEAR		(PKUNITY_AC97_BASE + 0x0018)
++#define PKUNITY_AC97_ENABLE		(PKUNITY_AC97_BASE + 0x001C)
++#define PKUNITY_AC97_OUT_FIFO		(PKUNITY_AC97_BASE + 0x0020)
++#define PKUNITY_AC97_IN_FIFO		(PKUNITY_AC97_BASE + 0x0030)
+ 
+ #define AC97_CODEC_REG(v)               FIELD((v), 7, 16)
+ #define AC97_CODEC_VAL(v)               FIELD((v), 16, 0)
+diff --git a/arch/unicore32/include/mach/regs-dmac.h b/arch/unicore32/include/mach/regs-dmac.h
+index 09fce9d0d640..66de9e7d1c8f 100644
+--- a/arch/unicore32/include/mach/regs-dmac.h
++++ b/arch/unicore32/include/mach/regs-dmac.h
+@@ -5,27 +5,27 @@
+ /*
+  * Interrupt Status Reg DMAC_ISR.
+  */
+-#define DMAC_ISR		__REG(PKUNITY_DMAC_BASE + 0x0020)
++#define DMAC_ISR		(PKUNITY_DMAC_BASE + 0x0020)
+ /*
+  * Interrupt Transfer Complete Status Reg DMAC_ITCSR.
+  */
+-#define DMAC_ITCSR		__REG(PKUNITY_DMAC_BASE + 0x0050)
++#define DMAC_ITCSR		(PKUNITY_DMAC_BASE + 0x0050)
+ /*
+  * Interrupt Transfer Complete Clear Reg DMAC_ITCCR.
+  */
+-#define DMAC_ITCCR		__REG(PKUNITY_DMAC_BASE + 0x0060)
++#define DMAC_ITCCR		(PKUNITY_DMAC_BASE + 0x0060)
+ /*
+  * Interrupt Error Status Reg DMAC_IESR.
+  */
+-#define DMAC_IESR		__REG(PKUNITY_DMAC_BASE + 0x0080)
++#define DMAC_IESR		(PKUNITY_DMAC_BASE + 0x0080)
+ /*
+  * Interrupt Error Clear Reg DMAC_IECR.
+  */
+-#define DMAC_IECR		__REG(PKUNITY_DMAC_BASE + 0x0090)
++#define DMAC_IECR		(PKUNITY_DMAC_BASE + 0x0090)
+ /*
+  * Enable Channels Reg DMAC_ENCH.
+  */
+-#define DMAC_ENCH		__REG(PKUNITY_DMAC_BASE + 0x00B0)
++#define DMAC_ENCH		(PKUNITY_DMAC_BASE + 0x00B0)
+ 
+ /*
+  * DMA control reg. Space [byte]
+@@ -35,19 +35,19 @@
+ /*
+  * Source Addr DMAC_SRCADDR(ch).
+  */
+-#define DMAC_SRCADDR(ch)	__REG(PKUNITY_DMAC_BASE + (ch)*DMASp + 0x00)
++#define DMAC_SRCADDR(ch)	(PKUNITY_DMAC_BASE + (ch)*DMASp + 0x00)
+ /*
+  * Destination Addr DMAC_DESTADDR(ch).
+  */
+-#define DMAC_DESTADDR(ch)	__REG(PKUNITY_DMAC_BASE + (ch)*DMASp + 0x04)
++#define DMAC_DESTADDR(ch)	(PKUNITY_DMAC_BASE + (ch)*DMASp + 0x04)
+ /*
+  * Control Reg DMAC_CONTROL(ch).
+  */
+-#define DMAC_CONTROL(ch)	__REG(PKUNITY_DMAC_BASE + (ch)*DMASp + 0x0C)
++#define DMAC_CONTROL(ch)	(PKUNITY_DMAC_BASE + (ch)*DMASp + 0x0C)
+ /*
+  * Configuration Reg DMAC_CONFIG(ch).
+  */
+-#define DMAC_CONFIG(ch)		__REG(PKUNITY_DMAC_BASE + (ch)*DMASp + 0x10)
++#define DMAC_CONFIG(ch)		(PKUNITY_DMAC_BASE + (ch)*DMASp + 0x10)
+ 
+ #define DMAC_IR_MASK            FMASK(6, 0)
+ /*
+diff --git a/arch/unicore32/include/mach/regs-gpio.h b/arch/unicore32/include/mach/regs-gpio.h
+index 5dd99d4c209e..0273b861ef96 100644
+--- a/arch/unicore32/include/mach/regs-gpio.h
++++ b/arch/unicore32/include/mach/regs-gpio.h
+@@ -5,35 +5,35 @@
+ /*
+  * Voltage Status Reg GPIO_GPLR.
+  */
+-#define GPIO_GPLR	__REG(PKUNITY_GPIO_BASE + 0x0000)
++#define GPIO_GPLR	(PKUNITY_GPIO_BASE + 0x0000)
+ /*
+  * Pin Direction Reg GPIO_GPDR.
+  */
+-#define GPIO_GPDR	__REG(PKUNITY_GPIO_BASE + 0x0004)
++#define GPIO_GPDR	(PKUNITY_GPIO_BASE + 0x0004)
+ /*
+  * Output Pin Set Reg GPIO_GPSR.
+  */
+-#define GPIO_GPSR	__REG(PKUNITY_GPIO_BASE + 0x0008)
++#define GPIO_GPSR	(PKUNITY_GPIO_BASE + 0x0008)
+ /*
+  * Output Pin Clear Reg GPIO_GPCR.
+  */
+-#define GPIO_GPCR	__REG(PKUNITY_GPIO_BASE + 0x000C)
++#define GPIO_GPCR	(PKUNITY_GPIO_BASE + 0x000C)
+ /*
+  * Raise Edge Detect Reg GPIO_GRER.
+  */
+-#define GPIO_GRER	__REG(PKUNITY_GPIO_BASE + 0x0010)
++#define GPIO_GRER	(PKUNITY_GPIO_BASE + 0x0010)
+ /*
+  * Fall Edge Detect Reg GPIO_GFER.
+  */
+-#define GPIO_GFER	__REG(PKUNITY_GPIO_BASE + 0x0014)
++#define GPIO_GFER	(PKUNITY_GPIO_BASE + 0x0014)
+ /*
+  * Edge Status Reg GPIO_GEDR.
+  */
+-#define GPIO_GEDR	__REG(PKUNITY_GPIO_BASE + 0x0018)
++#define GPIO_GEDR	(PKUNITY_GPIO_BASE + 0x0018)
+ /*
+  * Sepcial Voltage Detect Reg GPIO_GPIR.
+  */
+-#define GPIO_GPIR	__REG(PKUNITY_GPIO_BASE + 0x0020)
++#define GPIO_GPIR	(PKUNITY_GPIO_BASE + 0x0020)
+ 
+ #define GPIO_MIN	(0)
+ #define GPIO_MAX	(27)
+diff --git a/arch/unicore32/include/mach/regs-i2c.h b/arch/unicore32/include/mach/regs-i2c.h
+index 70b704f8dda8..463d108f8bfb 100644
+--- a/arch/unicore32/include/mach/regs-i2c.h
++++ b/arch/unicore32/include/mach/regs-i2c.h
+@@ -5,35 +5,35 @@
+ /*
+  * Control Reg I2C_CON.
+  */
+-#define I2C_CON		__REG(PKUNITY_I2C_BASE + 0x0000)
++#define I2C_CON		(PKUNITY_I2C_BASE + 0x0000)
+ /*
+  * Target Address Reg I2C_TAR.
+  */
+-#define I2C_TAR		__REG(PKUNITY_I2C_BASE + 0x0004)
++#define I2C_TAR		(PKUNITY_I2C_BASE + 0x0004)
+ /*
+  * Data buffer and command Reg I2C_DATACMD.
+  */
+-#define I2C_DATACMD	__REG(PKUNITY_I2C_BASE + 0x0010)
++#define I2C_DATACMD	(PKUNITY_I2C_BASE + 0x0010)
+ /*
+  * Enable Reg I2C_ENABLE.
+  */
+-#define I2C_ENABLE	__REG(PKUNITY_I2C_BASE + 0x006C)
++#define I2C_ENABLE	(PKUNITY_I2C_BASE + 0x006C)
+ /*
+  * Status Reg I2C_STATUS.
+  */
+-#define I2C_STATUS	__REG(PKUNITY_I2C_BASE + 0x0070)
++#define I2C_STATUS	(PKUNITY_I2C_BASE + 0x0070)
+ /*
+  * Tx FIFO Length Reg I2C_TXFLR.
+  */
+-#define I2C_TXFLR	__REG(PKUNITY_I2C_BASE + 0x0074)
++#define I2C_TXFLR	(PKUNITY_I2C_BASE + 0x0074)
+ /*
+  * Rx FIFO Length Reg I2C_RXFLR.
+  */
+-#define I2C_RXFLR	__REG(PKUNITY_I2C_BASE + 0x0078)
++#define I2C_RXFLR	(PKUNITY_I2C_BASE + 0x0078)
+ /*
+  * Enable Status Reg I2C_ENSTATUS.
+  */
+-#define I2C_ENSTATUS	__REG(PKUNITY_I2C_BASE + 0x009C)
++#define I2C_ENSTATUS	(PKUNITY_I2C_BASE + 0x009C)
+ 
+ #define I2C_CON_MASTER          FIELD(1, 1, 0)
+ #define I2C_CON_SPEED_STD       FIELD(1, 2, 1)
+diff --git a/arch/unicore32/include/mach/regs-intc.h b/arch/unicore32/include/mach/regs-intc.h
+index 409ae4776145..25648f89cbd3 100644
+--- a/arch/unicore32/include/mach/regs-intc.h
++++ b/arch/unicore32/include/mach/regs-intc.h
+@@ -4,25 +4,25 @@
+ /*
+  * INTC Level Reg INTC_ICLR.
+  */
+-#define INTC_ICLR	__REG(PKUNITY_INTC_BASE + 0x0000)
++#define INTC_ICLR	(PKUNITY_INTC_BASE + 0x0000)
+ /*
+  * INTC Mask Reg INTC_ICMR.
+  */
+-#define INTC_ICMR	__REG(PKUNITY_INTC_BASE + 0x0004)
++#define INTC_ICMR	(PKUNITY_INTC_BASE + 0x0004)
+ /*
+  * INTC Pending Reg INTC_ICPR.
+  */
+-#define INTC_ICPR	__REG(PKUNITY_INTC_BASE + 0x0008)
++#define INTC_ICPR	(PKUNITY_INTC_BASE + 0x0008)
+ /*
+  * INTC IRQ Pending Reg INTC_ICIP.
+  */
+-#define INTC_ICIP	__REG(PKUNITY_INTC_BASE + 0x000C)
++#define INTC_ICIP	(PKUNITY_INTC_BASE + 0x000C)
+ /*
+  * INTC REAL Pending Reg INTC_ICFP.
+  */
+-#define INTC_ICFP	__REG(PKUNITY_INTC_BASE + 0x0010)
++#define INTC_ICFP	(PKUNITY_INTC_BASE + 0x0010)
+ /*
+  * INTC Control Reg INTC_ICCR.
+  */
+-#define INTC_ICCR	__REG(PKUNITY_INTC_BASE + 0x0014)
++#define INTC_ICCR	(PKUNITY_INTC_BASE + 0x0014)
+ 
+diff --git a/arch/unicore32/include/mach/regs-nand.h b/arch/unicore32/include/mach/regs-nand.h
+index 0c33fe8c3090..a7c5563bb550 100644
+--- a/arch/unicore32/include/mach/regs-nand.h
++++ b/arch/unicore32/include/mach/regs-nand.h
+@@ -4,67 +4,67 @@
+ /*
+  * ID Reg. 0 NAND_IDR0
+  */
+-#define NAND_IDR0	__REG(PKUNITY_NAND_BASE + 0x0000)
++#define NAND_IDR0	(PKUNITY_NAND_BASE + 0x0000)
+ /*
+  * ID Reg. 1 NAND_IDR1
+  */
+-#define NAND_IDR1	__REG(PKUNITY_NAND_BASE + 0x0004)
++#define NAND_IDR1	(PKUNITY_NAND_BASE + 0x0004)
+ /*
+  * ID Reg. 2 NAND_IDR2
+  */
+-#define NAND_IDR2	__REG(PKUNITY_NAND_BASE + 0x0008)
++#define NAND_IDR2	(PKUNITY_NAND_BASE + 0x0008)
+ /*
+  * ID Reg. 3 NAND_IDR3
+  */
+-#define NAND_IDR3	__REG(PKUNITY_NAND_BASE + 0x000C)
++#define NAND_IDR3	(PKUNITY_NAND_BASE + 0x000C)
+ /*
+  * Page Address Reg 0 NAND_PAR0
+  */
+-#define NAND_PAR0	__REG(PKUNITY_NAND_BASE + 0x0010)
++#define NAND_PAR0	(PKUNITY_NAND_BASE + 0x0010)
+ /*
+  * Page Address Reg 1 NAND_PAR1
+  */
+-#define NAND_PAR1	__REG(PKUNITY_NAND_BASE + 0x0014)
++#define NAND_PAR1	(PKUNITY_NAND_BASE + 0x0014)
+ /*
+  * Page Address Reg 2 NAND_PAR2
+  */
+-#define NAND_PAR2	__REG(PKUNITY_NAND_BASE + 0x0018)
++#define NAND_PAR2	(PKUNITY_NAND_BASE + 0x0018)
+ /*
+  * ECC Enable Reg NAND_ECCEN
+  */
+-#define NAND_ECCEN	__REG(PKUNITY_NAND_BASE + 0x001C)
++#define NAND_ECCEN	(PKUNITY_NAND_BASE + 0x001C)
+ /*
+  * Buffer Reg NAND_BUF
+  */
+-#define NAND_BUF	__REG(PKUNITY_NAND_BASE + 0x0020)
++#define NAND_BUF	(PKUNITY_NAND_BASE + 0x0020)
+ /*
+  * ECC Status Reg NAND_ECCSR
+  */
+-#define NAND_ECCSR	__REG(PKUNITY_NAND_BASE + 0x0024)
++#define NAND_ECCSR	(PKUNITY_NAND_BASE + 0x0024)
+ /*
+  * Command Reg NAND_CMD
+  */
+-#define NAND_CMD	__REG(PKUNITY_NAND_BASE + 0x0028)
++#define NAND_CMD	(PKUNITY_NAND_BASE + 0x0028)
+ /*
+  * DMA Configure Reg NAND_DMACR
+  */
+-#define NAND_DMACR	__REG(PKUNITY_NAND_BASE + 0x002C)
++#define NAND_DMACR	(PKUNITY_NAND_BASE + 0x002C)
+ /*
+  * Interrupt Reg NAND_IR
+  */
+-#define NAND_IR		__REG(PKUNITY_NAND_BASE + 0x0030)
++#define NAND_IR		(PKUNITY_NAND_BASE + 0x0030)
+ /*
+  * Interrupt Mask Reg NAND_IMR
+  */
+-#define NAND_IMR	__REG(PKUNITY_NAND_BASE + 0x0034)
++#define NAND_IMR	(PKUNITY_NAND_BASE + 0x0034)
+ /*
+  * Chip Enable Reg NAND_CHIPEN
+  */
+-#define NAND_CHIPEN	__REG(PKUNITY_NAND_BASE + 0x0038)
++#define NAND_CHIPEN	(PKUNITY_NAND_BASE + 0x0038)
+ /*
+  * Address Reg NAND_ADDR
+  */
+-#define NAND_ADDR	__REG(PKUNITY_NAND_BASE + 0x003C)
++#define NAND_ADDR	(PKUNITY_NAND_BASE + 0x003C)
+ 
+ /*
+  * Command bits NAND_CMD_CMD_MASK
+diff --git a/arch/unicore32/include/mach/regs-ost.h b/arch/unicore32/include/mach/regs-ost.h
+index 33049a827518..7b91fe698eed 100644
+--- a/arch/unicore32/include/mach/regs-ost.h
++++ b/arch/unicore32/include/mach/regs-ost.h
+@@ -4,47 +4,47 @@
+ /*
+  * Match Reg 0 OST_OSMR0
+  */
+-#define OST_OSMR0	__REG(PKUNITY_OST_BASE + 0x0000)
++#define OST_OSMR0	(PKUNITY_OST_BASE + 0x0000)
+ /*
+  * Match Reg 1 OST_OSMR1
+  */
+-#define OST_OSMR1	__REG(PKUNITY_OST_BASE + 0x0004)
++#define OST_OSMR1	(PKUNITY_OST_BASE + 0x0004)
+ /*
+  * Match Reg 2 OST_OSMR2
+  */
+-#define OST_OSMR2	__REG(PKUNITY_OST_BASE + 0x0008)
++#define OST_OSMR2	(PKUNITY_OST_BASE + 0x0008)
+ /*
+  * Match Reg 3 OST_OSMR3
+  */
+-#define OST_OSMR3	__REG(PKUNITY_OST_BASE + 0x000C)
++#define OST_OSMR3	(PKUNITY_OST_BASE + 0x000C)
+ /*
+  * Counter Reg OST_OSCR
+  */
+-#define OST_OSCR	__REG(PKUNITY_OST_BASE + 0x0010)
++#define OST_OSCR	(PKUNITY_OST_BASE + 0x0010)
+ /*
+  * Status Reg OST_OSSR
+  */
+-#define OST_OSSR	__REG(PKUNITY_OST_BASE + 0x0014)
++#define OST_OSSR	(PKUNITY_OST_BASE + 0x0014)
+ /*
+  * Watchdog Enable Reg OST_OWER
+  */
+-#define OST_OWER	__REG(PKUNITY_OST_BASE + 0x0018)
++#define OST_OWER	(PKUNITY_OST_BASE + 0x0018)
+ /*
+  * Interrupt Enable Reg OST_OIER
+  */
+-#define OST_OIER	__REG(PKUNITY_OST_BASE + 0x001C)
++#define OST_OIER	(PKUNITY_OST_BASE + 0x001C)
+ /*
+  * PWM Pulse Width Control Reg OST_PWMPWCR
+  */
+-#define OST_PWMPWCR	__REG(PKUNITY_OST_BASE + 0x0080)
++#define OST_PWMPWCR	(PKUNITY_OST_BASE + 0x0080)
+ /*
+  * PWM Duty Cycle Control Reg OST_PWMDCCR
+  */
+-#define OST_PWMDCCR	__REG(PKUNITY_OST_BASE + 0x0084)
++#define OST_PWMDCCR	(PKUNITY_OST_BASE + 0x0084)
+ /*
+  * PWM Period Control Reg OST_PWMPCR
+  */
+-#define OST_PWMPCR	__REG(PKUNITY_OST_BASE + 0x0088)
++#define OST_PWMPCR	(PKUNITY_OST_BASE + 0x0088)
+ 
+ /*
+  * Match detected 0 OST_OSSR_M0
+diff --git a/arch/unicore32/include/mach/regs-pci.h b/arch/unicore32/include/mach/regs-pci.h
+index e8e1f1a52fd0..6a9341686bf8 100644
+--- a/arch/unicore32/include/mach/regs-pci.h
++++ b/arch/unicore32/include/mach/regs-pci.h
+@@ -8,79 +8,79 @@
+ /*
+  * PCICFG Bridge Base Reg.
+  */
+-#define PCICFG_BRIBASE          __REG(PKUNITY_PCICFG_BASE + 0x0000)
++#define PCICFG_BRIBASE          (PKUNITY_PCICFG_BASE + 0x0000)
+ /*
+  * PCICFG Address Reg.
+  */
+-#define PCICFG_ADDR             __REG(PKUNITY_PCICFG_BASE + 0x0004)
++#define PCICFG_ADDR             (PKUNITY_PCICFG_BASE + 0x0004)
+ /*
+  * PCICFG Address Reg.
+  */
+-#define PCICFG_DATA             __REG(PKUNITY_PCICFG_BASE + 0x0008)
++#define PCICFG_DATA             (PKUNITY_PCICFG_BASE + 0x0008)
+ 
+ /*
+  * PCI Bridge configuration space
+  */
+-#define PCIBRI_ID		__REG(PKUNITY_PCIBRI_BASE + 0x0000)
+-#define PCIBRI_CMD		__REG(PKUNITY_PCIBRI_BASE + 0x0004)
+-#define PCIBRI_CLASS		__REG(PKUNITY_PCIBRI_BASE + 0x0008)
+-#define PCIBRI_LTR		__REG(PKUNITY_PCIBRI_BASE + 0x000C)
+-#define PCIBRI_BAR0		__REG(PKUNITY_PCIBRI_BASE + 0x0010)
+-#define PCIBRI_BAR1		__REG(PKUNITY_PCIBRI_BASE + 0x0014)
+-#define PCIBRI_BAR2		__REG(PKUNITY_PCIBRI_BASE + 0x0018)
+-#define PCIBRI_BAR3		__REG(PKUNITY_PCIBRI_BASE + 0x001C)
+-#define PCIBRI_BAR4		__REG(PKUNITY_PCIBRI_BASE + 0x0020)
+-#define PCIBRI_BAR5		__REG(PKUNITY_PCIBRI_BASE + 0x0024)
++#define PCIBRI_ID		(PKUNITY_PCIBRI_BASE + 0x0000)
++#define PCIBRI_CMD		(PKUNITY_PCIBRI_BASE + 0x0004)
++#define PCIBRI_CLASS		(PKUNITY_PCIBRI_BASE + 0x0008)
++#define PCIBRI_LTR		(PKUNITY_PCIBRI_BASE + 0x000C)
++#define PCIBRI_BAR0		(PKUNITY_PCIBRI_BASE + 0x0010)
++#define PCIBRI_BAR1		(PKUNITY_PCIBRI_BASE + 0x0014)
++#define PCIBRI_BAR2		(PKUNITY_PCIBRI_BASE + 0x0018)
++#define PCIBRI_BAR3		(PKUNITY_PCIBRI_BASE + 0x001C)
++#define PCIBRI_BAR4		(PKUNITY_PCIBRI_BASE + 0x0020)
++#define PCIBRI_BAR5		(PKUNITY_PCIBRI_BASE + 0x0024)
+ 
+-#define PCIBRI_PCICTL0		__REG(PKUNITY_PCIBRI_BASE + 0x0100)
+-#define PCIBRI_PCIBAR0		__REG(PKUNITY_PCIBRI_BASE + 0x0104)
+-#define PCIBRI_PCIAMR0		__REG(PKUNITY_PCIBRI_BASE + 0x0108)
+-#define PCIBRI_PCITAR0		__REG(PKUNITY_PCIBRI_BASE + 0x010C)
+-#define PCIBRI_PCICTL1		__REG(PKUNITY_PCIBRI_BASE + 0x0110)
+-#define PCIBRI_PCIBAR1		__REG(PKUNITY_PCIBRI_BASE + 0x0114)
+-#define PCIBRI_PCIAMR1		__REG(PKUNITY_PCIBRI_BASE + 0x0118)
+-#define PCIBRI_PCITAR1		__REG(PKUNITY_PCIBRI_BASE + 0x011C)
+-#define PCIBRI_PCICTL2		__REG(PKUNITY_PCIBRI_BASE + 0x0120)
+-#define PCIBRI_PCIBAR2		__REG(PKUNITY_PCIBRI_BASE + 0x0124)
+-#define PCIBRI_PCIAMR2		__REG(PKUNITY_PCIBRI_BASE + 0x0128)
+-#define PCIBRI_PCITAR2		__REG(PKUNITY_PCIBRI_BASE + 0x012C)
+-#define PCIBRI_PCICTL3		__REG(PKUNITY_PCIBRI_BASE + 0x0130)
+-#define PCIBRI_PCIBAR3		__REG(PKUNITY_PCIBRI_BASE + 0x0134)
+-#define PCIBRI_PCIAMR3		__REG(PKUNITY_PCIBRI_BASE + 0x0138)
+-#define PCIBRI_PCITAR3		__REG(PKUNITY_PCIBRI_BASE + 0x013C)
+-#define PCIBRI_PCICTL4		__REG(PKUNITY_PCIBRI_BASE + 0x0140)
+-#define PCIBRI_PCIBAR4		__REG(PKUNITY_PCIBRI_BASE + 0x0144)
+-#define PCIBRI_PCIAMR4		__REG(PKUNITY_PCIBRI_BASE + 0x0148)
+-#define PCIBRI_PCITAR4		__REG(PKUNITY_PCIBRI_BASE + 0x014C)
+-#define PCIBRI_PCICTL5		__REG(PKUNITY_PCIBRI_BASE + 0x0150)
+-#define PCIBRI_PCIBAR5		__REG(PKUNITY_PCIBRI_BASE + 0x0154)
+-#define PCIBRI_PCIAMR5		__REG(PKUNITY_PCIBRI_BASE + 0x0158)
+-#define PCIBRI_PCITAR5		__REG(PKUNITY_PCIBRI_BASE + 0x015C)
++#define PCIBRI_PCICTL0		(PKUNITY_PCIBRI_BASE + 0x0100)
++#define PCIBRI_PCIBAR0		(PKUNITY_PCIBRI_BASE + 0x0104)
++#define PCIBRI_PCIAMR0		(PKUNITY_PCIBRI_BASE + 0x0108)
++#define PCIBRI_PCITAR0		(PKUNITY_PCIBRI_BASE + 0x010C)
++#define PCIBRI_PCICTL1		(PKUNITY_PCIBRI_BASE + 0x0110)
++#define PCIBRI_PCIBAR1		(PKUNITY_PCIBRI_BASE + 0x0114)
++#define PCIBRI_PCIAMR1		(PKUNITY_PCIBRI_BASE + 0x0118)
++#define PCIBRI_PCITAR1		(PKUNITY_PCIBRI_BASE + 0x011C)
++#define PCIBRI_PCICTL2		(PKUNITY_PCIBRI_BASE + 0x0120)
++#define PCIBRI_PCIBAR2		(PKUNITY_PCIBRI_BASE + 0x0124)
++#define PCIBRI_PCIAMR2		(PKUNITY_PCIBRI_BASE + 0x0128)
++#define PCIBRI_PCITAR2		(PKUNITY_PCIBRI_BASE + 0x012C)
++#define PCIBRI_PCICTL3		(PKUNITY_PCIBRI_BASE + 0x0130)
++#define PCIBRI_PCIBAR3		(PKUNITY_PCIBRI_BASE + 0x0134)
++#define PCIBRI_PCIAMR3		(PKUNITY_PCIBRI_BASE + 0x0138)
++#define PCIBRI_PCITAR3		(PKUNITY_PCIBRI_BASE + 0x013C)
++#define PCIBRI_PCICTL4		(PKUNITY_PCIBRI_BASE + 0x0140)
++#define PCIBRI_PCIBAR4		(PKUNITY_PCIBRI_BASE + 0x0144)
++#define PCIBRI_PCIAMR4		(PKUNITY_PCIBRI_BASE + 0x0148)
++#define PCIBRI_PCITAR4		(PKUNITY_PCIBRI_BASE + 0x014C)
++#define PCIBRI_PCICTL5		(PKUNITY_PCIBRI_BASE + 0x0150)
++#define PCIBRI_PCIBAR5		(PKUNITY_PCIBRI_BASE + 0x0154)
++#define PCIBRI_PCIAMR5		(PKUNITY_PCIBRI_BASE + 0x0158)
++#define PCIBRI_PCITAR5		(PKUNITY_PCIBRI_BASE + 0x015C)
+ 
+-#define PCIBRI_AHBCTL0		__REG(PKUNITY_PCIBRI_BASE + 0x0180)
+-#define PCIBRI_AHBBAR0		__REG(PKUNITY_PCIBRI_BASE + 0x0184)
+-#define PCIBRI_AHBAMR0		__REG(PKUNITY_PCIBRI_BASE + 0x0188)
+-#define PCIBRI_AHBTAR0		__REG(PKUNITY_PCIBRI_BASE + 0x018C)
+-#define PCIBRI_AHBCTL1		__REG(PKUNITY_PCIBRI_BASE + 0x0190)
+-#define PCIBRI_AHBBAR1		__REG(PKUNITY_PCIBRI_BASE + 0x0194)
+-#define PCIBRI_AHBAMR1		__REG(PKUNITY_PCIBRI_BASE + 0x0198)
+-#define PCIBRI_AHBTAR1		__REG(PKUNITY_PCIBRI_BASE + 0x019C)
+-#define PCIBRI_AHBCTL2		__REG(PKUNITY_PCIBRI_BASE + 0x01A0)
+-#define PCIBRI_AHBBAR2		__REG(PKUNITY_PCIBRI_BASE + 0x01A4)
+-#define PCIBRI_AHBAMR2		__REG(PKUNITY_PCIBRI_BASE + 0x01A8)
+-#define PCIBRI_AHBTAR2		__REG(PKUNITY_PCIBRI_BASE + 0x01AC)
+-#define PCIBRI_AHBCTL3		__REG(PKUNITY_PCIBRI_BASE + 0x01B0)
+-#define PCIBRI_AHBBAR3		__REG(PKUNITY_PCIBRI_BASE + 0x01B4)
+-#define PCIBRI_AHBAMR3		__REG(PKUNITY_PCIBRI_BASE + 0x01B8)
+-#define PCIBRI_AHBTAR3		__REG(PKUNITY_PCIBRI_BASE + 0x01BC)
+-#define PCIBRI_AHBCTL4		__REG(PKUNITY_PCIBRI_BASE + 0x01C0)
+-#define PCIBRI_AHBBAR4		__REG(PKUNITY_PCIBRI_BASE + 0x01C4)
+-#define PCIBRI_AHBAMR4		__REG(PKUNITY_PCIBRI_BASE + 0x01C8)
+-#define PCIBRI_AHBTAR4		__REG(PKUNITY_PCIBRI_BASE + 0x01CC)
+-#define PCIBRI_AHBCTL5		__REG(PKUNITY_PCIBRI_BASE + 0x01D0)
+-#define PCIBRI_AHBBAR5		__REG(PKUNITY_PCIBRI_BASE + 0x01D4)
+-#define PCIBRI_AHBAMR5		__REG(PKUNITY_PCIBRI_BASE + 0x01D8)
+-#define PCIBRI_AHBTAR5		__REG(PKUNITY_PCIBRI_BASE + 0x01DC)
++#define PCIBRI_AHBCTL0		(PKUNITY_PCIBRI_BASE + 0x0180)
++#define PCIBRI_AHBBAR0		(PKUNITY_PCIBRI_BASE + 0x0184)
++#define PCIBRI_AHBAMR0		(PKUNITY_PCIBRI_BASE + 0x0188)
++#define PCIBRI_AHBTAR0		(PKUNITY_PCIBRI_BASE + 0x018C)
++#define PCIBRI_AHBCTL1		(PKUNITY_PCIBRI_BASE + 0x0190)
++#define PCIBRI_AHBBAR1		(PKUNITY_PCIBRI_BASE + 0x0194)
++#define PCIBRI_AHBAMR1		(PKUNITY_PCIBRI_BASE + 0x0198)
++#define PCIBRI_AHBTAR1		(PKUNITY_PCIBRI_BASE + 0x019C)
++#define PCIBRI_AHBCTL2		(PKUNITY_PCIBRI_BASE + 0x01A0)
++#define PCIBRI_AHBBAR2		(PKUNITY_PCIBRI_BASE + 0x01A4)
++#define PCIBRI_AHBAMR2		(PKUNITY_PCIBRI_BASE + 0x01A8)
++#define PCIBRI_AHBTAR2		(PKUNITY_PCIBRI_BASE + 0x01AC)
++#define PCIBRI_AHBCTL3		(PKUNITY_PCIBRI_BASE + 0x01B0)
++#define PCIBRI_AHBBAR3		(PKUNITY_PCIBRI_BASE + 0x01B4)
++#define PCIBRI_AHBAMR3		(PKUNITY_PCIBRI_BASE + 0x01B8)
++#define PCIBRI_AHBTAR3		(PKUNITY_PCIBRI_BASE + 0x01BC)
++#define PCIBRI_AHBCTL4		(PKUNITY_PCIBRI_BASE + 0x01C0)
++#define PCIBRI_AHBBAR4		(PKUNITY_PCIBRI_BASE + 0x01C4)
++#define PCIBRI_AHBAMR4		(PKUNITY_PCIBRI_BASE + 0x01C8)
++#define PCIBRI_AHBTAR4		(PKUNITY_PCIBRI_BASE + 0x01CC)
++#define PCIBRI_AHBCTL5		(PKUNITY_PCIBRI_BASE + 0x01D0)
++#define PCIBRI_AHBBAR5		(PKUNITY_PCIBRI_BASE + 0x01D4)
++#define PCIBRI_AHBAMR5		(PKUNITY_PCIBRI_BASE + 0x01D8)
++#define PCIBRI_AHBTAR5		(PKUNITY_PCIBRI_BASE + 0x01DC)
+ 
+ #define PCIBRI_CTLx_AT          FIELD(1, 1, 2)
+ #define PCIBRI_CTLx_PREF        FIELD(1, 1, 1)
+diff --git a/arch/unicore32/include/mach/regs-pm.h b/arch/unicore32/include/mach/regs-pm.h
+index ed2d2fc6ad0c..854844aa8f4b 100644
+--- a/arch/unicore32/include/mach/regs-pm.h
++++ b/arch/unicore32/include/mach/regs-pm.h
+@@ -4,75 +4,75 @@
+ /*
+  * PM Control Reg PM_PMCR
+  */
+-#define PM_PMCR                 __REG(PKUNITY_PM_BASE + 0x0000)
++#define PM_PMCR                 (PKUNITY_PM_BASE + 0x0000)
+ /*
+  * PM General Conf. Reg PM_PGCR
+  */
+-#define PM_PGCR                 __REG(PKUNITY_PM_BASE + 0x0004)
++#define PM_PGCR                 (PKUNITY_PM_BASE + 0x0004)
+ /*
+  * PM PLL Conf. Reg PM_PPCR
+  */
+-#define PM_PPCR                 __REG(PKUNITY_PM_BASE + 0x0008)
++#define PM_PPCR                 (PKUNITY_PM_BASE + 0x0008)
+ /*
+  * PM Wakeup Enable Reg PM_PWER
+  */
+-#define PM_PWER                 __REG(PKUNITY_PM_BASE + 0x000C)
++#define PM_PWER                 (PKUNITY_PM_BASE + 0x000C)
+ /*
+  * PM GPIO Sleep Status Reg PM_PGSR
+  */
+-#define PM_PGSR                 __REG(PKUNITY_PM_BASE + 0x0010)
++#define PM_PGSR                 (PKUNITY_PM_BASE + 0x0010)
+ /*
+  * PM Clock Gate Reg PM_PCGR
+  */
+-#define PM_PCGR                 __REG(PKUNITY_PM_BASE + 0x0014)
++#define PM_PCGR                 (PKUNITY_PM_BASE + 0x0014)
+ /*
+  * PM SYS PLL Conf. Reg PM_PLLSYSCFG
+  */
+-#define PM_PLLSYSCFG            __REG(PKUNITY_PM_BASE + 0x0018)
++#define PM_PLLSYSCFG            (PKUNITY_PM_BASE + 0x0018)
+ /*
+  * PM DDR PLL Conf. Reg PM_PLLDDRCFG
+  */
+-#define PM_PLLDDRCFG            __REG(PKUNITY_PM_BASE + 0x001C)
++#define PM_PLLDDRCFG            (PKUNITY_PM_BASE + 0x001C)
+ /*
+  * PM VGA PLL Conf. Reg PM_PLLVGACFG
+  */
+-#define PM_PLLVGACFG            __REG(PKUNITY_PM_BASE + 0x0020)
++#define PM_PLLVGACFG            (PKUNITY_PM_BASE + 0x0020)
+ /*
+  * PM Div Conf. Reg PM_DIVCFG
+  */
+-#define PM_DIVCFG               __REG(PKUNITY_PM_BASE + 0x0024)
++#define PM_DIVCFG               (PKUNITY_PM_BASE + 0x0024)
+ /*
+  * PM SYS PLL Status Reg PM_PLLSYSSTATUS
+  */
+-#define PM_PLLSYSSTATUS         __REG(PKUNITY_PM_BASE + 0x0028)
++#define PM_PLLSYSSTATUS         (PKUNITY_PM_BASE + 0x0028)
+ /*
+  * PM DDR PLL Status Reg PM_PLLDDRSTATUS
+  */
+-#define PM_PLLDDRSTATUS         __REG(PKUNITY_PM_BASE + 0x002C)
++#define PM_PLLDDRSTATUS         (PKUNITY_PM_BASE + 0x002C)
+ /*
+  * PM VGA PLL Status Reg PM_PLLVGASTATUS
+  */
+-#define PM_PLLVGASTATUS         __REG(PKUNITY_PM_BASE + 0x0030)
++#define PM_PLLVGASTATUS         (PKUNITY_PM_BASE + 0x0030)
+ /*
+  * PM Div Status Reg PM_DIVSTATUS
+  */
+-#define PM_DIVSTATUS            __REG(PKUNITY_PM_BASE + 0x0034)
++#define PM_DIVSTATUS            (PKUNITY_PM_BASE + 0x0034)
+ /*
+  * PM Software Reset Reg PM_SWRESET
+  */
+-#define PM_SWRESET              __REG(PKUNITY_PM_BASE + 0x0038)
++#define PM_SWRESET              (PKUNITY_PM_BASE + 0x0038)
+ /*
+  * PM DDR2 PAD Start Reg PM_DDR2START
+  */
+-#define PM_DDR2START            __REG(PKUNITY_PM_BASE + 0x003C)
++#define PM_DDR2START            (PKUNITY_PM_BASE + 0x003C)
+ /*
+  * PM DDR2 PAD Status Reg PM_DDR2CAL0
+  */
+-#define PM_DDR2CAL0             __REG(PKUNITY_PM_BASE + 0x0040)
++#define PM_DDR2CAL0             (PKUNITY_PM_BASE + 0x0040)
+ /*
+  * PM PLL DFC Done Reg PM_PLLDFCDONE
+  */
+-#define PM_PLLDFCDONE           __REG(PKUNITY_PM_BASE + 0x0044)
++#define PM_PLLDFCDONE           (PKUNITY_PM_BASE + 0x0044)
+ 
+ #define PM_PMCR_SFB             FIELD(1, 1, 0)
+ #define PM_PMCR_IFB             FIELD(1, 1, 1)
+diff --git a/arch/unicore32/include/mach/regs-ps2.h b/arch/unicore32/include/mach/regs-ps2.h
+index 7da2071838ab..17d4e6dc0069 100644
+--- a/arch/unicore32/include/mach/regs-ps2.h
++++ b/arch/unicore32/include/mach/regs-ps2.h
+@@ -4,17 +4,17 @@
+ /*
+  * the same as I8042_DATA_REG PS2_DATA
+  */
+-#define PS2_DATA	__REG(PKUNITY_PS2_BASE + 0x0060)
++#define PS2_DATA	(PKUNITY_PS2_BASE + 0x0060)
+ /*
+  * the same as I8042_COMMAND_REG PS2_COMMAND
+  */
+-#define PS2_COMMAND	__REG(PKUNITY_PS2_BASE + 0x0064)
++#define PS2_COMMAND	(PKUNITY_PS2_BASE + 0x0064)
+ /*
+  * the same as I8042_STATUS_REG PS2_STATUS
+  */
+-#define PS2_STATUS	__REG(PKUNITY_PS2_BASE + 0x0064)
++#define PS2_STATUS	(PKUNITY_PS2_BASE + 0x0064)
+ /*
+  * counter reg PS2_CNT
+  */
+-#define PS2_CNT		__REG(PKUNITY_PS2_BASE + 0x0068)
++#define PS2_CNT		(PKUNITY_PS2_BASE + 0x0068)
+ 
+diff --git a/arch/unicore32/include/mach/regs-resetc.h b/arch/unicore32/include/mach/regs-resetc.h
+index 17639898fd84..39900cf4c936 100644
+--- a/arch/unicore32/include/mach/regs-resetc.h
++++ b/arch/unicore32/include/mach/regs-resetc.h
+@@ -4,11 +4,11 @@
+ /*
+  * Software Reset Register
+  */
+-#define RESETC_SWRR	__REG(PKUNITY_RESETC_BASE + 0x0000)
++#define RESETC_SWRR	(PKUNITY_RESETC_BASE + 0x0000)
+ /*
+  * Reset Status Register
+  */
+-#define RESETC_RSSR	__REG(PKUNITY_RESETC_BASE + 0x0004)
++#define RESETC_RSSR	(PKUNITY_RESETC_BASE + 0x0004)
+ 
+ /*
+  * Software Reset Bit
+diff --git a/arch/unicore32/include/mach/regs-rtc.h b/arch/unicore32/include/mach/regs-rtc.h
+index 155e38757186..e94ca193271d 100644
+--- a/arch/unicore32/include/mach/regs-rtc.h
++++ b/arch/unicore32/include/mach/regs-rtc.h
+@@ -4,19 +4,19 @@
+ /*
+  * RTC Alarm Reg RTC_RTAR
+  */
+-#define RTC_RTAR	__REG(PKUNITY_RTC_BASE + 0x0000)
++#define RTC_RTAR	(PKUNITY_RTC_BASE + 0x0000)
+ /*
+  * RTC Count Reg RTC_RCNR
+  */
+-#define RTC_RCNR	__REG(PKUNITY_RTC_BASE + 0x0004)
++#define RTC_RCNR	(PKUNITY_RTC_BASE + 0x0004)
+ /*
+  * RTC Trim Reg RTC_RTTR
+  */
+-#define RTC_RTTR	__REG(PKUNITY_RTC_BASE + 0x0008)
++#define RTC_RTTR	(PKUNITY_RTC_BASE + 0x0008)
+ /*
+  * RTC Status Reg RTC_RTSR
+  */
+-#define RTC_RTSR	__REG(PKUNITY_RTC_BASE + 0x0010)
++#define RTC_RTSR	(PKUNITY_RTC_BASE + 0x0010)
+ 
+ /*
+  * ALarm detected RTC_RTSR_AL
+diff --git a/arch/unicore32/include/mach/regs-sdc.h b/arch/unicore32/include/mach/regs-sdc.h
+index 3457b88c453c..1303ecf660ba 100644
+--- a/arch/unicore32/include/mach/regs-sdc.h
++++ b/arch/unicore32/include/mach/regs-sdc.h
+@@ -4,67 +4,67 @@
+ /*
+  * Clock Control Reg SDC_CCR
+  */
+-#define SDC_CCR		__REG(PKUNITY_SDC_BASE + 0x0000)
++#define SDC_CCR		(PKUNITY_SDC_BASE + 0x0000)
+ /*
+  * Software Reset Reg SDC_SRR
+  */
+-#define SDC_SRR		__REG(PKUNITY_SDC_BASE + 0x0004)
++#define SDC_SRR		(PKUNITY_SDC_BASE + 0x0004)
+ /*
+  * Argument Reg SDC_ARGUMENT
+  */
+-#define SDC_ARGUMENT	__REG(PKUNITY_SDC_BASE + 0x0008)
++#define SDC_ARGUMENT	(PKUNITY_SDC_BASE + 0x0008)
+ /*
+  * Command Reg SDC_COMMAND
+  */
+-#define SDC_COMMAND	__REG(PKUNITY_SDC_BASE + 0x000C)
++#define SDC_COMMAND	(PKUNITY_SDC_BASE + 0x000C)
+ /*
+  * Block Size Reg SDC_BLOCKSIZE
+  */
+-#define SDC_BLOCKSIZE	__REG(PKUNITY_SDC_BASE + 0x0010)
++#define SDC_BLOCKSIZE	(PKUNITY_SDC_BASE + 0x0010)
+ /*
+  * Block Cound Reg SDC_BLOCKCOUNT
+  */
+-#define SDC_BLOCKCOUNT	__REG(PKUNITY_SDC_BASE + 0x0014)
++#define SDC_BLOCKCOUNT	(PKUNITY_SDC_BASE + 0x0014)
+ /*
+  * Transfer Mode Reg SDC_TMR
+  */
+-#define SDC_TMR		__REG(PKUNITY_SDC_BASE + 0x0018)
++#define SDC_TMR		(PKUNITY_SDC_BASE + 0x0018)
+ /*
+  * Response Reg. 0 SDC_RES0
+  */
+-#define SDC_RES0	__REG(PKUNITY_SDC_BASE + 0x001C)
++#define SDC_RES0	(PKUNITY_SDC_BASE + 0x001C)
+ /*
+  * Response Reg. 1 SDC_RES1
+  */
+-#define SDC_RES1	__REG(PKUNITY_SDC_BASE + 0x0020)
++#define SDC_RES1	(PKUNITY_SDC_BASE + 0x0020)
+ /*
+  * Response Reg. 2 SDC_RES2
+  */
+-#define SDC_RES2	__REG(PKUNITY_SDC_BASE + 0x0024)
++#define SDC_RES2	(PKUNITY_SDC_BASE + 0x0024)
+ /*
+  * Response Reg. 3 SDC_RES3
+  */
+-#define SDC_RES3	__REG(PKUNITY_SDC_BASE + 0x0028)
++#define SDC_RES3	(PKUNITY_SDC_BASE + 0x0028)
+ /*
+  * Read Timeout Control Reg SDC_RTCR
+  */
+-#define SDC_RTCR	__REG(PKUNITY_SDC_BASE + 0x002C)
++#define SDC_RTCR	(PKUNITY_SDC_BASE + 0x002C)
+ /*
+  * Interrupt Status Reg SDC_ISR
+  */
+-#define SDC_ISR		__REG(PKUNITY_SDC_BASE + 0x0030)
++#define SDC_ISR		(PKUNITY_SDC_BASE + 0x0030)
+ /*
+  * Interrupt Status Mask Reg SDC_ISMR
+  */
+-#define SDC_ISMR	__REG(PKUNITY_SDC_BASE + 0x0034)
++#define SDC_ISMR	(PKUNITY_SDC_BASE + 0x0034)
+ /*
+  * RX FIFO SDC_RXFIFO
+  */
+-#define SDC_RXFIFO	__REG(PKUNITY_SDC_BASE + 0x0038)
++#define SDC_RXFIFO	(PKUNITY_SDC_BASE + 0x0038)
+ /*
+  * TX FIFO SDC_TXFIFO
+  */
+-#define SDC_TXFIFO	__REG(PKUNITY_SDC_BASE + 0x003C)
++#define SDC_TXFIFO	(PKUNITY_SDC_BASE + 0x003C)
+ 
+ /*
+  * SD Clock Enable SDC_CCR_CLKEN
+diff --git a/arch/unicore32/include/mach/regs-spi.h b/arch/unicore32/include/mach/regs-spi.h
+index cadc713c55b9..de16895e2dc0 100644
+--- a/arch/unicore32/include/mach/regs-spi.h
++++ b/arch/unicore32/include/mach/regs-spi.h
+@@ -4,27 +4,27 @@
+ /*
+  * Control reg. 0 SPI_CR0
+  */
+-#define SPI_CR0		__REG(PKUNITY_SPI_BASE + 0x0000)
++#define SPI_CR0		(PKUNITY_SPI_BASE + 0x0000)
+ /*
+  * Control reg. 1 SPI_CR1
+  */
+-#define SPI_CR1		__REG(PKUNITY_SPI_BASE + 0x0004)
++#define SPI_CR1		(PKUNITY_SPI_BASE + 0x0004)
+ /*
+  * Enable reg SPI_SSIENR
+  */
+-#define SPI_SSIENR	__REG(PKUNITY_SPI_BASE + 0x0008)
++#define SPI_SSIENR	(PKUNITY_SPI_BASE + 0x0008)
+ /*
+  * Status reg SPI_SR
+  */
+-#define SPI_SR		__REG(PKUNITY_SPI_BASE + 0x0028)
++#define SPI_SR		(PKUNITY_SPI_BASE + 0x0028)
+ /*
+  * Interrupt Mask reg SPI_IMR
+  */
+-#define SPI_IMR		__REG(PKUNITY_SPI_BASE + 0x002C)
++#define SPI_IMR		(PKUNITY_SPI_BASE + 0x002C)
+ /*
+  * Interrupt Status reg SPI_ISR
+  */
+-#define SPI_ISR		__REG(PKUNITY_SPI_BASE + 0x0030)
++#define SPI_ISR		(PKUNITY_SPI_BASE + 0x0030)
+ 
+ /*
+  * Enable SPI Controller SPI_SSIENR_EN
+diff --git a/arch/unicore32/include/mach/regs-umal.h b/arch/unicore32/include/mach/regs-umal.h
+index 2e718d1e86cc..885bb62fee71 100644
+--- a/arch/unicore32/include/mach/regs-umal.h
++++ b/arch/unicore32/include/mach/regs-umal.h
+@@ -10,86 +10,86 @@
+ /*
+  * TX/RX reset and control UMAL_CFG1
+  */
+-#define UMAL_CFG1		__REG(PKUNITY_UMAL_BASE + 0x0000)
++#define UMAL_CFG1		(PKUNITY_UMAL_BASE + 0x0000)
+ /*
+  * MAC interface mode control UMAL_CFG2
+  */
+-#define UMAL_CFG2		__REG(PKUNITY_UMAL_BASE + 0x0004)
++#define UMAL_CFG2		(PKUNITY_UMAL_BASE + 0x0004)
+ /*
+  * Inter Packet/Frame Gap UMAL_IPGIFG
+  */
+-#define UMAL_IPGIFG		__REG(PKUNITY_UMAL_BASE + 0x0008)
++#define UMAL_IPGIFG		(PKUNITY_UMAL_BASE + 0x0008)
+ /*
+  * Collision retry or backoff UMAL_HALFDUPLEX
+  */
+-#define UMAL_HALFDUPLEX		__REG(PKUNITY_UMAL_BASE + 0x000c)
++#define UMAL_HALFDUPLEX		(PKUNITY_UMAL_BASE + 0x000c)
+ /*
+  * Maximum Frame Length UMAL_MAXFRAME
+  */
+-#define UMAL_MAXFRAME		__REG(PKUNITY_UMAL_BASE + 0x0010)
++#define UMAL_MAXFRAME		(PKUNITY_UMAL_BASE + 0x0010)
+ /*
+  * Test Regsiter UMAL_TESTREG
+  */
+-#define UMAL_TESTREG		__REG(PKUNITY_UMAL_BASE + 0x001c)
++#define UMAL_TESTREG		(PKUNITY_UMAL_BASE + 0x001c)
+ /*
+  * MII Management Configure UMAL_MIICFG
+  */
+-#define UMAL_MIICFG		__REG(PKUNITY_UMAL_BASE + 0x0020)
++#define UMAL_MIICFG		(PKUNITY_UMAL_BASE + 0x0020)
+ /*
+  * MII Management Command UMAL_MIICMD
+  */
+-#define UMAL_MIICMD		__REG(PKUNITY_UMAL_BASE + 0x0024)
++#define UMAL_MIICMD		(PKUNITY_UMAL_BASE + 0x0024)
+ /*
+  * MII Management Address UMAL_MIIADDR
+  */
+-#define UMAL_MIIADDR		__REG(PKUNITY_UMAL_BASE + 0x0028)
++#define UMAL_MIIADDR		(PKUNITY_UMAL_BASE + 0x0028)
+ /*
+  * MII Management Control UMAL_MIICTRL
+  */
+-#define UMAL_MIICTRL		__REG(PKUNITY_UMAL_BASE + 0x002c)
++#define UMAL_MIICTRL		(PKUNITY_UMAL_BASE + 0x002c)
+ /*
+  * MII Management Status UMAL_MIISTATUS
+  */
+-#define UMAL_MIISTATUS		__REG(PKUNITY_UMAL_BASE + 0x0030)
++#define UMAL_MIISTATUS		(PKUNITY_UMAL_BASE + 0x0030)
+ /*
+  * MII Managment Indicator UMAL_MIIIDCT
+  */
+-#define UMAL_MIIIDCT		__REG(PKUNITY_UMAL_BASE + 0x0034)
++#define UMAL_MIIIDCT		(PKUNITY_UMAL_BASE + 0x0034)
+ /*
+  * Interface Control UMAL_IFCTRL
+  */
+-#define UMAL_IFCTRL		__REG(PKUNITY_UMAL_BASE + 0x0038)
++#define UMAL_IFCTRL		(PKUNITY_UMAL_BASE + 0x0038)
+ /*
+  * Interface Status UMAL_IFSTATUS
+  */
+-#define UMAL_IFSTATUS		__REG(PKUNITY_UMAL_BASE + 0x003c)
++#define UMAL_IFSTATUS		(PKUNITY_UMAL_BASE + 0x003c)
+ /*
+  * MAC address (high 4 bytes) UMAL_STADDR1
+  */
+-#define UMAL_STADDR1		__REG(PKUNITY_UMAL_BASE + 0x0040)
++#define UMAL_STADDR1		(PKUNITY_UMAL_BASE + 0x0040)
+ /*
+  * MAC address (low 2 bytes) UMAL_STADDR2
+  */
+-#define UMAL_STADDR2		__REG(PKUNITY_UMAL_BASE + 0x0044)
++#define UMAL_STADDR2		(PKUNITY_UMAL_BASE + 0x0044)
+ 
+ /* FIFO MODULE OF UMAL */
+ /* UMAL's FIFO module provides data queuing for increased system level
+  * throughput
+  */
+-#define UMAL_FIFOCFG0		__REG(PKUNITY_UMAL_BASE + 0x0048)
+-#define UMAL_FIFOCFG1		__REG(PKUNITY_UMAL_BASE + 0x004c)
+-#define UMAL_FIFOCFG2		__REG(PKUNITY_UMAL_BASE + 0x0050)
+-#define UMAL_FIFOCFG3		__REG(PKUNITY_UMAL_BASE + 0x0054)
+-#define UMAL_FIFOCFG4		__REG(PKUNITY_UMAL_BASE + 0x0058)
+-#define UMAL_FIFOCFG5		__REG(PKUNITY_UMAL_BASE + 0x005c)
+-#define UMAL_FIFORAM0		__REG(PKUNITY_UMAL_BASE + 0x0060)
+-#define UMAL_FIFORAM1		__REG(PKUNITY_UMAL_BASE + 0x0064)
+-#define UMAL_FIFORAM2		__REG(PKUNITY_UMAL_BASE + 0x0068)
+-#define UMAL_FIFORAM3		__REG(PKUNITY_UMAL_BASE + 0x006c)
+-#define UMAL_FIFORAM4		__REG(PKUNITY_UMAL_BASE + 0x0070)
+-#define UMAL_FIFORAM5		__REG(PKUNITY_UMAL_BASE + 0x0074)
+-#define UMAL_FIFORAM6		__REG(PKUNITY_UMAL_BASE + 0x0078)
+-#define UMAL_FIFORAM7		__REG(PKUNITY_UMAL_BASE + 0x007c)
++#define UMAL_FIFOCFG0		(PKUNITY_UMAL_BASE + 0x0048)
++#define UMAL_FIFOCFG1		(PKUNITY_UMAL_BASE + 0x004c)
++#define UMAL_FIFOCFG2		(PKUNITY_UMAL_BASE + 0x0050)
++#define UMAL_FIFOCFG3		(PKUNITY_UMAL_BASE + 0x0054)
++#define UMAL_FIFOCFG4		(PKUNITY_UMAL_BASE + 0x0058)
++#define UMAL_FIFOCFG5		(PKUNITY_UMAL_BASE + 0x005c)
++#define UMAL_FIFORAM0		(PKUNITY_UMAL_BASE + 0x0060)
++#define UMAL_FIFORAM1		(PKUNITY_UMAL_BASE + 0x0064)
++#define UMAL_FIFORAM2		(PKUNITY_UMAL_BASE + 0x0068)
++#define UMAL_FIFORAM3		(PKUNITY_UMAL_BASE + 0x006c)
++#define UMAL_FIFORAM4		(PKUNITY_UMAL_BASE + 0x0070)
++#define UMAL_FIFORAM5		(PKUNITY_UMAL_BASE + 0x0074)
++#define UMAL_FIFORAM6		(PKUNITY_UMAL_BASE + 0x0078)
++#define UMAL_FIFORAM7		(PKUNITY_UMAL_BASE + 0x007c)
+ 
+ /* MAHBE MODUEL OF UMAL */
+ /* UMAL's MAHBE module interfaces to the host system through 32-bit AHB Master
+@@ -99,35 +99,35 @@
+ /*
+  * Transmit Control UMAL_DMATxCtrl
+  */
+-#define UMAL_DMATxCtrl		__REG(PKUNITY_UMAL_BASE + 0x0180)
++#define UMAL_DMATxCtrl		(PKUNITY_UMAL_BASE + 0x0180)
+ /*
+  * Pointer to TX Descripter UMAL_DMATxDescriptor
+  */
+-#define UMAL_DMATxDescriptor	__REG(PKUNITY_UMAL_BASE + 0x0184)
++#define UMAL_DMATxDescriptor	(PKUNITY_UMAL_BASE + 0x0184)
+ /*
+  * Status of Tx Packet Transfers UMAL_DMATxStatus
+  */
+-#define UMAL_DMATxStatus	__REG(PKUNITY_UMAL_BASE + 0x0188)
++#define UMAL_DMATxStatus	(PKUNITY_UMAL_BASE + 0x0188)
+ /*
+  * Receive Control UMAL_DMARxCtrl
+  */
+-#define UMAL_DMARxCtrl		__REG(PKUNITY_UMAL_BASE + 0x018c)
++#define UMAL_DMARxCtrl		(PKUNITY_UMAL_BASE + 0x018c)
+ /*
+  * Pointer to Rx Descriptor UMAL_DMARxDescriptor
+  */
+-#define UMAL_DMARxDescriptor	__REG(PKUNITY_UMAL_BASE + 0x0190)
++#define UMAL_DMARxDescriptor	(PKUNITY_UMAL_BASE + 0x0190)
+ /*
+  * Status of Rx Packet Transfers UMAL_DMARxStatus
+  */
+-#define UMAL_DMARxStatus	__REG(PKUNITY_UMAL_BASE + 0x0194)
++#define UMAL_DMARxStatus	(PKUNITY_UMAL_BASE + 0x0194)
+ /*
+  * Interrupt Mask UMAL_DMAIntrMask
+  */
+-#define UMAL_DMAIntrMask	__REG(PKUNITY_UMAL_BASE + 0x0198)
++#define UMAL_DMAIntrMask	(PKUNITY_UMAL_BASE + 0x0198)
+ /*
+  * Interrupts, read only UMAL_DMAInterrupt
+  */
+-#define UMAL_DMAInterrupt	__REG(PKUNITY_UMAL_BASE + 0x019c)
++#define UMAL_DMAInterrupt	(PKUNITY_UMAL_BASE + 0x019c)
+ 
+ /*
+  * Commands for UMAL_CFG1 register
+diff --git a/arch/unicore32/include/mach/regs-unigfx.h b/arch/unicore32/include/mach/regs-unigfx.h
+index 58bbd540a393..faf8b287fccf 100644
+--- a/arch/unicore32/include/mach/regs-unigfx.h
++++ b/arch/unicore32/include/mach/regs-unigfx.h
+@@ -11,67 +11,67 @@
+ /*
+  * control reg UDE_CFG
+  */
+-#define UDE_CFG       __REG(UDE_BASE + 0x0000)
++#define UDE_CFG       (UDE_BASE + 0x0000)
+ /*
+  * framebuffer start address reg UDE_FSA
+  */
+-#define UDE_FSA       __REG(UDE_BASE + 0x0004)
++#define UDE_FSA       (UDE_BASE + 0x0004)
+ /*
+  * line size reg UDE_LS
+  */
+-#define UDE_LS        __REG(UDE_BASE + 0x0008)
++#define UDE_LS        (UDE_BASE + 0x0008)
+ /*
+  * pitch size reg UDE_PS
+  */
+-#define UDE_PS        __REG(UDE_BASE + 0x000C)
++#define UDE_PS        (UDE_BASE + 0x000C)
+ /*
+  * horizontal active time reg UDE_HAT
+  */
+-#define UDE_HAT       __REG(UDE_BASE + 0x0010)
++#define UDE_HAT       (UDE_BASE + 0x0010)
+ /*
+  * horizontal blank time reg UDE_HBT
+  */
+-#define UDE_HBT       __REG(UDE_BASE + 0x0014)
++#define UDE_HBT       (UDE_BASE + 0x0014)
+ /*
+  * horizontal sync time reg UDE_HST
+  */
+-#define UDE_HST       __REG(UDE_BASE + 0x0018)
++#define UDE_HST       (UDE_BASE + 0x0018)
+ /*
+  * vertival active time reg UDE_VAT
+  */
+-#define UDE_VAT       __REG(UDE_BASE + 0x001C)
++#define UDE_VAT       (UDE_BASE + 0x001C)
+ /*
+  * vertival blank time reg UDE_VBT
+  */
+-#define UDE_VBT       __REG(UDE_BASE + 0x0020)
++#define UDE_VBT       (UDE_BASE + 0x0020)
+ /*
+  * vertival sync time reg UDE_VST
+  */
+-#define UDE_VST       __REG(UDE_BASE + 0x0024)
++#define UDE_VST       (UDE_BASE + 0x0024)
+ /*
+  * cursor position UDE_CXY
+  */
+-#define UDE_CXY       __REG(UDE_BASE + 0x0028)
++#define UDE_CXY       (UDE_BASE + 0x0028)
+ /*
+  * cursor front color UDE_CC0
+  */
+-#define UDE_CC0       __REG(UDE_BASE + 0x002C)
++#define UDE_CC0       (UDE_BASE + 0x002C)
+ /*
+  * cursor background color UDE_CC1
+  */
+-#define UDE_CC1       __REG(UDE_BASE + 0x0030)
++#define UDE_CC1       (UDE_BASE + 0x0030)
+ /*
+  * video position UDE_VXY
+  */
+-#define UDE_VXY       __REG(UDE_BASE + 0x0034)
++#define UDE_VXY       (UDE_BASE + 0x0034)
+ /*
+  * video start address reg UDE_VSA
+  */
+-#define UDE_VSA       __REG(UDE_BASE + 0x0040)
++#define UDE_VSA       (UDE_BASE + 0x0040)
+ /*
+  * video size reg UDE_VS
+  */
+-#define UDE_VS        __REG(UDE_BASE + 0x004C)
++#define UDE_VS        (UDE_BASE + 0x004C)
+ 
+ /*
+  * command reg for UNIGFX GE
+@@ -79,102 +79,102 @@
+ /*
+  * src xy reg UGE_SRCXY
+  */
+-#define UGE_SRCXY     __REG(UGE_BASE + 0x0000)
++#define UGE_SRCXY     (UGE_BASE + 0x0000)
+ /*
+  * dst xy reg UGE_DSTXY
+  */
+-#define UGE_DSTXY     __REG(UGE_BASE + 0x0004)
++#define UGE_DSTXY     (UGE_BASE + 0x0004)
+ /*
+  * pitch reg UGE_PITCH
+  */
+-#define UGE_PITCH     __REG(UGE_BASE + 0x0008)
++#define UGE_PITCH     (UGE_BASE + 0x0008)
+ /*
+  * src start reg UGE_SRCSTART
+  */
+-#define UGE_SRCSTART  __REG(UGE_BASE + 0x000C)
++#define UGE_SRCSTART  (UGE_BASE + 0x000C)
+ /*
+  * dst start reg UGE_DSTSTART
+  */
+-#define UGE_DSTSTART  __REG(UGE_BASE + 0x0010)
++#define UGE_DSTSTART  (UGE_BASE + 0x0010)
+ /*
+  * width height reg UGE_WIDHEIGHT
+  */
+-#define UGE_WIDHEIGHT __REG(UGE_BASE + 0x0014)
++#define UGE_WIDHEIGHT (UGE_BASE + 0x0014)
+ /*
+  * rop alpah reg UGE_ROPALPHA
+  */
+-#define UGE_ROPALPHA  __REG(UGE_BASE + 0x0018)
++#define UGE_ROPALPHA  (UGE_BASE + 0x0018)
+ /*
+  * front color UGE_FCOLOR
+  */
+-#define UGE_FCOLOR    __REG(UGE_BASE + 0x001C)
++#define UGE_FCOLOR    (UGE_BASE + 0x001C)
+ /*
+  * background color UGE_BCOLOR
+  */
+-#define UGE_BCOLOR    __REG(UGE_BASE + 0x0020)
++#define UGE_BCOLOR    (UGE_BASE + 0x0020)
+ /*
+  * src color key for high value UGE_SCH
+  */
+-#define UGE_SCH       __REG(UGE_BASE + 0x0024)
++#define UGE_SCH       (UGE_BASE + 0x0024)
+ /*
+  * dst color key for high value UGE_DCH
+  */
+-#define UGE_DCH       __REG(UGE_BASE + 0x0028)
++#define UGE_DCH       (UGE_BASE + 0x0028)
+ /*
+  * src color key for low value UGE_SCL
+  */
+-#define UGE_SCL       __REG(UGE_BASE + 0x002C)
++#define UGE_SCL       (UGE_BASE + 0x002C)
+ /*
+  * dst color key for low value UGE_DCL
+  */
+-#define UGE_DCL       __REG(UGE_BASE + 0x0030)
++#define UGE_DCL       (UGE_BASE + 0x0030)
+ /*
+  * clip 0 reg UGE_CLIP0
+  */
+-#define UGE_CLIP0     __REG(UGE_BASE + 0x0034)
++#define UGE_CLIP0     (UGE_BASE + 0x0034)
+ /*
+  * clip 1 reg UGE_CLIP1
+  */
+-#define UGE_CLIP1     __REG(UGE_BASE + 0x0038)
++#define UGE_CLIP1     (UGE_BASE + 0x0038)
+ /*
+  * command reg UGE_COMMAND
+  */
+-#define UGE_COMMAND   __REG(UGE_BASE + 0x003C)
++#define UGE_COMMAND   (UGE_BASE + 0x003C)
+ /*
+  * pattern 0 UGE_P0
+  */
+-#define UGE_P0        __REG(UGE_BASE + 0x0040)
+-#define UGE_P1        __REG(UGE_BASE + 0x0044)
+-#define UGE_P2        __REG(UGE_BASE + 0x0048)
+-#define UGE_P3        __REG(UGE_BASE + 0x004C)
+-#define UGE_P4        __REG(UGE_BASE + 0x0050)
+-#define UGE_P5        __REG(UGE_BASE + 0x0054)
+-#define UGE_P6        __REG(UGE_BASE + 0x0058)
+-#define UGE_P7        __REG(UGE_BASE + 0x005C)
+-#define UGE_P8        __REG(UGE_BASE + 0x0060)
+-#define UGE_P9        __REG(UGE_BASE + 0x0064)
+-#define UGE_P10       __REG(UGE_BASE + 0x0068)
+-#define UGE_P11       __REG(UGE_BASE + 0x006C)
+-#define UGE_P12       __REG(UGE_BASE + 0x0070)
+-#define UGE_P13       __REG(UGE_BASE + 0x0074)
+-#define UGE_P14       __REG(UGE_BASE + 0x0078)
+-#define UGE_P15       __REG(UGE_BASE + 0x007C)
+-#define UGE_P16       __REG(UGE_BASE + 0x0080)
+-#define UGE_P17       __REG(UGE_BASE + 0x0084)
+-#define UGE_P18       __REG(UGE_BASE + 0x0088)
+-#define UGE_P19       __REG(UGE_BASE + 0x008C)
+-#define UGE_P20       __REG(UGE_BASE + 0x0090)
+-#define UGE_P21       __REG(UGE_BASE + 0x0094)
+-#define UGE_P22       __REG(UGE_BASE + 0x0098)
+-#define UGE_P23       __REG(UGE_BASE + 0x009C)
+-#define UGE_P24       __REG(UGE_BASE + 0x00A0)
+-#define UGE_P25       __REG(UGE_BASE + 0x00A4)
+-#define UGE_P26       __REG(UGE_BASE + 0x00A8)
+-#define UGE_P27       __REG(UGE_BASE + 0x00AC)
+-#define UGE_P28       __REG(UGE_BASE + 0x00B0)
+-#define UGE_P29       __REG(UGE_BASE + 0x00B4)
+-#define UGE_P30       __REG(UGE_BASE + 0x00B8)
+-#define UGE_P31       __REG(UGE_BASE + 0x00BC)
++#define UGE_P0        (UGE_BASE + 0x0040)
++#define UGE_P1        (UGE_BASE + 0x0044)
++#define UGE_P2        (UGE_BASE + 0x0048)
++#define UGE_P3        (UGE_BASE + 0x004C)
++#define UGE_P4        (UGE_BASE + 0x0050)
++#define UGE_P5        (UGE_BASE + 0x0054)
++#define UGE_P6        (UGE_BASE + 0x0058)
++#define UGE_P7        (UGE_BASE + 0x005C)
++#define UGE_P8        (UGE_BASE + 0x0060)
++#define UGE_P9        (UGE_BASE + 0x0064)
++#define UGE_P10       (UGE_BASE + 0x0068)
++#define UGE_P11       (UGE_BASE + 0x006C)
++#define UGE_P12       (UGE_BASE + 0x0070)
++#define UGE_P13       (UGE_BASE + 0x0074)
++#define UGE_P14       (UGE_BASE + 0x0078)
++#define UGE_P15       (UGE_BASE + 0x007C)
++#define UGE_P16       (UGE_BASE + 0x0080)
++#define UGE_P17       (UGE_BASE + 0x0084)
++#define UGE_P18       (UGE_BASE + 0x0088)
++#define UGE_P19       (UGE_BASE + 0x008C)
++#define UGE_P20       (UGE_BASE + 0x0090)
++#define UGE_P21       (UGE_BASE + 0x0094)
++#define UGE_P22       (UGE_BASE + 0x0098)
++#define UGE_P23       (UGE_BASE + 0x009C)
++#define UGE_P24       (UGE_BASE + 0x00A0)
++#define UGE_P25       (UGE_BASE + 0x00A4)
++#define UGE_P26       (UGE_BASE + 0x00A8)
++#define UGE_P27       (UGE_BASE + 0x00AC)
++#define UGE_P28       (UGE_BASE + 0x00B0)
++#define UGE_P29       (UGE_BASE + 0x00B4)
++#define UGE_P30       (UGE_BASE + 0x00B8)
++#define UGE_P31       (UGE_BASE + 0x00BC)
+ 
+ #define UDE_CFG_DST_MASK	FMASK(2, 8)
+ #define UDE_CFG_DST8            FIELD(0x0, 2, 8)
+diff --git a/arch/unicore32/kernel/entry.S b/arch/unicore32/kernel/entry.S
+index 83698b7c8f5b..00a259f9819e 100644
+--- a/arch/unicore32/kernel/entry.S
++++ b/arch/unicore32/kernel/entry.S
+@@ -91,7 +91,7 @@
+ 	.endm
+ 
+ 	.macro	get_irqnr_and_base, irqnr, irqstat, base, tmp
+-	ldw	\base, =(io_p2v(PKUNITY_INTC_BASE))
++	ldw	\base, =(PKUNITY_INTC_BASE)
+ 	ldw	\irqstat, [\base+], #0xC	@ INTC_ICIP
+ 	ldw	\tmp,	  [\base+], #0x4	@ INTC_ICMR
+ 	and.a	\irqstat, \irqstat, \tmp
+diff --git a/arch/unicore32/kernel/irq.c b/arch/unicore32/kernel/irq.c
+index e1dbfcb61873..b23624cf3062 100644
+--- a/arch/unicore32/kernel/irq.c
++++ b/arch/unicore32/kernel/irq.c
+@@ -226,8 +226,8 @@ static struct irq_chip puv3_normal_chip = {
+ 
+ static struct resource irq_resource = {
+ 	.name	= "irqs",
+-	.start	= PKUNITY_INTC_BASE,
+-	.end	= PKUNITY_INTC_BASE + 0xFFFFF,
++	.start	= io_v2p(PKUNITY_INTC_BASE),
++	.end	= io_v2p(PKUNITY_INTC_BASE) + 0xFFFFF,
+ };
+ 
+ static struct puv3_irq_state {
+diff --git a/arch/unicore32/kernel/pci.c b/arch/unicore32/kernel/pci.c
+index 65c265ee8e94..100eab842e66 100644
+--- a/arch/unicore32/kernel/pci.c
++++ b/arch/unicore32/kernel/pci.c
+@@ -75,27 +75,27 @@ void pci_puv3_preinit(void)
+ {
+ 	printk(KERN_DEBUG "PCI: PKUnity PCI Controller Initializing ...\n");
+ 	/* config PCI bridge base */
+-	writel(PKUNITY_PCIBRI_BASE, PCICFG_BRIBASE);
++	writel(io_v2p(PKUNITY_PCIBRI_BASE), PCICFG_BRIBASE);
+ 
+ 	writel(0, PCIBRI_AHBCTL0);
+-	writel(PKUNITY_PCIBRI_BASE | PCIBRI_BARx_MEM, PCIBRI_AHBBAR0);
++	writel(io_v2p(PKUNITY_PCIBRI_BASE) | PCIBRI_BARx_MEM, PCIBRI_AHBBAR0);
+ 	writel(0xFFFF0000, PCIBRI_AHBAMR0);
+ 	writel(0, PCIBRI_AHBTAR0);
+ 
+ 	writel(PCIBRI_CTLx_AT, PCIBRI_AHBCTL1);
+-	writel(PKUNITY_PCILIO_BASE | PCIBRI_BARx_IO, PCIBRI_AHBBAR1);
++	writel(io_v2p(PKUNITY_PCILIO_BASE) | PCIBRI_BARx_IO, PCIBRI_AHBBAR1);
+ 	writel(0xFFFF0000, PCIBRI_AHBAMR1);
+ 	writel(0x00000000, PCIBRI_AHBTAR1);
+ 
+ 	writel(PCIBRI_CTLx_PREF, PCIBRI_AHBCTL2);
+-	writel(PKUNITY_PCIMEM_BASE | PCIBRI_BARx_MEM, PCIBRI_AHBBAR2);
++	writel(io_v2p(PKUNITY_PCIMEM_BASE) | PCIBRI_BARx_MEM, PCIBRI_AHBBAR2);
+ 	writel(0xF8000000, PCIBRI_AHBAMR2);
+ 	writel(0, PCIBRI_AHBTAR2);
+ 
+-	writel(PKUNITY_PCIAHB_BASE | PCIBRI_BARx_MEM, PCIBRI_BAR1);
++	writel(io_v2p(PKUNITY_PCIAHB_BASE) | PCIBRI_BARx_MEM, PCIBRI_BAR1);
+ 
+ 	writel(PCIBRI_CTLx_AT | PCIBRI_CTLx_PREF, PCIBRI_PCICTL0);
+-	writel(PKUNITY_PCIAHB_BASE | PCIBRI_BARx_MEM, PCIBRI_PCIBAR0);
++	writel(io_v2p(PKUNITY_PCIAHB_BASE) | PCIBRI_BARx_MEM, PCIBRI_PCIBAR0);
+ 	writel(0xF8000000, PCIBRI_PCIAMR0);
+ 	writel(PKUNITY_SDRAM_BASE, PCIBRI_PCITAR0);
+ 
+diff --git a/arch/unicore32/kernel/puv3-core.c b/arch/unicore32/kernel/puv3-core.c
+index 7d10e7b07c20..8b1b6beb858e 100644
+--- a/arch/unicore32/kernel/puv3-core.c
++++ b/arch/unicore32/kernel/puv3-core.c
+@@ -50,8 +50,8 @@ unsigned long long sched_clock(void)
+ static struct resource puv3_usb_resources[] = {
+ 	/* order is significant! */
+ 	{
+-		.start		= PKUNITY_USB_BASE,
+-		.end		= PKUNITY_USB_BASE + 0x3ff,
++		.start		= io_v2p(PKUNITY_USB_BASE),
++		.end		= io_v2p(PKUNITY_USB_BASE) + 0x3ff,
+ 		.flags		= IORESOURCE_MEM,
+ 	}, {
+ 		.start		= IRQ_USB,
+@@ -82,8 +82,8 @@ static struct musb_hdrc_platform_data puv3_usb_plat = {
+ 
+ static struct resource puv3_mmc_resources[] = {
+ 	[0] = {
+-		.start	= PKUNITY_SDC_BASE,
+-		.end	= PKUNITY_SDC_BASE + 0xfff,
++		.start	= io_v2p(PKUNITY_SDC_BASE),
++		.end	= io_v2p(PKUNITY_SDC_BASE) + 0xfff,
+ 		.flags	= IORESOURCE_MEM,
+ 	},
+ 	[1] = {
+@@ -95,8 +95,8 @@ static struct resource puv3_mmc_resources[] = {
+ 
+ static struct resource puv3_unigfx_resources[] = {
+ 	[0] = {
+-		.start	= PKUNITY_UNIGFX_BASE,
+-		.end	= PKUNITY_UNIGFX_BASE + 0xfff,
++		.start	= io_v2p(PKUNITY_UNIGFX_BASE),
++		.end	= io_v2p(PKUNITY_UNIGFX_BASE) + 0xfff,
+ 		.flags	= IORESOURCE_MEM,
+ 	},
+ 	[1] = {
+@@ -108,8 +108,8 @@ static struct resource puv3_unigfx_resources[] = {
+ 
+ static struct resource puv3_rtc_resources[] = {
+ 	[0] = {
+-		.start = PKUNITY_RTC_BASE,
+-		.end   = PKUNITY_RTC_BASE + 0xff,
++		.start = io_v2p(PKUNITY_RTC_BASE),
++		.end   = io_v2p(PKUNITY_RTC_BASE) + 0xff,
+ 		.flags = IORESOURCE_MEM,
+ 	},
+ 	[1] = {
+@@ -126,16 +126,16 @@ static struct resource puv3_rtc_resources[] = {
+ 
+ static struct resource puv3_pwm_resources[] = {
+ 	[0] = {
+-		.start	= PKUNITY_OST_BASE + 0x80,
+-		.end	= PKUNITY_OST_BASE + 0xff,
++		.start	= io_v2p(PKUNITY_OST_BASE) + 0x80,
++		.end	= io_v2p(PKUNITY_OST_BASE) + 0xff,
+ 		.flags	= IORESOURCE_MEM,
+ 	},
+ };
+ 
+ static struct resource puv3_uart0_resources[] = {
+ 	[0] = {
+-		.start = PKUNITY_UART0_BASE,
+-		.end   = PKUNITY_UART0_BASE + 0xff,
++		.start = io_v2p(PKUNITY_UART0_BASE),
++		.end   = io_v2p(PKUNITY_UART0_BASE) + 0xff,
+ 		.flags = IORESOURCE_MEM,
+ 	},
+ 	[1] = {
+@@ -147,8 +147,8 @@ static struct resource puv3_uart0_resources[] = {
+ 
+ static struct resource puv3_uart1_resources[] = {
+ 	[0] = {
+-		.start = PKUNITY_UART1_BASE,
+-		.end   = PKUNITY_UART1_BASE + 0xff,
++		.start = io_v2p(PKUNITY_UART1_BASE),
++		.end   = io_v2p(PKUNITY_UART1_BASE) + 0xff,
+ 		.flags = IORESOURCE_MEM,
+ 	},
+ 	[1] = {
+@@ -160,8 +160,8 @@ static struct resource puv3_uart1_resources[] = {
+ 
+ static struct resource puv3_umal_resources[] = {
+ 	[0] = {
+-		.start = PKUNITY_UMAL_BASE,
+-		.end   = PKUNITY_UMAL_BASE + 0x1fff,
++		.start = io_v2p(PKUNITY_UMAL_BASE),
++		.end   = io_v2p(PKUNITY_UMAL_BASE) + 0x1fff,
+ 		.flags = IORESOURCE_MEM,
+ 	},
+ 	[1] = {
+diff --git a/arch/unicore32/kernel/puv3-nb0916.c b/arch/unicore32/kernel/puv3-nb0916.c
+index a78e60420653..e731c561ed4e 100644
+--- a/arch/unicore32/kernel/puv3-nb0916.c
++++ b/arch/unicore32/kernel/puv3-nb0916.c
+@@ -39,8 +39,8 @@ static struct resource physmap_flash_resource = {
+ 
+ static struct resource puv3_i2c_resources[] = {
+ 	[0] = {
+-		.start = PKUNITY_I2C_BASE,
+-		.end   = PKUNITY_I2C_BASE + 0xff,
++		.start = io_v2p(PKUNITY_I2C_BASE),
++		.end   = io_v2p(PKUNITY_I2C_BASE) + 0xff,
+ 		.flags = IORESOURCE_MEM,
+ 	},
+ 	[1] = {
+diff --git a/arch/unicore32/kernel/sleep.S b/arch/unicore32/kernel/sleep.S
+index f7c3fc87f7fe..607a104aec59 100644
+--- a/arch/unicore32/kernel/sleep.S
++++ b/arch/unicore32/kernel/sleep.S
+@@ -76,10 +76,10 @@ ENTRY(puv3_cpu_suspend)
+ 
+ 
+ 	@ DDR2 BaseAddr
+-	ldw	r0, =io_p2v(PKUNITY_DDR2CTRL_BASE)
++	ldw	r0, =(PKUNITY_DDR2CTRL_BASE)
+ 
+ 	@ PM BaseAddr
+-	ldw	r1, =io_p2v(PKUNITY_PM_BASE)
++	ldw	r1, =(PKUNITY_PM_BASE)
+ 
+ 	@ set PLL_SYS_CFG reg, 275
+ 	movl	r6, #0x00002401</pre><hr><pre>commit 4fde87cb13a29c06e0b4c2cba86445492098fbc2
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sun Feb 27 12:46:06 2011 +0800
+
+    unicore32: replace unicore32-specific iomap functions with generic lib implementation
+    
+    1. define and enable CONFIG_GENERIC_IOMAP
+    2. define unicore32-specific PCI_IOBASE for asm-generic/io.h
+    3. define HAVE_ARCH_PIO_SIZE and unicore32-specific PIO_* macros
+    4. remove all unicore32-specific iomap functions
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Reviewed-and-Acked-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/Kconfig b/arch/unicore32/Kconfig
+index 7f65018e64ac..4a36db45fb3d 100644
+--- a/arch/unicore32/Kconfig
++++ b/arch/unicore32/Kconfig
+@@ -30,6 +30,9 @@ config GENERIC_CLOCKEVENTS
+ config GENERIC_CSUM
+ 	def_bool y
+ 
++config GENERIC_IOMAP
++	def_bool y
++
+ config NO_IOPORT
+ 	bool
+ 
+diff --git a/arch/unicore32/include/asm/io.h b/arch/unicore32/include/asm/io.h
+index d73457c1800a..2483fcbadbe4 100644
+--- a/arch/unicore32/include/asm/io.h
++++ b/arch/unicore32/include/asm/io.h
+@@ -18,6 +18,7 @@
+ #include &lt;asm/memory.h&gt;
+ #include &lt;asm/system.h&gt;
+ 
++#define PCI_IOBASE	io_p2v(PKUNITY_PCILIO_BASE)
+ #include &lt;asm-generic/io.h&gt;
+ 
+ /*
+@@ -38,9 +39,6 @@ extern void __uc32_iounmap(volatile void __iomem *addr);
+ #define ioremap_cached(cookie, size)	__uc32_ioremap_cached(cookie, size)
+ #define iounmap(cookie)			__uc32_iounmap(cookie)
+ 
+-extern void __iomem *ioport_map(unsigned long port, unsigned int nr);
+-extern void ioport_unmap(void __iomem *addr);
+-
+ /*
+  * Convert a physical pointer to a virtual kernel pointer for /dev/mem
+  * access
+@@ -48,5 +46,10 @@ extern void ioport_unmap(void __iomem *addr);
+ #undef xlate_dev_mem_ptr
+ #define xlate_dev_mem_ptr(p)	__va(p)
+ 
++#define HAVE_ARCH_PIO_SIZE
++#define PIO_OFFSET		(unsigned int)(PCI_IOBASE)
++#define PIO_MASK		(unsigned int)(IO_SPACE_LIMIT)
++#define PIO_RESERVED		(PIO_OFFSET + PIO_MASK + 1)
++
+ #endif	/* __KERNEL__ */
+ #endif	/* __UNICORE_IO_H__ */
+diff --git a/arch/unicore32/mm/Makefile b/arch/unicore32/mm/Makefile
+index f3ff41039f51..46c166699319 100644
+--- a/arch/unicore32/mm/Makefile
++++ b/arch/unicore32/mm/Makefile
+@@ -3,7 +3,7 @@
+ #
+ 
+ obj-y				:= extable.o fault.o init.o pgd.o mmu.o
+-obj-y				+= iomap.o flush.o ioremap.o
++obj-y				+= flush.o ioremap.o
+ 
+ obj-$(CONFIG_SWIOTLB)		+= dma-swiotlb.o
+ 
+diff --git a/arch/unicore32/mm/iomap.c b/arch/unicore32/mm/iomap.c
+deleted file mode 100644
+index a7e1a3d2e069..000000000000
+--- a/arch/unicore32/mm/iomap.c
++++ /dev/null
+@@ -1,56 +0,0 @@
+-/*
+- * linux/arch/unicore32/mm/iomap.c
+- *
+- * Code specific to PKUnity SoC and UniCore ISA
+- *
+- * Copyright (C) 2001-2010 GUAN Xue-tao
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License version 2 as
+- * published by the Free Software Foundation.
+- *
+- * Map IO port and PCI memory spaces so that {read,write}[bwl] can
+- * be used to access this memory.
+- */
+-#include &lt;linux/module.h&gt;
+-#include &lt;linux/pci.h&gt;
+-#include &lt;linux/ioport.h&gt;
+-#include &lt;linux/io.h&gt;
+-
+-#ifdef __io
+-void __iomem *ioport_map(unsigned long port, unsigned int nr)
+-{
+-	/* we map PC lagcy 64K IO port to PCI IO space 0x80030000 */
+-	return (void __iomem *) (unsigned long)
+-			io_p2v((port &amp; 0xffff) + PKUNITY_PCILIO_BASE);
+-}
+-EXPORT_SYMBOL(ioport_map);
+-
+-void ioport_unmap(void __iomem *addr)
+-{
+-}
+-EXPORT_SYMBOL(ioport_unmap);
+-#endif
+-
+-#ifdef CONFIG_PCI
+-void __iomem *pci_iomap(struct pci_dev *dev, int bar, unsigned long maxlen)
+-{
+-	resource_size_t start = pci_resource_start(dev, bar);
+-	resource_size_t len   = pci_resource_len(dev, bar);
+-	unsigned long flags = pci_resource_flags(dev, bar);
+-
+-	if (!len || !start)
+-		return NULL;
+-	if (maxlen &amp;&amp; len &gt; maxlen)
+-		len = maxlen;
+-	if (flags &amp; IORESOURCE_IO)
+-		return ioport_map(start, len);
+-	if (flags &amp; IORESOURCE_MEM) {
+-		if (flags &amp; IORESOURCE_CACHEABLE)
+-			return ioremap(start, len);
+-		return ioremap_nocache(start, len);
+-	}
+-	return NULL;
+-}
+-EXPORT_SYMBOL(pci_iomap);
+-#endif</pre><hr><pre>commit ce443ab5fd536941da1d529ba3963324f941fc29
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Feb 26 21:39:10 2011 +0800
+
+    unicore32 machine related: add frame buffer driver for pkunity-v3 soc
+    
+    change from original version -- by advice of Paul Mundt
+    1. remove videomemorysize definitions
+    2. remove unifb_enable and unifb_setup
+    3. use dev_warn instead of printk in fb driver
+    4. remove judgement for FB_ACCEL_PUV3_UNIGFX
+    5. adjust clk_get and clk_set_rate calls
+    6. add resources definitions
+    7. remove unifb_option
+    8. adjust register for platform_device
+    9. adjust unifb_ops position and unifb_regs assignment position
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Acked-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index fa842ba63a1b..98f942eb7286 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -4902,6 +4902,7 @@ S:	Maintained
+ T:	git git://git.kernel.org/pub/scm/linux/kernel/git/epip/linux-2.6-unicore32.git
+ F:	drivers/input/serio/i8042-unicore32io.h
+ F:	drivers/i2c/busses/i2c-puv3.c
++F:	drivers/video/fb-puv3.c
+ 
+ PMC SIERRA MaxRAID DRIVER
+ M:	Anil Ravindranath &lt;anil_ravindranath@pmc-sierra.com&gt;
+diff --git a/arch/unicore32/configs/debug_defconfig b/arch/unicore32/configs/debug_defconfig
+index bf42abdd9683..b5fbde9f1cb2 100644
+--- a/arch/unicore32/configs/debug_defconfig
++++ b/arch/unicore32/configs/debug_defconfig
+@@ -66,7 +66,6 @@ CONFIG_LCD_BACKLIGHT=n
+ 
+ CONFIG_PUV3_RTC=y
+ CONFIG_PUV3_UMAL=y
+-CONFIG_PUV3_UNIGFX=y
+ CONFIG_PUV3_MUSB=n
+ CONFIG_PUV3_AC97=n
+ CONFIG_PUV3_NAND=n
+@@ -130,6 +129,8 @@ CONFIG_VIDEO_DEV=n
+ CONFIG_USB_VIDEO_CLASS=n
+ 
+ #	Graphics support
++CONFIG_FB=y
++CONFIG_FB_PUV3_UNIGFX=y
+ #	Console display driver support
+ CONFIG_VGA_CONSOLE=n
+ CONFIG_FRAMEBUFFER_CONSOLE=y
+diff --git a/arch/unicore32/include/mach/memory.h b/arch/unicore32/include/mach/memory.h
+index 541949dfa5b4..b774eff3ea65 100644
+--- a/arch/unicore32/include/mach/memory.h
++++ b/arch/unicore32/include/mach/memory.h
+@@ -50,7 +50,7 @@ void puv3_pci_adjust_zones(unsigned long *size, unsigned long *holes);
+ 
+ /* kuser area */
+ #define KUSER_VECPAGE_BASE	(KUSER_BASE + UL(0x3fff0000))
+-#define KUSER_UNIGFX_BASE	(KUSER_BASE + PKUNITY_UNIGFX_MMAP_BASE)
++#define KUSER_UNIGFX_BASE	(PAGE_OFFSET + PKUNITY_UNIGFX_MMAP_BASE)
+ /* kuser_vecpage (0xbfff0000) is ro, and vectors page (0xffff0000) is rw */
+ #define kuser_vecpage_to_vectors(x)	((x) - (KUSER_VECPAGE_BASE)	\
+ 					+ (VECTORS_BASE))
+diff --git a/arch/unicore32/kernel/puv3-core.c b/arch/unicore32/kernel/puv3-core.c
+index 6edf928a106c..7d10e7b07c20 100644
+--- a/arch/unicore32/kernel/puv3-core.c
++++ b/arch/unicore32/kernel/puv3-core.c
+@@ -93,6 +93,19 @@ static struct resource puv3_mmc_resources[] = {
+ 	},
+ };
+ 
++static struct resource puv3_unigfx_resources[] = {
++	[0] = {
++		.start	= PKUNITY_UNIGFX_BASE,
++		.end	= PKUNITY_UNIGFX_BASE + 0xfff,
++		.flags	= IORESOURCE_MEM,
++	},
++	[1] = {
++		.start	= PKUNITY_UNIGFX_MMAP_BASE,
++		.end	= PKUNITY_UNIGFX_MMAP_BASE + PKUNITY_UNIGFX_MMAP_SIZE,
++		.flags	= IORESOURCE_MEM,
++	},
++};
++
+ static struct resource puv3_rtc_resources[] = {
+ 	[0] = {
+ 		.start = PKUNITY_RTC_BASE,
+@@ -256,6 +269,8 @@ void __init puv3_core_init(void)
+ 			puv3_umal_resources, ARRAY_SIZE(puv3_umal_resources));
+ 	platform_device_register_simple("PKUnity-v3-MMC", -1,
+ 			puv3_mmc_resources, ARRAY_SIZE(puv3_mmc_resources));
++	platform_device_register_simple("PKUnity-v3-UNIGFX", -1,
++			puv3_unigfx_resources, ARRAY_SIZE(puv3_unigfx_resources));
+ 	platform_device_register_simple("PKUnity-v3-PWM", -1,
+ 			puv3_pwm_resources, ARRAY_SIZE(puv3_pwm_resources));
+ 	platform_device_register_simple("PKUnity-v3-UART", 0,
+diff --git a/drivers/video/Kconfig b/drivers/video/Kconfig
+index 6bafb51bb437..ec55a87899ab 100644
+--- a/drivers/video/Kconfig
++++ b/drivers/video/Kconfig
+@@ -2365,6 +2365,17 @@ config FB_JZ4740
+ 	help
+ 	  Framebuffer support for the JZ4740 SoC.
+ 
++config FB_PUV3_UNIGFX
++	tristate "PKUnity v3 Unigfx framebuffer support"
++	depends on FB &amp;&amp; UNICORE32 &amp;&amp; ARCH_PUV3
++	select FB_SYS_FILLRECT
++	select FB_SYS_COPYAREA
++	select FB_SYS_IMAGEBLIT
++	select FB_SYS_FOPS
++	help
++	  Choose this option if you want to use the Unigfx device as a
++	  framebuffer device. Without the support of PCI &amp; AGP.
++
+ source "drivers/video/omap/Kconfig"
+ source "drivers/video/omap2/Kconfig"
+ 
+diff --git a/drivers/video/Makefile b/drivers/video/Makefile
+index 8c8fabdff9d0..b0eb3da24670 100644
+--- a/drivers/video/Makefile
++++ b/drivers/video/Makefile
+@@ -139,6 +139,7 @@ obj-$(CONFIG_FB_MB862XX)	  += mb862xx/
+ obj-$(CONFIG_FB_MSM)              += msm/
+ obj-$(CONFIG_FB_NUC900)           += nuc900fb.o
+ obj-$(CONFIG_FB_JZ4740)		  += jz4740_fb.o
++obj-$(CONFIG_FB_PUV3_UNIGFX)      += fb-puv3.o
+ 
+ # Platform or fallback drivers go here
+ obj-$(CONFIG_FB_UVESA)            += uvesafb.o
+diff --git a/drivers/video/fb-puv3.c b/drivers/video/fb-puv3.c
+new file mode 100644
+index 000000000000..dbd2dc4745d1
+--- /dev/null
++++ b/drivers/video/fb-puv3.c
+@@ -0,0 +1,846 @@
++/*
++ * Frame Buffer Driver for PKUnity-v3 Unigfx
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include &lt;linux/module.h&gt;
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/errno.h&gt;
++#include &lt;linux/vmalloc.h&gt;
++#include &lt;linux/platform_device.h&gt;
++#include &lt;linux/clk.h&gt;
++#include &lt;linux/fb.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/console.h&gt;
++
++#include &lt;asm/sizes.h&gt;
++#include &lt;mach/hardware.h&gt;
++
++/* Platform_data reserved for unifb registers. */
++#define UNIFB_REGS_NUM		10
++/* RAM reserved for the frame buffer. */
++#define UNIFB_MEMSIZE		(SZ_4M)		/* 4 MB for 1024*768*32b */
++
++/*
++ * cause UNIGFX don not have EDID
++ * all the modes are organized as follow
++ */
++static const struct fb_videomode unifb_modes[] = {
++	/* 0 640x480-60 VESA */
++	{ "640x480@60",  60,  640, 480,  25175000,  48, 16, 34, 10,  96, 1,
++	  0, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA },
++	/* 1 640x480-75 VESA */
++	{ "640x480@75",  75,  640, 480,  31500000, 120, 16, 18,  1,  64, 1,
++	  0, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA },
++	/* 2 800x600-60 VESA */
++	{ "800x600@60",  60,  800, 600,  40000000,  88, 40, 26,  1, 128, 1,
++	  0, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA },
++	/* 3 800x600-75 VESA */
++	{ "800x600@75",  75,  800, 600,  49500000, 160, 16, 23,  1,  80, 1,
++	  0, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA },
++	/* 4 1024x768-60 VESA */
++	{ "1024x768@60", 60, 1024, 768,  65000000, 160, 24, 34,  3, 136, 1,
++	  0, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA },
++	/* 5 1024x768-75 VESA */
++	{ "1024x768@75", 75, 1024, 768,  78750000, 176, 16, 30,  1,  96, 1,
++	  0, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA },
++	/* 6 1280x960-60 VESA */
++	{ "1280x960@60", 60, 1280, 960, 108000000, 312, 96, 38,  1, 112, 1,
++	  0, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA },
++	/* 7 1440x900-60 VESA */
++	{ "1440x900@60", 60, 1440, 900, 106500000, 232, 80, 30,  3, 152, 1,
++	  0, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA },
++	/* 8 FIXME 9 1024x600-60 VESA UNTESTED */
++	{ "1024x600@60", 60, 1024, 600,  50650000, 160, 24, 26,  1, 136, 1,
++	  0, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA },
++	/* 9 FIXME 10 1024x600-75 VESA UNTESTED */
++	{ "1024x600@75", 75, 1024, 600,  61500000, 176, 16, 23,  1,  96, 1,
++	  0, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA },
++	/* 10 FIXME 11 1366x768-60 VESA UNTESTED */
++	{ "1366x768@60", 60, 1366, 768,  85500000, 256, 58, 18,  1,  112, 3,
++	  0, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA },
++};
++
++static struct fb_var_screeninfo unifb_default = {
++	.xres =		640,
++	.yres =		480,
++	.xres_virtual =	640,
++	.yres_virtual =	480,
++	.bits_per_pixel = 16,
++	.red =		{ 11, 5, 0 },
++	.green =	{ 5,  6, 0 },
++	.blue =		{ 0,  5, 0 },
++	.activate =	FB_ACTIVATE_NOW,
++	.height =	-1,
++	.width =	-1,
++	.pixclock =	25175000,
++	.left_margin =	48,
++	.right_margin =	16,
++	.upper_margin =	33,
++	.lower_margin =	10,
++	.hsync_len =	96,
++	.vsync_len =	2,
++	.vmode =	FB_VMODE_NONINTERLACED,
++};
++
++static struct fb_fix_screeninfo unifb_fix = {
++	.id =		"UNIGFX FB",
++	.type =		FB_TYPE_PACKED_PIXELS,
++	.visual =	FB_VISUAL_TRUECOLOR,
++	.xpanstep =	1,
++	.ypanstep =	1,
++	.ywrapstep =	1,
++	.accel =	FB_ACCEL_NONE,
++};
++
++static void unifb_sync(struct fb_info *info)
++{
++	/* TODO: may, this can be replaced by interrupt */
++	int cnt;
++
++	for (cnt = 0; cnt &lt; 0x10000000; cnt++) {
++		if (readl(UGE_COMMAND) &amp; 0x1000000)
++			return;
++	}
++
++	if (cnt &gt; 0x8000000)
++		dev_warn(info-&gt;device, "Warning: UniGFX GE time out ...\n");
++}
++
++static void unifb_prim_fillrect(struct fb_info *info,
++				const struct fb_fillrect *region)
++{
++	int awidth = region-&gt;width;
++	int aheight = region-&gt;height;
++	int m_iBpp = info-&gt;var.bits_per_pixel;
++	int screen_width = info-&gt;var.xres;
++	int src_sel = 1;	/* from fg_color */
++	int pat_sel = 1;
++	int src_x0 = 0;
++	int dst_x0 = region-&gt;dx;
++	int src_y0 = 0;
++	int dst_y0 = region-&gt;dy;
++	int rop_alpha_sel = 0;
++	int rop_alpha_code = 0xCC;
++	int x_dir = 1;
++	int y_dir = 1;
++	int alpha_r = 0;
++	int alpha_sel = 0;
++	int dst_pitch = screen_width * (m_iBpp / 8);
++	int dst_offset = dst_y0 * dst_pitch + dst_x0 * (m_iBpp / 8);
++	int src_pitch = screen_width * (m_iBpp / 8);
++	int src_offset = src_y0 * src_pitch + src_x0 * (m_iBpp / 8);
++	unsigned int command = 0;
++	int clip_region = 0;
++	int clip_en = 0;
++	int tp_en = 0;
++	int fg_color = 0;
++	int bottom = info-&gt;var.yres - 1;
++	int right = info-&gt;var.xres - 1;
++	int top = 0;
++
++	bottom = (bottom &lt;&lt; 16) | right;
++	command = (rop_alpha_sel &lt;&lt; 26) | (pat_sel &lt;&lt; 18) | (src_sel &lt;&lt; 16)
++		| (x_dir &lt;&lt; 20) | (y_dir &lt;&lt; 21) | (command &lt;&lt; 24)
++		| (clip_region &lt;&lt; 23) | (clip_en &lt;&lt; 22) | (tp_en &lt;&lt; 27);
++	src_pitch = (dst_pitch &lt;&lt; 16) | src_pitch;
++	awidth = awidth | (aheight &lt;&lt; 16);
++	alpha_r = ((rop_alpha_code &amp; 0xff) &lt;&lt; 8) | (alpha_r &amp; 0xff)
++		| (alpha_sel &lt;&lt; 16);
++	src_x0 = (src_x0 &amp; 0x1fff) | ((src_y0 &amp; 0x1fff) &lt;&lt; 16);
++	dst_x0 = (dst_x0 &amp; 0x1fff) | ((dst_y0 &amp; 0x1fff) &lt;&lt; 16);
++	fg_color = region-&gt;color;
++
++	unifb_sync(info);
++
++	writel(((u32 *)(info-&gt;pseudo_palette))[fg_color], UGE_FCOLOR);
++	writel(0, UGE_BCOLOR);
++	writel(src_pitch, UGE_PITCH);
++	writel(src_offset, UGE_SRCSTART);
++	writel(dst_offset, UGE_DSTSTART);
++	writel(awidth, UGE_WIDHEIGHT);
++	writel(top, UGE_CLIP0);
++	writel(bottom, UGE_CLIP1);
++	writel(alpha_r, UGE_ROPALPHA);
++	writel(src_x0, UGE_SRCXY);
++	writel(dst_x0, UGE_DSTXY);
++	writel(command, UGE_COMMAND);
++}
++
++static void unifb_fillrect(struct fb_info *info,
++		const struct fb_fillrect *region)
++{
++	struct fb_fillrect modded;
++	int vxres, vyres;
++
++	if (info-&gt;flags &amp; FBINFO_HWACCEL_DISABLED) {
++		sys_fillrect(info, region);
++		return;
++	}
++
++	vxres = info-&gt;var.xres_virtual;
++	vyres = info-&gt;var.yres_virtual;
++
++	memcpy(&amp;modded, region, sizeof(struct fb_fillrect));
++
++	if (!modded.width || !modded.height ||
++	    modded.dx &gt;= vxres || modded.dy &gt;= vyres)
++		return;
++
++	if (modded.dx + modded.width &gt; vxres)
++		modded.width = vxres - modded.dx;
++	if (modded.dy + modded.height &gt; vyres)
++		modded.height = vyres - modded.dy;
++
++	unifb_prim_fillrect(info, &amp;modded);
++}
++
++static void unifb_prim_copyarea(struct fb_info *info,
++				const struct fb_copyarea *area)
++{
++	int awidth = area-&gt;width;
++	int aheight = area-&gt;height;
++	int m_iBpp = info-&gt;var.bits_per_pixel;
++	int screen_width = info-&gt;var.xres;
++	int src_sel = 2;	/* from mem */
++	int pat_sel = 0;
++	int src_x0 = area-&gt;sx;
++	int dst_x0 = area-&gt;dx;
++	int src_y0 = area-&gt;sy;
++	int dst_y0 = area-&gt;dy;
++
++	int rop_alpha_sel = 0;
++	int rop_alpha_code = 0xCC;
++	int x_dir = 1;
++	int y_dir = 1;
++
++	int alpha_r = 0;
++	int alpha_sel = 0;
++	int dst_pitch = screen_width * (m_iBpp / 8);
++	int dst_offset = dst_y0 * dst_pitch + dst_x0 * (m_iBpp / 8);
++	int src_pitch = screen_width * (m_iBpp / 8);
++	int src_offset = src_y0 * src_pitch + src_x0 * (m_iBpp / 8);
++	unsigned int command = 0;
++	int clip_region = 0;
++	int clip_en = 1;
++	int tp_en = 0;
++	int top = 0;
++	int bottom = info-&gt;var.yres;
++	int right = info-&gt;var.xres;
++	int fg_color = 0;
++	int bg_color = 0;
++
++	if (src_x0 &lt; 0)
++		src_x0 = 0;
++	if (src_y0 &lt; 0)
++		src_y0 = 0;
++
++	if (src_y0 - dst_y0 &gt; 0) {
++		y_dir = 1;
++	} else {
++		y_dir = 0;
++		src_offset = (src_y0 + aheight) * src_pitch +
++				src_x0 * (m_iBpp / 8);
++		dst_offset = (dst_y0 + aheight) * dst_pitch +
++				dst_x0 * (m_iBpp / 8);
++		src_y0 += aheight;
++		dst_y0 += aheight;
++	}
++
++	command = (rop_alpha_sel &lt;&lt; 26) | (pat_sel &lt;&lt; 18) | (src_sel &lt;&lt; 16) |
++		(x_dir &lt;&lt; 20) | (y_dir &lt;&lt; 21) | (command &lt;&lt; 24) |
++		(clip_region &lt;&lt; 23) | (clip_en &lt;&lt; 22) | (tp_en &lt;&lt; 27);
++	src_pitch = (dst_pitch &lt;&lt; 16) | src_pitch;
++	awidth = awidth | (aheight &lt;&lt; 16);
++	alpha_r = ((rop_alpha_code &amp; 0xff) &lt;&lt; 8) | (alpha_r &amp; 0xff) |
++		(alpha_sel &lt;&lt; 16);
++	src_x0 = (src_x0 &amp; 0x1fff) | ((src_y0 &amp; 0x1fff) &lt;&lt; 16);
++	dst_x0 = (dst_x0 &amp; 0x1fff) | ((dst_y0 &amp; 0x1fff) &lt;&lt; 16);
++	bottom = (bottom &lt;&lt; 16) | right;
++
++	unifb_sync(info);
++
++	writel(src_pitch, UGE_PITCH);
++	writel(src_offset, UGE_SRCSTART);
++	writel(dst_offset, UGE_DSTSTART);
++	writel(awidth, UGE_WIDHEIGHT);
++	writel(top, UGE_CLIP0);
++	writel(bottom, UGE_CLIP1);
++	writel(bg_color, UGE_BCOLOR);
++	writel(fg_color, UGE_FCOLOR);
++	writel(alpha_r, UGE_ROPALPHA);
++	writel(src_x0, UGE_SRCXY);
++	writel(dst_x0, UGE_DSTXY);
++	writel(command, UGE_COMMAND);
++}
++
++static void unifb_copyarea(struct fb_info *info, const struct fb_copyarea *area)
++{
++	struct fb_copyarea modded;
++	u32 vxres, vyres;
++	modded.sx = area-&gt;sx;
++	modded.sy = area-&gt;sy;
++	modded.dx = area-&gt;dx;
++	modded.dy = area-&gt;dy;
++	modded.width = area-&gt;width;
++	modded.height = area-&gt;height;
++
++	if (info-&gt;flags &amp; FBINFO_HWACCEL_DISABLED) {
++		sys_copyarea(info, area);
++		return;
++	}
++
++	vxres = info-&gt;var.xres_virtual;
++	vyres = info-&gt;var.yres_virtual;
++
++	if (!modded.width || !modded.height ||
++	    modded.sx &gt;= vxres || modded.sy &gt;= vyres ||
++	    modded.dx &gt;= vxres || modded.dy &gt;= vyres)
++		return;
++
++	if (modded.sx + modded.width &gt; vxres)
++		modded.width = vxres - modded.sx;
++	if (modded.dx + modded.width &gt; vxres)
++		modded.width = vxres - modded.dx;
++	if (modded.sy + modded.height &gt; vyres)
++		modded.height = vyres - modded.sy;
++	if (modded.dy + modded.height &gt; vyres)
++		modded.height = vyres - modded.dy;
++
++	unifb_prim_copyarea(info, &amp;modded);
++}
++
++static void unifb_imageblit(struct fb_info *info, const struct fb_image *image)
++{
++	sys_imageblit(info, image);
++}
++
++static u_long get_line_length(int xres_virtual, int bpp)
++{
++	u_long length;
++
++	length = xres_virtual * bpp;
++	length = (length + 31) &amp; ~31;
++	length &gt;&gt;= 3;
++	return length;
++}
++
++/*
++ *  Setting the video mode has been split into two parts.
++ *  First part, xxxfb_check_var, must not write anything
++ *  to hardware, it should only verify and adjust var.
++ *  This means it doesn't alter par but it does use hardware
++ *  data from it to check this var.
++ */
++static int unifb_check_var(struct fb_var_screeninfo *var,
++			 struct fb_info *info)
++{
++	u_long line_length;
++
++	/*
++	 *  FB_VMODE_CONUPDATE and FB_VMODE_SMOOTH_XPAN are equal!
++	 *  as FB_VMODE_SMOOTH_XPAN is only used internally
++	 */
++
++	if (var-&gt;vmode &amp; FB_VMODE_CONUPDATE) {
++		var-&gt;vmode |= FB_VMODE_YWRAP;
++		var-&gt;xoffset = info-&gt;var.xoffset;
++		var-&gt;yoffset = info-&gt;var.yoffset;
++	}
++
++	/*
++	 *  Some very basic checks
++	 */
++	if (!var-&gt;xres)
++		var-&gt;xres = 1;
++	if (!var-&gt;yres)
++		var-&gt;yres = 1;
++	if (var-&gt;xres &gt; var-&gt;xres_virtual)
++		var-&gt;xres_virtual = var-&gt;xres;
++	if (var-&gt;yres &gt; var-&gt;yres_virtual)
++		var-&gt;yres_virtual = var-&gt;yres;
++	if (var-&gt;bits_per_pixel &lt;= 1)
++		var-&gt;bits_per_pixel = 1;
++	else if (var-&gt;bits_per_pixel &lt;= 8)
++		var-&gt;bits_per_pixel = 8;
++	else if (var-&gt;bits_per_pixel &lt;= 16)
++		var-&gt;bits_per_pixel = 16;
++	else if (var-&gt;bits_per_pixel &lt;= 24)
++		var-&gt;bits_per_pixel = 24;
++	else if (var-&gt;bits_per_pixel &lt;= 32)
++		var-&gt;bits_per_pixel = 32;
++	else
++		return -EINVAL;
++
++	if (var-&gt;xres_virtual &lt; var-&gt;xoffset + var-&gt;xres)
++		var-&gt;xres_virtual = var-&gt;xoffset + var-&gt;xres;
++	if (var-&gt;yres_virtual &lt; var-&gt;yoffset + var-&gt;yres)
++		var-&gt;yres_virtual = var-&gt;yoffset + var-&gt;yres;
++
++	/*
++	 *  Memory limit
++	 */
++	line_length =
++	    get_line_length(var-&gt;xres_virtual, var-&gt;bits_per_pixel);
++	if (line_length * var-&gt;yres_virtual &gt; UNIFB_MEMSIZE)
++		return -ENOMEM;
++
++	/*
++	 * Now that we checked it we alter var. The reason being is that the
++	 * video mode passed in might not work but slight changes to it might
++	 * make it work. This way we let the user know what is acceptable.
++	 */
++	switch (var-&gt;bits_per_pixel) {
++	case 1:
++	case 8:
++		var-&gt;red.offset = 0;
++		var-&gt;red.length = 8;
++		var-&gt;green.offset = 0;
++		var-&gt;green.length = 8;
++		var-&gt;blue.offset = 0;
++		var-&gt;blue.length = 8;
++		var-&gt;transp.offset = 0;
++		var-&gt;transp.length = 0;
++		break;
++	case 16:		/* RGBA 5551 */
++		if (var-&gt;transp.length) {
++			var-&gt;red.offset = 0;
++			var-&gt;red.length = 5;
++			var-&gt;green.offset = 5;
++			var-&gt;green.length = 5;
++			var-&gt;blue.offset = 10;
++			var-&gt;blue.length = 5;
++			var-&gt;transp.offset = 15;
++			var-&gt;transp.length = 1;
++		} else {	/* RGB 565 */
++			var-&gt;red.offset = 11;
++			var-&gt;red.length = 5;
++			var-&gt;green.offset = 5;
++			var-&gt;green.length = 6;
++			var-&gt;blue.offset = 0;
++			var-&gt;blue.length = 5;
++			var-&gt;transp.offset = 0;
++			var-&gt;transp.length = 0;
++		}
++		break;
++	case 24:		/* RGB 888 */
++		var-&gt;red.offset = 0;
++		var-&gt;red.length = 8;
++		var-&gt;green.offset = 8;
++		var-&gt;green.length = 8;
++		var-&gt;blue.offset = 16;
++		var-&gt;blue.length = 8;
++		var-&gt;transp.offset = 0;
++		var-&gt;transp.length = 0;
++		break;
++	case 32:		/* RGBA 8888 */
++		var-&gt;red.offset = 16;
++		var-&gt;red.length = 8;
++		var-&gt;green.offset = 8;
++		var-&gt;green.length = 8;
++		var-&gt;blue.offset = 0;
++		var-&gt;blue.length = 8;
++		var-&gt;transp.offset = 24;
++		var-&gt;transp.length = 8;
++		break;
++	}
++	var-&gt;red.msb_right = 0;
++	var-&gt;green.msb_right = 0;
++	var-&gt;blue.msb_right = 0;
++	var-&gt;transp.msb_right = 0;
++
++	return 0;
++}
++
++/*
++ * This routine actually sets the video mode. It's in here where we
++ * the hardware state info-&gt;par and fix which can be affected by the
++ * change in par. For this driver it doesn't do much.
++ */
++static int unifb_set_par(struct fb_info *info)
++{
++	int hTotal, vTotal, hSyncStart, hSyncEnd, vSyncStart, vSyncEnd;
++	int format;
++
++#ifdef CONFIG_PUV3_PM
++	struct clk *clk_vga;
++	u32 pixclk = 0;
++	int i;
++
++	for (i = 0; i &lt;= 10; i++) {
++		if    (info-&gt;var.xres         == unifb_modes[i].xres
++		    &amp;&amp; info-&gt;var.yres         == unifb_modes[i].yres
++		    &amp;&amp; info-&gt;var.upper_margin == unifb_modes[i].upper_margin
++		    &amp;&amp; info-&gt;var.lower_margin == unifb_modes[i].lower_margin
++		    &amp;&amp; info-&gt;var.left_margin  == unifb_modes[i].left_margin
++		    &amp;&amp; info-&gt;var.right_margin == unifb_modes[i].right_margin
++		    &amp;&amp; info-&gt;var.hsync_len    == unifb_modes[i].hsync_len
++		    &amp;&amp; info-&gt;var.vsync_len    == unifb_modes[i].vsync_len) {
++			pixclk = unifb_modes[i].pixclock;
++			break;
++		}
++	}
++
++	/* set clock rate */
++	clk_vga = clk_get(info-&gt;device, "VGA_CLK");
++	if (clk_vga == ERR_PTR(-ENOENT))
++		return -ENOENT;
++
++	if (pixclk != 0) {
++		if (clk_set_rate(clk_vga, pixclk)) { /* set clock failed */
++			info-&gt;fix = unifb_fix;
++			info-&gt;var = unifb_default;
++			if (clk_set_rate(clk_vga, unifb_default.pixclock))
++				return -EINVAL;
++		}
++	}
++#endif
++
++	info-&gt;fix.line_length = get_line_length(info-&gt;var.xres_virtual,
++						info-&gt;var.bits_per_pixel);
++
++	hSyncStart = info-&gt;var.xres + info-&gt;var.right_margin;
++	hSyncEnd = hSyncStart + info-&gt;var.hsync_len;
++	hTotal = hSyncEnd + info-&gt;var.left_margin;
++
++	vSyncStart = info-&gt;var.yres + info-&gt;var.lower_margin;
++	vSyncEnd = vSyncStart + info-&gt;var.vsync_len;
++	vTotal = vSyncEnd + info-&gt;var.upper_margin;
++
++	switch (info-&gt;var.bits_per_pixel) {
++	case 8:
++		format = UDE_CFG_DST8;
++		break;
++	case 16:
++		format = UDE_CFG_DST16;
++		break;
++	case 24:
++		format = UDE_CFG_DST24;
++		break;
++	case 32:
++		format = UDE_CFG_DST32;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	writel(PKUNITY_UNIGFX_MMAP_BASE, UDE_FSA);
++	writel(info-&gt;var.yres, UDE_LS);
++	writel(get_line_length(info-&gt;var.xres,
++			info-&gt;var.bits_per_pixel) &gt;&gt; 3, UDE_PS);
++			/* &gt;&gt; 3 for hardware required. */
++	writel((hTotal &lt;&lt; 16) | (info-&gt;var.xres), UDE_HAT);
++	writel(((hTotal - 1) &lt;&lt; 16) | (info-&gt;var.xres - 1), UDE_HBT);
++	writel(((hSyncEnd - 1) &lt;&lt; 16) | (hSyncStart - 1), UDE_HST);
++	writel((vTotal &lt;&lt; 16) | (info-&gt;var.yres), UDE_VAT);
++	writel(((vTotal - 1) &lt;&lt; 16) | (info-&gt;var.yres - 1), UDE_VBT);
++	writel(((vSyncEnd - 1) &lt;&lt; 16) | (vSyncStart - 1), UDE_VST);
++	writel(UDE_CFG_GDEN_ENABLE | UDE_CFG_TIMEUP_ENABLE
++			| format | 0xC0000001, UDE_CFG);
++
++	return 0;
++}
++
++/*
++ *  Set a single color register. The values supplied are already
++ *  rounded down to the hardware's capabilities (according to the
++ *  entries in the var structure). Return != 0 for invalid regno.
++ */
++static int unifb_setcolreg(u_int regno, u_int red, u_int green, u_int blue,
++			 u_int transp, struct fb_info *info)
++{
++	if (regno &gt;= 256)	/* no. of hw registers */
++		return 1;
++
++	/* grayscale works only partially under directcolor */
++	if (info-&gt;var.grayscale) {
++		/* grayscale = 0.30*R + 0.59*G + 0.11*B */
++		red = green = blue =
++		    (red * 77 + green * 151 + blue * 28) &gt;&gt; 8;
++	}
++
++#define CNVT_TOHW(val, width) ((((val)&lt;&lt;(width))+0x7FFF-(val))&gt;&gt;16)
++	switch (info-&gt;fix.visual) {
++	case FB_VISUAL_TRUECOLOR:
++	case FB_VISUAL_PSEUDOCOLOR:
++		red = CNVT_TOHW(red, info-&gt;var.red.length);
++		green = CNVT_TOHW(green, info-&gt;var.green.length);
++		blue = CNVT_TOHW(blue, info-&gt;var.blue.length);
++		transp = CNVT_TOHW(transp, info-&gt;var.transp.length);
++		break;
++	case FB_VISUAL_DIRECTCOLOR:
++		red = CNVT_TOHW(red, 8);	/* expect 8 bit DAC */
++		green = CNVT_TOHW(green, 8);
++		blue = CNVT_TOHW(blue, 8);
++		/* hey, there is bug in transp handling... */
++		transp = CNVT_TOHW(transp, 8);
++		break;
++	}
++#undef CNVT_TOHW
++	/* Truecolor has hardware independent palette */
++	if (info-&gt;fix.visual == FB_VISUAL_TRUECOLOR) {
++		u32 v;
++
++		if (regno &gt;= 16)
++			return 1;
++
++		v = (red &lt;&lt; info-&gt;var.red.offset) |
++		    (green &lt;&lt; info-&gt;var.green.offset) |
++		    (blue &lt;&lt; info-&gt;var.blue.offset) |
++		    (transp &lt;&lt; info-&gt;var.transp.offset);
++		switch (info-&gt;var.bits_per_pixel) {
++		case 8:
++			break;
++		case 16:
++		case 24:
++		case 32:
++			((u32 *) (info-&gt;pseudo_palette))[regno] = v;
++			break;
++		default:
++			return 1;
++		}
++		return 0;
++	}
++	return 0;
++}
++
++/*
++ *  Pan or Wrap the Display
++ *
++ *  This call looks only at xoffset, yoffset and the FB_VMODE_YWRAP flag
++ */
++static int unifb_pan_display(struct fb_var_screeninfo *var,
++			   struct fb_info *info)
++{
++	if (var-&gt;vmode &amp; FB_VMODE_YWRAP) {
++		if (var-&gt;yoffset &lt; 0
++		    || var-&gt;yoffset &gt;= info-&gt;var.yres_virtual
++		    || var-&gt;xoffset)
++			return -EINVAL;
++	} else {
++		if (var-&gt;xoffset + var-&gt;xres &gt; info-&gt;var.xres_virtual ||
++		    var-&gt;yoffset + var-&gt;yres &gt; info-&gt;var.yres_virtual)
++			return -EINVAL;
++	}
++	info-&gt;var.xoffset = var-&gt;xoffset;
++	info-&gt;var.yoffset = var-&gt;yoffset;
++	if (var-&gt;vmode &amp; FB_VMODE_YWRAP)
++		info-&gt;var.vmode |= FB_VMODE_YWRAP;
++	else
++		info-&gt;var.vmode &amp;= ~FB_VMODE_YWRAP;
++	return 0;
++}
++
++int unifb_mmap(struct fb_info *info,
++		    struct vm_area_struct *vma)
++{
++	unsigned long size = vma-&gt;vm_end - vma-&gt;vm_start;
++	unsigned long offset = vma-&gt;vm_pgoff &lt;&lt; PAGE_SHIFT;
++	unsigned long pos = info-&gt;fix.smem_start + offset;
++
++	if (offset + size &gt; info-&gt;fix.smem_len)
++		return -EINVAL;
++
++	vma-&gt;vm_page_prot = pgprot_noncached(vma-&gt;vm_page_prot);
++
++	if (io_remap_pfn_range(vma, vma-&gt;vm_start, pos &gt;&gt; PAGE_SHIFT, size,
++				vma-&gt;vm_page_prot))
++		return -EAGAIN;
++
++	vma-&gt;vm_flags |= VM_RESERVED;	/* avoid to swap out this VMA */
++	return 0;
++
++}
++
++static struct fb_ops unifb_ops = {
++	.fb_read        = fb_sys_read,
++	.fb_write       = fb_sys_write,
++	.fb_check_var	= unifb_check_var,
++	.fb_set_par	= unifb_set_par,
++	.fb_setcolreg	= unifb_setcolreg,
++	.fb_pan_display	= unifb_pan_display,
++	.fb_fillrect	= unifb_fillrect,
++	.fb_copyarea	= unifb_copyarea,
++	.fb_imageblit   = unifb_imageblit,
++	.fb_mmap	= unifb_mmap,
++};
++
++/*
++ *  Initialisation
++ */
++static int unifb_probe(struct platform_device *dev)
++{
++	struct fb_info *info;
++	u32 unifb_regs[UNIFB_REGS_NUM];
++	int retval = -ENOMEM;
++	struct resource *iomem, *mapmem;
++
++	info = framebuffer_alloc(sizeof(u32)*256, &amp;dev-&gt;dev);
++	if (!info)
++		goto err;
++
++	info-&gt;screen_base = (char __iomem *)KUSER_UNIGFX_BASE;
++	info-&gt;fbops = &amp;unifb_ops;
++
++	retval = fb_find_mode(&amp;info-&gt;var, info, NULL,
++			      unifb_modes, 10, &amp;unifb_modes[0], 16);
++
++	if (!retval || (retval == 4))
++		info-&gt;var = unifb_default;
++
++	iomem = platform_get_resource(dev, IORESOURCE_MEM, 0);
++	unifb_fix.mmio_start = iomem-&gt;start;
++
++	mapmem = platform_get_resource(dev, IORESOURCE_MEM, 1);
++	unifb_fix.smem_start = mapmem-&gt;start;
++	unifb_fix.smem_len = UNIFB_MEMSIZE;
++
++	info-&gt;fix = unifb_fix;
++	info-&gt;pseudo_palette = info-&gt;par;
++	info-&gt;par = NULL;
++	info-&gt;flags = FBINFO_FLAG_DEFAULT;
++#ifdef FB_ACCEL_PUV3_UNIGFX
++	info-&gt;fix.accel = FB_ACCEL_PUV3_UNIGFX;
++#endif
++
++	retval = fb_alloc_cmap(&amp;info-&gt;cmap, 256, 0);
++	if (retval &lt; 0)
++		goto err1;
++
++	retval = register_framebuffer(info);
++	if (retval &lt; 0)
++		goto err2;
++	platform_set_drvdata(dev, info);
++	platform_device_add_data(dev, unifb_regs, sizeof(u32) * UNIFB_REGS_NUM);
++
++	printk(KERN_INFO
++	       "fb%d: Virtual frame buffer device, using %dM of video memory\n",
++	       info-&gt;node, UNIFB_MEMSIZE &gt;&gt; 20);
++	return 0;
++err2:
++	fb_dealloc_cmap(&amp;info-&gt;cmap);
++err1:
++	framebuffer_release(info);
++err:
++	return retval;
++}
++
++static int unifb_remove(struct platform_device *dev)
++{
++	struct fb_info *info = platform_get_drvdata(dev);
++
++	if (info) {
++		unregister_framebuffer(info);
++		fb_dealloc_cmap(&amp;info-&gt;cmap);
++		framebuffer_release(info);
++	}
++	return 0;
++}
++
++#ifdef CONFIG_PM
++static int unifb_resume(struct platform_device *dev)
++{
++	int rc = 0;
++	u32 *unifb_regs = dev-&gt;dev.platform_data;
++
++	if (dev-&gt;dev.power.power_state.event == PM_EVENT_ON)
++		return 0;
++
++	console_lock();
++
++	if (dev-&gt;dev.power.power_state.event == PM_EVENT_SUSPEND) {
++		writel(unifb_regs[0], UDE_FSA);
++		writel(unifb_regs[1], UDE_LS);
++		writel(unifb_regs[2], UDE_PS);
++		writel(unifb_regs[3], UDE_HAT);
++		writel(unifb_regs[4], UDE_HBT);
++		writel(unifb_regs[5], UDE_HST);
++		writel(unifb_regs[6], UDE_VAT);
++		writel(unifb_regs[7], UDE_VBT);
++		writel(unifb_regs[8], UDE_VST);
++		writel(unifb_regs[9], UDE_CFG);
++	}
++	dev-&gt;dev.power.power_state = PMSG_ON;
++
++	console_unlock();
++
++	return rc;
++}
++
++static int unifb_suspend(struct platform_device *dev, pm_message_t mesg)
++{
++	u32 *unifb_regs = dev-&gt;dev.platform_data;
++
++	unifb_regs[0] = readl(UDE_FSA);
++	unifb_regs[1] = readl(UDE_LS);
++	unifb_regs[2] = readl(UDE_PS);
++	unifb_regs[3] = readl(UDE_HAT);
++	unifb_regs[4] = readl(UDE_HBT);
++	unifb_regs[5] = readl(UDE_HST);
++	unifb_regs[6] = readl(UDE_VAT);
++	unifb_regs[7] = readl(UDE_VBT);
++	unifb_regs[8] = readl(UDE_VST);
++	unifb_regs[9] = readl(UDE_CFG);
++
++	if (mesg.event == dev-&gt;dev.power.power_state.event)
++		return 0;
++
++	switch (mesg.event) {
++	case PM_EVENT_FREEZE:		/* about to take snapshot */
++	case PM_EVENT_PRETHAW:		/* before restoring snapshot */
++		goto done;
++	}
++
++	console_lock();
++
++	/* do nothing... */
++
++	console_unlock();
++
++done:
++	dev-&gt;dev.power.power_state = mesg;
++
++	return 0;
++}
++#else
++#define	unifb_resume	NULL
++#define unifb_suspend	NULL
++#endif
++
++static struct platform_driver unifb_driver = {
++	.probe	 = unifb_probe,
++	.remove  = unifb_remove,
++	.resume  = unifb_resume,
++	.suspend = unifb_suspend,
++	.driver  = {
++		.name	= "PKUnity-v3-UNIGFX",
++	},
++};
++
++static int __init unifb_init(void)
++{
++#ifndef MODULE
++	if (fb_get_options("unifb", NULL))
++		return -ENODEV;
++#endif
++
++	return platform_driver_register(&amp;unifb_driver);
++}
++
++module_init(unifb_init);
++
++static void __exit unifb_exit(void)
++{
++	platform_driver_unregister(&amp;unifb_driver);
++}
++
++module_exit(unifb_exit);
++
++MODULE_LICENSE("GPL v2");
+diff --git a/include/linux/fb.h b/include/linux/fb.h
+index 68ba85a00c06..b2a36391d2a1 100644
+--- a/include/linux/fb.h
++++ b/include/linux/fb.h
+@@ -152,6 +152,8 @@
+ #define FB_ACCEL_PROSAVAGE_DDR  0x8d	/* S3 ProSavage DDR             */
+ #define FB_ACCEL_PROSAVAGE_DDRK 0x8e	/* S3 ProSavage DDR-K           */
+ 
++#define FB_ACCEL_PUV3_UNIGFX	0xa0	/* PKUnity-v3 Unigfx		*/
++
+ struct fb_fix_screeninfo {
+ 	char id[16];			/* identification string eg "TT Builtin" */
+ 	unsigned long smem_start;	/* Start of frame buffer mem */</pre><hr><pre>commit d10e4a660d11212a41ac5d2c116a655e25e2d38a
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Feb 26 21:29:29 2011 +0800
+
+    unicore32 machine related files: add i2c bus drivers for pkunity-v3 soc
+    
+    change from original version -- by advice of Jean Delvare
+    1. remove global variable i2c_reg, replaced by local variables
+    2. replace ENXIO with ENODEV when no platform resources
+    3. add adapter-&gt;nr assignment before i2c_add_numbered_adapter() call
+    4. add judgement for i2c_del_adapter() return value
+    5. release adapter when driver removed
+    6. add __devexit for puv3_i2c_remove() function
+    7. modify several names to more appropriated ones
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Acked-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index e8b15bfec6d6..fa842ba63a1b 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -4901,6 +4901,7 @@ W:	http://mprc.pku.edu.cn/~guanxuetao/linux
+ S:	Maintained
+ T:	git git://git.kernel.org/pub/scm/linux/kernel/git/epip/linux-2.6-unicore32.git
+ F:	drivers/input/serio/i8042-unicore32io.h
++F:	drivers/i2c/busses/i2c-puv3.c
+ 
+ PMC SIERRA MaxRAID DRIVER
+ M:	Anil Ravindranath &lt;anil_ravindranath@pmc-sierra.com&gt;
+diff --git a/arch/unicore32/configs/debug_defconfig b/arch/unicore32/configs/debug_defconfig
+index 3647f68147da..bf42abdd9683 100644
+--- a/arch/unicore32/configs/debug_defconfig
++++ b/arch/unicore32/configs/debug_defconfig
+@@ -114,6 +114,10 @@ CONFIG_INPUT_EVDEV=m
+ #	Keyboards
+ CONFIG_KEYBOARD_GPIO=m
+ 
++#	I2C support
++CONFIG_I2C=y
++CONFIG_I2C_PUV3=y
++
+ #	Hardware Monitoring support
+ #CONFIG_SENSORS_LM75=m
+ #	Generic Thermal sysfs driver
+diff --git a/drivers/i2c/busses/Kconfig b/drivers/i2c/busses/Kconfig
+index 113505a6434e..cbfcf6fb4a61 100644
+--- a/drivers/i2c/busses/Kconfig
++++ b/drivers/i2c/busses/Kconfig
+@@ -523,6 +523,17 @@ config I2C_PNX
+ 	  This driver can also be built as a module.  If so, the module
+ 	  will be called i2c-pnx.
+ 
++config I2C_PUV3
++	tristate "PKUnity v3 I2C bus support"
++	depends on UNICORE32 &amp;&amp; ARCH_PUV3
++	select I2C_ALGOBIT
++	help
++	  This driver supports the I2C IP inside the PKUnity-v3 SoC.
++	  This I2C bus controller is under AMBA/AXI bus.
++
++	  This driver can also be built as a module.  If so, the module
++	  will be called i2c-puv3.
++
+ config I2C_PXA
+ 	tristate "Intel PXA2XX I2C adapter"
+ 	depends on ARCH_PXA || ARCH_MMP
+diff --git a/drivers/i2c/busses/Makefile b/drivers/i2c/busses/Makefile
+index 9d2d0ec7fb23..a83966acc5ab 100644
+--- a/drivers/i2c/busses/Makefile
++++ b/drivers/i2c/busses/Makefile
+@@ -51,6 +51,7 @@ obj-$(CONFIG_I2C_PASEMI)	+= i2c-pasemi.o
+ obj-$(CONFIG_I2C_PCA_PLATFORM)	+= i2c-pca-platform.o
+ obj-$(CONFIG_I2C_PMCMSP)	+= i2c-pmcmsp.o
+ obj-$(CONFIG_I2C_PNX)		+= i2c-pnx.o
++obj-$(CONFIG_I2C_PUV3)		+= i2c-puv3.o
+ obj-$(CONFIG_I2C_PXA)		+= i2c-pxa.o
+ obj-$(CONFIG_I2C_S3C2410)	+= i2c-s3c2410.o
+ obj-$(CONFIG_I2C_S6000)		+= i2c-s6000.o
+diff --git a/drivers/i2c/busses/i2c-puv3.c b/drivers/i2c/busses/i2c-puv3.c
+new file mode 100644
+index 000000000000..fac673940849
+--- /dev/null
++++ b/drivers/i2c/busses/i2c-puv3.c
+@@ -0,0 +1,306 @@
++/*
++ * I2C driver for PKUnity-v3 SoC
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include &lt;linux/module.h&gt;
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/err.h&gt;
++#include &lt;linux/slab.h&gt;
++#include &lt;linux/types.h&gt;
++#include &lt;linux/delay.h&gt;
++#include &lt;linux/i2c.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/clk.h&gt;
++#include &lt;linux/platform_device.h&gt;
++#include &lt;linux/io.h&gt;
++#include &lt;mach/hardware.h&gt;
++
++/*
++ * Poll the i2c status register until the specified bit is set.
++ * Returns 0 if timed out (100 msec).
++ */
++static short poll_status(unsigned long bit)
++{
++	int loop_cntr = 1000;
++
++	if (bit &amp; I2C_STATUS_TFNF) {
++		do {
++			udelay(10);
++		} while (!(readl(I2C_STATUS) &amp; bit) &amp;&amp; (--loop_cntr &gt; 0));
++	} else {
++		/* RXRDY handler */
++		do {
++			if (readl(I2C_TAR) == I2C_TAR_EEPROM)
++				msleep(20);
++			else
++				udelay(10);
++		} while (!(readl(I2C_RXFLR) &amp; 0xf) &amp;&amp; (--loop_cntr &gt; 0));
++	}
++
++	return (loop_cntr &gt; 0);
++}
++
++static int xfer_read(struct i2c_adapter *adap, unsigned char *buf, int length)
++{
++	int i2c_reg = *buf;
++
++	/* Read data */
++	while (length--) {
++		if (!poll_status(I2C_STATUS_TFNF)) {
++			dev_dbg(&amp;adap-&gt;dev, "Tx FIFO Not Full timeout\n");
++			return -ETIMEDOUT;
++		}
++
++		/* send addr */
++		writel(i2c_reg | I2C_DATACMD_WRITE, I2C_DATACMD);
++
++		/* get ready to next write */
++		i2c_reg++;
++
++		/* send read CMD */
++		writel(I2C_DATACMD_READ, I2C_DATACMD);
++
++		/* wait until the Rx FIFO have available */
++		if (!poll_status(I2C_STATUS_RFNE)) {
++			dev_dbg(&amp;adap-&gt;dev, "RXRDY timeout\n");
++			return -ETIMEDOUT;
++		}
++
++		/* read the data to buf */
++		*buf = (readl(I2C_DATACMD) &amp; I2C_DATACMD_DAT_MASK);
++		buf++;
++	}
++
++	return 0;
++}
++
++static int xfer_write(struct i2c_adapter *adap, unsigned char *buf, int length)
++{
++	int i2c_reg = *buf;
++
++	/* Do nothing but storing the reg_num to a static variable */
++	if (i2c_reg == -1) {
++		printk(KERN_WARNING "Error i2c reg\n");
++		return -ETIMEDOUT;
++	}
++
++	if (length == 1)
++		return 0;
++
++	buf++;
++	length--;
++	while (length--) {
++		/* send addr */
++		writel(i2c_reg | I2C_DATACMD_WRITE, I2C_DATACMD);
++
++		/* send write CMD */
++		writel(*buf | I2C_DATACMD_WRITE, I2C_DATACMD);
++
++		/* wait until the Rx FIFO have available */
++		msleep(20);
++
++		/* read the data to buf */
++		i2c_reg++;
++		buf++;
++	}
++
++	return 0;
++}
++
++/*
++ * Generic i2c master transfer entrypoint.
++ *
++ */
++static int puv3_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *pmsg,
++		int num)
++{
++	int i, ret;
++	unsigned char swap;
++
++	/* Disable i2c */
++	writel(I2C_ENABLE_DISABLE, I2C_ENABLE);
++
++	/* Set the work mode and speed*/
++	writel(I2C_CON_MASTER | I2C_CON_SPEED_STD | I2C_CON_SLAVEDISABLE, I2C_CON);
++
++	writel(pmsg-&gt;addr, I2C_TAR);
++
++	/* Enable i2c */
++	writel(I2C_ENABLE_ENABLE, I2C_ENABLE);
++
++	dev_dbg(&amp;adap-&gt;dev, "puv3_i2c_xfer: processing %d messages:\n", num);
++
++	for (i = 0; i &lt; num; i++) {
++		dev_dbg(&amp;adap-&gt;dev, " #%d: %sing %d byte%s %s 0x%02x\n", i,
++			pmsg-&gt;flags &amp; I2C_M_RD ? "read" : "writ",
++			pmsg-&gt;len, pmsg-&gt;len &gt; 1 ? "s" : "",
++			pmsg-&gt;flags &amp; I2C_M_RD ? "from" : "to",	pmsg-&gt;addr);
++
++		if (pmsg-&gt;len &amp;&amp; pmsg-&gt;buf) {	/* sanity check */
++			if (pmsg-&gt;flags &amp; I2C_M_RD)
++				ret = xfer_read(adap, pmsg-&gt;buf, pmsg-&gt;len);
++			else
++				ret = xfer_write(adap, pmsg-&gt;buf, pmsg-&gt;len);
++
++			if (ret)
++				return ret;
++
++		}
++		dev_dbg(&amp;adap-&gt;dev, "transfer complete\n");
++		pmsg++;		/* next message */
++	}
++
++	/* XXX: fixup be16_to_cpu in bq27x00_battery.c */
++	if (pmsg-&gt;addr == I2C_TAR_PWIC) {
++		swap = pmsg-&gt;buf[0];
++		pmsg-&gt;buf[0] = pmsg-&gt;buf[1];
++		pmsg-&gt;buf[1] = swap;
++	}
++
++	return i;
++}
++
++/*
++ * Return list of supported functionality.
++ */
++static u32 puv3_i2c_func(struct i2c_adapter *adapter)
++{
++	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
++}
++
++static struct i2c_algorithm puv3_i2c_algorithm = {
++	.master_xfer	= puv3_i2c_xfer,
++	.functionality	= puv3_i2c_func,
++};
++
++/*
++ * Main initialization routine.
++ */
++static int __devinit puv3_i2c_probe(struct platform_device *pdev)
++{
++	struct i2c_adapter *adapter;
++	struct resource *mem;
++	int rc;
++
++	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!mem)
++		return -ENODEV;
++
++	if (!request_mem_region(mem-&gt;start, resource_size(mem), "puv3_i2c"))
++		return -EBUSY;
++
++	adapter = kzalloc(sizeof(struct i2c_adapter), GFP_KERNEL);
++	if (adapter == NULL) {
++		dev_err(&amp;pdev-&gt;dev, "can't allocate inteface!\n");
++		rc = -ENOMEM;
++		goto fail_nomem;
++	}
++	snprintf(adapter-&gt;name, sizeof(adapter-&gt;name), "PUV3-I2C at 0x%08x",
++			mem-&gt;start);
++	adapter-&gt;algo = &amp;puv3_i2c_algorithm;
++	adapter-&gt;class = I2C_CLASS_HWMON;
++	adapter-&gt;dev.parent = &amp;pdev-&gt;dev;
++
++	platform_set_drvdata(pdev, adapter);
++
++	adapter-&gt;nr = pdev-&gt;id;
++	rc = i2c_add_numbered_adapter(adapter);
++	if (rc) {
++		dev_err(&amp;pdev-&gt;dev, "Adapter '%s' registration failed\n",
++				adapter-&gt;name);
++		goto fail_add_adapter;
++	}
++
++	dev_info(&amp;pdev-&gt;dev, "PKUnity v3 i2c bus adapter.\n");
++	return 0;
++
++fail_add_adapter:
++	platform_set_drvdata(pdev, NULL);
++	kfree(adapter);
++fail_nomem:
++	release_mem_region(mem-&gt;start, resource_size(mem));
++
++	return rc;
++}
++
++static int __devexit puv3_i2c_remove(struct platform_device *pdev)
++{
++	struct i2c_adapter *adapter = platform_get_drvdata(pdev);
++	struct resource *mem;
++	int rc;
++
++	rc = i2c_del_adapter(adapter);
++	if (rc) {
++		dev_err(&amp;pdev-&gt;dev, "Adapter '%s' delete fail\n",
++				adapter-&gt;name);
++		return rc;
++	}
++
++	put_device(&amp;pdev-&gt;dev);
++	platform_set_drvdata(pdev, NULL);
++
++	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	release_mem_region(mem-&gt;start, resource_size(mem));
++
++	return rc;
++}
++
++#ifdef CONFIG_PM
++static int puv3_i2c_suspend(struct platform_device *dev, pm_message_t state)
++{
++	int poll_count;
++	/* Disable the IIC */
++	writel(I2C_ENABLE_DISABLE, I2C_ENABLE);
++	for (poll_count = 0; poll_count &lt; 50; poll_count++) {
++		if (readl(I2C_ENSTATUS) &amp; I2C_ENSTATUS_ENABLE)
++			udelay(25);
++	}
++
++	return 0;
++}
++
++static int puv3_i2c_resume(struct platform_device *dev)
++{
++	return 0 ;
++}
++#else
++#define puv3_i2c_suspend NULL
++#define puv3_i2c_resume NULL
++#endif
++
++MODULE_ALIAS("platform:puv3_i2c");
++
++static struct platform_driver puv3_i2c_driver = {
++	.probe		= puv3_i2c_probe,
++	.remove		= __devexit_p(puv3_i2c_remove),
++	.suspend	= puv3_i2c_suspend,
++	.resume		= puv3_i2c_resume,
++	.driver		= {
++		.name	= "PKUnity-v3-I2C",
++		.owner	= THIS_MODULE,
++	}
++};
++
++static int __init puv3_i2c_init(void)
++{
++	return platform_driver_register(&amp;puv3_i2c_driver);
++}
++
++static void __exit puv3_i2c_exit(void)
++{
++	platform_driver_unregister(&amp;puv3_i2c_driver);
++}
++
++module_init(puv3_i2c_init);
++module_exit(puv3_i2c_exit);
++
++MODULE_DESCRIPTION("PKUnity v3 I2C driver");
++MODULE_LICENSE("GPL v2");</pre><hr><pre>commit e5abf78b57199a417eb01ff922a5ea6ff9e10b61
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Feb 26 21:21:18 2011 +0800
+
+    unicore32 io: redefine __REG(x) and re-use readl/writel funcs
+    
+      -- by advice of Arnd Bergmann
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Reviewed-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/include/asm/gpio.h b/arch/unicore32/include/asm/gpio.h
+index 3aaa41e9e413..2716f14e3ff6 100644
+--- a/arch/unicore32/include/asm/gpio.h
++++ b/arch/unicore32/include/asm/gpio.h
+@@ -13,6 +13,7 @@
+ #ifndef __UNICORE_GPIO_H__
+ #define __UNICORE_GPIO_H__
+ 
++#include &lt;linux/io.h&gt;
+ #include &lt;asm/irq.h&gt;
+ #include &lt;mach/hardware.h&gt;
+ #include &lt;asm-generic/gpio.h&gt;
+@@ -66,7 +67,7 @@
+ static inline int gpio_get_value(unsigned gpio)
+ {
+ 	if (__builtin_constant_p(gpio) &amp;&amp; (gpio &lt;= GPIO_MAX))
+-		return GPIO_GPLR &amp; GPIO_GPIO(gpio);
++		return readl(GPIO_GPLR) &amp; GPIO_GPIO(gpio);
+ 	else
+ 		return __gpio_get_value(gpio);
+ }
+@@ -75,9 +76,9 @@ static inline void gpio_set_value(unsigned gpio, int value)
+ {
+ 	if (__builtin_constant_p(gpio) &amp;&amp; (gpio &lt;= GPIO_MAX))
+ 		if (value)
+-			GPIO_GPSR = GPIO_GPIO(gpio);
++			writel(GPIO_GPIO(gpio), GPIO_GPSR);
+ 		else
+-			GPIO_GPCR = GPIO_GPIO(gpio);
++			writel(GPIO_GPIO(gpio), GPIO_GPCR);
+ 	else
+ 		__gpio_set_value(gpio, value);
+ }
+@@ -86,7 +87,7 @@ static inline void gpio_set_value(unsigned gpio, int value)
+ 
+ static inline unsigned gpio_to_irq(unsigned gpio)
+ {
+-	if ((gpio &lt; IRQ_GPIOHIGH) &amp;&amp; (FIELD(1, 1, gpio) &amp; GPIO_GPIR))
++	if ((gpio &lt; IRQ_GPIOHIGH) &amp;&amp; (FIELD(1, 1, gpio) &amp; readl(GPIO_GPIR)))
+ 		return IRQ_GPIOLOW0 + gpio;
+ 	else
+ 		return IRQ_GPIO0 + gpio;
+diff --git a/arch/unicore32/include/mach/dma.h b/arch/unicore32/include/mach/dma.h
+index 3e3224a10525..d655c1b6e083 100644
+--- a/arch/unicore32/include/mach/dma.h
++++ b/arch/unicore32/include/mach/dma.h
+@@ -35,7 +35,14 @@ extern int puv3_request_dma(char *name,
+ 
+ extern void puv3_free_dma(int dma_ch);
+ 
+-#define puv3_stop_dma(ch)		(DMAC_CONFIG(ch) &amp;= ~DMAC_CONFIG_EN)
+-#define puv3_resume_dma(ch)             (DMAC_CONFIG(ch) |= DMAC_CONFIG_EN)
++static inline void puv3_stop_dma(int ch)
++{
++	writel(readl(DMAC_CONFIG(ch)) &amp; ~DMAC_CONFIG_EN, DMAC_CONFIG(ch));
++}
++
++static inline void puv3_resume_dma(int ch)
++{
++	writel(readl(DMAC_CONFIG(ch)) | DMAC_CONFIG_EN, DMAC_CONFIG(ch));
++}
+ 
+ #endif /* __MACH_PUV3_DMA_H__ */
+diff --git a/arch/unicore32/include/mach/hardware.h b/arch/unicore32/include/mach/hardware.h
+index c7d3dd6b4eff..b71405ab6de6 100644
+--- a/arch/unicore32/include/mach/hardware.h
++++ b/arch/unicore32/include/mach/hardware.h
+@@ -22,13 +22,7 @@
+ 
+ #ifndef __ASSEMBLY__
+ 
+-# define __REG(x)	(*((volatile unsigned long *)io_p2v(x)))
+-# define __PREG(x)	(io_v2p((unsigned long)&amp;(x)))
+-
+-#else
+-
+-# define __REG(x)	io_p2v(x)
+-# define __PREG(x)	io_v2p(x)
++# define __REG(x)	(void __iomem *)io_p2v(x)
+ 
+ #endif
+ 
+diff --git a/arch/unicore32/kernel/clock.c b/arch/unicore32/kernel/clock.c
+index 80323db581fd..18d4563e6fa5 100644
+--- a/arch/unicore32/kernel/clock.c
++++ b/arch/unicore32/kernel/clock.c
+@@ -20,6 +20,7 @@
+ #include &lt;linux/clk.h&gt;
+ #include &lt;linux/mutex.h&gt;
+ #include &lt;linux/delay.h&gt;
++#include &lt;linux/io.h&gt;
+ 
+ #include &lt;mach/hardware.h&gt;
+ 
+@@ -152,28 +153,29 @@ int clk_set_rate(struct clk *clk, unsigned long rate)
+ 		if (ret)
+ 			return ret;
+ 
+-		if (PM_PLLVGACFG == pll_vgacfg)
++		if (readl(PM_PLLVGACFG) == pll_vgacfg)
+ 			return 0;
+ 
+ 		/* set pll vga cfg reg. */
+-		PM_PLLVGACFG = pll_vgacfg;
++		writel(pll_vgacfg, PM_PLLVGACFG);
+ 
+-		PM_PMCR = PM_PMCR_CFBVGA;
+-		while ((PM_PLLDFCDONE &amp; PM_PLLDFCDONE_VGADFC)
++		writel(PM_PMCR_CFBVGA, PM_PMCR);
++		while ((readl(PM_PLLDFCDONE) &amp; PM_PLLDFCDONE_VGADFC)
+ 				!= PM_PLLDFCDONE_VGADFC)
+ 			udelay(100); /* about 1ms */
+ 
+ 		/* set div cfg reg. */
+-		PM_PCGR |= PM_PCGR_VGACLK;
++		writel(readl(PM_PCGR) | PM_PCGR_VGACLK, PM_PCGR);
+ 
+-		PM_DIVCFG = (PM_DIVCFG &amp; ~PM_DIVCFG_VGACLK_MASK)
+-				| PM_DIVCFG_VGACLK(pll_vgadiv);
++		writel((readl(PM_DIVCFG) &amp; ~PM_DIVCFG_VGACLK_MASK)
++				| PM_DIVCFG_VGACLK(pll_vgadiv), PM_DIVCFG);
+ 
+-		PM_SWRESET |= PM_SWRESET_VGADIV;
+-		while ((PM_SWRESET &amp; PM_SWRESET_VGADIV) == PM_SWRESET_VGADIV)
++		writel(readl(PM_SWRESET) | PM_SWRESET_VGADIV, PM_SWRESET);
++		while ((readl(PM_SWRESET) &amp; PM_SWRESET_VGADIV)
++				== PM_SWRESET_VGADIV)
+ 			udelay(100); /* 65536 bclk32, about 320us */
+ 
+-		PM_PCGR &amp;= ~PM_PCGR_VGACLK;
++		writel(readl(PM_PCGR) &amp; ~PM_PCGR_VGACLK, PM_PCGR);
+ 	}
+ #ifdef CONFIG_CPU_FREQ
+ 	if (clk == &amp;clk_mclk_clk) {
+@@ -323,15 +325,15 @@ struct {
+ static int __init clk_init(void)
+ {
+ #ifdef CONFIG_PUV3_PM
+-	u32 pllrate, divstatus = PM_DIVSTATUS;
+-	u32 pcgr_val = PM_PCGR;
++	u32 pllrate, divstatus = readl(PM_DIVSTATUS);
++	u32 pcgr_val = readl(PM_PCGR);
+ 	int i;
+ 
+ 	pcgr_val |= PM_PCGR_BCLKMME | PM_PCGR_BCLKH264E | PM_PCGR_BCLKH264D
+ 			| PM_PCGR_HECLK | PM_PCGR_HDCLK;
+-	PM_PCGR = pcgr_val;
++	writel(pcgr_val, PM_PCGR);
+ 
+-	pllrate = PM_PLLSYSSTATUS;
++	pllrate = readl(PM_PLLSYSSTATUS);
+ 
+ 	/* lookup pmclk_table */
+ 	clk_mclk_clk.rate = 0;
+@@ -346,7 +348,7 @@ static int __init clk_init(void)
+ 		clk_bclk32_clk.rate = clk_mclk_clk.rate /
+ 			(((divstatus &amp; 0x0000f000) &gt;&gt; 12) + 1);
+ 
+-	pllrate = PM_PLLDDRSTATUS;
++	pllrate = readl(PM_PLLDDRSTATUS);
+ 
+ 	/* lookup pddr_table */
+ 	clk_ddr_clk.rate = 0;
+@@ -357,7 +359,7 @@ static int __init clk_init(void)
+ 		}
+ 	}
+ 
+-	pllrate = PM_PLLVGASTATUS;
++	pllrate = readl(PM_PLLVGASTATUS);
+ 
+ 	/* lookup pvga_table */
+ 	clk_vga_clk.rate = 0;
+diff --git a/arch/unicore32/kernel/dma.c b/arch/unicore32/kernel/dma.c
+index b8dcc2514e9a..ae441bc3122c 100644
+--- a/arch/unicore32/kernel/dma.c
++++ b/arch/unicore32/kernel/dma.c
+@@ -16,6 +16,7 @@
+ #include &lt;linux/kernel.h&gt;
+ #include &lt;linux/interrupt.h&gt;
+ #include &lt;linux/errno.h&gt;
++#include &lt;linux/io.h&gt;
+ 
+ #include &lt;asm/system.h&gt;
+ #include &lt;asm/irq.h&gt;
+@@ -94,15 +95,16 @@ EXPORT_SYMBOL(puv3_free_dma);
+ 
+ static irqreturn_t dma_irq_handler(int irq, void *dev_id)
+ {
+-	int i, dint = DMAC_ITCSR;
++	int i, dint;
+ 
++	dint = readl(DMAC_ITCSR);
+ 	for (i = 0; i &lt; MAX_DMA_CHANNELS; i++) {
+ 		if (dint &amp; DMAC_CHANNEL(i)) {
+ 			struct dma_channel *channel = &amp;dma_channels[i];
+ 
+ 			/* Clear TC interrupt of channel i */
+-			DMAC_ITCCR = DMAC_CHANNEL(i);
+-			DMAC_ITCCR = 0;
++			writel(DMAC_CHANNEL(i), DMAC_ITCCR);
++			writel(0, DMAC_ITCCR);
+ 
+ 			if (channel-&gt;name &amp;&amp; channel-&gt;irq_handler) {
+ 				channel-&gt;irq_handler(i, channel-&gt;data);
+@@ -121,15 +123,16 @@ static irqreturn_t dma_irq_handler(int irq, void *dev_id)
+ 
+ static irqreturn_t dma_err_handler(int irq, void *dev_id)
+ {
+-	int i, dint = DMAC_IESR;
++	int i, dint;
+ 
++	dint = readl(DMAC_IESR);
+ 	for (i = 0; i &lt; MAX_DMA_CHANNELS; i++) {
+ 		if (dint &amp; DMAC_CHANNEL(i)) {
+ 			struct dma_channel *channel = &amp;dma_channels[i];
+ 
+ 			/* Clear Err interrupt of channel i */
+-			DMAC_IECR = DMAC_CHANNEL(i);
+-			DMAC_IECR = 0;
++			writel(DMAC_CHANNEL(i), DMAC_IECR);
++			writel(0, DMAC_IECR);
+ 
+ 			if (channel-&gt;name &amp;&amp; channel-&gt;err_handler) {
+ 				channel-&gt;err_handler(i, channel-&gt;data);
+diff --git a/arch/unicore32/kernel/gpio.c b/arch/unicore32/kernel/gpio.c
+index 4cb28308bb5f..cb12ec39552c 100644
+--- a/arch/unicore32/kernel/gpio.c
++++ b/arch/unicore32/kernel/gpio.c
+@@ -52,15 +52,15 @@ device_initcall(puv3_gpio_leds_init);
+ 
+ static int puv3_gpio_get(struct gpio_chip *chip, unsigned offset)
+ {
+-	return GPIO_GPLR &amp; GPIO_GPIO(offset);
++	return readl(GPIO_GPLR) &amp; GPIO_GPIO(offset);
+ }
+ 
+ static void puv3_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
+ {
+ 	if (value)
+-		GPIO_GPSR = GPIO_GPIO(offset);
++		writel(GPIO_GPIO(offset), GPIO_GPSR);
+ 	else
+-		GPIO_GPCR = GPIO_GPIO(offset);
++		writel(GPIO_GPIO(offset), GPIO_GPCR);
+ }
+ 
+ static int puv3_direction_input(struct gpio_chip *chip, unsigned offset)
+@@ -68,7 +68,7 @@ static int puv3_direction_input(struct gpio_chip *chip, unsigned offset)
+ 	unsigned long flags;
+ 
+ 	local_irq_save(flags);
+-	GPIO_GPDR &amp;= ~GPIO_GPIO(offset);
++	writel(readl(GPIO_GPDR) &amp; ~GPIO_GPIO(offset), GPIO_GPDR);
+ 	local_irq_restore(flags);
+ 	return 0;
+ }
+@@ -80,7 +80,7 @@ static int puv3_direction_output(struct gpio_chip *chip, unsigned offset,
+ 
+ 	local_irq_save(flags);
+ 	puv3_gpio_set(chip, offset, value);
+-	GPIO_GPDR |= GPIO_GPIO(offset);
++	writel(readl(GPIO_GPDR) | GPIO_GPIO(offset), GPIO_GPDR);
+ 	local_irq_restore(flags);
+ 	return 0;
+ }
+@@ -97,7 +97,7 @@ static struct gpio_chip puv3_gpio_chip = {
+ 
+ void __init puv3_init_gpio(void)
+ {
+-	GPIO_GPDR = GPIO_DIR;
++	writel(GPIO_DIR, GPIO_GPDR);
+ #if	defined(CONFIG_PUV3_NB0916) || defined(CONFIG_PUV3_SMW0919)	\
+ 	|| defined(CONFIG_PUV3_DB0913)
+ 	gpio_set_value(GPO_WIFI_EN, 1);
+diff --git a/arch/unicore32/kernel/irq.c b/arch/unicore32/kernel/irq.c
+index 38e30897dea3..e1dbfcb61873 100644
+--- a/arch/unicore32/kernel/irq.c
++++ b/arch/unicore32/kernel/irq.c
+@@ -66,8 +66,8 @@ static int puv3_gpio_type(struct irq_data *d, unsigned int type)
+ 	else
+ 		GPIO_IRQ_falling_edge &amp;= ~mask;
+ 
+-	GPIO_GRER = GPIO_IRQ_rising_edge &amp; GPIO_IRQ_mask;
+-	GPIO_GFER = GPIO_IRQ_falling_edge &amp; GPIO_IRQ_mask;
++	writel(GPIO_IRQ_rising_edge &amp; GPIO_IRQ_mask, GPIO_GRER);
++	writel(GPIO_IRQ_falling_edge &amp; GPIO_IRQ_mask, GPIO_GFER);
+ 
+ 	return 0;
+ }
+@@ -77,25 +77,25 @@ static int puv3_gpio_type(struct irq_data *d, unsigned int type)
+  */
+ static void puv3_low_gpio_ack(struct irq_data *d)
+ {
+-	GPIO_GEDR = (1 &lt;&lt; d-&gt;irq);
++	writel((1 &lt;&lt; d-&gt;irq), GPIO_GEDR);
+ }
+ 
+ static void puv3_low_gpio_mask(struct irq_data *d)
+ {
+-	INTC_ICMR &amp;= ~(1 &lt;&lt; d-&gt;irq);
++	writel(readl(INTC_ICMR) &amp; ~(1 &lt;&lt; d-&gt;irq), INTC_ICMR);
+ }
+ 
+ static void puv3_low_gpio_unmask(struct irq_data *d)
+ {
+-	INTC_ICMR |= 1 &lt;&lt; d-&gt;irq;
++	writel(readl(INTC_ICMR) | (1 &lt;&lt; d-&gt;irq), INTC_ICMR);
+ }
+ 
+ static int puv3_low_gpio_wake(struct irq_data *d, unsigned int on)
+ {
+ 	if (on)
+-		PM_PWER |= 1 &lt;&lt; d-&gt;irq;
++		writel(readl(PM_PWER) | (1 &lt;&lt; d-&gt;irq), PM_PWER);
+ 	else
+-		PM_PWER &amp;= ~(1 &lt;&lt; d-&gt;irq);
++		writel(readl(PM_PWER) &amp; ~(1 &lt;&lt; d-&gt;irq), PM_PWER);
+ 	return 0;
+ }
+ 
+@@ -118,13 +118,13 @@ puv3_gpio_handler(unsigned int irq, struct irq_desc *desc)
+ {
+ 	unsigned int mask;
+ 
+-	mask = GPIO_GEDR;
++	mask = readl(GPIO_GEDR);
+ 	do {
+ 		/*
+ 		 * clear down all currently active IRQ sources.
+ 		 * We will be processing them all.
+ 		 */
+-		GPIO_GEDR = mask;
++		writel(mask, GPIO_GEDR);
+ 
+ 		irq = IRQ_GPIO0;
+ 		do {
+@@ -133,7 +133,7 @@ puv3_gpio_handler(unsigned int irq, struct irq_desc *desc)
+ 			mask &gt;&gt;= 1;
+ 			irq++;
+ 		} while (mask);
+-		mask = GPIO_GEDR;
++		mask = readl(GPIO_GEDR);
+ 	} while (mask);
+ }
+ 
+@@ -146,7 +146,7 @@ static void puv3_high_gpio_ack(struct irq_data *d)
+ {
+ 	unsigned int mask = GPIO_MASK(d-&gt;irq);
+ 
+-	GPIO_GEDR = mask;
++	writel(mask, GPIO_GEDR);
+ }
+ 
+ static void puv3_high_gpio_mask(struct irq_data *d)
+@@ -155,8 +155,8 @@ static void puv3_high_gpio_mask(struct irq_data *d)
+ 
+ 	GPIO_IRQ_mask &amp;= ~mask;
+ 
+-	GPIO_GRER &amp;= ~mask;
+-	GPIO_GFER &amp;= ~mask;
++	writel(readl(GPIO_GRER) &amp; ~mask, GPIO_GRER);
++	writel(readl(GPIO_GFER) &amp; ~mask, GPIO_GFER);
+ }
+ 
+ static void puv3_high_gpio_unmask(struct irq_data *d)
+@@ -165,16 +165,16 @@ static void puv3_high_gpio_unmask(struct irq_data *d)
+ 
+ 	GPIO_IRQ_mask |= mask;
+ 
+-	GPIO_GRER = GPIO_IRQ_rising_edge &amp; GPIO_IRQ_mask;
+-	GPIO_GFER = GPIO_IRQ_falling_edge &amp; GPIO_IRQ_mask;
++	writel(GPIO_IRQ_rising_edge &amp; GPIO_IRQ_mask, GPIO_GRER);
++	writel(GPIO_IRQ_falling_edge &amp; GPIO_IRQ_mask, GPIO_GFER);
+ }
+ 
+ static int puv3_high_gpio_wake(struct irq_data *d, unsigned int on)
+ {
+ 	if (on)
+-		PM_PWER |= PM_PWER_GPIOHIGH;
++		writel(readl(PM_PWER) | PM_PWER_GPIOHIGH, PM_PWER);
+ 	else
+-		PM_PWER &amp;= ~PM_PWER_GPIOHIGH;
++		writel(readl(PM_PWER) &amp; ~PM_PWER_GPIOHIGH, PM_PWER);
+ 	return 0;
+ }
+ 
+@@ -193,12 +193,12 @@ static struct irq_chip puv3_high_gpio_chip = {
+  */
+ static void puv3_mask_irq(struct irq_data *d)
+ {
+-	INTC_ICMR &amp;= ~(1 &lt;&lt; d-&gt;irq);
++	writel(readl(INTC_ICMR) &amp; ~(1 &lt;&lt; d-&gt;irq), INTC_ICMR);
+ }
+ 
+ static void puv3_unmask_irq(struct irq_data *d)
+ {
+-	INTC_ICMR |= (1 &lt;&lt; d-&gt;irq);
++	writel(readl(INTC_ICMR) | (1 &lt;&lt; d-&gt;irq), INTC_ICMR);
+ }
+ 
+ /*
+@@ -208,9 +208,9 @@ static int puv3_set_wake(struct irq_data *d, unsigned int on)
+ {
+ 	if (d-&gt;irq == IRQ_RTCAlarm) {
+ 		if (on)
+-			PM_PWER |= PM_PWER_RTC;
++			writel(readl(PM_PWER) | PM_PWER_RTC, PM_PWER);
+ 		else
+-			PM_PWER &amp;= ~PM_PWER_RTC;
++			writel(readl(PM_PWER) &amp; ~PM_PWER_RTC, PM_PWER);
+ 		return 0;
+ 	}
+ 	return -EINVAL;
+@@ -242,25 +242,25 @@ static int puv3_irq_suspend(struct sys_device *dev, pm_message_t state)
+ 	struct puv3_irq_state *st = &amp;puv3_irq_state;
+ 
+ 	st-&gt;saved = 1;
+-	st-&gt;icmr = INTC_ICMR;
+-	st-&gt;iclr = INTC_ICLR;
+-	st-&gt;iccr = INTC_ICCR;
++	st-&gt;icmr = readl(INTC_ICMR);
++	st-&gt;iclr = readl(INTC_ICLR);
++	st-&gt;iccr = readl(INTC_ICCR);
+ 
+ 	/*
+ 	 * Disable all GPIO-based interrupts.
+ 	 */
+-	INTC_ICMR &amp;= ~(0x1ff);
++	writel(readl(INTC_ICMR) &amp; ~(0x1ff), INTC_ICMR);
+ 
+ 	/*
+ 	 * Set the appropriate edges for wakeup.
+ 	 */
+-	GPIO_GRER = PM_PWER &amp; GPIO_IRQ_rising_edge;
+-	GPIO_GFER = PM_PWER &amp; GPIO_IRQ_falling_edge;
++	writel(readl(PM_PWER) &amp; GPIO_IRQ_rising_edge, GPIO_GRER);
++	writel(readl(PM_PWER) &amp; GPIO_IRQ_falling_edge, GPIO_GFER);
+ 
+ 	/*
+ 	 * Clear any pending GPIO interrupts.
+ 	 */
+-	GPIO_GEDR = GPIO_GEDR;
++	writel(readl(GPIO_GEDR), GPIO_GEDR);
+ 
+ 	return 0;
+ }
+@@ -270,13 +270,13 @@ static int puv3_irq_resume(struct sys_device *dev)
+ 	struct puv3_irq_state *st = &amp;puv3_irq_state;
+ 
+ 	if (st-&gt;saved) {
+-		INTC_ICCR = st-&gt;iccr;
+-		INTC_ICLR = st-&gt;iclr;
++		writel(st-&gt;iccr, INTC_ICCR);
++		writel(st-&gt;iclr, INTC_ICLR);
+ 
+-		GPIO_GRER = GPIO_IRQ_rising_edge &amp; GPIO_IRQ_mask;
+-		GPIO_GFER = GPIO_IRQ_falling_edge &amp; GPIO_IRQ_mask;
++		writel(GPIO_IRQ_rising_edge &amp; GPIO_IRQ_mask, GPIO_GRER);
++		writel(GPIO_IRQ_falling_edge &amp; GPIO_IRQ_mask, GPIO_GFER);
+ 
+-		INTC_ICMR = st-&gt;icmr;
++		writel(st-&gt;icmr, INTC_ICMR);
+ 	}
+ 	return 0;
+ }
+@@ -307,18 +307,18 @@ void __init init_IRQ(void)
+ 	request_resource(&amp;iomem_resource, &amp;irq_resource);
+ 
+ 	/* disable all IRQs */
+-	INTC_ICMR = 0;
++	writel(0, INTC_ICMR);
+ 
+ 	/* all IRQs are IRQ, not REAL */
+-	INTC_ICLR = 0;
++	writel(0, INTC_ICLR);
+ 
+ 	/* clear all GPIO edge detects */
+-	GPIO_GPIR = FMASK(8, 0) &amp; ~FIELD(1, 1, GPI_SOFF_REQ);
+-	GPIO_GFER = 0;
+-	GPIO_GRER = 0;
+-	GPIO_GEDR = 0x0FFFFFFF;
++	writel(FMASK(8, 0) &amp; ~FIELD(1, 1, GPI_SOFF_REQ), GPIO_GPIR);
++	writel(0, GPIO_GFER);
++	writel(0, GPIO_GRER);
++	writel(0x0FFFFFFF, GPIO_GEDR);
+ 
+-	INTC_ICCR = 1;
++	writel(1, INTC_ICCR);
+ 
+ 	for (irq = 0; irq &lt; IRQ_GPIOHIGH; irq++) {
+ 		set_irq_chip(irq, &amp;puv3_low_gpio_chip);
+diff --git a/arch/unicore32/kernel/pci.c b/arch/unicore32/kernel/pci.c
+index d4e55e2d2d29..65c265ee8e94 100644
+--- a/arch/unicore32/kernel/pci.c
++++ b/arch/unicore32/kernel/pci.c
+@@ -30,16 +30,16 @@ static int
+ puv3_read_config(struct pci_bus *bus, unsigned int devfn, int where,
+ 			int size, u32 *value)
+ {
+-	PCICFG_ADDR = CONFIG_CMD(bus, devfn, where);
++	writel(CONFIG_CMD(bus, devfn, where), PCICFG_ADDR);
+ 	switch (size) {
+ 	case 1:
+-		*value = (PCICFG_DATA &gt;&gt; ((where &amp; 3) * 8)) &amp; 0xFF;
++		*value = (readl(PCICFG_DATA) &gt;&gt; ((where &amp; 3) * 8)) &amp; 0xFF;
+ 		break;
+ 	case 2:
+-		*value = (PCICFG_DATA &gt;&gt; ((where &amp; 2) * 8)) &amp; 0xFFFF;
++		*value = (readl(PCICFG_DATA) &gt;&gt; ((where &amp; 2) * 8)) &amp; 0xFFFF;
+ 		break;
+ 	case 4:
+-		*value = PCICFG_DATA;
++		*value = readl(PCICFG_DATA);
+ 		break;
+ 	}
+ 	return PCIBIOS_SUCCESSFUL;
+@@ -49,18 +49,18 @@ static int
+ puv3_write_config(struct pci_bus *bus, unsigned int devfn, int where,
+ 			int size, u32 value)
+ {
+-	PCICFG_ADDR = CONFIG_CMD(bus, devfn, where);
++	writel(CONFIG_CMD(bus, devfn, where), PCICFG_ADDR);
+ 	switch (size) {
+ 	case 1:
+-		PCICFG_DATA = (PCICFG_DATA &amp; ~FMASK(8, (where&amp;3)*8))
+-			| FIELD(value, 8, (where&amp;3)*8);
++		writel((readl(PCICFG_DATA) &amp; ~FMASK(8, (where&amp;3)*8))
++			| FIELD(value, 8, (where&amp;3)*8), PCICFG_DATA);
+ 		break;
+ 	case 2:
+-		PCICFG_DATA = (PCICFG_DATA &amp; ~FMASK(16, (where&amp;2)*8))
+-			| FIELD(value, 16, (where&amp;2)*8);
++		writel((readl(PCICFG_DATA) &amp; ~FMASK(16, (where&amp;2)*8))
++			| FIELD(value, 16, (where&amp;2)*8), PCICFG_DATA);
+ 		break;
+ 	case 4:
+-		PCICFG_DATA = value;
++		writel(value, PCICFG_DATA);
+ 		break;
+ 	}
+ 	return PCIBIOS_SUCCESSFUL;
+@@ -75,31 +75,31 @@ void pci_puv3_preinit(void)
+ {
+ 	printk(KERN_DEBUG "PCI: PKUnity PCI Controller Initializing ...\n");
+ 	/* config PCI bridge base */
+-	PCICFG_BRIBASE = PKUNITY_PCIBRI_BASE;
++	writel(PKUNITY_PCIBRI_BASE, PCICFG_BRIBASE);
+ 
+-	PCIBRI_AHBCTL0 = 0;
+-	PCIBRI_AHBBAR0 = PKUNITY_PCIBRI_BASE | PCIBRI_BARx_MEM;
+-	PCIBRI_AHBAMR0 = 0xFFFF0000;
+-	PCIBRI_AHBTAR0 = 0;
++	writel(0, PCIBRI_AHBCTL0);
++	writel(PKUNITY_PCIBRI_BASE | PCIBRI_BARx_MEM, PCIBRI_AHBBAR0);
++	writel(0xFFFF0000, PCIBRI_AHBAMR0);
++	writel(0, PCIBRI_AHBTAR0);
+ 
+-	PCIBRI_AHBCTL1 = PCIBRI_CTLx_AT;
+-	PCIBRI_AHBBAR1 = PKUNITY_PCILIO_BASE | PCIBRI_BARx_IO;
+-	PCIBRI_AHBAMR1 = 0xFFFF0000;
+-	PCIBRI_AHBTAR1 = 0x00000000;
++	writel(PCIBRI_CTLx_AT, PCIBRI_AHBCTL1);
++	writel(PKUNITY_PCILIO_BASE | PCIBRI_BARx_IO, PCIBRI_AHBBAR1);
++	writel(0xFFFF0000, PCIBRI_AHBAMR1);
++	writel(0x00000000, PCIBRI_AHBTAR1);
+ 
+-	PCIBRI_AHBCTL2 = PCIBRI_CTLx_PREF;
+-	PCIBRI_AHBBAR2 = PKUNITY_PCIMEM_BASE | PCIBRI_BARx_MEM;
+-	PCIBRI_AHBAMR2 = 0xF8000000;
+-	PCIBRI_AHBTAR2 = 0;
++	writel(PCIBRI_CTLx_PREF, PCIBRI_AHBCTL2);
++	writel(PKUNITY_PCIMEM_BASE | PCIBRI_BARx_MEM, PCIBRI_AHBBAR2);
++	writel(0xF8000000, PCIBRI_AHBAMR2);
++	writel(0, PCIBRI_AHBTAR2);
+ 
+-	PCIBRI_BAR1 = PKUNITY_PCIAHB_BASE | PCIBRI_BARx_MEM;
++	writel(PKUNITY_PCIAHB_BASE | PCIBRI_BARx_MEM, PCIBRI_BAR1);
+ 
+-	PCIBRI_PCICTL0 = PCIBRI_CTLx_AT | PCIBRI_CTLx_PREF;
+-	PCIBRI_PCIBAR0 = PKUNITY_PCIAHB_BASE | PCIBRI_BARx_MEM;
+-	PCIBRI_PCIAMR0 = 0xF8000000;
+-	PCIBRI_PCITAR0 = PKUNITY_SDRAM_BASE;
++	writel(PCIBRI_CTLx_AT | PCIBRI_CTLx_PREF, PCIBRI_PCICTL0);
++	writel(PKUNITY_PCIAHB_BASE | PCIBRI_BARx_MEM, PCIBRI_PCIBAR0);
++	writel(0xF8000000, PCIBRI_PCIAMR0);
++	writel(PKUNITY_SDRAM_BASE, PCIBRI_PCITAR0);
+ 
+-	PCIBRI_CMD = PCIBRI_CMD | PCIBRI_CMD_IO | PCIBRI_CMD_MEM;
++	writel(readl(PCIBRI_CMD) | PCIBRI_CMD_IO | PCIBRI_CMD_MEM, PCIBRI_CMD);
+ }
+ 
+ static int __init pci_puv3_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+diff --git a/arch/unicore32/kernel/process.c b/arch/unicore32/kernel/process.c
+index 8d4a273ae086..ba401df971ed 100644
+--- a/arch/unicore32/kernel/process.c
++++ b/arch/unicore32/kernel/process.c
+@@ -125,9 +125,9 @@ void machine_restart(char *cmd)
+ 		/* Jump into ROM at address 0xffff0000 */
+ 		cpu_reset(VECTORS_BASE);
+ 	} else {
+-		PM_PLLSYSCFG = 0x00002001; /* cpu clk = 250M */
+-		PM_PLLDDRCFG = 0x00100800; /* ddr clk =  44M */
+-		PM_PLLVGACFG = 0x00002001; /* vga clk = 250M */
++		writel(0x00002001, PM_PLLSYSCFG); /* cpu clk = 250M */
++		writel(0x00100800, PM_PLLDDRCFG); /* ddr clk =  44M */
++		writel(0x00002001, PM_PLLVGACFG); /* vga clk = 250M */
+ 
+ 		/* Use on-chip reset capability */
+ 		/* following instructions must be in one icache line */
+@@ -141,10 +141,10 @@ void machine_restart(char *cmd)
+ 			"	nop; nop; nop\n\t"
+ 			/* prefetch 3 instructions at most */
+ 			:
+-			: "r" ((unsigned long)&amp;PM_PMCR),
++			: "r" (PM_PMCR),
+ 			  "r" (PM_PMCR_CFBSYS | PM_PMCR_CFBDDR
+ 				| PM_PMCR_CFBVGA),
+-			  "r" ((unsigned long)&amp;RESETC_SWRR),
++			  "r" (RESETC_SWRR),
+ 			  "r" (RESETC_SWRR_SRB)
+ 			: "r0", "memory");
+ 	}
+diff --git a/arch/unicore32/kernel/puv3-core.c b/arch/unicore32/kernel/puv3-core.c
+index 26cc52b51e7b..6edf928a106c 100644
+--- a/arch/unicore32/kernel/puv3-core.c
++++ b/arch/unicore32/kernel/puv3-core.c
+@@ -36,7 +36,7 @@
+  */
+ unsigned long long sched_clock(void)
+ {
+-	unsigned long long v = cnt32_to_63(OST_OSCR);
++	unsigned long long v = cnt32_to_63(readl(OST_OSCR));
+ 
+ 	/* original conservative method, but overflow frequently
+ 	 * v *= NSEC_PER_SEC &gt;&gt; 12;
+@@ -187,15 +187,15 @@ static void puv3_cpu_pm_restore(unsigned long *sleep_save)
+ static int puv3_cpu_pm_prepare(void)
+ {
+ 	/* set resume return address */
+-	PM_DIVCFG = virt_to_phys(puv3_cpu_resume);
++	writel(virt_to_phys(puv3_cpu_resume), PM_DIVCFG);
+ 	return 0;
+ }
+ 
+ static void puv3_cpu_pm_enter(suspend_state_t state)
+ {
+ 	/* Clear reset status */
+-	RESETC_RSSR = RESETC_RSSR_HWR | RESETC_RSSR_WDR
+-			| RESETC_RSSR_SMR | RESETC_RSSR_SWR;
++	writel(RESETC_RSSR_HWR | RESETC_RSSR_WDR
++			| RESETC_RSSR_SMR | RESETC_RSSR_SWR, RESETC_RSSR);
+ 
+ 	switch (state) {
+ /*	case PM_SUSPEND_ON:
+@@ -242,7 +242,7 @@ void puv3_ps2_init(void)
+ 	struct clk *bclk32;
+ 
+ 	bclk32 = clk_get(NULL, "BUS32_CLK");
+-	PS2_CNT = clk_get_rate(bclk32) / 200000; /* should &gt; 5us */
++	writel(clk_get_rate(bclk32) / 200000, PS2_CNT); /* should &gt; 5us */
+ }
+ 
+ void __init puv3_core_init(void)
+diff --git a/arch/unicore32/kernel/rtc.c b/arch/unicore32/kernel/rtc.c
+index 5e4db4158589..c5f068295b51 100644
+--- a/arch/unicore32/kernel/rtc.c
++++ b/arch/unicore32/kernel/rtc.c
+@@ -41,7 +41,7 @@ static irqreturn_t puv3_rtc_alarmirq(int irq, void *id)
+ {
+ 	struct rtc_device *rdev = id;
+ 
+-	RTC_RTSR |= RTC_RTSR_AL;
++	writel(readl(RTC_RTSR) | RTC_RTSR_AL, RTC_RTSR);
+ 	rtc_update_irq(rdev, 1, RTC_AF | RTC_IRQF);
+ 	return IRQ_HANDLED;
+ }
+@@ -50,7 +50,7 @@ static irqreturn_t puv3_rtc_tickirq(int irq, void *id)
+ {
+ 	struct rtc_device *rdev = id;
+ 
+-	RTC_RTSR |= RTC_RTSR_HZ;
++	writel(readl(RTC_RTSR) | RTC_RTSR_HZ, RTC_RTSR);
+ 	rtc_update_irq(rdev, 1, RTC_PF | RTC_IRQF);
+ 	return IRQ_HANDLED;
+ }
+@@ -62,12 +62,12 @@ static void puv3_rtc_setaie(int to)
+ 
+ 	pr_debug("%s: aie=%d\n", __func__, to);
+ 
+-	tmp = RTC_RTSR &amp; ~RTC_RTSR_ALE;
++	tmp = readl(RTC_RTSR) &amp; ~RTC_RTSR_ALE;
+ 
+ 	if (to)
+ 		tmp |= RTC_RTSR_ALE;
+ 
+-	RTC_RTSR = tmp;
++	writel(tmp, RTC_RTSR);
+ }
+ 
+ static int puv3_rtc_setpie(struct device *dev, int enabled)
+@@ -77,12 +77,12 @@ static int puv3_rtc_setpie(struct device *dev, int enabled)
+ 	pr_debug("%s: pie=%d\n", __func__, enabled);
+ 
+ 	spin_lock_irq(&amp;puv3_rtc_pie_lock);
+-	tmp = RTC_RTSR &amp; ~RTC_RTSR_HZE;
++	tmp = readl(RTC_RTSR) &amp; ~RTC_RTSR_HZE;
+ 
+ 	if (enabled)
+ 		tmp |= RTC_RTSR_HZE;
+ 
+-	RTC_RTSR = tmp;
++	writel(tmp, RTC_RTSR);
+ 	spin_unlock_irq(&amp;puv3_rtc_pie_lock);
+ 
+ 	return 0;
+@@ -97,7 +97,7 @@ static int puv3_rtc_setfreq(struct device *dev, int freq)
+ 
+ static int puv3_rtc_gettime(struct device *dev, struct rtc_time *rtc_tm)
+ {
+-	rtc_time_to_tm(RTC_RCNR, rtc_tm);
++	rtc_time_to_tm(readl(RTC_RCNR), rtc_tm);
+ 
+ 	pr_debug("read time %02x.%02x.%02x %02x/%02x/%02x\n",
+ 		 rtc_tm-&gt;tm_year, rtc_tm-&gt;tm_mon, rtc_tm-&gt;tm_mday,
+@@ -115,7 +115,7 @@ static int puv3_rtc_settime(struct device *dev, struct rtc_time *tm)
+ 		 tm-&gt;tm_hour, tm-&gt;tm_min, tm-&gt;tm_sec);
+ 
+ 	rtc_tm_to_time(tm, &amp;rtc_count);
+-	RTC_RCNR = rtc_count;
++	writel(rtc_count, RTC_RCNR);
+ 
+ 	return 0;
+ }
+@@ -124,9 +124,9 @@ static int puv3_rtc_getalarm(struct device *dev, struct rtc_wkalrm *alrm)
+ {
+ 	struct rtc_time *alm_tm = &amp;alrm-&gt;time;
+ 
+-	rtc_time_to_tm(RTC_RTAR, alm_tm);
++	rtc_time_to_tm(readl(RTC_RTAR), alm_tm);
+ 
+-	alrm-&gt;enabled = RTC_RTSR &amp; RTC_RTSR_ALE;
++	alrm-&gt;enabled = readl(RTC_RTSR) &amp; RTC_RTSR_ALE;
+ 
+ 	pr_debug("read alarm %02x %02x.%02x.%02x %02x/%02x/%02x\n",
+ 		 alrm-&gt;enabled,
+@@ -147,7 +147,7 @@ static int puv3_rtc_setalarm(struct device *dev, struct rtc_wkalrm *alrm)
+ 		 tm-&gt;tm_hour &amp; 0xff, tm-&gt;tm_min &amp; 0xff, tm-&gt;tm_sec);
+ 
+ 	rtc_tm_to_time(tm, &amp;rtcalarm_count);
+-	RTC_RTAR = rtcalarm_count;
++	writel(rtcalarm_count, RTC_RTAR);
+ 
+ 	puv3_rtc_setaie(alrm-&gt;enabled);
+ 
+@@ -162,7 +162,7 @@ static int puv3_rtc_setalarm(struct device *dev, struct rtc_wkalrm *alrm)
+ static int puv3_rtc_proc(struct device *dev, struct seq_file *seq)
+ {
+ 	seq_printf(seq, "periodic_IRQ\t: %s\n",
+-		     (RTC_RTSR &amp; RTC_RTSR_HZE) ? "yes" : "no");
++		     (readl(RTC_RTSR) &amp; RTC_RTSR_HZE) ? "yes" : "no");
+ 	return 0;
+ }
+ 
+@@ -222,13 +222,13 @@ static const struct rtc_class_ops puv3_rtcops = {
+ static void puv3_rtc_enable(struct platform_device *pdev, int en)
+ {
+ 	if (!en) {
+-		RTC_RTSR &amp;= ~RTC_RTSR_HZE;
++		writel(readl(RTC_RTSR) &amp; ~RTC_RTSR_HZE, RTC_RTSR);
+ 	} else {
+ 		/* re-enable the device, and check it is ok */
+ 
+-		if ((RTC_RTSR &amp; RTC_RTSR_HZE) == 0) {
++		if ((readl(RTC_RTSR) &amp; RTC_RTSR_HZE) == 0) {
+ 			dev_info(&amp;pdev-&gt;dev, "rtc disabled, re-enabling\n");
+-			RTC_RTSR |= RTC_RTSR_HZE;
++			writel(readl(RTC_RTSR) | RTC_RTSR_HZE, RTC_RTSR);
+ 		}
+ 	}
+ }
+@@ -331,7 +331,7 @@ static int ticnt_save;
+ static int puv3_rtc_suspend(struct platform_device *pdev, pm_message_t state)
+ {
+ 	/* save RTAR for anyone using periodic interrupts */
+-	ticnt_save = RTC_RTAR;
++	ticnt_save = readl(RTC_RTAR);
+ 	puv3_rtc_enable(pdev, 0);
+ 	return 0;
+ }
+@@ -339,7 +339,7 @@ static int puv3_rtc_suspend(struct platform_device *pdev, pm_message_t state)
+ static int puv3_rtc_resume(struct platform_device *pdev)
+ {
+ 	puv3_rtc_enable(pdev, 1);
+-	RTC_RTAR = ticnt_save;
++	writel(ticnt_save, RTC_RTAR);
+ 	return 0;
+ }
+ #else
+diff --git a/arch/unicore32/kernel/time.c b/arch/unicore32/kernel/time.c
+index 8bb4b815bce9..080710c09241 100644
+--- a/arch/unicore32/kernel/time.c
++++ b/arch/unicore32/kernel/time.c
+@@ -26,8 +26,8 @@ static irqreturn_t puv3_ost0_interrupt(int irq, void *dev_id)
+ 	struct clock_event_device *c = dev_id;
+ 
+ 	/* Disarm the compare/match, signal the event. */
+-	OST_OIER &amp;= ~OST_OIER_E0;
+-	OST_OSSR &amp;= ~OST_OSSR_M0;
++	writel(readl(OST_OIER) &amp; ~OST_OIER_E0, OST_OIER);
++	writel(readl(OST_OSSR) &amp; ~OST_OSSR_M0, OST_OSSR);
+ 	c-&gt;event_handler(c);
+ 
+ 	return IRQ_HANDLED;
+@@ -38,10 +38,10 @@ puv3_osmr0_set_next_event(unsigned long delta, struct clock_event_device *c)
+ {
+ 	unsigned long next, oscr;
+ 
+-	OST_OIER |= OST_OIER_E0;
+-	next = OST_OSCR + delta;
+-	OST_OSMR0 = next;
+-	oscr = OST_OSCR;
++	writel(readl(OST_OIER) | OST_OIER_E0, OST_OIER);
++	next = readl(OST_OSCR) + delta;
++	writel(next, OST_OSMR0);
++	oscr = readl(OST_OSCR);
+ 
+ 	return (signed)(next - oscr) &lt;= MIN_OSCR_DELTA ? -ETIME : 0;
+ }
+@@ -53,8 +53,8 @@ puv3_osmr0_set_mode(enum clock_event_mode mode, struct clock_event_device *c)
+ 	case CLOCK_EVT_MODE_ONESHOT:
+ 	case CLOCK_EVT_MODE_UNUSED:
+ 	case CLOCK_EVT_MODE_SHUTDOWN:
+-		OST_OIER &amp;= ~OST_OIER_E0;
+-		OST_OSSR &amp;= ~OST_OSSR_M0;
++		writel(readl(OST_OIER) &amp; ~OST_OIER_E0, OST_OIER);
++		writel(readl(OST_OSSR) &amp; ~OST_OSSR_M0, OST_OSSR);
+ 		break;
+ 
+ 	case CLOCK_EVT_MODE_RESUME:
+@@ -73,7 +73,7 @@ static struct clock_event_device ckevt_puv3_osmr0 = {
+ 
+ static cycle_t puv3_read_oscr(struct clocksource *cs)
+ {
+-	return OST_OSCR;
++	return readl(OST_OSCR);
+ }
+ 
+ static struct clocksource cksrc_puv3_oscr = {
+@@ -93,8 +93,8 @@ static struct irqaction puv3_timer_irq = {
+ 
+ void __init time_init(void)
+ {
+-	OST_OIER = 0;		/* disable any timer interrupts */
+-	OST_OSSR = 0;		/* clear status on all timers */
++	writel(0, OST_OIER);		/* disable any timer interrupts */
++	writel(0, OST_OSSR);		/* clear status on all timers */
+ 
+ 	clockevents_calc_mult_shift(&amp;ckevt_puv3_osmr0, CLOCK_TICK_RATE, 5);
+ 
+@@ -115,26 +115,26 @@ unsigned long osmr[4], oier;
+ 
+ void puv3_timer_suspend(void)
+ {
+-	osmr[0] = OST_OSMR0;
+-	osmr[1] = OST_OSMR1;
+-	osmr[2] = OST_OSMR2;
+-	osmr[3] = OST_OSMR3;
+-	oier = OST_OIER;
++	osmr[0] = readl(OST_OSMR0);
++	osmr[1] = readl(OST_OSMR1);
++	osmr[2] = readl(OST_OSMR2);
++	osmr[3] = readl(OST_OSMR3);
++	oier = readl(OST_OIER);
+ }
+ 
+ void puv3_timer_resume(void)
+ {
+-	OST_OSSR = 0;
+-	OST_OSMR0 = osmr[0];
+-	OST_OSMR1 = osmr[1];
+-	OST_OSMR2 = osmr[2];
+-	OST_OSMR3 = osmr[3];
+-	OST_OIER = oier;
++	writel(0, OST_OSSR);
++	writel(osmr[0], OST_OSMR0);
++	writel(osmr[1], OST_OSMR1);
++	writel(osmr[2], OST_OSMR2);
++	writel(osmr[3], OST_OSMR3);
++	writel(oier, OST_OIER);
+ 
+ 	/*
+ 	 * OSMR0 is the system timer: make sure OSCR is sufficiently behind
+ 	 */
+-	OST_OSCR = OST_OSMR0 - LATCH;
++	writel(readl(OST_OSMR0) - LATCH, OST_OSCR);
+ }
+ #else
+ void puv3_timer_suspend(void) { };
+diff --git a/drivers/input/serio/i8042-unicore32io.h b/drivers/input/serio/i8042-unicore32io.h
+index 620b040b81b0..73f5cc124a36 100644
+--- a/drivers/input/serio/i8042-unicore32io.h
++++ b/drivers/input/serio/i8042-unicore32io.h
+@@ -29,11 +29,11 @@
+ /*
+  * Register numbers.
+  */
+-#define I8042_COMMAND_REG	((volatile void __iomem *)&amp;PS2_COMMAND)
+-#define I8042_STATUS_REG	((volatile void __iomem *)&amp;PS2_STATUS)
+-#define I8042_DATA_REG		((volatile void __iomem *)&amp;PS2_DATA)
++#define I8042_COMMAND_REG	PS2_COMMAND
++#define I8042_STATUS_REG	PS2_STATUS
++#define I8042_DATA_REG		PS2_DATA
+ 
+-#define I8042_REGION_START	(resource_size_t)(&amp;PS2_DATA)
++#define I8042_REGION_START	(resource_size_t)(PS2_DATA)
+ #define I8042_REGION_SIZE	(resource_size_t)(16)
+ 
+ static inline int i8042_read_data(void)</pre><hr><pre>commit 4517366d870b89d6fb8c0c90deb6c73d975908af
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Fri Feb 25 17:58:00 2011 +0800
+
+    unicore32 i8042 upgrade and bugfix: adjust resource request region type
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+
+diff --git a/drivers/input/serio/i8042-unicore32io.h b/drivers/input/serio/i8042-unicore32io.h
+index 2cdd8726446f..620b040b81b0 100644
+--- a/drivers/input/serio/i8042-unicore32io.h
++++ b/drivers/input/serio/i8042-unicore32io.h
+@@ -58,7 +58,7 @@ static inline void i8042_write_command(int val)
+ 
+ static inline int i8042_platform_init(void)
+ {
+-	if (!request_region(I8042_REGION_START, I8042_REGION_SIZE, "i8042"))
++	if (!request_mem_region(I8042_REGION_START, I8042_REGION_SIZE, "i8042"))
+ 		return -EBUSY;
+ 
+ 	i8042_reset = 1;
+@@ -67,7 +67,7 @@ static inline int i8042_platform_init(void)
+ 
+ static inline void i8042_platform_exit(void)
+ {
+-	release_region(I8042_REGION_START, I8042_REGION_SIZE);
++	release_mem_region(I8042_REGION_START, I8042_REGION_SIZE);
+ }
+ 
+ #endif /* _I8042_UNICORE32_H */</pre><hr><pre>commit 4ef2ec63cc5117d099960c49910533e467942e27
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Tue Feb 22 17:34:47 2011 +0800
+
+    unicore32 upgrade to v2.6.38-rc5: add one more paramter for pte_alloc_map call
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+
+diff --git a/arch/unicore32/mm/pgd.c b/arch/unicore32/mm/pgd.c
+index 632cef7cd378..08b8d4295e70 100644
+--- a/arch/unicore32/mm/pgd.c
++++ b/arch/unicore32/mm/pgd.c
+@@ -54,7 +54,7 @@ pgd_t *get_pgd_slow(struct mm_struct *mm)
+ 		if (!new_pmd)
+ 			goto no_pmd;
+ 
+-		new_pte = pte_alloc_map(mm, new_pmd, 0);
++		new_pte = pte_alloc_map(mm, NULL, new_pmd, 0);
+ 		if (!new_pte)
+ 			goto no_pte;
+ </pre>
+    <div class="pagination">
+        <a href='11_5.html'>&lt;&lt;Prev</a><a href='11.html'>1</a><a href='11_2.html'>2</a><a href='11_3.html'>3</a><a href='11_4.html'>4</a><a href='11_5.html'>5</a><span>[6]</span><a href='11_7.html'>7</a><a href='11_8.html'>8</a><a href='11_9.html'>9</a><a href='11_10.html'>10</a><a href='11_7.html'>Next&gt;&gt;</a>
+    <div>
+</body>

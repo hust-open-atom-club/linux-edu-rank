@@ -1,0 +1,1863 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_54.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><span>[55]</span><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_56.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit eab5c084b858fd95a873fc2b97de9a9ad937b4ed
+Author: Chuck Lever &lt;cel@citi.umich.edu&gt;
+Date:   Thu Aug 11 16:25:14 2005 -0400
+
+    [PATCH] NFS: use a constant value for TCP retransmit timeouts
+    
+     Implement a best practice: don't use exponential backoff when computing
+     retransmit timeout values on TCP connections, but simply retransmit
+     at regular intervals.
+    
+     This also fixes a bug introduced when xprt_reset_majortimeo() was added.
+    
+     Test-plan:
+     Enable RPC debugging and watch timeout behavior on a NFS/TCP mount.
+    
+     Version: Thu, 11 Aug 2005 16:02:19 -0400
+    
+     Signed-off-by: Chuck Lever &lt;cel@netapp.com&gt;
+     Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/inode.c b/fs/nfs/inode.c
+index 6922469d6fc5..b6a1ca508e60 100644
+--- a/fs/nfs/inode.c
++++ b/fs/nfs/inode.c
+@@ -358,6 +358,35 @@ nfs_sb_init(struct super_block *sb, rpc_authflavor_t authflavor)
+ 	return no_root_error;
+ }
+ 
++static void nfs_init_timeout_values(struct rpc_timeout *to, int proto, unsigned int timeo, unsigned int retrans)
++{
++	to-&gt;to_initval = timeo * HZ / 10;
++	to-&gt;to_retries = retrans;
++	if (!to-&gt;to_retries)
++		to-&gt;to_retries = 2;
++
++	switch (proto) {
++	case IPPROTO_TCP:
++		if (!to-&gt;to_initval)
++			to-&gt;to_initval = 60 * HZ;
++		if (to-&gt;to_initval &gt; RPC_MAX_TCP_TIMEOUT)
++			to-&gt;to_initval = RPC_MAX_TCP_TIMEOUT;
++		to-&gt;to_increment = to-&gt;to_initval;
++		to-&gt;to_maxval = to-&gt;to_initval + (to-&gt;to_increment * to-&gt;to_retries);
++		to-&gt;to_exponential = 0;
++		break;
++	case IPPROTO_UDP:
++	default:
++		if (!to-&gt;to_initval)
++			to-&gt;to_initval = 11 * HZ / 10;
++		if (to-&gt;to_initval &gt; RPC_MAX_UDP_TIMEOUT)
++			to-&gt;to_initval = RPC_MAX_UDP_TIMEOUT;
++		to-&gt;to_maxval = RPC_MAX_UDP_TIMEOUT;
++		to-&gt;to_exponential = 1;
++		break;
++	}
++}
++
+ /*
+  * Create an RPC client handle.
+  */
+@@ -367,22 +396,12 @@ nfs_create_client(struct nfs_server *server, const struct nfs_mount_data *data)
+ 	struct rpc_timeout	timeparms;
+ 	struct rpc_xprt		*xprt = NULL;
+ 	struct rpc_clnt		*clnt = NULL;
+-	int			tcp   = (data-&gt;flags &amp; NFS_MOUNT_TCP);
+-
+-	/* Initialize timeout values */
+-	timeparms.to_initval = data-&gt;timeo * HZ / 10;
+-	timeparms.to_retries = data-&gt;retrans;
+-	timeparms.to_maxval  = tcp ? RPC_MAX_TCP_TIMEOUT : RPC_MAX_UDP_TIMEOUT;
+-	timeparms.to_exponential = 1;
++	int			proto = (data-&gt;flags &amp; NFS_MOUNT_TCP) ? IPPROTO_TCP : IPPROTO_UDP;
+ 
+-	if (!timeparms.to_initval)
+-		timeparms.to_initval = (tcp ? 600 : 11) * HZ / 10;
+-	if (!timeparms.to_retries)
+-		timeparms.to_retries = 5;
++	nfs_init_timeout_values(&amp;timeparms, proto, data-&gt;timeo, data-&gt;retrans);
+ 
+ 	/* create transport and client */
+-	xprt = xprt_create_proto(tcp ? IPPROTO_TCP : IPPROTO_UDP,
+-				 &amp;server-&gt;addr, &amp;timeparms);
++	xprt = xprt_create_proto(proto, &amp;server-&gt;addr, &amp;timeparms);
+ 	if (IS_ERR(xprt)) {
+ 		dprintk("%s: cannot create RPC transport. Error = %ld\n",
+ 				__FUNCTION__, PTR_ERR(xprt));
+@@ -1674,7 +1693,7 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
+ 	struct rpc_clnt *clnt = NULL;
+ 	struct rpc_timeout timeparms;
+ 	rpc_authflavor_t authflavour;
+-	int proto, err = -EIO;
++	int err = -EIO;
+ 
+ 	sb-&gt;s_blocksize_bits = 0;
+ 	sb-&gt;s_blocksize = 0;
+@@ -1692,30 +1711,8 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
+ 	server-&gt;acdirmax = data-&gt;acdirmax*HZ;
+ 
+ 	server-&gt;rpc_ops = &amp;nfs_v4_clientops;
+-	/* Initialize timeout values */
+-
+-	timeparms.to_initval = data-&gt;timeo * HZ / 10;
+-	timeparms.to_retries = data-&gt;retrans;
+-	timeparms.to_exponential = 1;
+-	if (!timeparms.to_retries)
+-		timeparms.to_retries = 5;
+ 
+-	proto = data-&gt;proto;
+-	/* Which IP protocol do we use? */
+-	switch (proto) {
+-	case IPPROTO_TCP:
+-		timeparms.to_maxval  = RPC_MAX_TCP_TIMEOUT;
+-		if (!timeparms.to_initval)
+-			timeparms.to_initval = 600 * HZ / 10;
+-		break;
+-	case IPPROTO_UDP:
+-		timeparms.to_maxval  = RPC_MAX_UDP_TIMEOUT;
+-		if (!timeparms.to_initval)
+-			timeparms.to_initval = 11 * HZ / 10;
+-		break;
+-	default:
+-		return -EINVAL;
+-	}
++	nfs_init_timeout_values(&amp;timeparms, data-&gt;proto, data-&gt;timeo, data-&gt;retrans);
+ 
+ 	clp = nfs4_get_client(&amp;server-&gt;addr.sin_addr);
+ 	if (!clp) {
+@@ -1740,7 +1737,7 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
+ 
+ 	down_write(&amp;clp-&gt;cl_sem);
+ 	if (IS_ERR(clp-&gt;cl_rpcclient)) {
+-		xprt = xprt_create_proto(proto, &amp;server-&gt;addr, &amp;timeparms);
++		xprt = xprt_create_proto(data-&gt;proto, &amp;server-&gt;addr, &amp;timeparms);
+ 		if (IS_ERR(xprt)) {
+ 			up_write(&amp;clp-&gt;cl_sem);
+ 			err = PTR_ERR(xprt);
+diff --git a/net/sunrpc/xprt.c b/net/sunrpc/xprt.c
+index b28ea0cc0cb7..0e4ffdaa0129 100644
+--- a/net/sunrpc/xprt.c
++++ b/net/sunrpc/xprt.c
+@@ -1453,7 +1453,7 @@ xprt_default_timeout(struct rpc_timeout *to, int proto)
+ 	if (proto == IPPROTO_UDP)
+ 		xprt_set_timeout(to, 5,  5 * HZ);
+ 	else
+-		xprt_set_timeout(to, 5, 60 * HZ);
++		xprt_set_timeout(to, 2, 60 * HZ);
+ }
+ 
+ /*
+@@ -1464,7 +1464,7 @@ xprt_set_timeout(struct rpc_timeout *to, unsigned int retr, unsigned long incr)
+ {
+ 	to-&gt;to_initval   = 
+ 	to-&gt;to_increment = incr;
+-	to-&gt;to_maxval    = incr * retr;
++	to-&gt;to_maxval    = to-&gt;to_initval + (incr * retr);
+ 	to-&gt;to_retries   = retr;
+ 	to-&gt;to_exponential = 0;
+ }</pre><hr><pre>commit da35187801732397a7e05fb9e77f3700cc35f5db
+Author: Chuck Lever &lt;cel@citi.umich.edu&gt;
+Date:   Thu Aug 11 16:25:11 2005 -0400
+
+    [PATCH] RPC: proper soft timeout behavior for rpcbind
+    
+     Implement a best practice:  for soft mounts, an rpcbind timeout should
+     cause an RPC request to fail.
+    
+     This also provides an FSM hook for retrying an rpcbind with a different
+     rpcbind protocol version.  We'll use this later to try multiple rpcbind
+     protocol versions when binding.  To enable this, expose the RPC error
+     code returned during a portmap request to the FSM so it can make some
+     decision about how to report, retry, or fail the request.
+    
+     Test-plan:
+     Hundreds of passes with connectathon NFSv3 locking suite, on the client
+     and server.
+    
+     Version: Thu, 11 Aug 2005 16:01:53 -0400
+    
+     Signed-off-by: Chuck Lever &lt;cel@netapp.com&gt;
+     Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/clnt.c b/net/sunrpc/clnt.c
+index f17e6153b688..2d3cf0a52d82 100644
+--- a/net/sunrpc/clnt.c
++++ b/net/sunrpc/clnt.c
+@@ -53,6 +53,7 @@ static void	call_allocate(struct rpc_task *task);
+ static void	call_encode(struct rpc_task *task);
+ static void	call_decode(struct rpc_task *task);
+ static void	call_bind(struct rpc_task *task);
++static void	call_bind_status(struct rpc_task *task);
+ static void	call_transmit(struct rpc_task *task);
+ static void	call_status(struct rpc_task *task);
+ static void	call_refresh(struct rpc_task *task);
+@@ -734,43 +735,94 @@ static void
+ call_bind(struct rpc_task *task)
+ {
+ 	struct rpc_clnt	*clnt = task-&gt;tk_client;
+-	struct rpc_xprt *xprt = clnt-&gt;cl_xprt;
+-
+-	dprintk("RPC: %4d call_bind xprt %p %s connected\n", task-&gt;tk_pid,
+-			xprt, (xprt_connected(xprt) ? "is" : "is not"));
+ 
+-	task-&gt;tk_action = (xprt_connected(xprt)) ? call_transmit : call_connect;
++	dprintk("RPC: %4d call_bind (status %d)\n",
++				task-&gt;tk_pid, task-&gt;tk_status);
+ 
++	task-&gt;tk_action = call_connect;
+ 	if (!clnt-&gt;cl_port) {
+-		task-&gt;tk_action = call_connect;
++		task-&gt;tk_action = call_bind_status;
+ 		task-&gt;tk_timeout = RPC_CONNECT_TIMEOUT;
+ 		rpc_getport(task, clnt);
+ 	}
+ }
+ 
+ /*
+- * 4a.	Connect to the RPC server (TCP case)
++ * 4a.	Sort out bind result
++ */
++static void
++call_bind_status(struct rpc_task *task)
++{
++	int status = -EACCES;
++
++	if (task-&gt;tk_status &gt;= 0) {
++		dprintk("RPC: %4d call_bind_status (status %d)\n",
++					task-&gt;tk_pid, task-&gt;tk_status);
++		task-&gt;tk_status = 0;
++		task-&gt;tk_action = call_connect;
++		return;
++	}
++
++	switch (task-&gt;tk_status) {
++	case -EACCES:
++		dprintk("RPC: %4d remote rpcbind: RPC program/version unavailable\n",
++				task-&gt;tk_pid);
++		break;
++	case -ETIMEDOUT:
++		dprintk("RPC: %4d rpcbind request timed out\n",
++				task-&gt;tk_pid);
++		if (RPC_IS_SOFT(task)) {
++			status = -EIO;
++			break;
++		}
++		goto retry_bind;
++	case -EPFNOSUPPORT:
++		dprintk("RPC: %4d remote rpcbind service unavailable\n",
++				task-&gt;tk_pid);
++		break;
++	case -EPROTONOSUPPORT:
++		dprintk("RPC: %4d remote rpcbind version 2 unavailable\n",
++				task-&gt;tk_pid);
++		break;
++	default:
++		dprintk("RPC: %4d unrecognized rpcbind error (%d)\n",
++				task-&gt;tk_pid, -task-&gt;tk_status);
++		status = -EIO;
++		break;
++	}
++
++	rpc_exit(task, status);
++	return;
++
++retry_bind:
++	task-&gt;tk_status = 0;
++	task-&gt;tk_action = call_bind;
++	return;
++}
++
++/*
++ * 4b.	Connect to the RPC server
+  */
+ static void
+ call_connect(struct rpc_task *task)
+ {
+-	struct rpc_clnt *clnt = task-&gt;tk_client;
++	struct rpc_xprt *xprt = task-&gt;tk_xprt;
+ 
+-	dprintk("RPC: %4d call_connect status %d\n",
+-				task-&gt;tk_pid, task-&gt;tk_status);
++	dprintk("RPC: %4d call_connect xprt %p %s connected\n",
++			task-&gt;tk_pid, xprt,
++			(xprt_connected(xprt) ? "is" : "is not"));
+ 
+-	if (xprt_connected(clnt-&gt;cl_xprt)) {
+-		task-&gt;tk_action = call_transmit;
+-		return;
++	task-&gt;tk_action = call_transmit;
++	if (!xprt_connected(xprt)) {
++		task-&gt;tk_action = call_connect_status;
++		if (task-&gt;tk_status &lt; 0)
++			return;
++		xprt_connect(task);
+ 	}
+-	task-&gt;tk_action = call_connect_status;
+-	if (task-&gt;tk_status &lt; 0)
+-		return;
+-	xprt_connect(task);
+ }
+ 
+ /*
+- * 4b. Sort out connect result
++ * 4c.	Sort out connect result
+  */
+ static void
+ call_connect_status(struct rpc_task *task)
+@@ -778,6 +830,9 @@ call_connect_status(struct rpc_task *task)
+ 	struct rpc_clnt *clnt = task-&gt;tk_client;
+ 	int status = task-&gt;tk_status;
+ 
++	dprintk("RPC: %5u call_connect_status (status %d)\n", 
++				task-&gt;tk_pid, task-&gt;tk_status);
++
+ 	task-&gt;tk_status = 0;
+ 	if (status &gt;= 0) {
+ 		clnt-&gt;cl_stats-&gt;netreconn++;
+@@ -785,17 +840,19 @@ call_connect_status(struct rpc_task *task)
+ 		return;
+ 	}
+ 
+-	/* Something failed: we may have to rebind */
++	/* Something failed: remote service port may have changed */
+ 	if (clnt-&gt;cl_autobind)
+ 		clnt-&gt;cl_port = 0;
++
+ 	switch (status) {
+ 	case -ENOTCONN:
+ 	case -ETIMEDOUT:
+ 	case -EAGAIN:
+-		task-&gt;tk_action = (clnt-&gt;cl_port == 0) ? call_bind : call_connect;
++		task-&gt;tk_action = call_bind;
+ 		break;
+ 	default:
+ 		rpc_exit(task, -EIO);
++		break;
+ 	}
+ }
+ </pre><hr><pre>commit 23475d66bd8600e0c5353f86c1b74f68df27bdb5
+Author: Chuck Lever &lt;cel@citi.umich.edu&gt;
+Date:   Thu Aug 11 16:25:08 2005 -0400
+
+    [PATCH] RPC: Report connection errors properly when mounting with "soft"
+    
+     Fix up xprt_connect_status: the soft timeout logic was clobbering tk_status,
+     so TCP connect errors were not properly reported on soft mounts.
+    
+     Test-plan:
+     Destructive testing (unplugging the network temporarily).  Connectathon
+     with UDP and TCP.
+    
+     Version: Thu, 11 Aug 2005 16:01:28 -0400
+    
+     Signed-off-by: Chuck Lever &lt;cel@netapp.com&gt;
+     Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/xprt.c b/net/sunrpc/xprt.c
+index 3c654e06b084..b28ea0cc0cb7 100644
+--- a/net/sunrpc/xprt.c
++++ b/net/sunrpc/xprt.c
+@@ -592,24 +592,33 @@ xprt_connect_status(struct rpc_task *task)
+ 		return;
+ 	}
+ 
+-	/* if soft mounted, just cause this RPC to fail */
+-	if (RPC_IS_SOFT(task))
+-		task-&gt;tk_status = -EIO;
+-
+ 	switch (task-&gt;tk_status) {
+ 	case -ECONNREFUSED:
+ 	case -ECONNRESET:
++		dprintk("RPC: %4d xprt_connect_status: server %s refused connection\n",
++				task-&gt;tk_pid, task-&gt;tk_client-&gt;cl_server);
++		break;
+ 	case -ENOTCONN:
+-		return;
++		dprintk("RPC: %4d xprt_connect_status: connection broken\n",
++				task-&gt;tk_pid);
++		break;
+ 	case -ETIMEDOUT:
+-		dprintk("RPC: %4d xprt_connect_status: timed out\n",
++		dprintk("RPC: %4d xprt_connect_status: connect attempt timed out\n",
+ 				task-&gt;tk_pid);
+ 		break;
+ 	default:
+-		printk(KERN_ERR "RPC: error %d connecting to server %s\n",
+-				-task-&gt;tk_status, task-&gt;tk_client-&gt;cl_server);
++		dprintk("RPC: %4d xprt_connect_status: error %d connecting to server %s\n",
++				task-&gt;tk_pid, -task-&gt;tk_status, task-&gt;tk_client-&gt;cl_server);
++		xprt_release_write(xprt, task);
++		task-&gt;tk_status = -EIO;
++		return;
++	}
++
++	/* if soft mounted, just cause this RPC to fail */
++	if (RPC_IS_SOFT(task)) {
++		xprt_release_write(xprt, task);
++		task-&gt;tk_status = -EIO;
+ 	}
+-	xprt_release_write(xprt, task);
+ }
+ 
+ /*</pre><hr><pre>commit dc59250c6ebed099a9bc0a11298e2281dd896657
+Author: Chuck Lever &lt;cel@citi.umich.edu&gt;
+Date:   Thu Aug 18 11:24:12 2005 -0700
+
+    [PATCH] NFS: Introduce the use of inode-&gt;i_lock to protect fields in nfsi
+    
+    Down the road we want to eliminate the use of the global kernel lock entirely
+    from the NFS client.  To do this, we need to protect the fields in the
+    nfs_inode structure adequately.  Start by serializing updates to the
+    "cache_validity" field.
+    
+    Note this change addresses an SMP hang found by njw@osdl.org, where processes
+    deadlock because nfs_end_data_update and nfs_revalidate_mapping update the
+    "cache_validity" field without proper serialization.
+    
+    Test plan:
+     Millions of fsx ops on SMP clients.  Run Nick Wilson's breaknfs program on
+     large SMP clients.
+    
+    Signed-off-by: Chuck Lever &lt;cel@netapp.com&gt;
+    Cc: Trond Myklebust &lt;trond.myklebust@fys.uio.no&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfs/dir.c b/fs/nfs/dir.c
+index 27cf5577f239..147cbf9261ce 100644
+--- a/fs/nfs/dir.c
++++ b/fs/nfs/dir.c
+@@ -189,7 +189,9 @@ int nfs_readdir_filler(nfs_readdir_descriptor_t *desc, struct page *page)
+ 		goto error;
+ 	}
+ 	SetPageUptodate(page);
++	spin_lock(&amp;inode-&gt;i_lock);
+ 	NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ATIME;
++	spin_unlock(&amp;inode-&gt;i_lock);
+ 	/* Ensure consistent page alignment of the data.
+ 	 * Note: assumes we have exclusive access to this mapping either
+ 	 *	 through inode-&gt;i_sem or some other mechanism.
+@@ -462,7 +464,9 @@ int uncached_readdir(nfs_readdir_descriptor_t *desc, void *dirent,
+ 						page,
+ 						NFS_SERVER(inode)-&gt;dtsize,
+ 						desc-&gt;plus);
++	spin_lock(&amp;inode-&gt;i_lock);
+ 	NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ATIME;
++	spin_unlock(&amp;inode-&gt;i_lock);
+ 	desc-&gt;page = page;
+ 	desc-&gt;ptr = kmap(page);		/* matching kunmap in nfs_do_filldir */
+ 	if (desc-&gt;error &gt;= 0) {
+@@ -1596,7 +1600,10 @@ void nfs_access_add_cache(struct inode *inode, struct nfs_access_entry *set)
+ 			put_rpccred(cache-&gt;cred);
+ 		cache-&gt;cred = get_rpccred(set-&gt;cred);
+ 	}
++	/* FIXME: replace current access_cache BKL reliance with inode-&gt;i_lock */
++	spin_lock(&amp;inode-&gt;i_lock);
+ 	nfsi-&gt;cache_validity &amp;= ~NFS_INO_INVALID_ACCESS;
++	spin_unlock(&amp;inode-&gt;i_lock);
+ 	cache-&gt;jiffies = set-&gt;jiffies;
+ 	cache-&gt;mask = set-&gt;mask;
+ }
+diff --git a/fs/nfs/inode.c b/fs/nfs/inode.c
+index ee27578277f3..541b418327c8 100644
+--- a/fs/nfs/inode.c
++++ b/fs/nfs/inode.c
+@@ -615,6 +615,8 @@ nfs_zap_caches(struct inode *inode)
+ 	struct nfs_inode *nfsi = NFS_I(inode);
+ 	int mode = inode-&gt;i_mode;
+ 
++	spin_lock(&amp;inode-&gt;i_lock);
++
+ 	NFS_ATTRTIMEO(inode) = NFS_MINATTRTIMEO(inode);
+ 	NFS_ATTRTIMEO_UPDATE(inode) = jiffies;
+ 
+@@ -623,6 +625,8 @@ nfs_zap_caches(struct inode *inode)
+ 		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA|NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL|NFS_INO_REVAL_PAGECACHE;
+ 	else
+ 		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL|NFS_INO_REVAL_PAGECACHE;
++
++	spin_unlock(&amp;inode-&gt;i_lock);
+ }
+ 
+ static void nfs_zap_acl_cache(struct inode *inode)
+@@ -632,7 +636,9 @@ static void nfs_zap_acl_cache(struct inode *inode)
+ 	clear_acl_cache = NFS_PROTO(inode)-&gt;clear_acl_cache;
+ 	if (clear_acl_cache != NULL)
+ 		clear_acl_cache(inode);
++	spin_lock(&amp;inode-&gt;i_lock);
+ 	NFS_I(inode)-&gt;cache_validity &amp;= ~NFS_INO_INVALID_ACL;
++	spin_unlock(&amp;inode-&gt;i_lock);
+ }
+ 
+ /*
+@@ -841,7 +847,9 @@ void nfs_setattr_update_inode(struct inode *inode, struct iattr *attr)
+ 			inode-&gt;i_uid = attr-&gt;ia_uid;
+ 		if ((attr-&gt;ia_valid &amp; ATTR_GID) != 0)
+ 			inode-&gt;i_gid = attr-&gt;ia_gid;
++		spin_lock(&amp;inode-&gt;i_lock);
+ 		NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL;
++		spin_unlock(&amp;inode-&gt;i_lock);
+ 	}
+ 	if ((attr-&gt;ia_valid &amp; ATTR_SIZE) != 0) {
+ 		inode-&gt;i_size = attr-&gt;ia_size;
+@@ -1082,6 +1090,7 @@ __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
+ 			 (long long)NFS_FILEID(inode), status);
+ 		goto out;
+ 	}
++	spin_lock(&amp;inode-&gt;i_lock);
+ 	cache_validity = nfsi-&gt;cache_validity;
+ 	nfsi-&gt;cache_validity &amp;= ~NFS_INO_REVAL_PAGECACHE;
+ 
+@@ -1091,6 +1100,7 @@ __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
+ 	 */
+ 	if (verifier == nfsi-&gt;cache_change_attribute)
+ 		nfsi-&gt;cache_validity &amp;= ~(NFS_INO_INVALID_ATTR|NFS_INO_INVALID_ATIME);
++	spin_unlock(&amp;inode-&gt;i_lock);
+ 
+ 	nfs_revalidate_mapping(inode, inode-&gt;i_mapping);
+ 
+@@ -1149,12 +1159,16 @@ void nfs_revalidate_mapping(struct inode *inode, struct address_space *mapping)
+ 			nfs_wb_all(inode);
+ 		}
+ 		invalidate_inode_pages2(mapping);
++
++		spin_lock(&amp;inode-&gt;i_lock);
+ 		nfsi-&gt;cache_validity &amp;= ~NFS_INO_INVALID_DATA;
+ 		if (S_ISDIR(inode-&gt;i_mode)) {
+ 			memset(nfsi-&gt;cookieverf, 0, sizeof(nfsi-&gt;cookieverf));
+ 			/* This ensures we revalidate child dentries */
+ 			nfsi-&gt;cache_change_attribute++;
+ 		}
++		spin_unlock(&amp;inode-&gt;i_lock);
++
+ 		dfprintk(PAGECACHE, "NFS: (%s/%Ld) data cache invalidated\n",
+ 				inode-&gt;i_sb-&gt;s_id,
+ 				(long long)NFS_FILEID(inode));
+@@ -1184,10 +1198,12 @@ void nfs_end_data_update(struct inode *inode)
+ 
+ 	if (!nfs_have_delegation(inode, FMODE_READ)) {
+ 		/* Mark the attribute cache for revalidation */
++		spin_lock(&amp;inode-&gt;i_lock);
+ 		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATTR;
+ 		/* Directories and symlinks: invalidate page cache too */
+ 		if (S_ISDIR(inode-&gt;i_mode) || S_ISLNK(inode-&gt;i_mode))
+ 			nfsi-&gt;cache_validity |= NFS_INO_INVALID_DATA;
++		spin_unlock(&amp;inode-&gt;i_lock);
+ 	}
+ 	nfsi-&gt;cache_change_attribute ++;
+ 	atomic_dec(&amp;nfsi-&gt;data_updates);
+@@ -1212,6 +1228,8 @@ int nfs_refresh_inode(struct inode *inode, struct nfs_fattr *fattr)
+ 	if (nfs_have_delegation(inode, FMODE_READ))
+ 		return 0;
+ 
++	spin_lock(&amp;inode-&gt;i_lock);
++
+ 	/* Are we in the process of updating data on the server? */
+ 	data_unstable = nfs_caches_unstable(inode);
+ 
+@@ -1226,13 +1244,17 @@ int nfs_refresh_inode(struct inode *inode, struct nfs_fattr *fattr)
+ 		}
+ 	}
+ 
+-	if ((fattr-&gt;valid &amp; NFS_ATTR_FATTR) == 0)
++	if ((fattr-&gt;valid &amp; NFS_ATTR_FATTR) == 0) {
++		spin_unlock(&amp;inode-&gt;i_lock);
+ 		return 0;
++	}
+ 
+ 	/* Has the inode gone and changed behind our back? */
+ 	if (nfsi-&gt;fileid != fattr-&gt;fileid
+-			|| (inode-&gt;i_mode &amp; S_IFMT) != (fattr-&gt;mode &amp; S_IFMT))
++			|| (inode-&gt;i_mode &amp; S_IFMT) != (fattr-&gt;mode &amp; S_IFMT)) {
++		spin_unlock(&amp;inode-&gt;i_lock);
+ 		return -EIO;
++	}
+ 
+ 	cur_size = i_size_read(inode);
+  	new_isize = nfs_size_to_loff_t(fattr-&gt;size);
+@@ -1271,6 +1293,7 @@ int nfs_refresh_inode(struct inode *inode, struct nfs_fattr *fattr)
+ 		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATIME;
+ 
+ 	nfsi-&gt;read_cache_jiffies = fattr-&gt;timestamp;
++	spin_unlock(&amp;inode-&gt;i_lock);
+ 	return 0;
+ }
+ 
+@@ -1309,11 +1332,15 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr, unsign
+ 		goto out_err;
+ 	}
+ 
++	spin_lock(&amp;inode-&gt;i_lock);
++
+ 	/*
+ 	 * Make sure the inode's type hasn't changed.
+ 	 */
+-	if ((inode-&gt;i_mode &amp; S_IFMT) != (fattr-&gt;mode &amp; S_IFMT))
++	if ((inode-&gt;i_mode &amp; S_IFMT) != (fattr-&gt;mode &amp; S_IFMT)) {
++		spin_unlock(&amp;inode-&gt;i_lock);
+ 		goto out_changed;
++	}
+ 
+ 	/*
+ 	 * Update the read time so we don't revalidate too often.
+@@ -1406,6 +1433,7 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr, unsign
+ 	if (!nfs_have_delegation(inode, FMODE_READ))
+ 		nfsi-&gt;cache_validity |= invalid;
+ 
++	spin_unlock(&amp;inode-&gt;i_lock);
+ 	return 0;
+  out_changed:
+ 	/*
+diff --git a/fs/nfs/nfs3acl.c b/fs/nfs/nfs3acl.c
+index a020e650ffc2..6a5bbc0ae941 100644
+--- a/fs/nfs/nfs3acl.c
++++ b/fs/nfs/nfs3acl.c
+@@ -308,7 +308,9 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
+ 	nfs_begin_data_update(inode);
+ 	status = rpc_call(server-&gt;client_acl, ACLPROC3_SETACL,
+ 			  &amp;args, &amp;fattr, 0);
++	spin_lock(&amp;inode-&gt;i_lock);
+ 	NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ACCESS;
++	spin_unlock(&amp;inode-&gt;i_lock);
+ 	nfs_end_data_update(inode);
+ 	dprintk("NFS reply setacl: %d\n", status);
+ 
+diff --git a/fs/nfs/read.c b/fs/nfs/read.c
+index 90df0500ca1b..6ceb1d471f20 100644
+--- a/fs/nfs/read.c
++++ b/fs/nfs/read.c
+@@ -140,7 +140,9 @@ static int nfs_readpage_sync(struct nfs_open_context *ctx, struct inode *inode,
+ 		if (rdata-&gt;res.eof != 0 || result == 0)
+ 			break;
+ 	} while (count);
++	spin_lock(&amp;inode-&gt;i_lock);
+ 	NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ATIME;
++	spin_unlock(&amp;inode-&gt;i_lock);
+ 
+ 	if (count)
+ 		memclear_highpage_flush(page, rdata-&gt;args.pgbase, count);
+@@ -473,7 +475,9 @@ void nfs_readpage_result(struct rpc_task *task)
+ 		}
+ 		task-&gt;tk_status = -EIO;
+ 	}
++	spin_lock(&amp;data-&gt;inode-&gt;i_lock);
+ 	NFS_I(data-&gt;inode)-&gt;cache_validity |= NFS_INO_INVALID_ATIME;
++	spin_unlock(&amp;data-&gt;inode-&gt;i_lock);
+ 	data-&gt;complete(data, status);
+ }
+ 
+diff --git a/include/linux/nfs_fs.h b/include/linux/nfs_fs.h
+index deef9567788a..9a6047ff1b25 100644
+--- a/include/linux/nfs_fs.h
++++ b/include/linux/nfs_fs.h
+@@ -238,8 +238,11 @@ static inline int nfs_caches_unstable(struct inode *inode)
+ 
+ static inline void NFS_CACHEINV(struct inode *inode)
+ {
+-	if (!nfs_caches_unstable(inode))
++	if (!nfs_caches_unstable(inode)) {
++		spin_lock(&amp;inode-&gt;i_lock);
+ 		NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ATTR | NFS_INO_INVALID_ACCESS;
++		spin_unlock(&amp;inode-&gt;i_lock);
++	}
+ }
+ 
+ static inline int nfs_server_capable(struct inode *inode, int cap)</pre><hr><pre>commit 412d582ec1dd59aab2353f8cb7e74f2c79cd20b9
+Author: Chuck Lever &lt;cel@citi.umich.edu&gt;
+Date:   Thu Aug 18 11:24:11 2005 -0700
+
+    [PATCH] NFS: use atomic bitops to manipulate flags in nfsi-&gt;flags
+    
+    Introduce atomic bitops to manipulate the bits in the nfs_inode structure's
+    "flags" field.
+    
+    Using bitops means we can use a generic wait_on_bit call instead of an ad hoc
+    locking scheme in fs/nfs/inode.c, so we can remove the "nfs_i_wait" field from
+    nfs_inode at the same time.
+    
+    The other new flags field will continue to use bitmask and logic AND and OR.
+    This permits several flags to be set at the same time efficiently.  The
+    following patch adds a spin lock to protect these flags, and this spin lock
+    will later cover other fields in the nfs_inode structure, amortizing the cost
+    of using this type of serialization.
+    
+    Test plan:
+     Millions of fsx ops on SMP clients.
+    
+    Signed-off-by: Chuck Lever &lt;cel@netapp.com&gt;
+    Cc: Trond Myklebust &lt;trond.myklebust@fys.uio.no&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfs/dir.c b/fs/nfs/dir.c
+index 5732e13cd0da..27cf5577f239 100644
+--- a/fs/nfs/dir.c
++++ b/fs/nfs/dir.c
+@@ -182,7 +182,7 @@ int nfs_readdir_filler(nfs_readdir_descriptor_t *desc, struct page *page)
+ 		/* We requested READDIRPLUS, but the server doesn't grok it */
+ 		if (error == -ENOTSUPP &amp;&amp; desc-&gt;plus) {
+ 			NFS_SERVER(inode)-&gt;caps &amp;= ~NFS_CAP_READDIRPLUS;
+-			NFS_FLAGS(inode) &amp;= ~NFS_INO_ADVISE_RDPLUS;
++			clear_bit(NFS_INO_ADVISE_RDPLUS, &amp;NFS_FLAGS(inode));
+ 			desc-&gt;plus = 0;
+ 			goto again;
+ 		}
+@@ -545,7 +545,7 @@ static int nfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
+ 			break;
+ 		}
+ 		if (res == -ETOOSMALL &amp;&amp; desc-&gt;plus) {
+-			NFS_FLAGS(inode) &amp;= ~NFS_INO_ADVISE_RDPLUS;
++			clear_bit(NFS_INO_ADVISE_RDPLUS, &amp;NFS_FLAGS(inode));
+ 			nfs_zap_caches(inode);
+ 			desc-&gt;plus = 0;
+ 			desc-&gt;entry-&gt;eof = 0;
+diff --git a/fs/nfs/inode.c b/fs/nfs/inode.c
+index 622184553516..ee27578277f3 100644
+--- a/fs/nfs/inode.c
++++ b/fs/nfs/inode.c
+@@ -739,7 +739,7 @@ nfs_fhget(struct super_block *sb, struct nfs_fh *fh, struct nfs_fattr *fattr)
+ 			inode-&gt;i_fop = &amp;nfs_dir_operations;
+ 			if (nfs_server_capable(inode, NFS_CAP_READDIRPLUS)
+ 			    &amp;&amp; fattr-&gt;size &lt;= NFS_LIMIT_READDIRPLUS)
+-				NFS_FLAGS(inode) |= NFS_INO_ADVISE_RDPLUS;
++				set_bit(NFS_INO_ADVISE_RDPLUS, &amp;NFS_FLAGS(inode));
+ 		} else if (S_ISLNK(inode-&gt;i_mode))
+ 			inode-&gt;i_op = &amp;nfs_symlink_inode_operations;
+ 		else
+@@ -849,26 +849,43 @@ void nfs_setattr_update_inode(struct inode *inode, struct iattr *attr)
+ 	}
+ }
+ 
++static int nfs_wait_schedule(void *word)
++{
++	if (signal_pending(current))
++		return -ERESTARTSYS;
++	schedule();
++	return 0;
++}
++
+ /*
+  * Wait for the inode to get unlocked.
+- * (Used for NFS_INO_LOCKED and NFS_INO_REVALIDATING).
+  */
+-static int
+-nfs_wait_on_inode(struct inode *inode, int flag)
++static int nfs_wait_on_inode(struct inode *inode)
+ {
+ 	struct rpc_clnt	*clnt = NFS_CLIENT(inode);
+ 	struct nfs_inode *nfsi = NFS_I(inode);
+-
++	sigset_t oldmask;
+ 	int error;
+-	if (!(NFS_FLAGS(inode) &amp; flag))
+-		return 0;
++
+ 	atomic_inc(&amp;inode-&gt;i_count);
+-	error = nfs_wait_event(clnt, nfsi-&gt;nfs_i_wait,
+-				!(NFS_FLAGS(inode) &amp; flag));
++	rpc_clnt_sigmask(clnt, &amp;oldmask);
++	error = wait_on_bit_lock(&amp;nfsi-&gt;flags, NFS_INO_REVALIDATING,
++					nfs_wait_schedule, TASK_INTERRUPTIBLE);
++	rpc_clnt_sigunmask(clnt, &amp;oldmask);
+ 	iput(inode);
++
+ 	return error;
+ }
+ 
++static void nfs_wake_up_inode(struct inode *inode)
++{
++	struct nfs_inode *nfsi = NFS_I(inode);
++
++	clear_bit(NFS_INO_REVALIDATING, &amp;nfsi-&gt;flags);
++	smp_mb__after_clear_bit();
++	wake_up_bit(&amp;nfsi-&gt;flags, NFS_INO_REVALIDATING);
++}
++
+ int nfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
+ {
+ 	struct inode *inode = dentry-&gt;d_inode;
+@@ -1029,18 +1046,19 @@ __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
+ 	if (NFS_STALE(inode))
+  		goto out_nowait;
+ 
+-	while (NFS_REVALIDATING(inode)) {
+-		status = nfs_wait_on_inode(inode, NFS_INO_REVALIDATING);
+-		if (status &lt; 0)
+-			goto out_nowait;
+-		if (NFS_ATTRTIMEO(inode) == 0)
+-			continue;
+-		if (nfsi-&gt;cache_validity &amp; (NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA|NFS_INO_INVALID_ATIME))
+-			continue;
+-		status = NFS_STALE(inode) ? -ESTALE : 0;
+-		goto out_nowait;
++	status = nfs_wait_on_inode(inode);
++	if (status &lt; 0)
++		goto out;
++	if (NFS_STALE(inode)) {
++		status = -ESTALE;
++		/* Do we trust the cached ESTALE? */
++		if (NFS_ATTRTIMEO(inode) != 0) {
++			if (nfsi-&gt;cache_validity &amp; (NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA|NFS_INO_INVALID_ATIME)) {
++				/* no */
++			} else
++				goto out;
++		}
+ 	}
+-	NFS_FLAGS(inode) |= NFS_INO_REVALIDATING;
+ 
+ 	/* Protect against RPC races by saving the change attribute */
+ 	verifier = nfs_save_change_attribute(inode);
+@@ -1052,7 +1070,7 @@ __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
+ 		if (status == -ESTALE) {
+ 			nfs_zap_caches(inode);
+ 			if (!S_ISDIR(inode-&gt;i_mode))
+-				NFS_FLAGS(inode) |= NFS_INO_STALE;
++				set_bit(NFS_INO_STALE, &amp;NFS_FLAGS(inode));
+ 		}
+ 		goto out;
+ 	}
+@@ -1083,9 +1101,9 @@ __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
+ 		inode-&gt;i_sb-&gt;s_id,
+ 		(long long)NFS_FILEID(inode));
+ 
+-out:
+-	NFS_FLAGS(inode) &amp;= ~NFS_INO_REVALIDATING;
+-	wake_up(&amp;nfsi-&gt;nfs_i_wait);
++ out:
++	nfs_wake_up_inode(inode);
++
+  out_nowait:
+ 	unlock_kernel();
+ 	return status;
+@@ -1404,7 +1422,7 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr, unsign
+ 	 */
+ 	nfs_invalidate_inode(inode);
+  out_err:
+-	NFS_FLAGS(inode) |= NFS_INO_STALE;
++	set_bit(NFS_INO_STALE, &amp;NFS_FLAGS(inode));
+ 	return -ESTALE;
+ }
+ 
+@@ -1996,7 +2014,6 @@ static void init_once(void * foo, kmem_cache_t * cachep, unsigned long flags)
+ 		nfsi-&gt;ndirty = 0;
+ 		nfsi-&gt;ncommit = 0;
+ 		nfsi-&gt;npages = 0;
+-		init_waitqueue_head(&amp;nfsi-&gt;nfs_i_wait);
+ 		nfs4_init_once(nfsi);
+ 	}
+ }
+diff --git a/include/linux/nfs_fs.h b/include/linux/nfs_fs.h
+index 229a1755842a..deef9567788a 100644
+--- a/include/linux/nfs_fs.h
++++ b/include/linux/nfs_fs.h
+@@ -112,8 +112,8 @@ struct nfs_inode {
+ 	/*
+ 	 * Various flags
+ 	 */
+-	unsigned int		flags;
+-	unsigned long		cache_validity;
++	unsigned long		flags;			/* atomic bit ops */
++	unsigned long		cache_validity;		/* bit mask */
+ 
+ 	/*
+ 	 * read_cache_jiffies is when we started read-caching this inode,
+@@ -175,8 +175,6 @@ struct nfs_inode {
+ 	/* Open contexts for shared mmap writes */
+ 	struct list_head	open_files;
+ 
+-	wait_queue_head_t	nfs_i_wait;
+-
+ #ifdef CONFIG_NFS_V4
+ 	struct nfs4_cached_acl	*nfs4_acl;
+         /* NFSv4 state */
+@@ -199,11 +197,11 @@ struct nfs_inode {
+ #define NFS_INO_REVAL_PAGECACHE	0x0020		/* must revalidate pagecache */
+ 
+ /*
+- * Legal values of flags field
++ * Bit offsets in flags field
+  */
+-#define NFS_INO_REVALIDATING	0x0001		/* revalidating attrs */
+-#define NFS_INO_ADVISE_RDPLUS	0x0002		/* advise readdirplus */
+-#define NFS_INO_STALE		0x0004		/* possible stale inode */
++#define NFS_INO_REVALIDATING	(0)		/* revalidating attrs */
++#define NFS_INO_ADVISE_RDPLUS	(1)		/* advise readdirplus */
++#define NFS_INO_STALE		(2)		/* possible stale inode */
+ 
+ static inline struct nfs_inode *NFS_I(struct inode *inode)
+ {
+@@ -229,8 +227,7 @@ static inline struct nfs_inode *NFS_I(struct inode *inode)
+ #define NFS_ATTRTIMEO_UPDATE(inode)	(NFS_I(inode)-&gt;attrtimeo_timestamp)
+ 
+ #define NFS_FLAGS(inode)		(NFS_I(inode)-&gt;flags)
+-#define NFS_REVALIDATING(inode)		(NFS_FLAGS(inode) &amp; NFS_INO_REVALIDATING)
+-#define NFS_STALE(inode)		(NFS_FLAGS(inode) &amp; NFS_INO_STALE)
++#define NFS_STALE(inode)		(test_bit(NFS_INO_STALE, &amp;NFS_FLAGS(inode)))
+ 
+ #define NFS_FILEID(inode)		(NFS_I(inode)-&gt;fileid)
+ 
+@@ -252,7 +249,7 @@ static inline int nfs_server_capable(struct inode *inode, int cap)
+ 
+ static inline int NFS_USE_READDIRPLUS(struct inode *inode)
+ {
+-	return NFS_FLAGS(inode) &amp; NFS_INO_ADVISE_RDPLUS;
++	return test_bit(NFS_INO_ADVISE_RDPLUS, &amp;NFS_FLAGS(inode));
+ }
+ 
+ /**</pre><hr><pre>commit 5529680981807b44abf3be30fb6d612ff04f68ff
+Author: Chuck Lever &lt;cel@citi.umich.edu&gt;
+Date:   Thu Aug 18 11:24:09 2005 -0700
+
+    [PATCH] NFS: split nfsi-&gt;flags into two fields
+    
+    Certain bits in nfsi-&gt;flags can be manipulated with atomic bitops, and some
+    are better manipulated via logical bitmask operations.
+    
+    This patch splits the flags field into two.  The next patch introduces atomic
+    bitops for one of the fields.
+    
+    Test plan:
+     Millions of fsx ops on SMP clients.
+    
+    Signed-off-by: Chuck Lever &lt;cel@netapp.com&gt;
+    Cc: Trond Myklebust &lt;trond.myklebust@fys.uio.no&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfs/dir.c b/fs/nfs/dir.c
+index b38a57e78a63..5732e13cd0da 100644
+--- a/fs/nfs/dir.c
++++ b/fs/nfs/dir.c
+@@ -189,7 +189,7 @@ int nfs_readdir_filler(nfs_readdir_descriptor_t *desc, struct page *page)
+ 		goto error;
+ 	}
+ 	SetPageUptodate(page);
+-	NFS_FLAGS(inode) |= NFS_INO_INVALID_ATIME;
++	NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ATIME;
+ 	/* Ensure consistent page alignment of the data.
+ 	 * Note: assumes we have exclusive access to this mapping either
+ 	 *	 through inode-&gt;i_sem or some other mechanism.
+@@ -462,7 +462,7 @@ int uncached_readdir(nfs_readdir_descriptor_t *desc, void *dirent,
+ 						page,
+ 						NFS_SERVER(inode)-&gt;dtsize,
+ 						desc-&gt;plus);
+-	NFS_FLAGS(inode) |= NFS_INO_INVALID_ATIME;
++	NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ATIME;
+ 	desc-&gt;page = page;
+ 	desc-&gt;ptr = kmap(page);		/* matching kunmap in nfs_do_filldir */
+ 	if (desc-&gt;error &gt;= 0) {
+@@ -608,7 +608,7 @@ static inline int nfs_check_verifier(struct inode *dir, struct dentry *dentry)
+ {
+ 	if (IS_ROOT(dentry))
+ 		return 1;
+-	if ((NFS_FLAGS(dir) &amp; NFS_INO_INVALID_ATTR) != 0
++	if ((NFS_I(dir)-&gt;cache_validity &amp; NFS_INO_INVALID_ATTR) != 0
+ 			|| nfs_attribute_timeout(dir))
+ 		return 0;
+ 	return nfs_verify_change_attribute(dir, (unsigned long)dentry-&gt;d_fsdata);
+@@ -1575,11 +1575,12 @@ static int nfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+ 
+ int nfs_access_get_cached(struct inode *inode, struct rpc_cred *cred, struct nfs_access_entry *res)
+ {
+-	struct nfs_access_entry *cache = &amp;NFS_I(inode)-&gt;cache_access;
++	struct nfs_inode *nfsi = NFS_I(inode);
++	struct nfs_access_entry *cache = &amp;nfsi-&gt;cache_access;
+ 
+ 	if (cache-&gt;cred != cred
+ 			|| time_after(jiffies, cache-&gt;jiffies + NFS_ATTRTIMEO(inode))
+-			|| (NFS_FLAGS(inode) &amp; NFS_INO_INVALID_ACCESS))
++			|| (nfsi-&gt;cache_validity &amp; NFS_INO_INVALID_ACCESS))
+ 		return -ENOENT;
+ 	memcpy(res, cache, sizeof(*res));
+ 	return 0;
+@@ -1587,14 +1588,15 @@ int nfs_access_get_cached(struct inode *inode, struct rpc_cred *cred, struct nfs
+ 
+ void nfs_access_add_cache(struct inode *inode, struct nfs_access_entry *set)
+ {
+-	struct nfs_access_entry *cache = &amp;NFS_I(inode)-&gt;cache_access;
++	struct nfs_inode *nfsi = NFS_I(inode);
++	struct nfs_access_entry *cache = &amp;nfsi-&gt;cache_access;
+ 
+ 	if (cache-&gt;cred != set-&gt;cred) {
+ 		if (cache-&gt;cred)
+ 			put_rpccred(cache-&gt;cred);
+ 		cache-&gt;cred = get_rpccred(set-&gt;cred);
+ 	}
+-	NFS_FLAGS(inode) &amp;= ~NFS_INO_INVALID_ACCESS;
++	nfsi-&gt;cache_validity &amp;= ~NFS_INO_INVALID_ACCESS;
+ 	cache-&gt;jiffies = set-&gt;jiffies;
+ 	cache-&gt;mask = set-&gt;mask;
+ }
+diff --git a/fs/nfs/file.c b/fs/nfs/file.c
+index 5621ba9885f4..f6b9eda925c5 100644
+--- a/fs/nfs/file.c
++++ b/fs/nfs/file.c
+@@ -134,9 +134,10 @@ nfs_file_release(struct inode *inode, struct file *filp)
+  */
+ static int nfs_revalidate_file(struct inode *inode, struct file *filp)
+ {
++	struct nfs_inode *nfsi = NFS_I(inode);
+ 	int retval = 0;
+ 
+-	if ((NFS_FLAGS(inode) &amp; NFS_INO_REVAL_PAGECACHE) || nfs_attribute_timeout(inode))
++	if ((nfsi-&gt;cache_validity &amp; NFS_INO_REVAL_PAGECACHE) || nfs_attribute_timeout(inode))
+ 		retval = __nfs_revalidate_inode(NFS_SERVER(inode), inode);
+ 	nfs_revalidate_mapping(inode, filp-&gt;f_mapping);
+ 	return 0;
+@@ -164,7 +165,7 @@ static int nfs_revalidate_file_size(struct inode *inode, struct file *filp)
+ 		goto force_reval;
+ 	if (nfsi-&gt;npages != 0)
+ 		return 0;
+-	if (!(NFS_FLAGS(inode) &amp; NFS_INO_REVAL_PAGECACHE) &amp;&amp; !nfs_attribute_timeout(inode))
++	if (!(nfsi-&gt;cache_validity &amp; NFS_INO_REVAL_PAGECACHE) &amp;&amp; !nfs_attribute_timeout(inode))
+ 		return 0;
+ force_reval:
+ 	return __nfs_revalidate_inode(server, inode);
+diff --git a/fs/nfs/inode.c b/fs/nfs/inode.c
+index bb7ca022bcb2..622184553516 100644
+--- a/fs/nfs/inode.c
++++ b/fs/nfs/inode.c
+@@ -620,9 +620,9 @@ nfs_zap_caches(struct inode *inode)
+ 
+ 	memset(NFS_COOKIEVERF(inode), 0, sizeof(NFS_COOKIEVERF(inode)));
+ 	if (S_ISREG(mode) || S_ISDIR(mode) || S_ISLNK(mode))
+-		nfsi-&gt;flags |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA|NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL|NFS_INO_REVAL_PAGECACHE;
++		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA|NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL|NFS_INO_REVAL_PAGECACHE;
+ 	else
+-		nfsi-&gt;flags |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL|NFS_INO_REVAL_PAGECACHE;
++		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL|NFS_INO_REVAL_PAGECACHE;
+ }
+ 
+ static void nfs_zap_acl_cache(struct inode *inode)
+@@ -632,7 +632,7 @@ static void nfs_zap_acl_cache(struct inode *inode)
+ 	clear_acl_cache = NFS_PROTO(inode)-&gt;clear_acl_cache;
+ 	if (clear_acl_cache != NULL)
+ 		clear_acl_cache(inode);
+-	NFS_I(inode)-&gt;flags &amp;= ~NFS_INO_INVALID_ACL;
++	NFS_I(inode)-&gt;cache_validity &amp;= ~NFS_INO_INVALID_ACL;
+ }
+ 
+ /*
+@@ -841,7 +841,7 @@ void nfs_setattr_update_inode(struct inode *inode, struct iattr *attr)
+ 			inode-&gt;i_uid = attr-&gt;ia_uid;
+ 		if ((attr-&gt;ia_valid &amp; ATTR_GID) != 0)
+ 			inode-&gt;i_gid = attr-&gt;ia_gid;
+-		NFS_FLAGS(inode) |= NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL;
++		NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL;
+ 	}
+ 	if ((attr-&gt;ia_valid &amp; ATTR_SIZE) != 0) {
+ 		inode-&gt;i_size = attr-&gt;ia_size;
+@@ -872,8 +872,7 @@ nfs_wait_on_inode(struct inode *inode, int flag)
+ int nfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
+ {
+ 	struct inode *inode = dentry-&gt;d_inode;
+-	struct nfs_inode *nfsi = NFS_I(inode);
+-	int need_atime = nfsi-&gt;flags &amp; NFS_INO_INVALID_ATIME;
++	int need_atime = NFS_I(inode)-&gt;cache_validity &amp; NFS_INO_INVALID_ATIME;
+ 	int err;
+ 
+ 	if (__IS_FLG(inode, MS_NOATIME))
+@@ -1019,7 +1018,7 @@ __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
+ 	struct nfs_fattr fattr;
+ 	struct nfs_inode *nfsi = NFS_I(inode);
+ 	unsigned long verifier;
+-	unsigned int flags;
++	unsigned long cache_validity;
+ 
+ 	dfprintk(PAGECACHE, "NFS: revalidating (%s/%Ld)\n",
+ 		inode-&gt;i_sb-&gt;s_id, (long long)NFS_FILEID(inode));
+@@ -1036,7 +1035,7 @@ __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
+ 			goto out_nowait;
+ 		if (NFS_ATTRTIMEO(inode) == 0)
+ 			continue;
+-		if (NFS_FLAGS(inode) &amp; (NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA|NFS_INO_INVALID_ATIME))
++		if (nfsi-&gt;cache_validity &amp; (NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA|NFS_INO_INVALID_ATIME))
+ 			continue;
+ 		status = NFS_STALE(inode) ? -ESTALE : 0;
+ 		goto out_nowait;
+@@ -1065,18 +1064,21 @@ __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
+ 			 (long long)NFS_FILEID(inode), status);
+ 		goto out;
+ 	}
+-	flags = nfsi-&gt;flags;
+-	nfsi-&gt;flags &amp;= ~NFS_INO_REVAL_PAGECACHE;
++	cache_validity = nfsi-&gt;cache_validity;
++	nfsi-&gt;cache_validity &amp;= ~NFS_INO_REVAL_PAGECACHE;
++
+ 	/*
+ 	 * We may need to keep the attributes marked as invalid if
+ 	 * we raced with nfs_end_attr_update().
+ 	 */
+ 	if (verifier == nfsi-&gt;cache_change_attribute)
+-		nfsi-&gt;flags &amp;= ~(NFS_INO_INVALID_ATTR|NFS_INO_INVALID_ATIME);
+-	/* Do the page cache invalidation */
++		nfsi-&gt;cache_validity &amp;= ~(NFS_INO_INVALID_ATTR|NFS_INO_INVALID_ATIME);
++
+ 	nfs_revalidate_mapping(inode, inode-&gt;i_mapping);
+-	if (flags &amp; NFS_INO_INVALID_ACL)
++
++	if (cache_validity &amp; NFS_INO_INVALID_ACL)
+ 		nfs_zap_acl_cache(inode);
++
+ 	dfprintk(PAGECACHE, "NFS: (%s/%Ld) revalidation complete\n",
+ 		inode-&gt;i_sb-&gt;s_id,
+ 		(long long)NFS_FILEID(inode));
+@@ -1107,7 +1109,7 @@ int nfs_attribute_timeout(struct inode *inode)
+  */
+ int nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
+ {
+-	if (!(NFS_FLAGS(inode) &amp; (NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA))
++	if (!(NFS_I(inode)-&gt;cache_validity &amp; (NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA))
+ 			&amp;&amp; !nfs_attribute_timeout(inode))
+ 		return NFS_STALE(inode) ? -ESTALE : 0;
+ 	return __nfs_revalidate_inode(server, inode);
+@@ -1122,14 +1124,14 @@ void nfs_revalidate_mapping(struct inode *inode, struct address_space *mapping)
+ {
+ 	struct nfs_inode *nfsi = NFS_I(inode);
+ 
+-	if (nfsi-&gt;flags &amp; NFS_INO_INVALID_DATA) {
++	if (nfsi-&gt;cache_validity &amp; NFS_INO_INVALID_DATA) {
+ 		if (S_ISREG(inode-&gt;i_mode)) {
+ 			if (filemap_fdatawrite(mapping) == 0)
+ 				filemap_fdatawait(mapping);
+ 			nfs_wb_all(inode);
+ 		}
+ 		invalidate_inode_pages2(mapping);
+-		nfsi-&gt;flags &amp;= ~NFS_INO_INVALID_DATA;
++		nfsi-&gt;cache_validity &amp;= ~NFS_INO_INVALID_DATA;
+ 		if (S_ISDIR(inode-&gt;i_mode)) {
+ 			memset(nfsi-&gt;cookieverf, 0, sizeof(nfsi-&gt;cookieverf));
+ 			/* This ensures we revalidate child dentries */
+@@ -1164,10 +1166,10 @@ void nfs_end_data_update(struct inode *inode)
+ 
+ 	if (!nfs_have_delegation(inode, FMODE_READ)) {
+ 		/* Mark the attribute cache for revalidation */
+-		nfsi-&gt;flags |= NFS_INO_INVALID_ATTR;
++		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATTR;
+ 		/* Directories and symlinks: invalidate page cache too */
+ 		if (S_ISDIR(inode-&gt;i_mode) || S_ISLNK(inode-&gt;i_mode))
+-			nfsi-&gt;flags |= NFS_INO_INVALID_DATA;
++			nfsi-&gt;cache_validity |= NFS_INO_INVALID_DATA;
+ 	}
+ 	nfsi-&gt;cache_change_attribute ++;
+ 	atomic_dec(&amp;nfsi-&gt;data_updates);
+@@ -1200,9 +1202,9 @@ int nfs_refresh_inode(struct inode *inode, struct nfs_fattr *fattr)
+ 				&amp;&amp; nfsi-&gt;change_attr == fattr-&gt;pre_change_attr)
+ 			nfsi-&gt;change_attr = fattr-&gt;change_attr;
+ 		if (nfsi-&gt;change_attr != fattr-&gt;change_attr) {
+-			nfsi-&gt;flags |= NFS_INO_INVALID_ATTR;
++			nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATTR;
+ 			if (!data_unstable)
+-				nfsi-&gt;flags |= NFS_INO_REVAL_PAGECACHE;
++				nfsi-&gt;cache_validity |= NFS_INO_REVAL_PAGECACHE;
+ 		}
+ 	}
+ 
+@@ -1227,28 +1229,28 @@ int nfs_refresh_inode(struct inode *inode, struct nfs_fattr *fattr)
+ 
+ 	/* Verify a few of the more important attributes */
+ 	if (!timespec_equal(&amp;inode-&gt;i_mtime, &amp;fattr-&gt;mtime)) {
+-		nfsi-&gt;flags |= NFS_INO_INVALID_ATTR;
++		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATTR;
+ 		if (!data_unstable)
+-			nfsi-&gt;flags |= NFS_INO_REVAL_PAGECACHE;
++			nfsi-&gt;cache_validity |= NFS_INO_REVAL_PAGECACHE;
+ 	}
+ 	if (cur_size != new_isize) {
+-		nfsi-&gt;flags |= NFS_INO_INVALID_ATTR;
++		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATTR;
+ 		if (nfsi-&gt;npages == 0)
+-			nfsi-&gt;flags |= NFS_INO_REVAL_PAGECACHE;
++			nfsi-&gt;cache_validity |= NFS_INO_REVAL_PAGECACHE;
+ 	}
+ 
+ 	/* Have any file permissions changed? */
+ 	if ((inode-&gt;i_mode &amp; S_IALLUGO) != (fattr-&gt;mode &amp; S_IALLUGO)
+ 			|| inode-&gt;i_uid != fattr-&gt;uid
+ 			|| inode-&gt;i_gid != fattr-&gt;gid)
+-		nfsi-&gt;flags |= NFS_INO_INVALID_ATTR | NFS_INO_INVALID_ACCESS | NFS_INO_INVALID_ACL;
++		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATTR | NFS_INO_INVALID_ACCESS | NFS_INO_INVALID_ACL;
+ 
+ 	/* Has the link count changed? */
+ 	if (inode-&gt;i_nlink != fattr-&gt;nlink)
+-		nfsi-&gt;flags |= NFS_INO_INVALID_ATTR;
++		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATTR;
+ 
+ 	if (!timespec_equal(&amp;inode-&gt;i_atime, &amp;fattr-&gt;atime))
+-		nfsi-&gt;flags |= NFS_INO_INVALID_ATIME;
++		nfsi-&gt;cache_validity |= NFS_INO_INVALID_ATIME;
+ 
+ 	nfsi-&gt;read_cache_jiffies = fattr-&gt;timestamp;
+ 	return 0;
+@@ -1384,7 +1386,7 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr, unsign
+ 				|| S_ISLNK(inode-&gt;i_mode)))
+ 		invalid &amp;= ~NFS_INO_INVALID_DATA;
+ 	if (!nfs_have_delegation(inode, FMODE_READ))
+-		nfsi-&gt;flags |= invalid;
++		nfsi-&gt;cache_validity |= invalid;
+ 
+ 	return 0;
+  out_changed:
+@@ -1961,7 +1963,8 @@ static struct inode *nfs_alloc_inode(struct super_block *sb)
+ 	nfsi = (struct nfs_inode *)kmem_cache_alloc(nfs_inode_cachep, SLAB_KERNEL);
+ 	if (!nfsi)
+ 		return NULL;
+-	nfsi-&gt;flags = 0;
++	nfsi-&gt;flags = 0UL;
++	nfsi-&gt;cache_validity = 0UL;
+ #ifdef CONFIG_NFS_V3_ACL
+ 	nfsi-&gt;acl_access = ERR_PTR(-EAGAIN);
+ 	nfsi-&gt;acl_default = ERR_PTR(-EAGAIN);
+diff --git a/fs/nfs/nfs3acl.c b/fs/nfs/nfs3acl.c
+index 1b7a3ef2f813..a020e650ffc2 100644
+--- a/fs/nfs/nfs3acl.c
++++ b/fs/nfs/nfs3acl.c
+@@ -308,7 +308,7 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
+ 	nfs_begin_data_update(inode);
+ 	status = rpc_call(server-&gt;client_acl, ACLPROC3_SETACL,
+ 			  &amp;args, &amp;fattr, 0);
+-	NFS_FLAGS(inode) |= NFS_INO_INVALID_ACCESS;
++	NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ACCESS;
+ 	nfs_end_data_update(inode);
+ 	dprintk("NFS reply setacl: %d\n", status);
+ 
+diff --git a/fs/nfs/read.c b/fs/nfs/read.c
+index 6f866b8aa2d5..90df0500ca1b 100644
+--- a/fs/nfs/read.c
++++ b/fs/nfs/read.c
+@@ -140,7 +140,7 @@ static int nfs_readpage_sync(struct nfs_open_context *ctx, struct inode *inode,
+ 		if (rdata-&gt;res.eof != 0 || result == 0)
+ 			break;
+ 	} while (count);
+-	NFS_FLAGS(inode) |= NFS_INO_INVALID_ATIME;
++	NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ATIME;
+ 
+ 	if (count)
+ 		memclear_highpage_flush(page, rdata-&gt;args.pgbase, count);
+@@ -473,7 +473,7 @@ void nfs_readpage_result(struct rpc_task *task)
+ 		}
+ 		task-&gt;tk_status = -EIO;
+ 	}
+-	NFS_FLAGS(data-&gt;inode) |= NFS_INO_INVALID_ATIME;
++	NFS_I(data-&gt;inode)-&gt;cache_validity |= NFS_INO_INVALID_ATIME;
+ 	data-&gt;complete(data, status);
+ }
+ 
+diff --git a/include/linux/nfs_fs.h b/include/linux/nfs_fs.h
+index 7d78a783c64a..229a1755842a 100644
+--- a/include/linux/nfs_fs.h
++++ b/include/linux/nfs_fs.h
+@@ -113,6 +113,7 @@ struct nfs_inode {
+ 	 * Various flags
+ 	 */
+ 	unsigned int		flags;
++	unsigned long		cache_validity;
+ 
+ 	/*
+ 	 * read_cache_jiffies is when we started read-caching this inode,
+@@ -188,17 +189,21 @@ struct nfs_inode {
+ };
+ 
+ /*
+- * Legal inode flag values
++ * Cache validity bit flags
+  */
+-#define NFS_INO_STALE		0x0001		/* possible stale inode */
+-#define NFS_INO_ADVISE_RDPLUS   0x0002          /* advise readdirplus */
+-#define NFS_INO_REVALIDATING	0x0004		/* revalidating attrs */
+-#define NFS_INO_INVALID_ATTR	0x0008		/* cached attrs are invalid */
+-#define NFS_INO_INVALID_DATA	0x0010		/* cached data is invalid */
+-#define NFS_INO_INVALID_ATIME	0x0020		/* cached atime is invalid */
+-#define NFS_INO_INVALID_ACCESS	0x0040		/* cached access cred invalid */
+-#define NFS_INO_INVALID_ACL	0x0080		/* cached acls are invalid */
+-#define NFS_INO_REVAL_PAGECACHE	0x1000		/* must revalidate pagecache */
++#define NFS_INO_INVALID_ATTR	0x0001		/* cached attrs are invalid */
++#define NFS_INO_INVALID_DATA	0x0002		/* cached data is invalid */
++#define NFS_INO_INVALID_ATIME	0x0004		/* cached atime is invalid */
++#define NFS_INO_INVALID_ACCESS	0x0008		/* cached access cred invalid */
++#define NFS_INO_INVALID_ACL	0x0010		/* cached acls are invalid */
++#define NFS_INO_REVAL_PAGECACHE	0x0020		/* must revalidate pagecache */
++
++/*
++ * Legal values of flags field
++ */
++#define NFS_INO_REVALIDATING	0x0001		/* revalidating attrs */
++#define NFS_INO_ADVISE_RDPLUS	0x0002		/* advise readdirplus */
++#define NFS_INO_STALE		0x0004		/* possible stale inode */
+ 
+ static inline struct nfs_inode *NFS_I(struct inode *inode)
+ {
+@@ -237,7 +242,7 @@ static inline int nfs_caches_unstable(struct inode *inode)
+ static inline void NFS_CACHEINV(struct inode *inode)
+ {
+ 	if (!nfs_caches_unstable(inode))
+-		NFS_FLAGS(inode) |= NFS_INO_INVALID_ATTR | NFS_INO_INVALID_ACCESS;
++		NFS_I(inode)-&gt;cache_validity |= NFS_INO_INVALID_ATTR | NFS_INO_INVALID_ACCESS;
+ }
+ 
+ static inline int nfs_server_capable(struct inode *inode, int cap)</pre><hr><pre>commit 6a19275ada9137435da58990c8f8d3f58e170bf1
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Jun 22 17:16:23 2005 +0000
+
+    [PATCH] RPC: [PATCH] improve rpcauthauth_create error returns
+    
+     Currently we return -ENOMEM for every single failure to create a new auth.
+     This is actually accurate for auth_null and auth_unix, but for auth_gss it's a
+     bit confusing.
+    
+     Allow rpcauth_create (and the -&gt;create methods) to return errors.  With this
+     patch, the user may sometimes see an EINVAL instead.  Whee.
+    
+     Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+     Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/inode.c b/fs/nfs/inode.c
+index 350c48c12639..97b3fe7ece63 100644
+--- a/fs/nfs/inode.c
++++ b/fs/nfs/inode.c
+@@ -160,11 +160,10 @@ nfs_clear_inode(struct inode *inode)
+ void
+ nfs_umount_begin(struct super_block *sb)
+ {
+-	struct nfs_server *server = NFS_SB(sb);
+-	struct rpc_clnt	*rpc;
++	struct rpc_clnt	*rpc = NFS_SB(sb)-&gt;client;
+ 
+ 	/* -EIO all pending I/O */
+-	if ((rpc = server-&gt;client) != NULL)
++	if (!IS_ERR(rpc))
+ 		rpc_killall_tasks(rpc);
+ }
+ 
+@@ -450,11 +449,14 @@ nfs_fill_super(struct super_block *sb, struct nfs_mount_data *data, int silent)
+ 		return PTR_ERR(server-&gt;client);
+ 	/* RFC 2623, sec 2.3.2 */
+ 	if (authflavor != RPC_AUTH_UNIX) {
++		struct rpc_auth *auth;
++
+ 		server-&gt;client_sys = rpc_clone_client(server-&gt;client);
+ 		if (IS_ERR(server-&gt;client_sys))
+ 			return PTR_ERR(server-&gt;client_sys);
+-		if (!rpcauth_create(RPC_AUTH_UNIX, server-&gt;client_sys))
+-			return -ENOMEM;
++		auth = rpcauth_create(RPC_AUTH_UNIX, server-&gt;client_sys);
++		if (IS_ERR(auth))
++			return PTR_ERR(auth);
+ 	} else {
+ 		atomic_inc(&amp;server-&gt;client-&gt;cl_count);
+ 		server-&gt;client_sys = server-&gt;client;
+@@ -1450,6 +1452,7 @@ static struct super_block *nfs_get_sb(struct file_system_type *fs_type,
+ 	memset(server, 0, sizeof(struct nfs_server));
+ 	/* Zero out the NFS state stuff */
+ 	init_nfsv4_state(server);
++	server-&gt;client = server-&gt;client_sys = ERR_PTR(-EINVAL);
+ 
+ 	root = &amp;server-&gt;fh;
+ 	if (data-&gt;flags &amp; NFS_MOUNT_VER3)
+@@ -1506,9 +1509,9 @@ static void nfs_kill_super(struct super_block *s)
+ 
+ 	kill_anon_super(s);
+ 
+-	if (server-&gt;client != NULL &amp;&amp; !IS_ERR(server-&gt;client))
++	if (!IS_ERR(server-&gt;client))
+ 		rpc_shutdown_client(server-&gt;client);
+-	if (server-&gt;client_sys != NULL &amp;&amp; !IS_ERR(server-&gt;client_sys))
++	if (!IS_ERR(server-&gt;client_sys))
+ 		rpc_shutdown_client(server-&gt;client_sys);
+ 
+ 	if (!(server-&gt;flags &amp; NFS_MOUNT_NONLM))
+@@ -1650,7 +1653,7 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
+ 	}
+ 
+ 	down_write(&amp;clp-&gt;cl_sem);
+-	if (clp-&gt;cl_rpcclient == NULL) {
++	if (IS_ERR(clp-&gt;cl_rpcclient)) {
+ 		xprt = xprt_create_proto(proto, &amp;server-&gt;addr, &amp;timeparms);
+ 		if (IS_ERR(xprt)) {
+ 			up_write(&amp;clp-&gt;cl_sem);
+@@ -1711,9 +1714,12 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
+ 	}
+ 
+ 	if (clnt-&gt;cl_auth-&gt;au_flavor != authflavour) {
+-		if (rpcauth_create(authflavour, clnt) == NULL) {
++		struct rpc_auth *auth;
++
++		auth = rpcauth_create(authflavour, clnt);
++		if (IS_ERR(auth)) {
+ 			dprintk("%s: couldn't create credcache!\n", __FUNCTION__);
+-			return -ENOMEM;
++			return PTR_ERR(auth);
+ 		}
+ 	}
+ 
+@@ -1788,6 +1794,7 @@ static struct super_block *nfs4_get_sb(struct file_system_type *fs_type,
+ 	memset(server, 0, sizeof(struct nfs_server));
+ 	/* Zero out the NFS state stuff */
+ 	init_nfsv4_state(server);
++	server-&gt;client = server-&gt;client_sys = ERR_PTR(-EINVAL);
+ 
+ 	p = nfs_copy_user_string(NULL, &amp;data-&gt;hostname, 256);
+ 	if (IS_ERR(p))
+diff --git a/fs/nfs/nfs4state.c b/fs/nfs/nfs4state.c
+index 17b187f2d776..591ad1d51880 100644
+--- a/fs/nfs/nfs4state.c
++++ b/fs/nfs/nfs4state.c
+@@ -110,6 +110,7 @@ nfs4_alloc_client(struct in_addr *addr)
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_superblocks);
+ 	init_waitqueue_head(&amp;clp-&gt;cl_waitq);
+ 	rpc_init_wait_queue(&amp;clp-&gt;cl_rpcwaitq, "NFS4 client");
++	clp-&gt;cl_rpcclient = ERR_PTR(-EINVAL);
+ 	clp-&gt;cl_boot_time = CURRENT_TIME;
+ 	clp-&gt;cl_state = 1 &lt;&lt; NFS4CLNT_OK;
+ 	return clp;
+@@ -131,7 +132,7 @@ nfs4_free_client(struct nfs4_client *clp)
+ 	if (clp-&gt;cl_cred)
+ 		put_rpccred(clp-&gt;cl_cred);
+ 	nfs_idmap_delete(clp);
+-	if (clp-&gt;cl_rpcclient)
++	if (!IS_ERR(clp-&gt;cl_rpcclient))
+ 		rpc_shutdown_client(clp-&gt;cl_rpcclient);
+ 	kfree(clp);
+ 	nfs_callback_down();
+diff --git a/net/sunrpc/auth.c b/net/sunrpc/auth.c
+index 9bcec9b927b9..505e2d4b3d62 100644
+--- a/net/sunrpc/auth.c
++++ b/net/sunrpc/auth.c
+@@ -66,10 +66,10 @@ rpcauth_create(rpc_authflavor_t pseudoflavor, struct rpc_clnt *clnt)
+ 	u32			flavor = pseudoflavor_to_flavor(pseudoflavor);
+ 
+ 	if (flavor &gt;= RPC_AUTH_MAXFLAVOR || !(ops = auth_flavors[flavor]))
+-		return NULL;
++		return ERR_PTR(-EINVAL);
+ 	auth = ops-&gt;create(clnt, pseudoflavor);
+-	if (!auth)
+-		return NULL;
++	if (IS_ERR(auth))
++		return auth;
+ 	if (clnt-&gt;cl_auth)
+ 		rpcauth_destroy(clnt-&gt;cl_auth);
+ 	clnt-&gt;cl_auth = auth;
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index 7d88db83ab12..2f7b867161d2 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -660,14 +660,16 @@ gss_create(struct rpc_clnt *clnt, rpc_authflavor_t flavor)
+ {
+ 	struct gss_auth *gss_auth;
+ 	struct rpc_auth * auth;
++	int err = -ENOMEM; /* XXX? */
+ 
+ 	dprintk("RPC:      creating GSS authenticator for client %p\n",clnt);
+ 
+ 	if (!try_module_get(THIS_MODULE))
+-		return NULL;
++		return ERR_PTR(err);
+ 	if (!(gss_auth = kmalloc(sizeof(*gss_auth), GFP_KERNEL)))
+ 		goto out_dec;
+ 	gss_auth-&gt;client = clnt;
++	err = -EINVAL;
+ 	gss_auth-&gt;mech = gss_mech_get_by_pseudoflavor(flavor);
+ 	if (!gss_auth-&gt;mech) {
+ 		printk(KERN_WARNING "%s: Pseudoflavor %d not found!",
+@@ -686,15 +688,18 @@ gss_create(struct rpc_clnt *clnt, rpc_authflavor_t flavor)
+ 	auth-&gt;au_flavor = flavor;
+ 	atomic_set(&amp;auth-&gt;au_count, 1);
+ 
+-	if (rpcauth_init_credcache(auth, GSS_CRED_EXPIRE) &lt; 0)
++	err = rpcauth_init_credcache(auth, GSS_CRED_EXPIRE);
++	if (err)
+ 		goto err_put_mech;
+ 
+ 	snprintf(gss_auth-&gt;path, sizeof(gss_auth-&gt;path), "%s/%s",
+ 			clnt-&gt;cl_pathname,
+ 			gss_auth-&gt;mech-&gt;gm_name);
+ 	gss_auth-&gt;dentry = rpc_mkpipe(gss_auth-&gt;path, clnt, &amp;gss_upcall_ops, RPC_PIPE_WAIT_FOR_OPEN);
+-	if (IS_ERR(gss_auth-&gt;dentry))
++	if (IS_ERR(gss_auth-&gt;dentry)) {
++		err = PTR_ERR(gss_auth-&gt;dentry);
+ 		goto err_put_mech;
++	}
+ 
+ 	return auth;
+ err_put_mech:
+@@ -703,7 +708,7 @@ gss_create(struct rpc_clnt *clnt, rpc_authflavor_t flavor)
+ 	kfree(gss_auth);
+ out_dec:
+ 	module_put(THIS_MODULE);
+-	return NULL;
++	return ERR_PTR(err);
+ }
+ 
+ static void
+diff --git a/net/sunrpc/clnt.c b/net/sunrpc/clnt.c
+index b36797ad8083..9da1deb482e2 100644
+--- a/net/sunrpc/clnt.c
++++ b/net/sunrpc/clnt.c
+@@ -103,6 +103,7 @@ rpc_new_client(struct rpc_xprt *xprt, char *servname,
+ {
+ 	struct rpc_version	*version;
+ 	struct rpc_clnt		*clnt = NULL;
++	struct rpc_auth		*auth;
+ 	int err;
+ 	int len;
+ 
+@@ -157,10 +158,11 @@ rpc_new_client(struct rpc_xprt *xprt, char *servname,
+ 	if (err &lt; 0)
+ 		goto out_no_path;
+ 
+-	err = -ENOMEM;
+-	if (!rpcauth_create(flavor, clnt)) {
++	auth = rpcauth_create(flavor, clnt);
++	if (IS_ERR(auth)) {
+ 		printk(KERN_INFO "RPC: Couldn't create auth handle (flavor %u)\n",
+ 				flavor);
++		err = PTR_ERR(auth);
+ 		goto out_no_auth;
+ 	}
+ </pre><hr><pre>commit 438b6fdebf2a2e8573e7290bc176feb4d4475f43
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Jun 22 17:16:23 2005 +0000
+
+    [PATCH] RPC: Don't fall back from krb5p to krb5i
+    
+     We shouldn't be silently falling back from krb5p to krb5i.
+    
+     Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+     Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index a33b627cbef4..7d88db83ab12 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -675,9 +675,8 @@ gss_create(struct rpc_clnt *clnt, rpc_authflavor_t flavor)
+ 		goto err_free;
+ 	}
+ 	gss_auth-&gt;service = gss_pseudoflavor_to_service(gss_auth-&gt;mech, flavor);
+-	/* FIXME: Will go away once privacy support is merged in */
+-	if (gss_auth-&gt;service == RPC_GSS_SVC_PRIVACY)
+-		gss_auth-&gt;service = RPC_GSS_SVC_INTEGRITY;
++	if (gss_auth-&gt;service == 0)
++		goto err_put_mech;
+ 	INIT_LIST_HEAD(&amp;gss_auth-&gt;upcalls);
+ 	spin_lock_init(&amp;gss_auth-&gt;lock);
+ 	auth = &amp;gss_auth-&gt;rpc_auth;</pre><hr><pre>commit e50a1c2e1f816c81eed6a589019052cb44189267
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Jun 22 17:16:23 2005 +0000
+
+    [PATCH] NFSv4: client-side caching NFSv4 ACLs
+    
+     Add nfs4_acl field to the nfs_inode, and use it to cache acls.  Only cache
+     acls of size up to a page.  Also prepare for up to a page of acl data even
+     when the user doesn't pass in a buffer, as when they want to get the acl
+     length to decide what size buffer to allocate.
+    
+     Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+     Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/inode.c b/fs/nfs/inode.c
+index c45bd52cc1d7..350c48c12639 100644
+--- a/fs/nfs/inode.c
++++ b/fs/nfs/inode.c
+@@ -142,10 +142,6 @@ nfs_delete_inode(struct inode * inode)
+ 	clear_inode(inode);
+ }
+ 
+-/*
+- * For the moment, the only task for the NFS clear_inode method is to
+- * release the mmap credential
+- */
+ static void
+ nfs_clear_inode(struct inode *inode)
+ {
+@@ -1923,6 +1919,9 @@ static struct inode *nfs_alloc_inode(struct super_block *sb)
+ 	if (!nfsi)
+ 		return NULL;
+ 	nfsi-&gt;flags = 0;
++#ifdef CONFIG_NFS_V4
++	nfsi-&gt;nfs4_acl = NULL;
++#endif /* CONFIG_NFS_V4 */
+ 	return &amp;nfsi-&gt;vfs_inode;
+ }
+ 
+diff --git a/fs/nfs/nfs4proc.c b/fs/nfs/nfs4proc.c
+index d969dd13e7db..128d01cfea19 100644
+--- a/fs/nfs/nfs4proc.c
++++ b/fs/nfs/nfs4proc.c
+@@ -2188,9 +2188,75 @@ static void buf_to_pages(const void *buf, size_t buflen,
+ 	}
+ }
+ 
+-static ssize_t nfs4_proc_get_acl(struct inode *inode, void *buf, size_t buflen)
++struct nfs4_cached_acl {
++	int cached;
++	size_t len;
++	char data[];
++};
++
++static void nfs4_set_cached_acl(struct inode *inode, struct nfs4_cached_acl *acl)
++{
++	struct nfs_inode *nfsi = NFS_I(inode);
++
++	spin_lock(&amp;inode-&gt;i_lock);
++	kfree(nfsi-&gt;nfs4_acl);
++	nfsi-&gt;nfs4_acl = acl;
++	spin_unlock(&amp;inode-&gt;i_lock);
++}
++
++static void nfs4_zap_acl_attr(struct inode *inode)
++{
++	nfs4_set_cached_acl(inode, NULL);
++}
++
++static inline ssize_t nfs4_read_cached_acl(struct inode *inode, char *buf, size_t buflen)
++{
++	struct nfs_inode *nfsi = NFS_I(inode);
++	struct nfs4_cached_acl *acl;
++	int ret = -ENOENT;
++
++	spin_lock(&amp;inode-&gt;i_lock);
++	acl = nfsi-&gt;nfs4_acl;
++	if (acl == NULL)
++		goto out;
++	if (buf == NULL) /* user is just asking for length */
++		goto out_len;
++	if (acl-&gt;cached == 0)
++		goto out;
++	ret = -ERANGE; /* see getxattr(2) man page */
++	if (acl-&gt;len &gt; buflen)
++		goto out;
++	memcpy(buf, acl-&gt;data, acl-&gt;len);
++out_len:
++	ret = acl-&gt;len;
++out:
++	spin_unlock(&amp;inode-&gt;i_lock);
++	return ret;
++}
++
++static void nfs4_write_cached_acl(struct inode *inode, const char *buf, size_t acl_len)
++{
++	struct nfs4_cached_acl *acl;
++
++	if (buf &amp;&amp; acl_len &lt;= PAGE_SIZE) {
++		acl = kmalloc(sizeof(*acl) + acl_len, GFP_KERNEL);
++		if (acl == NULL)
++			goto out;
++		acl-&gt;cached = 1;
++		memcpy(acl-&gt;data, buf, acl_len);
++	} else {
++		acl = kmalloc(sizeof(*acl), GFP_KERNEL);
++		if (acl == NULL)
++			goto out;
++		acl-&gt;cached = 0;
++	}
++	acl-&gt;len = acl_len;
++out:
++	nfs4_set_cached_acl(inode, acl);
++}
++
++static inline ssize_t nfs4_get_acl_uncached(struct inode *inode, void *buf, size_t buflen)
+ {
+-	struct nfs_server *server = NFS_SERVER(inode);
+ 	struct page *pages[NFS4ACL_MAXPAGES];
+ 	struct nfs_getaclargs args = {
+ 		.fh = NFS_FH(inode),
+@@ -2198,24 +2264,66 @@ static ssize_t nfs4_proc_get_acl(struct inode *inode, void *buf, size_t buflen)
+ 		.acl_len = buflen,
+ 	};
+ 	size_t resp_len = buflen;
++	void *resp_buf;
+ 	struct rpc_message msg = {
+ 		.rpc_proc = &amp;nfs4_procedures[NFSPROC4_CLNT_GETACL],
+ 		.rpc_argp = &amp;args,
+ 		.rpc_resp = &amp;resp_len,
+ 	};
++	struct page *localpage = NULL;
+ 	int ret;
+ 
+-	if (!nfs4_server_supports_acls(server))
+-		return -EOPNOTSUPP;
+-	buf_to_pages(buf, buflen, args.acl_pages, &amp;args.acl_pgbase);
++	if (buflen &lt; PAGE_SIZE) {
++		/* As long as we're doing a round trip to the server anyway,
++		 * let's be prepared for a page of acl data. */
++		localpage = alloc_page(GFP_KERNEL);
++		resp_buf = page_address(localpage);
++		if (localpage == NULL)
++			return -ENOMEM;
++		args.acl_pages[0] = localpage;
++		args.acl_pgbase = 0;
++		args.acl_len = PAGE_SIZE;
++	} else {
++		resp_buf = buf;
++		buf_to_pages(buf, buflen, args.acl_pages, &amp;args.acl_pgbase);
++	}
+ 	ret = rpc_call_sync(NFS_CLIENT(inode), &amp;msg, 0);
+-	if (buflen &amp;&amp; resp_len &gt; buflen)
+-		return -ERANGE;
+-	if (ret == 0)
+-		ret = resp_len;
++	if (ret)
++		goto out_free;
++	if (resp_len &gt; args.acl_len)
++		nfs4_write_cached_acl(inode, NULL, resp_len);
++	else
++		nfs4_write_cached_acl(inode, resp_buf, resp_len);
++	if (buf) {
++		ret = -ERANGE;
++		if (resp_len &gt; buflen)
++			goto out_free;
++		if (localpage)
++			memcpy(buf, resp_buf, resp_len);
++	}
++	ret = resp_len;
++out_free:
++	if (localpage)
++		__free_page(localpage);
+ 	return ret;
+ }
+ 
++static ssize_t nfs4_proc_get_acl(struct inode *inode, void *buf, size_t buflen)
++{
++	struct nfs_server *server = NFS_SERVER(inode);
++	int ret;
++
++	if (!nfs4_server_supports_acls(server))
++		return -EOPNOTSUPP;
++	ret = nfs_revalidate_inode(server, inode);
++	if (ret &lt; 0)
++		return ret;
++	ret = nfs4_read_cached_acl(inode, buf, buflen);
++	if (ret != -ENOENT)
++		return ret;
++	return nfs4_get_acl_uncached(inode, buf, buflen);
++}
++
+ static int nfs4_proc_set_acl(struct inode *inode, const void *buf, size_t buflen)
+ {
+ 	struct nfs_server *server = NFS_SERVER(inode);
+@@ -2236,6 +2344,8 @@ static int nfs4_proc_set_acl(struct inode *inode, const void *buf, size_t buflen
+ 		return -EOPNOTSUPP;
+ 	buf_to_pages(buf, buflen, arg.acl_pages, &amp;arg.acl_pgbase);
+ 	ret = rpc_call_sync(NFS_SERVER(inode)-&gt;client, &amp;msg, 0);
++	if (ret == 0)
++		nfs4_write_cached_acl(inode, buf, buflen);
+ 	return ret;
+ }
+ 
+@@ -2907,6 +3017,7 @@ struct nfs_rpc_ops	nfs_v4_clientops = {
+ 	.file_open      = nfs4_proc_file_open,
+ 	.file_release   = nfs4_proc_file_release,
+ 	.lock		= nfs4_proc_lock,
++	.clear_acl_cache = nfs4_zap_acl_attr,
+ };
+ 
+ /*
+diff --git a/include/linux/nfs_fs.h b/include/linux/nfs_fs.h
+index 140bdf489f71..d2b5d7e0e85a 100644
+--- a/include/linux/nfs_fs.h
++++ b/include/linux/nfs_fs.h
+@@ -169,13 +169,13 @@ struct nfs_inode {
+ 	wait_queue_head_t	nfs_i_wait;
+ 
+ #ifdef CONFIG_NFS_V4
++	struct nfs4_cached_acl	*nfs4_acl;
+         /* NFSv4 state */
+ 	struct list_head	open_states;
+ 	struct nfs_delegation	*delegation;
+ 	int			 delegation_state;
+ 	struct rw_semaphore	rwsem;
+ #endif /* CONFIG_NFS_V4*/
+-
+ 	struct inode		vfs_inode;
+ };
+ </pre><hr><pre>commit 4b580ee3dc00f9828a9a7aad2724f448fdc94075
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Jun 22 17:16:23 2005 +0000
+
+    [PATCH] NFSv4: ACL support for the NFSv4 client: write
+    
+     Client-side write support for NFSv4 ACLs.
+    
+     Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+     Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/nfs4proc.c b/fs/nfs/nfs4proc.c
+index c91c09938a55..d969dd13e7db 100644
+--- a/fs/nfs/nfs4proc.c
++++ b/fs/nfs/nfs4proc.c
+@@ -2216,6 +2216,29 @@ static ssize_t nfs4_proc_get_acl(struct inode *inode, void *buf, size_t buflen)
+ 	return ret;
+ }
+ 
++static int nfs4_proc_set_acl(struct inode *inode, const void *buf, size_t buflen)
++{
++	struct nfs_server *server = NFS_SERVER(inode);
++	struct page *pages[NFS4ACL_MAXPAGES];
++	struct nfs_setaclargs arg = {
++		.fh		= NFS_FH(inode),
++		.acl_pages	= pages,
++		.acl_len	= buflen,
++	};
++	struct rpc_message msg = {
++		.rpc_proc	= &amp;nfs4_procedures[NFSPROC4_CLNT_SETACL],
++		.rpc_argp	= &amp;arg,
++		.rpc_resp	= NULL,
++	};
++	int ret;
++
++	if (!nfs4_server_supports_acls(server))
++		return -EOPNOTSUPP;
++	buf_to_pages(buf, buflen, arg.acl_pages, &amp;arg.acl_pgbase);
++	ret = rpc_call_sync(NFS_SERVER(inode)-&gt;client, &amp;msg, 0);
++	return ret;
++}
++
+ static int
+ nfs4_async_handle_error(struct rpc_task *task, struct nfs_server *server)
+ {
+@@ -2792,7 +2815,16 @@ nfs4_proc_lock(struct file *filp, int cmd, struct file_lock *request)
+ int nfs4_setxattr(struct dentry *dentry, const char *key, const void *buf,
+ 		size_t buflen, int flags)
+ {
+-	return -EOPNOTSUPP;
++	struct inode *inode = dentry-&gt;d_inode;
++
++	if (strcmp(key, XATTR_NAME_NFSV4_ACL) != 0)
++		return -EOPNOTSUPP;
++
++	if (!S_ISREG(inode-&gt;i_mode) &amp;&amp;
++	    (!S_ISDIR(inode-&gt;i_mode) || inode-&gt;i_mode &amp; S_ISVTX))
++		return -EPERM;
++
++	return nfs4_proc_set_acl(inode, buf, buflen);
+ }
+ 
+ /* The getxattr man page suggests returning -ENODATA for unknown attributes,</pre>
+    <div class="pagination">
+        <a href='4_54.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><span>[55]</span><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_56.html'>Next&gt;&gt;</a>
+    <div>
+</body>

@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6_9.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><span>[10]</span><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_11.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 6f489a966fbeb0da63d45c2c66a8957eab604bf6
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue May 23 07:59:32 2023 +0800
+
+    media: usb: siano: Fix warning due to null work_func_t function pointer
+    
+    The previous commit ebad8e731c1c ("media: usb: siano: Fix use after
+    free bugs caused by do_submit_urb") adds cancel_work_sync() in
+    smsusb_stop_streaming(). But smsusb_stop_streaming() may be called,
+    even if the work_struct surb-&gt;wq has not been initialized. As a result,
+    the warning will occur. One of the processes that could lead to warning
+    is shown below:
+    
+    smsusb_probe()
+      smsusb_init_device()
+        if (!dev-&gt;in_ep || !dev-&gt;out_ep || align &lt; 0) {
+             smsusb_term_device(intf);
+               smsusb_stop_streaming()
+                 cancel_work_sync(&amp;dev-&gt;surbs[i].wq);
+                   __cancel_work_timer()
+                     __flush_work()
+                       if (WARN_ON(!work-&gt;func)) // work-&gt;func is null
+    
+    The log reported by syzbot is shown below:
+    
+    WARNING: CPU: 0 PID: 897 at kernel/workqueue.c:3066 __flush_work+0x798/0xa80 kernel/workqueue.c:3063
+    Modules linked in:
+    CPU: 0 PID: 897 Comm: kworker/0:2 Not tainted 6.2.0-rc1-syzkaller #0
+    RIP: 0010:__flush_work+0x798/0xa80 kernel/workqueue.c:3066
+    ...
+    RSP: 0018:ffffc9000464ebf8 EFLAGS: 00010246
+    RAX: 1ffff11002dbb420 RBX: 0000000000000021 RCX: 1ffffffff204fa4e
+    RDX: dffffc0000000000 RSI: 0000000000000001 RDI: ffff888016dda0e8
+    RBP: ffffc9000464ed98 R08: 0000000000000001 R09: ffffffff90253b2f
+    R10: 0000000000000001 R11: 0000000000000000 R12: ffff888016dda0e8
+    R13: ffff888016dda0e8 R14: ffff888016dda100 R15: 0000000000000001
+    FS:  0000000000000000(0000) GS:ffff8880b9a00000(0000) knlGS:0000000000000000
+    CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+    CR2: 00007ffd4331efe8 CR3: 000000000b48e000 CR4: 00000000003506f0
+    DR0: 0000000000000000 DR1: 0000000000000000 DR2: 0000000000000000
+    DR3: 0000000000000000 DR6: 00000000fffe0ff0 DR7: 0000000000000400
+    Call Trace:
+     &lt;TASK&gt;
+     __cancel_work_timer+0x315/0x460 kernel/workqueue.c:3160
+     smsusb_stop_streaming drivers/media/usb/siano/smsusb.c:182 [inline]
+     smsusb_term_device+0xda/0x2d0 drivers/media/usb/siano/smsusb.c:344
+     smsusb_init_device+0x400/0x9ce drivers/media/usb/siano/smsusb.c:419
+     smsusb_probe+0xbbd/0xc55 drivers/media/usb/siano/smsusb.c:567
+    ...
+    
+    This patch adds check before cancel_work_sync(). If surb-&gt;wq has not
+    been initialized, the cancel_work_sync() will not be executed.
+    
+    Reported-by: syzbot+27b0b464864741b18b99@syzkaller.appspotmail.com
+    Fixes: ebad8e731c1c ("media: usb: siano: Fix use after free bugs caused by do_submit_urb")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+
+diff --git a/drivers/media/usb/siano/smsusb.c b/drivers/media/usb/siano/smsusb.c
+index 6f443c542c6d..640737d3b8ae 100644
+--- a/drivers/media/usb/siano/smsusb.c
++++ b/drivers/media/usb/siano/smsusb.c
+@@ -179,7 +179,8 @@ static void smsusb_stop_streaming(struct smsusb_device_t *dev)
+ 
+ 	for (i = 0; i &lt; MAX_URBS; i++) {
+ 		usb_kill_urb(&amp;dev-&gt;surbs[i].urb);
+-		cancel_work_sync(&amp;dev-&gt;surbs[i].wq);
++		if (dev-&gt;surbs[i].wq.func)
++			cancel_work_sync(&amp;dev-&gt;surbs[i].wq);
+ 
+ 		if (dev-&gt;surbs[i].cb) {
+ 			smscore_putbuffer(dev-&gt;coredev, dev-&gt;surbs[i].cb);</pre><hr><pre>commit 0f5bb36bf9b39a2a96e730bf4455095b50713f63
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Wed Mar 8 12:55:14 2023 +0000
+
+    media: netup_unidvb: fix use-after-free at del_timer()
+    
+    When Universal DVB card is detaching, netup_unidvb_dma_fini()
+    uses del_timer() to stop dma-&gt;timeout timer. But when timer
+    handler netup_unidvb_dma_timeout() is running, del_timer()
+    could not stop it. As a result, the use-after-free bug could
+    happen. The process is shown below:
+    
+        (cleanup routine)          |        (timer routine)
+                                   | mod_timer(&amp;dev-&gt;tx_sim_timer, ..)
+    netup_unidvb_finidev()         | (wait a time)
+      netup_unidvb_dma_fini()      | netup_unidvb_dma_timeout()
+        del_timer(&amp;dma-&gt;timeout);  |
+                                   |   ndev-&gt;pci_dev-&gt;dev //USE
+    
+    Fix by changing del_timer() to del_timer_sync().
+    
+    Link: https://lore.kernel.org/linux-media/20230308125514.4208-1-duoming@zju.edu.cn
+    Fixes: 52b1eaf4c59a ("[media] netup_unidvb: NetUP Universal DVB-S/S2/T/T2/C PCI-E card driver")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@kernel.org&gt;
+
+diff --git a/drivers/media/pci/netup_unidvb/netup_unidvb_core.c b/drivers/media/pci/netup_unidvb/netup_unidvb_core.c
+index 8287851b5ffd..aaa1d2dedebd 100644
+--- a/drivers/media/pci/netup_unidvb/netup_unidvb_core.c
++++ b/drivers/media/pci/netup_unidvb/netup_unidvb_core.c
+@@ -697,7 +697,7 @@ static void netup_unidvb_dma_fini(struct netup_unidvb_dev *ndev, int num)
+ 	netup_unidvb_dma_enable(dma, 0);
+ 	msleep(50);
+ 	cancel_work_sync(&amp;dma-&gt;work);
+-	del_timer(&amp;dma-&gt;timeout);
++	del_timer_sync(&amp;dma-&gt;timeout);
+ }
+ 
+ static int netup_unidvb_dma_setup(struct netup_unidvb_dev *ndev)</pre><hr><pre>commit dbe836576f12743a7d2d170ad4ad4fd324c4d47a
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Mon May 1 17:37:02 2023 -0700
+
+    Input: cyttsp4_core - change del_timer_sync() to timer_shutdown_sync()
+    
+    The watchdog_timer can schedule tx_timeout_task and watchdog_work
+    can also arm watchdog_timer. The process is shown below:
+    
+    ----------- timer schedules work ------------
+    cyttsp4_watchdog_timer() //timer handler
+      schedule_work(&amp;cd-&gt;watchdog_work)
+    
+    ----------- work arms timer ------------
+    cyttsp4_watchdog_work() //workqueue callback function
+      cyttsp4_start_wd_timer()
+        mod_timer(&amp;cd-&gt;watchdog_timer, ...)
+    
+    Although del_timer_sync() and cancel_work_sync() are called in
+    cyttsp4_remove(), the timer and workqueue could still be rearmed.
+    As a result, the possible use after free bugs could happen. The
+    process is shown below:
+    
+      (cleanup routine)           |  (timer and workqueue routine)
+    cyttsp4_remove()              | cyttsp4_watchdog_timer() //timer
+      cyttsp4_stop_wd_timer()     |   schedule_work()
+        del_timer_sync()          |
+                                  | cyttsp4_watchdog_work() //worker
+                                  |   cyttsp4_start_wd_timer()
+                                  |     mod_timer()
+        cancel_work_sync()        |
+                                  | cyttsp4_watchdog_timer() //timer
+                                  |   schedule_work()
+        del_timer_sync()          |
+      kfree(cd) //FREE            |
+                                  | cyttsp4_watchdog_work() // reschedule!
+                                  |   cd-&gt; //USE
+    
+    This patch changes del_timer_sync() to timer_shutdown_sync(),
+    which could prevent rearming of the timer from the workqueue.
+    
+    Fixes: 17fb1563d69b ("Input: cyttsp4 - add core driver for Cypress TMA4XX touchscreen devices")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230421082919.8471-1-duoming@zju.edu.cn
+    Signed-off-by: Dmitry Torokhov &lt;dmitry.torokhov@gmail.com&gt;
+
+diff --git a/drivers/input/touchscreen/cyttsp4_core.c b/drivers/input/touchscreen/cyttsp4_core.c
+index 0cd6f626adec..7cb26929dc73 100644
+--- a/drivers/input/touchscreen/cyttsp4_core.c
++++ b/drivers/input/touchscreen/cyttsp4_core.c
+@@ -1263,9 +1263,8 @@ static void cyttsp4_stop_wd_timer(struct cyttsp4 *cd)
+ 	 * Ensure we wait until the watchdog timer
+ 	 * running on a different CPU finishes
+ 	 */
+-	del_timer_sync(&amp;cd-&gt;watchdog_timer);
++	timer_shutdown_sync(&amp;cd-&gt;watchdog_timer);
+ 	cancel_work_sync(&amp;cd-&gt;watchdog_work);
+-	del_timer_sync(&amp;cd-&gt;watchdog_timer);
+ }
+ 
+ static void cyttsp4_watchdog_timer(struct timer_list *t)</pre><hr><pre>commit e50b9b9e8610d47b7c22529443e45a16b1ea3a15
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sat Apr 15 16:12:27 2023 +0800
+
+    cxgb4: fix use after free bugs caused by circular dependency problem
+    
+    The flower_stats_timer can schedule flower_stats_work and
+    flower_stats_work can also arm the flower_stats_timer. The
+    process is shown below:
+    
+    ----------- timer schedules work ------------
+    ch_flower_stats_cb() //timer handler
+      schedule_work(&amp;adap-&gt;flower_stats_work);
+    
+    ----------- work arms timer ------------
+    ch_flower_stats_handler() //workqueue callback function
+      mod_timer(&amp;adap-&gt;flower_stats_timer, ...);
+    
+    When the cxgb4 device is detaching, the timer and workqueue
+    could still be rearmed. The process is shown below:
+    
+      (cleanup routine)           | (timer and workqueue routine)
+    remove_one()                  |
+      free_some_resources()       | ch_flower_stats_cb() //timer
+        cxgb4_cleanup_tc_flower() |   schedule_work()
+          del_timer_sync()        |
+                                  | ch_flower_stats_handler() //workqueue
+                                  |   mod_timer()
+          cancel_work_sync()      |
+      kfree(adapter) //FREE       | ch_flower_stats_cb() //timer
+                                  |   adap-&gt;flower_stats_work //USE
+    
+    This patch changes del_timer_sync() to timer_shutdown_sync(),
+    which could prevent rearming of the timer from the workqueue.
+    
+    Fixes: e0f911c81e93 ("cxgb4: fetch stats for offloaded tc flower flows")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230415081227.7463-1-duoming@zju.edu.cn
+    Signed-off-by: Paolo Abeni &lt;pabeni@redhat.com&gt;
+
+diff --git a/drivers/net/ethernet/chelsio/cxgb4/cxgb4_tc_flower.c b/drivers/net/ethernet/chelsio/cxgb4/cxgb4_tc_flower.c
+index dd9be229819a..d3541159487d 100644
+--- a/drivers/net/ethernet/chelsio/cxgb4/cxgb4_tc_flower.c
++++ b/drivers/net/ethernet/chelsio/cxgb4/cxgb4_tc_flower.c
+@@ -1135,7 +1135,7 @@ void cxgb4_cleanup_tc_flower(struct adapter *adap)
+ 		return;
+ 
+ 	if (adap-&gt;flower_stats_timer.function)
+-		del_timer_sync(&amp;adap-&gt;flower_stats_timer);
++		timer_shutdown_sync(&amp;adap-&gt;flower_stats_timer);
+ 	cancel_work_sync(&amp;adap-&gt;flower_stats_work);
+ 	rhashtable_destroy(&amp;adap-&gt;flower_tbl);
+ 	adap-&gt;tc_flower_initialized = false;</pre><hr><pre>commit 65f69851e44d71248b952a687e44759a7abb5016
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Tue Mar 7 23:29:17 2023 +0800
+
+    igb: revert rtnl_lock() that causes deadlock
+    
+    The commit 6faee3d4ee8b ("igb: Add lock to avoid data race") adds
+    rtnl_lock to eliminate a false data race shown below
+    
+     (FREE from device detaching)      |   (USE from netdev core)
+    igb_remove                         |  igb_ndo_get_vf_config
+     igb_disable_sriov                 |  vf &gt;= adapter-&gt;vfs_allocated_count?
+      kfree(adapter-&gt;vf_data)          |
+      adapter-&gt;vfs_allocated_count = 0 |
+                                       |    memcpy(... adapter-&gt;vf_data[vf]
+    
+    The above race will never happen and the extra rtnl_lock causes deadlock
+    below
+    
+    [  141.420169]  &lt;TASK&gt;
+    [  141.420672]  __schedule+0x2dd/0x840
+    [  141.421427]  schedule+0x50/0xc0
+    [  141.422041]  schedule_preempt_disabled+0x11/0x20
+    [  141.422678]  __mutex_lock.isra.13+0x431/0x6b0
+    [  141.423324]  unregister_netdev+0xe/0x20
+    [  141.423578]  igbvf_remove+0x45/0xe0 [igbvf]
+    [  141.423791]  pci_device_remove+0x36/0xb0
+    [  141.423990]  device_release_driver_internal+0xc1/0x160
+    [  141.424270]  pci_stop_bus_device+0x6d/0x90
+    [  141.424507]  pci_stop_and_remove_bus_device+0xe/0x20
+    [  141.424789]  pci_iov_remove_virtfn+0xba/0x120
+    [  141.425452]  sriov_disable+0x2f/0xf0
+    [  141.425679]  igb_disable_sriov+0x4e/0x100 [igb]
+    [  141.426353]  igb_remove+0xa0/0x130 [igb]
+    [  141.426599]  pci_device_remove+0x36/0xb0
+    [  141.426796]  device_release_driver_internal+0xc1/0x160
+    [  141.427060]  driver_detach+0x44/0x90
+    [  141.427253]  bus_remove_driver+0x55/0xe0
+    [  141.427477]  pci_unregister_driver+0x2a/0xa0
+    [  141.428296]  __x64_sys_delete_module+0x141/0x2b0
+    [  141.429126]  ? mntput_no_expire+0x4a/0x240
+    [  141.429363]  ? syscall_trace_enter.isra.19+0x126/0x1a0
+    [  141.429653]  do_syscall_64+0x5b/0x80
+    [  141.429847]  ? exit_to_user_mode_prepare+0x14d/0x1c0
+    [  141.430109]  ? syscall_exit_to_user_mode+0x12/0x30
+    [  141.430849]  ? do_syscall_64+0x67/0x80
+    [  141.431083]  ? syscall_exit_to_user_mode_prepare+0x183/0x1b0
+    [  141.431770]  ? syscall_exit_to_user_mode+0x12/0x30
+    [  141.432482]  ? do_syscall_64+0x67/0x80
+    [  141.432714]  ? exc_page_fault+0x64/0x140
+    [  141.432911]  entry_SYSCALL_64_after_hwframe+0x72/0xdc
+    
+    Since the igb_disable_sriov() will call pci_disable_sriov() before
+    releasing any resources, the netdev core will synchronize the cleanup to
+    avoid any races. This patch removes the useless rtnl_(un)lock to guarantee
+    correctness.
+    
+    CC: stable@vger.kernel.org
+    Fixes: 6faee3d4ee8b ("igb: Add lock to avoid data race")
+    Reported-by: Corinna Vinschen &lt;vinschen@redhat.com&gt;
+    Link: https://lore.kernel.org/intel-wired-lan/ZAcJvkEPqWeJHO2r@calimero.vinschen.de/
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Tested-by: Corinna Vinschen &lt;vinschen@redhat.com&gt;
+    Reviewed-by: Jacob Keller &lt;jacob.e.keller@intel.com&gt;
+    Reviewed-by: Simon Horman &lt;simon.horman@corigine.com&gt;
+    Tested-by: Rafal Romanowski &lt;rafal.romanowski@intel.com&gt;
+    Signed-off-by: Tony Nguyen &lt;anthony.l.nguyen@intel.com&gt;
+
+diff --git a/drivers/net/ethernet/intel/igb/igb_main.c b/drivers/net/ethernet/intel/igb/igb_main.c
+index 03bc1e8af575..5532361b0e94 100644
+--- a/drivers/net/ethernet/intel/igb/igb_main.c
++++ b/drivers/net/ethernet/intel/igb/igb_main.c
+@@ -3863,9 +3863,7 @@ static void igb_remove(struct pci_dev *pdev)
+ 	igb_release_hw_control(adapter);
+ 
+ #ifdef CONFIG_PCI_IOV
+-	rtnl_lock();
+ 	igb_disable_sriov(pdev);
+-	rtnl_unlock();
+ #endif
+ 
+ 	unregister_netdev(netdev);</pre><hr><pre>commit ebad8e731c1c06adf04621d6fd327b860c0861b5
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Mon Jan 23 03:04:38 2023 +0100
+
+    media: usb: siano: Fix use after free bugs caused by do_submit_urb
+    
+    There are UAF bugs caused by do_submit_urb(). One of the KASan reports
+    is shown below:
+    
+    [   36.403605] BUG: KASAN: use-after-free in worker_thread+0x4a2/0x890
+    [   36.406105] Read of size 8 at addr ffff8880059600e8 by task kworker/0:2/49
+    [   36.408316]
+    [   36.408867] CPU: 0 PID: 49 Comm: kworker/0:2 Not tainted 6.2.0-rc3-15798-g5a41237ad1d4-dir8
+    [   36.411696] Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS rel-1.14.0-0-g15584
+    [   36.416157] Workqueue:  0x0 (events)
+    [   36.417654] Call Trace:
+    [   36.418546]  &lt;TASK&gt;
+    [   36.419320]  dump_stack_lvl+0x96/0xd0
+    [   36.420522]  print_address_description+0x75/0x350
+    [   36.421992]  print_report+0x11b/0x250
+    [   36.423174]  ? _raw_spin_lock_irqsave+0x87/0xd0
+    [   36.424806]  ? __virt_addr_valid+0xcf/0x170
+    [   36.426069]  ? worker_thread+0x4a2/0x890
+    [   36.427355]  kasan_report+0x131/0x160
+    [   36.428556]  ? worker_thread+0x4a2/0x890
+    [   36.430053]  worker_thread+0x4a2/0x890
+    [   36.431297]  ? worker_clr_flags+0x90/0x90
+    [   36.432479]  kthread+0x166/0x190
+    [   36.433493]  ? kthread_blkcg+0x50/0x50
+    [   36.434669]  ret_from_fork+0x22/0x30
+    [   36.435923]  &lt;/TASK&gt;
+    [   36.436684]
+    [   36.437215] Allocated by task 24:
+    [   36.438289]  kasan_set_track+0x50/0x80
+    [   36.439436]  __kasan_kmalloc+0x89/0xa0
+    [   36.440566]  smsusb_probe+0x374/0xc90
+    [   36.441920]  usb_probe_interface+0x2d1/0x4c0
+    [   36.443253]  really_probe+0x1d5/0x580
+    [   36.444539]  __driver_probe_device+0xe3/0x130
+    [   36.446085]  driver_probe_device+0x49/0x220
+    [   36.447423]  __device_attach_driver+0x19e/0x1b0
+    [   36.448931]  bus_for_each_drv+0xcb/0x110
+    [   36.450217]  __device_attach+0x132/0x1f0
+    [   36.451470]  bus_probe_device+0x59/0xf0
+    [   36.452563]  device_add+0x4ec/0x7b0
+    [   36.453830]  usb_set_configuration+0xc63/0xe10
+    [   36.455230]  usb_generic_driver_probe+0x3b/0x80
+    [   36.456166] printk: console [ttyGS0] disabled
+    [   36.456569]  usb_probe_device+0x90/0x110
+    [   36.459523]  really_probe+0x1d5/0x580
+    [   36.461027]  __driver_probe_device+0xe3/0x130
+    [   36.462465]  driver_probe_device+0x49/0x220
+    [   36.463847]  __device_attach_driver+0x19e/0x1b0
+    [   36.465229]  bus_for_each_drv+0xcb/0x110
+    [   36.466466]  __device_attach+0x132/0x1f0
+    [   36.467799]  bus_probe_device+0x59/0xf0
+    [   36.469010]  device_add+0x4ec/0x7b0
+    [   36.470125]  usb_new_device+0x863/0xa00
+    [   36.471374]  hub_event+0x18c7/0x2220
+    [   36.472746]  process_one_work+0x34c/0x5b0
+    [   36.474041]  worker_thread+0x4b7/0x890
+    [   36.475216]  kthread+0x166/0x190
+    [   36.476267]  ret_from_fork+0x22/0x30
+    [   36.477447]
+    [   36.478160] Freed by task 24:
+    [   36.479239]  kasan_set_track+0x50/0x80
+    [   36.480512]  kasan_save_free_info+0x2b/0x40
+    [   36.481808]  ____kasan_slab_free+0x122/0x1a0
+    [   36.483173]  __kmem_cache_free+0xc4/0x200
+    [   36.484563]  smsusb_term_device+0xcd/0xf0
+    [   36.485896]  smsusb_probe+0xc85/0xc90
+    [   36.486976]  usb_probe_interface+0x2d1/0x4c0
+    [   36.488303]  really_probe+0x1d5/0x580
+    [   36.489498]  __driver_probe_device+0xe3/0x130
+    [   36.491140]  driver_probe_device+0x49/0x220
+    [   36.492475]  __device_attach_driver+0x19e/0x1b0
+    [   36.493988]  bus_for_each_drv+0xcb/0x110
+    [   36.495171]  __device_attach+0x132/0x1f0
+    [   36.496617]  bus_probe_device+0x59/0xf0
+    [   36.497875]  device_add+0x4ec/0x7b0
+    [   36.498972]  usb_set_configuration+0xc63/0xe10
+    [   36.500264]  usb_generic_driver_probe+0x3b/0x80
+    [   36.501740]  usb_probe_device+0x90/0x110
+    [   36.503084]  really_probe+0x1d5/0x580
+    [   36.504241]  __driver_probe_device+0xe3/0x130
+    [   36.505548]  driver_probe_device+0x49/0x220
+    [   36.506766]  __device_attach_driver+0x19e/0x1b0
+    [   36.508368]  bus_for_each_drv+0xcb/0x110
+    [   36.509646]  __device_attach+0x132/0x1f0
+    [   36.510911]  bus_probe_device+0x59/0xf0
+    [   36.512103]  device_add+0x4ec/0x7b0
+    [   36.513215]  usb_new_device+0x863/0xa00
+    [   36.514736]  hub_event+0x18c7/0x2220
+    [   36.516130]  process_one_work+0x34c/0x5b0
+    [   36.517396]  worker_thread+0x4b7/0x890
+    [   36.518591]  kthread+0x166/0x190
+    [   36.519599]  ret_from_fork+0x22/0x30
+    [   36.520851]
+    [   36.521405] Last potentially related work creation:
+    [   36.523143]  kasan_save_stack+0x3f/0x60
+    [   36.524275]  kasan_record_aux_stack_noalloc+0x9d/0xb0
+    [   36.525831]  insert_work+0x25/0x130
+    [   36.527039]  __queue_work+0x4d4/0x620
+    [   36.528236]  queue_work_on+0x72/0xb0
+    [   36.529344]  __usb_hcd_giveback_urb+0x13f/0x1b0
+    [   36.530819]  dummy_timer+0x350/0x1a40
+    [   36.532149]  call_timer_fn+0x2c/0x190
+    [   36.533567]  expire_timers+0x69/0x1f0
+    [   36.534736]  __run_timers+0x289/0x2d0
+    [   36.535841]  run_timer_softirq+0x2d/0x60
+    [   36.537110]  __do_softirq+0x116/0x380
+    [   36.538377]
+    [   36.538950] Second to last potentially related work creation:
+    [   36.540855]  kasan_save_stack+0x3f/0x60
+    [   36.542084]  kasan_record_aux_stack_noalloc+0x9d/0xb0
+    [   36.543592]  insert_work+0x25/0x130
+    [   36.544891]  __queue_work+0x4d4/0x620
+    [   36.546168]  queue_work_on+0x72/0xb0
+    [   36.547328]  __usb_hcd_giveback_urb+0x13f/0x1b0
+    [   36.548805]  dummy_timer+0x350/0x1a40
+    [   36.550116]  call_timer_fn+0x2c/0x190
+    [   36.551570]  expire_timers+0x69/0x1f0
+    [   36.552762]  __run_timers+0x289/0x2d0
+    [   36.553916]  run_timer_softirq+0x2d/0x60
+    [   36.555118]  __do_softirq+0x116/0x380
+    [   36.556239]
+    [   36.556807] The buggy address belongs to the object at ffff888005960000
+    [   36.556807]  which belongs to the cache kmalloc-4k of size 4096
+    [   36.560652] The buggy address is located 232 bytes inside of
+    [   36.560652]  4096-byte region [ffff888005960000, ffff888005961000)
+    [   36.564791]
+    [   36.565355] The buggy address belongs to the physical page:
+    [   36.567212] page:000000004f0a0731 refcount:1 mapcount:0 mapping:0000000000000000 index:0x00
+    [   36.570534] head:000000004f0a0731 order:3 compound_mapcount:0 subpages_mapcount:0 compound0
+    [   36.573717] flags: 0x100000000010200(slab|head|node=0|zone=1)
+    [   36.575481] raw: 0100000000010200 ffff888001042140 dead000000000122 0000000000000000
+    [   36.577842] raw: 0000000000000000 0000000000040004 00000001ffffffff 0000000000000000
+    [   36.580175] page dumped because: kasan: bad access detected
+    [   36.581994]
+    [   36.582548] Memory state around the buggy address:
+    [   36.583983]  ffff88800595ff80: fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc
+    [   36.586240]  ffff888005960000: fa fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+    [   36.588884] &gt;ffff888005960080: fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+    [   36.591071]                                                           ^
+    [   36.593295]  ffff888005960100: fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+    [   36.595705]  ffff888005960180: fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+    [   36.598026] ==================================================================
+    [   36.600224] Disabling lock debugging due to kernel taint
+    [   36.602681] general protection fault, probably for non-canonical address 0x43600a000000060I
+    [   36.607129] CPU: 0 PID: 49 Comm: kworker/0:2 Tainted: G    B              6.2.0-rc3-15798-8
+    [   36.611115] Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS rel-1.14.0-0-g15584
+    [   36.615026] Workqueue: events do_submit_urb
+    [   36.616290] RIP: 0010:_raw_spin_lock_irqsave+0x8a/0xd0
+    [   36.618107] Code: 24 00 00 00 00 48 89 df be 04 00 00 00 e8 9e b5 c6 fe 48 89 ef be 04 00 5
+    [   36.623522] RSP: 0018:ffff888004b6fcf0 EFLAGS: 00010046
+    [   36.625072] RAX: 0000000000000000 RBX: 043600a000000060 RCX: ffffffff9fc0e0d7
+    [   36.627206] RDX: 0000000000000000 RSI: dffffc0000000000 RDI: ffff888004b6fcf0
+    [   36.629813] RBP: ffff888004b6fcf0 R08: dffffc0000000000 R09: ffffed100096df9f
+    [   36.631974] R10: dfffe9100096dfa0 R11: 1ffff1100096df9e R12: ffff888005960020
+    [   36.634285] R13: ffff8880059600f0 R14: 0000000000000246 R15: 0000000000000001
+    [   36.636438] FS:  0000000000000000(0000) GS:ffff88806d600000(0000) knlGS:0000000000000000
+    [   36.639092] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+    [   36.640951] CR2: 00007f07476819a3 CR3: 0000000004a34000 CR4: 00000000000006f0
+    [   36.643411] Call Trace:
+    [   36.644215]  &lt;TASK&gt;
+    [   36.644902]  smscore_getbuffer+0x3e/0x1e0
+    [   36.646147]  do_submit_urb+0x4f/0x190
+    [   36.647449]  process_one_work+0x34c/0x5b0
+    [   36.648777]  worker_thread+0x4b7/0x890
+    [   36.649984]  ? worker_clr_flags+0x90/0x90
+    [   36.651166]  kthread+0x166/0x190
+    [   36.652151]  ? kthread_blkcg+0x50/0x50
+    [   36.653547]  ret_from_fork+0x22/0x30
+    [   36.655051]  &lt;/TASK&gt;
+    [   36.655733] Modules linked in:
+    [   36.656787] ---[ end trace 0000000000000000 ]---
+    [   36.658328] RIP: 0010:_raw_spin_lock_irqsave+0x8a/0xd0
+    [   36.660045] Code: 24 00 00 00 00 48 89 df be 04 00 00 00 e8 9e b5 c6 fe 48 89 ef be 04 00 5
+    [   36.665730] RSP: 0018:ffff888004b6fcf0 EFLAGS: 00010046
+    [   36.667448] RAX: 0000000000000000 RBX: 043600a000000060 RCX: ffffffff9fc0e0d7
+    [   36.669675] RDX: 0000000000000000 RSI: dffffc0000000000 RDI: ffff888004b6fcf0
+    [   36.672645] RBP: ffff888004b6fcf0 R08: dffffc0000000000 R09: ffffed100096df9f
+    [   36.674921] R10: dfffe9100096dfa0 R11: 1ffff1100096df9e R12: ffff888005960020
+    [   36.677034] R13: ffff8880059600f0 R14: 0000000000000246 R15: 0000000000000001
+    [   36.679184] FS:  0000000000000000(0000) GS:ffff88806d600000(0000) knlGS:0000000000000000
+    [   36.681655] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+    [   36.683383] CR2: 00007f07476819a3 CR3: 0000000004a34000 CR4: 00000000000006f0
+    [   36.685733] Kernel panic - not syncing: Fatal exception
+    [   36.688585] Kernel Offset: 0x1d400000 from 0xffffffff81000000 (relocation range: 0xfffffff)
+    [   36.692199] ---[ end Kernel panic - not syncing: Fatal exception ]---
+    
+    When the siano device is plugged in, it may call the following functions
+    to initialize the device.
+    
+    smsusb_probe()--&gt;smsusb_init_device()--&gt;smscore_start_device().
+    
+    When smscore_start_device() gets failed, the function smsusb_term_device()
+    will be called and smsusb_device_t will be deallocated. Although we use
+    usb_kill_urb() in smsusb_stop_streaming() to cancel transfer requests
+    and wait for them to finish, the worker threads that are scheduled by
+    smsusb_onresponse() may be still running. As a result, the UAF bugs
+    could happen.
+    
+    We add cancel_work_sync() in smsusb_stop_streaming() in order that the
+    worker threads could finish before the smsusb_device_t is deallocated.
+    
+    Fixes: dd47fbd40e6e ("[media] smsusb: don't sleep while atomic")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@kernel.org&gt;
+
+diff --git a/drivers/media/usb/siano/smsusb.c b/drivers/media/usb/siano/smsusb.c
+index fe9c7b3a950e..6f443c542c6d 100644
+--- a/drivers/media/usb/siano/smsusb.c
++++ b/drivers/media/usb/siano/smsusb.c
+@@ -179,6 +179,7 @@ static void smsusb_stop_streaming(struct smsusb_device_t *dev)
+ 
+ 	for (i = 0; i &lt; MAX_URBS; i++) {
+ 		usb_kill_urb(&amp;dev-&gt;surbs[i].urb);
++		cancel_work_sync(&amp;dev-&gt;surbs[i].wq);
+ 
+ 		if (dev-&gt;surbs[i].cb) {
+ 			smscore_putbuffer(dev-&gt;coredev, dev-&gt;surbs[i].cb);</pre><hr><pre>commit 29b0589a865b6f66d141d79b2dd1373e4e50fe17
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue Jan 24 08:55:33 2023 +0100
+
+    media: rc: Fix use-after-free bugs caused by ene_tx_irqsim()
+    
+    When the ene device is detaching, function ene_remove() will
+    be called. But there is no function to cancel tx_sim_timer
+    in ene_remove(), the timer handler ene_tx_irqsim() could race
+    with ene_remove(). As a result, the UAF bugs could happen,
+    the process is shown below.
+    
+        (cleanup routine)          |        (timer routine)
+                                   | mod_timer(&amp;dev-&gt;tx_sim_timer, ..)
+    ene_remove()                   | (wait a time)
+                                   | ene_tx_irqsim()
+                                   |   dev-&gt;hw_lock //USE
+                                   |   ene_tx_sample(dev) //USE
+    
+    Fix by adding del_timer_sync(&amp;dev-&gt;tx_sim_timer) in ene_remove(),
+    The tx_sim_timer could stop before ene device is deallocated.
+    
+    What's more, The rc_unregister_device() and del_timer_sync()
+    should be called first in ene_remove() and the deallocated
+    functions such as free_irq(), release_region() and so on
+    should be called behind them. Because the rc_unregister_device()
+    is well synchronized. Otherwise, race conditions may happen. The
+    situations that may lead to race conditions are shown below.
+    
+    Firstly, the rx receiver is disabled with ene_rx_disable()
+    before rc_unregister_device() in ene_remove(), which means it
+    can be enabled again if a process opens /dev/lirc0 between
+    ene_rx_disable() and rc_unregister_device().
+    
+    Secondly, the irqaction descriptor is freed by free_irq()
+    before the rc device is unregistered, which means irqaction
+    descriptor may be accessed again after it is deallocated.
+    
+    Thirdly, the timer can call ene_tx_sample() that can write
+    to the io ports, which means the io ports could be accessed
+    again after they are deallocated by release_region().
+    
+    Therefore, the rc_unregister_device() and del_timer_sync()
+    should be called first in ene_remove().
+    
+    Suggested by: Sean Young &lt;sean@mess.org&gt;
+    
+    Fixes: 9ea53b74df9c ("V4L/DVB: STAGING: remove lirc_ene0100 driver")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: Sean Young &lt;sean@mess.org&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@kernel.org&gt;
+
+diff --git a/drivers/media/rc/ene_ir.c b/drivers/media/rc/ene_ir.c
+index e09270916fbc..11ee21a7db8f 100644
+--- a/drivers/media/rc/ene_ir.c
++++ b/drivers/media/rc/ene_ir.c
+@@ -1106,6 +1106,8 @@ static void ene_remove(struct pnp_dev *pnp_dev)
+ 	struct ene_device *dev = pnp_get_drvdata(pnp_dev);
+ 	unsigned long flags;
+ 
++	rc_unregister_device(dev-&gt;rdev);
++	del_timer_sync(&amp;dev-&gt;tx_sim_timer);
+ 	spin_lock_irqsave(&amp;dev-&gt;hw_lock, flags);
+ 	ene_rx_disable(dev);
+ 	ene_rx_restore_hw_buffer(dev);
+@@ -1113,7 +1115,6 @@ static void ene_remove(struct pnp_dev *pnp_dev)
+ 
+ 	free_irq(dev-&gt;irq, dev);
+ 	release_region(dev-&gt;hw_io, ENE_IO_SIZE);
+-	rc_unregister_device(dev-&gt;rdev);
+ 	kfree(dev);
+ }
+ </pre><hr><pre>commit 70fae37a09268455b8ab4f64647086b61da6f39c
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Wed Jan 18 22:10:00 2023 +0800
+
+    Revert "char: pcmcia: cm4000_cs: Replace mdelay with usleep_range in set_protocol"
+    
+    This reverts commit be826ada52f1fcabed5b5217c94609ebf5967211.
+    
+    The function monitor_card() is a timer handler that runs in an
+    atomic context, but it calls usleep_range() that can sleep.
+    As a result, the sleep-in-atomic-context bugs will happen.
+    The process is shown below:
+    
+        (atomic context)
+    monitor_card()
+      set_protocol()
+        usleep_range() //sleep
+    
+    The origin commit c1986ee9bea3 ("[PATCH] New Omnikey Cardman
+    4000 driver") works fine.
+    
+    Fixes: be826ada52f1 ("char: pcmcia: cm4000_cs: Replace mdelay with usleep_range in set_protocol")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230118141000.5580-1-duoming@zju.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/char/pcmcia/cm4000_cs.c b/drivers/char/pcmcia/cm4000_cs.c
+index adaec8fd4b16..e656f42a28ac 100644
+--- a/drivers/char/pcmcia/cm4000_cs.c
++++ b/drivers/char/pcmcia/cm4000_cs.c
+@@ -529,7 +529,8 @@ static int set_protocol(struct cm4000_dev *dev, struct ptsreq *ptsreq)
+ 			DEBUGP(5, dev, "NumRecBytes is valid\n");
+ 			break;
+ 		}
+-		usleep_range(10000, 11000);
++		/* can not sleep as this is in atomic context */
++		mdelay(10);
+ 	}
+ 	if (i == 100) {
+ 		DEBUGP(5, dev, "Timeout waiting for NumRecBytes getting "
+@@ -549,7 +550,8 @@ static int set_protocol(struct cm4000_dev *dev, struct ptsreq *ptsreq)
+ 			}
+ 			break;
+ 		}
+-		usleep_range(10000, 11000);
++		/* can not sleep as this is in atomic context */
++		mdelay(10);
+ 	}
+ 
+ 	/* check whether it is a short PTS reply? */</pre><hr><pre>commit 3a664569b71b0a52be5ffb9fb87cc4f83d29bd71
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Mon Nov 28 16:21:59 2022 +0000
+
+    media: dvbdev: fix refcnt bug
+    
+    Previous commit initialize the dvbdev-&gt;ref before the template copy,
+    which will overwrite the reference and cause refcnt bug.
+    
+    refcount_t: addition on 0; use-after-free.
+    WARNING: CPU: 0 PID: 1 at lib/refcount.c:25 refcount_warn_saturate+0x17c/0x1f0 lib/refcount.c:25
+    Modules linked in:
+    CPU: 0 PID: 1 Comm: swapper/0 Not tainted 6.1.0-rc6-next-20221128-syzkaller #0
+    ...
+    RIP: 0010:refcount_warn_saturate+0x17c/0x1f0 lib/refcount.c:25
+    RSP: 0000:ffffc900000678d0 EFLAGS: 00010282
+    RAX: 0000000000000000 RBX: 0000000000000000 RCX: 0000000000000000
+    RDX: ffff88813ff58000 RSI: ffffffff81660e7c RDI: fffff5200000cf0c
+    RBP: ffff888022a45010 R08: 0000000000000005 R09: 0000000000000000
+    R10: 0000000080000000 R11: 0000000000000000 R12: 0000000000000001
+    R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000001
+    FS:  0000000000000000(0000) GS:ffff8880b9800000(0000) knlGS:0000000000000000
+    CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+    CR2: ffff88823ffff000 CR3: 000000000c48e000 CR4: 00000000003506f0
+    DR0: 0000000000000000 DR1: 0000000000000000 DR2: 0000000000000000
+    DR3: 0000000000000000 DR6: 00000000fffe0ff0 DR7: 0000000000000400
+    Call Trace:
+     &lt;TASK&gt;
+     __refcount_add include/linux/refcount.h:199 [inline]
+     __refcount_inc include/linux/refcount.h:250 [inline]
+     refcount_inc include/linux/refcount.h:267 [inline]
+     kref_get include/linux/kref.h:45 [inline]
+     dvb_device_get drivers/media/dvb-core/dvbdev.c:585 [inline]
+     dvb_register_device+0xe83/0x16e0 drivers/media/dvb-core/dvbdev.c:517
+    ...
+    
+    Just place the kref_init at correct position.
+    
+    Reported-by: syzbot+fce48a3dd3368645bd6c@syzkaller.appspotmail.com
+    Fixes: 0fc044b2b5e2 ("media: dvbdev: adopts refcnt to avoid UAF")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@kernel.org&gt;
+
+diff --git a/drivers/media/dvb-core/dvbdev.c b/drivers/media/dvb-core/dvbdev.c
+index d45673cb3ce1..2a857cf70c94 100644
+--- a/drivers/media/dvb-core/dvbdev.c
++++ b/drivers/media/dvb-core/dvbdev.c
+@@ -482,8 +482,8 @@ int dvb_register_device(struct dvb_adapter *adap, struct dvb_device **pdvbdev,
+ 		return -ENOMEM;
+ 	}
+ 
+-	kref_init(&amp;dvbdev-&gt;ref);
+ 	memcpy(dvbdev, template, sizeof(struct dvb_device));
++	kref_init(&amp;dvbdev-&gt;ref);
+ 	dvbdev-&gt;type = type;
+ 	dvbdev-&gt;id = id;
+ 	dvbdev-&gt;adapter = adap;</pre><hr><pre>commit 3edfd14bb50fa6f94ed1a37bbb17d9f1c2793b57
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Mon Nov 28 08:39:03 2022 +0000
+
+    media: dvbdev: fix build warning due to comments
+    
+    Previous commit that introduces reference counter does not add proper
+    comments, which will lead to warning when building htmldocs. Fix them.
+    
+    Reported-by: "Stephen Rothwell" &lt;sfr@canb.auug.org.au&gt;
+    Fixes: 0fc044b2b5e2 ("media: dvbdev: adopts refcnt to avoid UAF")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@kernel.org&gt;
+
+diff --git a/include/media/dvbdev.h b/include/media/dvbdev.h
+index fad9871157e2..29d25c8a6f13 100644
+--- a/include/media/dvbdev.h
++++ b/include/media/dvbdev.h
+@@ -130,6 +130,7 @@ struct dvb_adapter {
+  * struct dvb_device - represents a DVB device node
+  *
+  * @list_head:	List head with all DVB devices
++ * @ref:	reference counter
+  * @fops:	pointer to struct file_operations
+  * @adapter:	pointer to the adapter that holds this device node
+  * @type:	type of the device, as defined by &amp;enum dvb_device_type.
+@@ -200,7 +201,7 @@ struct dvb_device {
+ struct dvb_device *dvb_device_get(struct dvb_device *dvbdev);
+ 
+ /**
+- * dvb_device_get - Decrease dvb_device reference
++ * dvb_device_put - Decrease dvb_device reference
+  *
+  * @dvbdev:	pointer to struct dvb_device
+  */</pre>
+    <div class="pagination">
+        <a href='6_9.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><span>[10]</span><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_11.html'>Next&gt;&gt;</a>
+    <div>
+</body>

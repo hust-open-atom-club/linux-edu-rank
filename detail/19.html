@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Georgia</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Georgia</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='19_2.html'>2</a><a href='19_3.html'>3</a><a href='19_4.html'>4</a><a href='19_5.html'>5</a><a href='19_6.html'>6</a><a href='19_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit f311ade3a7adf31658ed882aaab9f9879fdccef7
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sat Feb 1 20:38:38 2020 +0000
+
+    btrfs: ref-verify: fix memory leaks
+    
+    In btrfs_ref_tree_mod(), 'ref' and 'ra' are allocated through kzalloc() and
+    kmalloc(), respectively. In the following code, if an error occurs, the
+    execution will be redirected to 'out' or 'out_unlock' and the function will
+    be exited. However, on some of the paths, 'ref' and 'ra' are not
+    deallocated, leading to memory leaks. For example, if 'action' is
+    BTRFS_ADD_DELAYED_EXTENT, add_block_entry() will be invoked. If the return
+    value indicates an error, the execution will be redirected to 'out'. But,
+    'ref' is not deallocated on this path, causing a memory leak.
+    
+    To fix the above issues, deallocate both 'ref' and 'ra' before exiting from
+    the function when an error is encountered.
+    
+    CC: stable@vger.kernel.org # 4.15+
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Reviewed-by: David Sterba &lt;dsterba@suse.com&gt;
+    Signed-off-by: David Sterba &lt;dsterba@suse.com&gt;
+
+diff --git a/fs/btrfs/ref-verify.c b/fs/btrfs/ref-verify.c
+index b57f3618e58e..454a1015d026 100644
+--- a/fs/btrfs/ref-verify.c
++++ b/fs/btrfs/ref-verify.c
+@@ -744,6 +744,7 @@ int btrfs_ref_tree_mod(struct btrfs_fs_info *fs_info,
+ 		 */
+ 		be = add_block_entry(fs_info, bytenr, num_bytes, ref_root);
+ 		if (IS_ERR(be)) {
++			kfree(ref);
+ 			kfree(ra);
+ 			ret = PTR_ERR(be);
+ 			goto out;
+@@ -757,6 +758,8 @@ int btrfs_ref_tree_mod(struct btrfs_fs_info *fs_info,
+ 			"re-allocated a block that still has references to it!");
+ 			dump_block_entry(fs_info, be);
+ 			dump_ref_action(fs_info, ra);
++			kfree(ref);
++			kfree(ra);
+ 			goto out_unlock;
+ 		}
+ 
+@@ -819,6 +822,7 @@ int btrfs_ref_tree_mod(struct btrfs_fs_info *fs_info,
+ "dropping a ref for a existing root that doesn't have a ref on the block");
+ 				dump_block_entry(fs_info, be);
+ 				dump_ref_action(fs_info, ra);
++				kfree(ref);
+ 				kfree(ra);
+ 				goto out_unlock;
+ 			}
+@@ -834,6 +838,7 @@ int btrfs_ref_tree_mod(struct btrfs_fs_info *fs_info,
+ "attempting to add another ref for an existing ref on a tree block");
+ 			dump_block_entry(fs_info, be);
+ 			dump_ref_action(fs_info, ra);
++			kfree(ref);
+ 			kfree(ra);
+ 			goto out_unlock;
+ 		}</pre><hr><pre>commit 123c23c6a7b7ecd2a3d6060bea1d94019f71fd66
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Mon Feb 3 03:47:53 2020 +0000
+
+    NFS: Fix memory leaks
+    
+    In _nfs42_proc_copy(), 'res-&gt;commit_res.verf' is allocated through
+    kzalloc() if 'args-&gt;sync' is true. In the following code, if
+    'res-&gt;synchronous' is false, handle_async_copy() will be invoked. If an
+    error occurs during the invocation, the following code will not be executed
+    and the error will be returned . However, the allocated
+    'res-&gt;commit_res.verf' is not deallocated, leading to a memory leak. This
+    is also true if the invocation of process_copy_commit() returns an error.
+    
+    To fix the above leaks, redirect the execution to the 'out' label if an
+    error is encountered.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Anna Schumaker &lt;Anna.Schumaker@Netapp.com&gt;
+
+diff --git a/fs/nfs/nfs42proc.c b/fs/nfs/nfs42proc.c
+index 9637aad36bdc..e2ae54b35dfe 100644
+--- a/fs/nfs/nfs42proc.c
++++ b/fs/nfs/nfs42proc.c
+@@ -343,14 +343,14 @@ static ssize_t _nfs42_proc_copy(struct file *src,
+ 		status = handle_async_copy(res, dst_server, src_server, src,
+ 				dst, &amp;args-&gt;src_stateid, restart);
+ 		if (status)
+-			return status;
++			goto out;
+ 	}
+ 
+ 	if ((!res-&gt;synchronous || !args-&gt;sync) &amp;&amp;
+ 			res-&gt;write_res.verifier.committed != NFS_FILE_SYNC) {
+ 		status = process_copy_commit(dst, pos_dst, res);
+ 		if (status)
+-			return status;
++			goto out;
+ 	}
+ 
+ 	truncate_pagecache_range(dst_inode, pos_dst,</pre><hr><pre>commit fa865ba183d61c1ec8cbcab8573159c3b72b89a4
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sat Jan 25 14:33:29 2020 +0000
+
+    firestream: fix memory leaks
+    
+    In fs_open(), 'vcc' is allocated through kmalloc() and assigned to
+    'atm_vcc-&gt;dev_data.' In the following execution, if an error occurs, e.g.,
+    there is no more free channel, an error code EBUSY or ENOMEM will be
+    returned. However, 'vcc' is not deallocated, leading to memory leaks. Note
+    that, in normal cases where fs_open() returns 0, 'vcc' will be deallocated
+    in fs_close(). But, if fs_open() fails, there is no guarantee that
+    fs_close() will be invoked.
+    
+    To fix this issue, deallocate 'vcc' before the error code is returned.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/atm/firestream.c b/drivers/atm/firestream.c
+index aad00d2b28f5..cc87004d5e2d 100644
+--- a/drivers/atm/firestream.c
++++ b/drivers/atm/firestream.c
+@@ -912,6 +912,7 @@ static int fs_open(struct atm_vcc *atm_vcc)
+ 			}
+ 			if (!to) {
+ 				printk ("No more free channels for FS50..\n");
++				kfree(vcc);
+ 				return -EBUSY;
+ 			}
+ 			vcc-&gt;channo = dev-&gt;channo;
+@@ -922,6 +923,7 @@ static int fs_open(struct atm_vcc *atm_vcc)
+ 			if (((DO_DIRECTION(rxtp) &amp;&amp; dev-&gt;atm_vccs[vcc-&gt;channo])) ||
+ 			    ( DO_DIRECTION(txtp) &amp;&amp; test_bit (vcc-&gt;channo, dev-&gt;tx_inuse))) {
+ 				printk ("Channel is in use for FS155.\n");
++				kfree(vcc);
+ 				return -EBUSY;
+ 			}
+ 		}
+@@ -935,6 +937,7 @@ static int fs_open(struct atm_vcc *atm_vcc)
+ 			    tc, sizeof (struct fs_transmit_config));
+ 		if (!tc) {
+ 			fs_dprintk (FS_DEBUG_OPEN, "fs: can't alloc transmit_config.\n");
++			kfree(vcc);
+ 			return -ENOMEM;
+ 		}
+ </pre><hr><pre>commit 8472ba62154058b64ebb83d5f57259a352d28697
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Mon Aug 12 00:59:21 2019 -0500
+
+    e1000: fix memory leaks
+    
+    In e1000_set_ringparam(), 'tx_old' and 'rx_old' are not deallocated if
+    e1000_up() fails, leading to memory leaks. Refactor the code to fix this
+    issue.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Tested-by: Aaron Brown &lt;aaron.f.brown@intel.com&gt;
+    Signed-off-by: Jeff Kirsher &lt;jeffrey.t.kirsher@intel.com&gt;
+
+diff --git a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
+index 71d3d8854d8f..be56e631d693 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
++++ b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
+@@ -607,6 +607,7 @@ static int e1000_set_ringparam(struct net_device *netdev,
+ 	for (i = 0; i &lt; adapter-&gt;num_rx_queues; i++)
+ 		rxdr[i].count = rxdr-&gt;count;
+ 
++	err = 0;
+ 	if (netif_running(adapter-&gt;netdev)) {
+ 		/* Try to get new resources before deleting old */
+ 		err = e1000_setup_all_rx_resources(adapter);
+@@ -627,14 +628,13 @@ static int e1000_set_ringparam(struct net_device *netdev,
+ 		adapter-&gt;rx_ring = rxdr;
+ 		adapter-&gt;tx_ring = txdr;
+ 		err = e1000_up(adapter);
+-		if (err)
+-			goto err_setup;
+ 	}
+ 	kfree(tx_old);
+ 	kfree(rx_old);
+ 
+ 	clear_bit(__E1000_RESETTING, &amp;adapter-&gt;flags);
+-	return 0;
++	return err;
++
+ err_setup_tx:
+ 	e1000_free_all_rx_resources(adapter);
+ err_setup_rx:
+@@ -646,7 +646,6 @@ static int e1000_set_ringparam(struct net_device *netdev,
+ err_alloc_tx:
+ 	if (netif_running(adapter-&gt;netdev))
+ 		e1000_up(adapter);
+-err_setup:
+ 	clear_bit(__E1000_RESETTING, &amp;adapter-&gt;flags);
+ 	return err;
+ }</pre><hr><pre>commit 334f5b61a6f29834e881923b98d1e27e5ce9620d
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Thu Aug 15 16:04:31 2019 -0500
+
+    ath10k: add cleanup in ath10k_sta_state()
+    
+    If 'sta-&gt;tdls' is false, no cleanup is executed, leading to memory/resource
+    leaks, e.g., 'arsta-&gt;tx_stats'. To fix this issue, perform cleanup before
+    go to the 'exit' label.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@codeaurora.org&gt;
+
+diff --git a/drivers/net/wireless/ath/ath10k/mac.c b/drivers/net/wireless/ath/ath10k/mac.c
+index ba167f4356cf..578d1c06ed87 100644
+--- a/drivers/net/wireless/ath/ath10k/mac.c
++++ b/drivers/net/wireless/ath/ath10k/mac.c
+@@ -6559,8 +6559,12 @@ static int ath10k_sta_state(struct ieee80211_hw *hw,
+ 
+ 		spin_unlock_bh(&amp;ar-&gt;data_lock);
+ 
+-		if (!sta-&gt;tdls)
++		if (!sta-&gt;tdls) {
++			ath10k_peer_delete(ar, arvif-&gt;vdev_id, sta-&gt;addr);
++			ath10k_mac_dec_num_stations(arvif, sta);
++			kfree(arsta-&gt;tx_stats);
+ 			goto exit;
++		}
+ 
+ 		ret = ath10k_wmi_update_fw_tdls_state(ar, arvif-&gt;vdev_id,
+ 						      WMI_TDLS_ENABLE_ACTIVE);</pre><hr><pre>commit 137e92fd14959506269d58e08dae35c0bb745211
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Aug 18 11:36:44 2019 -0500
+
+    mtd: sm_ftl: Fix memory leak in sm_init_zone() error path
+    
+    In sm_init_zone(), 'zone-&gt;lba_to_phys_table' is allocated through
+    kmalloc_array() and 'zone-&gt;free_sectors' is allocated in kfifo_alloc()
+    respectively. However, they are not deallocated in the following execution
+    if sm_read_sector() fails, leading to memory leaks. To fix this issue, free
+    them before returning -EIO.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Richard Weinberger &lt;richard@nod.at&gt;
+
+diff --git a/drivers/mtd/sm_ftl.c b/drivers/mtd/sm_ftl.c
+index dfc47a444b90..4744bf94ad9a 100644
+--- a/drivers/mtd/sm_ftl.c
++++ b/drivers/mtd/sm_ftl.c
+@@ -774,8 +774,11 @@ static int sm_init_zone(struct sm_ftl *ftl, int zone_num)
+ 			continue;
+ 
+ 		/* Read the oob of first sector */
+-		if (sm_read_sector(ftl, zone_num, block, 0, NULL, &amp;oob))
++		if (sm_read_sector(ftl, zone_num, block, 0, NULL, &amp;oob)) {
++			kfifo_free(&amp;zone-&gt;free_sectors);
++			kfree(zone-&gt;lba_to_phys_table);
+ 			return -EIO;
++		}
+ 
+ 		/* Test to see if block is erased. It is enough to test
+ 			first sector, because erase happens in one shot */</pre><hr><pre>commit 6a379f67454a3c740671ed6c7793b76ffecef50b
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Mon Aug 19 16:55:04 2019 -0500
+
+    jffs2: Fix memory leak in jffs2_scan_eraseblock() error path
+    
+    In jffs2_scan_eraseblock(), 'sumptr' is allocated through kmalloc() if
+    'sumlen' is larger than 'buf_size'. However, it is not deallocated in the
+    following execution if jffs2_fill_scan_buf() fails, leading to a memory
+    leak bug. To fix this issue, free 'sumptr' before returning the error.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Richard Weinberger &lt;richard@nod.at&gt;
+
+diff --git a/fs/jffs2/scan.c b/fs/jffs2/scan.c
+index 90431dd613b8..5f7e284e0df3 100644
+--- a/fs/jffs2/scan.c
++++ b/fs/jffs2/scan.c
+@@ -527,8 +527,11 @@ static int jffs2_scan_eraseblock (struct jffs2_sb_info *c, struct jffs2_eraseblo
+ 					err = jffs2_fill_scan_buf(c, sumptr, 
+ 								  jeb-&gt;offset + c-&gt;sector_size - sumlen,
+ 								  sumlen - buf_len);				
+-					if (err)
++					if (err) {
++						if (sumlen &gt; buf_size)
++							kfree(sumptr);
+ 						return err;
++					}
+ 				}
+ 			}
+ </pre><hr><pre>commit 9163e0184bd7d5f779934d34581843f699ad2ffd
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Mon Aug 19 23:44:24 2019 -0500
+
+    ubifs: Fix memory leak bug in alloc_ubifs_info() error path
+    
+    In ubifs_mount(), 'c' is allocated through kzalloc() in alloc_ubifs_info().
+    However, it is not deallocated in the following execution if
+    ubifs_fill_super() fails, leading to a memory leak bug. To fix this issue,
+    free 'c' before going to the 'out_deact' label.
+    
+    Fixes: 1e51764a3c2a ("UBIFS: add new flash file system")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Richard Weinberger &lt;richard@nod.at&gt;
+
+diff --git a/fs/ubifs/super.c b/fs/ubifs/super.c
+index 8c1d571334bc..fe9231fc4702 100644
+--- a/fs/ubifs/super.c
++++ b/fs/ubifs/super.c
+@@ -2256,8 +2256,10 @@ static struct dentry *ubifs_mount(struct file_system_type *fs_type, int flags,
+ 		}
+ 	} else {
+ 		err = ubifs_fill_super(sb, data, flags &amp; SB_SILENT ? 1 : 0);
+-		if (err)
++		if (err) {
++			kfree(c);
+ 			goto out_deact;
++		}
+ 		/* We do not support atime */
+ 		sb-&gt;s_flags |= SB_ACTIVE;
+ 		if (IS_ENABLED(CONFIG_UBIFS_ATIME_SUPPORT))</pre><hr><pre>commit 7992e00469c485f108a7f0da08be34b0fa441f79
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Mon Aug 19 22:24:50 2019 -0500
+
+    ubifs: Fix memory leak in __ubifs_node_verify_hmac error path
+    
+    In __ubifs_node_verify_hmac(), 'hmac' is allocated through kmalloc().
+    However, it is not deallocated in the following execution if
+    ubifs_node_calc_hmac() fails, leading to a memory leak bug. To fix this
+    issue, free 'hmac' before returning the error.
+    
+    Fixes: 49525e5eecca ("ubifs: Add helper functions for authentication support")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Richard Weinberger &lt;richard@nod.at&gt;
+
+diff --git a/fs/ubifs/auth.c b/fs/ubifs/auth.c
+index d9af2de9084a..8cdbd53d780c 100644
+--- a/fs/ubifs/auth.c
++++ b/fs/ubifs/auth.c
+@@ -479,8 +479,10 @@ int __ubifs_node_verify_hmac(const struct ubifs_info *c, const void *node,
+ 		return -ENOMEM;
+ 
+ 	err = ubifs_node_calc_hmac(c, node, len, ofs_hmac, hmac);
+-	if (err)
++	if (err) {
++		kfree(hmac);
+ 		return err;
++	}
+ 
+ 	err = crypto_memneq(hmac, node + ofs_hmac, hmac_len);
+ </pre><hr><pre>commit ce4d8b16e64d062f1c6271a0068dbbbba2dee620
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Mon Aug 19 22:03:46 2019 -0500
+
+    ubifs: Fix memory leak in read_znode() error path
+    
+    In read_znode(), the indexing node 'idx' is allocated by kmalloc().
+    However, it is not deallocated in the following execution if
+    ubifs_node_check_hash() fails, leading to a memory leak bug. To fix this
+    issue, free 'idx' before returning the error.
+    
+    Fixes: 16a26b20d2af ("ubifs: authentication: Add hashes to index nodes")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Richard Weinberger &lt;richard@nod.at&gt;
+
+diff --git a/fs/ubifs/tnc_misc.c b/fs/ubifs/tnc_misc.c
+index 6f293f662d98..49cb34c3f324 100644
+--- a/fs/ubifs/tnc_misc.c
++++ b/fs/ubifs/tnc_misc.c
+@@ -284,6 +284,7 @@ static int read_znode(struct ubifs_info *c, struct ubifs_zbranch *zzbr,
+ 	err = ubifs_node_check_hash(c, idx, zzbr-&gt;hash);
+ 	if (err) {
+ 		ubifs_bad_hash(c, idx, zzbr-&gt;hash, lnum, offs);
++		kfree(idx);
+ 		return err;
+ 	}
+ </pre>
+    <div class="pagination">
+        <span>[1]</span><a href='19_2.html'>2</a><a href='19_3.html'>3</a><a href='19_4.html'>4</a><a href='19_5.html'>5</a><a href='19_6.html'>6</a><a href='19_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

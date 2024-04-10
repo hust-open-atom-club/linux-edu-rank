@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_17.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><span>[18]</span><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_19.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 3227fa41abc191384fa81b3bcf52aa7fccb31536
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Oct 25 21:43:01 2009 -0400
+
+    nfsd: filter readdir results in V4ROOT case
+    
+    As with lookup, we treat every boject as a mountpoint and pretend it
+    doesn't exist if it isn't exported.
+    
+    The preexisting code here is confusing, but I haven't yet figured out
+    how to make it clearer.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index cab978031100..a8587e90fd5a 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -2196,11 +2196,14 @@ nfsd4_encode_dirent_fattr(struct nfsd4_readdir *cd,
+ 	 * we will not follow the cross mount and will fill the attribtutes
+ 	 * directly from the mountpoint dentry.
+ 	 */
+-	if (d_mountpoint(dentry) &amp;&amp; !attributes_need_mount(cd-&gt;rd_bmval))
+-		ignore_crossmnt = 1;
+-	else if (d_mountpoint(dentry)) {
++	if (nfsd_mountpoint(dentry, exp)) {
+ 		int err;
+ 
++		if (!(exp-&gt;ex_flags &amp; NFSEXP_V4ROOT)
++				&amp;&amp; !attributes_need_mount(cd-&gt;rd_bmval)) {
++			ignore_crossmnt = 1;
++			goto out_encode;
++		}
+ 		/*
+ 		 * Why the heck aren't we just using nfsd_lookup??
+ 		 * Different "."/".." handling?  Something else?
+@@ -2216,6 +2219,7 @@ nfsd4_encode_dirent_fattr(struct nfsd4_readdir *cd,
+ 			goto out_put;
+ 
+ 	}
++out_encode:
+ 	nfserr = nfsd4_encode_fattr(NULL, exp, dentry, p, buflen, cd-&gt;rd_bmval,
+ 					cd-&gt;rd_rqstp, ignore_crossmnt);
+ out_put:
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index eaf2f0dca12a..a0015a958aef 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -170,7 +170,7 @@ static int nfsd_lookup_parent(struct svc_rqst *rqstp, struct dentry *dparent, st
+  * For nfsd purposes, we treat V4ROOT exports as though there was an
+  * export at *every* directory.
+  */
+-static int nfsd_mountpoint(struct dentry *dentry, struct svc_export *exp)
++int nfsd_mountpoint(struct dentry *dentry, struct svc_export *exp)
+ {
+ 	if (d_mountpoint(dentry))
+ 		return 1;
+diff --git a/fs/nfsd/vfs.h b/fs/nfsd/vfs.h
+index b8011fd2fcab..f4fa6d351bbd 100644
+--- a/fs/nfsd/vfs.h
++++ b/fs/nfsd/vfs.h
+@@ -40,6 +40,7 @@ __be32		 nfsd_lookup_dentry(struct svc_rqst *, struct svc_fh *,
+ 				struct svc_export **, struct dentry **);
+ __be32		nfsd_setattr(struct svc_rqst *, struct svc_fh *,
+ 				struct iattr *, int, time_t);
++int nfsd_mountpoint(struct dentry *, struct svc_export *);
+ #ifdef CONFIG_NFSD_V4
+ __be32          nfsd4_set_nfs4_acl(struct svc_rqst *, struct svc_fh *,
+                     struct nfs4_acl *);</pre><hr><pre>commit 82ead7fe41da960ed80652d13d5a1072f85f5aca
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Oct 25 21:33:15 2009 -0400
+
+    nfsd: filter lookup results in V4ROOT case
+    
+    We treat every object as a mountpoint and pretend it doesn't exist if
+    it isn't exported.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 7e2fdd50113f..eaf2f0dca12a 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -166,6 +166,19 @@ static int nfsd_lookup_parent(struct svc_rqst *rqstp, struct dentry *dparent, st
+ 	return 0;
+ }
+ 
++/*
++ * For nfsd purposes, we treat V4ROOT exports as though there was an
++ * export at *every* directory.
++ */
++static int nfsd_mountpoint(struct dentry *dentry, struct svc_export *exp)
++{
++	if (d_mountpoint(dentry))
++		return 1;
++	if (!(exp-&gt;ex_flags &amp; NFSEXP_V4ROOT))
++		return 0;
++	return dentry-&gt;d_inode != NULL;
++}
++
+ __be32
+ nfsd_lookup_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp,
+ 		   const char *name, unsigned int len,
+@@ -211,7 +224,7 @@ nfsd_lookup_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp,
+ 		/*
+ 		 * check if we have crossed a mount point ...
+ 		 */
+-		if (d_mountpoint(dentry)) {
++		if (nfsd_mountpoint(dentry, exp)) {
+ 			if ((host_err = nfsd_cross_mnt(rqstp, &amp;dentry, &amp;exp))) {
+ 				dput(dentry);
+ 				goto out_nfserr;</pre><hr><pre>commit 3b6cee7bc4b2f7858e9202293104acda8826bb68
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Oct 25 21:18:19 2009 -0400
+
+    nfsd4: don't continue "under" mounts in V4ROOT case
+    
+    If /A/mount/point/ has filesystem "B" mounted on top of it, and if "A"
+    is exported, but not "B", then the nfs server has always returned to the
+    client a filehandle for the mountpoint, instead of for the root of "B",
+    allowing the client to see the subtree of "A" that would otherwise be
+    hidden by B.
+    
+    Disable this behavior in the case of V4ROOT exports; we implement the
+    path restrictions of V4ROOT exports by treating *every* directory as if
+    it were a mountpoint, and allowing traversal *only* if the new directory
+    is exported.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 04bdba12d21b..7e2fdd50113f 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -99,8 +99,16 @@ nfsd_cross_mnt(struct svc_rqst *rqstp, struct dentry **dpp,
+ 
+ 	exp2 = rqst_exp_get_by_name(rqstp, &amp;path);
+ 	if (IS_ERR(exp2)) {
+-		if (PTR_ERR(exp2) != -ENOENT)
+-			err = PTR_ERR(exp2);
++		err = PTR_ERR(exp2);
++		/*
++		 * We normally allow NFS clients to continue
++		 * "underneath" a mountpoint that is not exported.
++		 * The exception is V4ROOT, where no traversal is ever
++		 * allowed without an explicit export of the new
++		 * directory.
++		 */
++		if (err == -ENOENT &amp;&amp; !(exp-&gt;ex_flags &amp; NFSEXP_V4ROOT))
++			err = 0;
+ 		path_put(&amp;path);
+ 		goto out;
+ 	}</pre><hr><pre>commit 12045a6ee9908b38b6d286530c7d816e39071346
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 8 18:15:52 2009 -0500
+
+    nfsd: let "insecure" flag vary by pseudoflavor
+    
+    This was an oversight; it should be among the export flags that can be
+    allowed to vary by pseudoflavor.  This allows an administrator to (for
+    example) allow auth_sys mounts only from low ports, but allow auth_krb5
+    mounts to use any port.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfsfh.c b/fs/nfsd/nfsfh.c
+index 0eb1c59f5ab8..951938d6c495 100644
+--- a/fs/nfsd/nfsfh.c
++++ b/fs/nfsd/nfsfh.c
+@@ -88,8 +88,10 @@ nfsd_mode_check(struct svc_rqst *rqstp, umode_t mode, int type)
+ static __be32 nfsd_setuser_and_check_port(struct svc_rqst *rqstp,
+ 					  struct svc_export *exp)
+ {
++	int flags = nfsexp_flags(rqstp, exp);
++
+ 	/* Check if the request originated from a secure port. */
+-	if (!rqstp-&gt;rq_secure &amp;&amp; EX_SECURE(exp)) {
++	if (!rqstp-&gt;rq_secure &amp;&amp; (flags &amp; NFSEXP_INSECURE_PORT)) {
+ 		RPC_IFDEBUG(char buf[RPC_MAX_ADDRBUFLEN]);
+ 		dprintk(KERN_WARNING
+ 		       "nfsd: request from insecure port %s!\n",
+diff --git a/include/linux/nfsd/export.h b/include/linux/nfsd/export.h
+index 4f1df1d7312c..4cafbe1255f0 100644
+--- a/include/linux/nfsd/export.h
++++ b/include/linux/nfsd/export.h
+@@ -44,7 +44,8 @@
+ 
+ /* The flags that may vary depending on security flavor: */
+ #define NFSEXP_SECINFO_FLAGS	(NFSEXP_READONLY | NFSEXP_ROOTSQUASH \
+-					| NFSEXP_ALLSQUASH)
++					| NFSEXP_ALLSQUASH \
++					| NFSEXP_INSECURE_PORT)
+ 
+ #ifdef __KERNEL__
+ 
+@@ -109,7 +110,6 @@ struct svc_expkey {
+ 	struct path		ek_path;
+ };
+ 
+-#define EX_SECURE(exp)		(!((exp)-&gt;ex_flags &amp; NFSEXP_INSECURE_PORT))
+ #define EX_ISSYNC(exp)		(!((exp)-&gt;ex_flags &amp; NFSEXP_ASYNC))
+ #define EX_NOHIDE(exp)		((exp)-&gt;ex_flags &amp; NFSEXP_NOHIDE)
+ #define EX_WGATHER(exp)		((exp)-&gt;ex_flags &amp; NFSEXP_GATHERED_WRITES)</pre><hr><pre>commit e8e8753f7a32ce4f636771126fc8eba0dc4ad817
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Dec 14 12:53:32 2009 -0500
+
+    nfsd: new interface to advertise export features
+    
+    Soon we will add the new V4ROOT flag, and allow the INSECURE flag to
+    vary by pseudoflavor.  It would be useful for nfs-utils (for example,
+    for improved exportfs error reporting) to be able to know when this
+    happens.  Use this new interface for that purpose.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfsctl.c b/fs/nfsd/nfsctl.c
+index 0415680d3f58..e7051ac4dc73 100644
+--- a/fs/nfsd/nfsctl.c
++++ b/fs/nfsd/nfsctl.c
+@@ -31,6 +31,7 @@ enum {
+ 	NFSD_Getfd,
+ 	NFSD_Getfs,
+ 	NFSD_List,
++	NFSD_Export_features,
+ 	NFSD_Fh,
+ 	NFSD_FO_UnlockIP,
+ 	NFSD_FO_UnlockFS,
+@@ -149,6 +150,24 @@ static const struct file_operations exports_operations = {
+ 	.owner		= THIS_MODULE,
+ };
+ 
++static int export_features_show(struct seq_file *m, void *v)
++{
++	seq_printf(m, "0x%x 0x%x\n", NFSEXP_ALLFLAGS, NFSEXP_SECINFO_FLAGS);
++	return 0;
++}
++
++static int export_features_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, export_features_show, NULL);
++}
++
++static struct file_operations export_features_operations = {
++	.open		= export_features_open,
++	.read		= seq_read,
++	.llseek		= seq_lseek,
++	.release	= single_release,
++};
++
+ extern int nfsd_pool_stats_open(struct inode *inode, struct file *file);
+ extern int nfsd_pool_stats_release(struct inode *inode, struct file *file);
+ 
+@@ -1306,6 +1325,8 @@ static int nfsd_fill_super(struct super_block * sb, void * data, int silent)
+ 		[NFSD_Getfd] = {".getfd", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+ 		[NFSD_Getfs] = {".getfs", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+ 		[NFSD_List] = {"exports", &amp;exports_operations, S_IRUGO},
++		[NFSD_Export_features] = {"export_features",
++					&amp;export_features_operations, S_IRUGO},
+ 		[NFSD_FO_UnlockIP] = {"unlock_ip",
+ 					&amp;transaction_ops, S_IWUSR|S_IRUSR},
+ 		[NFSD_FO_UnlockFS] = {"unlock_filesystem",
+diff --git a/include/linux/nfsd/export.h b/include/linux/nfsd/export.h
+index ef3d416fcf67..4f1df1d7312c 100644
+--- a/include/linux/nfsd/export.h
++++ b/include/linux/nfsd/export.h
+@@ -39,7 +39,8 @@
+ #define NFSEXP_FSID		0x2000
+ #define	NFSEXP_CROSSMOUNT	0x4000
+ #define	NFSEXP_NOACL		0x8000	/* reserved for possible ACL related use */
+-#define NFSEXP_ALLFLAGS		0xFE3F
++/* All flags that we claim to support.  (Note we don't support NOACL.) */
++#define NFSEXP_ALLFLAGS		0x7E3F
+ 
+ /* The flags that may vary depending on security flavor: */
+ #define NFSEXP_SECINFO_FLAGS	(NFSEXP_READONLY | NFSEXP_ROOTSQUASH \</pre><hr><pre>commit 57ecb34febc4c133ca0ccc7817796605a78a01d3
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 1 19:42:57 2009 -0500
+
+    nfsd4: fix share mode permissions
+    
+    NFSv4 opens may function as locks denying other NFSv4 users the rights
+    to open a file.
+    
+    We're requiring a user to have write permissions before they can deny
+    write.  We're *not* requiring a user to have write permissions to deny
+    read, which is if anything a more drastic denial.
+    
+    What was intended was to require write permissions for DENY_READ.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4proc.c b/fs/nfsd/nfs4proc.c
+index 60a93cdefef5..a468224a118f 100644
+--- a/fs/nfsd/nfs4proc.c
++++ b/fs/nfsd/nfs4proc.c
+@@ -171,7 +171,7 @@ do_open_permission(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfs
+ 		accmode |= NFSD_MAY_READ;
+ 	if (open-&gt;op_share_access &amp; NFS4_SHARE_ACCESS_WRITE)
+ 		accmode |= (NFSD_MAY_WRITE | NFSD_MAY_TRUNC);
+-	if (open-&gt;op_share_deny &amp; NFS4_SHARE_DENY_WRITE)
++	if (open-&gt;op_share_deny &amp; NFS4_SHARE_DENY_READ)
+ 		accmode |= NFSD_MAY_WRITE;
+ 
+ 	status = fh_verify(rqstp, current_fh, S_IFREG, accmode);</pre><hr><pre>commit d4e935bd67ca05db4119b67801d9ece6ae139f05
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Dec 3 15:58:33 2009 -0500
+
+    The rpc server does not require that service threads take the BKL.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/callback.c b/fs/nfs/callback.c
+index 293fa0528a6e..e66ec5d169f7 100644
+--- a/fs/nfs/callback.c
++++ b/fs/nfs/callback.c
+@@ -78,11 +78,6 @@ nfs4_callback_svc(void *vrqstp)
+ 
+ 	set_freezable();
+ 
+-	/*
+-	 * FIXME: do we really need to run this under the BKL? If so, please
+-	 * add a comment about what it's intended to protect.
+-	 */
+-	lock_kernel();
+ 	while (!kthread_should_stop()) {
+ 		/*
+ 		 * Listen for a request on the socket
+@@ -104,7 +99,6 @@ nfs4_callback_svc(void *vrqstp)
+ 		preverr = err;
+ 		svc_process(rqstp);
+ 	}
+-	unlock_kernel();
+ 	return 0;
+ }
+ 
+@@ -160,11 +154,6 @@ nfs41_callback_svc(void *vrqstp)
+ 
+ 	set_freezable();
+ 
+-	/*
+-	 * FIXME: do we really need to run this under the BKL? If so, please
+-	 * add a comment about what it's intended to protect.
+-	 */
+-	lock_kernel();
+ 	while (!kthread_should_stop()) {
+ 		prepare_to_wait(&amp;serv-&gt;sv_cb_waitq, &amp;wq, TASK_INTERRUPTIBLE);
+ 		spin_lock_bh(&amp;serv-&gt;sv_cb_lock);
+@@ -183,7 +172,6 @@ nfs41_callback_svc(void *vrqstp)
+ 		}
+ 		finish_wait(&amp;serv-&gt;sv_cb_waitq, &amp;wq);
+ 	}
+-	unlock_kernel();
+ 	return 0;
+ }
+ </pre><hr><pre>commit 864f0f61f829bac5f150a903aad9619322a25424
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Nov 25 17:42:05 2009 -0500
+
+    nfsd: simplify fh_verify access checks
+    
+    All nfsd security depends on the security checks in fh_verify, and
+    especially on nfsd_setuser().
+    
+    It therefore bothers me that the nfsd_setuser call may be made from
+    three different places, depending on whether the filehandle has already
+    been mapped to a dentry, and on whether subtreechecking is in force.
+    
+    Instead, make an unconditional call in fh_verify(), so it's trivial to
+    verify that the call always occurs.
+    
+    That leaves us with a redundant nfsd_setuser() call in the subtreecheck
+    case--it needs the correct user set earlier in order to check execute
+    permissions on the path to this filehandle--but I'm willing to accept
+    that minor inefficiency in the subtreecheck case in return for more
+    straightforward permission checking.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfsfh.c b/fs/nfsd/nfsfh.c
+index d0d8a217a3ea..a77efb8c2243 100644
+--- a/fs/nfsd/nfsfh.c
++++ b/fs/nfsd/nfsfh.c
+@@ -233,14 +233,6 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
+ 		goto out;
+ 	}
+ 
+-	if (exp-&gt;ex_flags &amp; NFSEXP_NOSUBTREECHECK) {
+-		error = nfsd_setuser_and_check_port(rqstp, exp);
+-		if (error) {
+-			dput(dentry);
+-			goto out;
+-		}
+-	}
+-
+ 	if (S_ISDIR(dentry-&gt;d_inode-&gt;i_mode) &amp;&amp;
+ 			(dentry-&gt;d_flags &amp; DCACHE_DISCONNECTED)) {
+ 		printk("nfsd: find_fh_dentry returned a DISCONNECTED directory: %s/%s\n",
+@@ -295,28 +287,28 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 		error = nfsd_set_fh_dentry(rqstp, fhp);
+ 		if (error)
+ 			goto out;
+-		dentry = fhp-&gt;fh_dentry;
+-		exp = fhp-&gt;fh_export;
+-	} else {
+-		/*
+-		 * just rechecking permissions
+-		 * (e.g. nfsproc_create calls fh_verify, then nfsd_create
+-		 * does as well)
+-		 */
+-		dprintk("nfsd: fh_verify - just checking\n");
+-		dentry = fhp-&gt;fh_dentry;
+-		exp = fhp-&gt;fh_export;
+-		/*
+-		 * Set user creds for this exportpoint; necessary even
+-		 * in the "just checking" case because this may be a
+-		 * filehandle that was created by fh_compose, and that
+-		 * is about to be used in another nfsv4 compound
+-		 * operation.
+-		 */
+-		error = nfsd_setuser_and_check_port(rqstp, exp);
+-		if (error)
+-			goto out;
+ 	}
++	dentry = fhp-&gt;fh_dentry;
++	exp = fhp-&gt;fh_export;
++	/*
++	 * We still have to do all these permission checks, even when
++	 * fh_dentry is already set:
++	 * 	- fh_verify may be called multiple times with different
++	 * 	  "access" arguments (e.g. nfsd_proc_create calls
++	 * 	  fh_verify(...,NFSD_MAY_EXEC) first, then later (in
++	 * 	  nfsd_create) calls fh_verify(...,NFSD_MAY_CREATE).
++	 *	- in the NFSv4 case, the filehandle may have been filled
++	 *	  in by fh_compose, and given a dentry, but further
++	 *	  compound operations performed with that filehandle
++	 *	  still need permissions checks.  In the worst case, a
++	 *	  mountpoint crossing may have changed the export
++	 *	  options, and we may now need to use a different uid
++	 *	  (for example, if different id-squashing options are in
++	 *	  effect on the new filesystem).
++	 */
++	error = nfsd_setuser_and_check_port(rqstp, exp);
++	if (error)
++		goto out;
+ 
+ 	error = nfsd_mode_check(rqstp, dentry-&gt;d_inode-&gt;i_mode, type);
+ 	if (error)</pre><hr><pre>commit 9b8b317d58084b9a44f6f33b355c4278d9f841fb
+Merge: 78c210efdefe 648f4e3e50c4
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Nov 23 12:34:58 2009 -0500
+
+    Merge commit 'v2.6.32-rc8' into HEAD
+</pre><hr><pre>commit 78c210efdefe07131f91ed512a3308b15bb14e2f
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Aug 6 15:41:34 2009 -0400
+
+    Revert "knfsd: avoid overloading the CPU scheduler with enormous load averages"
+    
+    This reverts commit 59a252ff8c0f2fa32c896f69d56ae33e641ce7ad.
+    
+    This helps in an entirely cached workload but not necessarily in
+    workloads that require waiting on disk.
+    
+    Conflicts:
+    
+            include/linux/sunrpc/svc.h
+            net/sunrpc/svc_xprt.c
+    
+    Reported-by: Simon Kirby &lt;sim@hostway.ca&gt;
+    Tested-by: Jesper Krogh &lt;jesper@krogh.cc&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/include/linux/sunrpc/svc.h b/include/linux/sunrpc/svc.h
+index 52e8cb0a7569..d1567d627557 100644
+--- a/include/linux/sunrpc/svc.h
++++ b/include/linux/sunrpc/svc.h
+@@ -29,7 +29,6 @@ struct svc_pool_stats {
+ 	unsigned long	packets;
+ 	unsigned long	sockets_queued;
+ 	unsigned long	threads_woken;
+-	unsigned long	overloads_avoided;
+ 	unsigned long	threads_timedout;
+ };
+ 
+@@ -50,7 +49,6 @@ struct svc_pool {
+ 	struct list_head	sp_sockets;	/* pending sockets */
+ 	unsigned int		sp_nrthreads;	/* # of threads in pool */
+ 	struct list_head	sp_all_threads;	/* all server threads */
+-	int			sp_nwaking;	/* number of threads woken but not yet active */
+ 	struct svc_pool_stats	sp_stats;	/* statistics on pool operation */
+ } ____cacheline_aligned_in_smp;
+ 
+@@ -284,7 +282,6 @@ struct svc_rqst {
+ 						 * cache pages */
+ 	wait_queue_head_t	rq_wait;	/* synchronization */
+ 	struct task_struct	*rq_task;	/* service thread */
+-	int			rq_waking;	/* 1 if thread is being woken */
+ };
+ 
+ /*
+diff --git a/net/sunrpc/svc_xprt.c b/net/sunrpc/svc_xprt.c
+index df124f78ee48..2c58b75a236f 100644
+--- a/net/sunrpc/svc_xprt.c
++++ b/net/sunrpc/svc_xprt.c
+@@ -16,8 +16,6 @@
+ 
+ #define RPCDBG_FACILITY	RPCDBG_SVCXPRT
+ 
+-#define SVC_MAX_WAKING 5
+-
+ static struct svc_deferred_req *svc_deferred_dequeue(struct svc_xprt *xprt);
+ static int svc_deferred_recv(struct svc_rqst *rqstp);
+ static struct cache_deferred_req *svc_defer(struct cache_req *req);
+@@ -306,7 +304,6 @@ void svc_xprt_enqueue(struct svc_xprt *xprt)
+ 	struct svc_pool *pool;
+ 	struct svc_rqst	*rqstp;
+ 	int cpu;
+-	int thread_avail;
+ 
+ 	if (!(xprt-&gt;xpt_flags &amp;
+ 	      ((1&lt;&lt;XPT_CONN)|(1&lt;&lt;XPT_DATA)|(1&lt;&lt;XPT_CLOSE)|(1&lt;&lt;XPT_DEFERRED))))
+@@ -318,6 +315,12 @@ void svc_xprt_enqueue(struct svc_xprt *xprt)
+ 
+ 	spin_lock_bh(&amp;pool-&gt;sp_lock);
+ 
++	if (!list_empty(&amp;pool-&gt;sp_threads) &amp;&amp;
++	    !list_empty(&amp;pool-&gt;sp_sockets))
++		printk(KERN_ERR
++		       "svc_xprt_enqueue: "
++		       "threads and transports both waiting??\n");
++
+ 	if (test_bit(XPT_DEAD, &amp;xprt-&gt;xpt_flags)) {
+ 		/* Don't enqueue dead transports */
+ 		dprintk("svc: transport %p is dead, not enqueued\n", xprt);
+@@ -358,15 +361,7 @@ void svc_xprt_enqueue(struct svc_xprt *xprt)
+ 	}
+ 
+  process:
+-	/* Work out whether threads are available */
+-	thread_avail = !list_empty(&amp;pool-&gt;sp_threads);	/* threads are asleep */
+-	if (pool-&gt;sp_nwaking &gt;= SVC_MAX_WAKING) {
+-		/* too many threads are runnable and trying to wake up */
+-		thread_avail = 0;
+-		pool-&gt;sp_stats.overloads_avoided++;
+-	}
+-
+-	if (thread_avail) {
++	if (!list_empty(&amp;pool-&gt;sp_threads)) {
+ 		rqstp = list_entry(pool-&gt;sp_threads.next,
+ 				   struct svc_rqst,
+ 				   rq_list);
+@@ -381,8 +376,6 @@ void svc_xprt_enqueue(struct svc_xprt *xprt)
+ 		svc_xprt_get(xprt);
+ 		rqstp-&gt;rq_reserved = serv-&gt;sv_max_mesg;
+ 		atomic_add(rqstp-&gt;rq_reserved, &amp;xprt-&gt;xpt_reserved);
+-		rqstp-&gt;rq_waking = 1;
+-		pool-&gt;sp_nwaking++;
+ 		pool-&gt;sp_stats.threads_woken++;
+ 		BUG_ON(xprt-&gt;xpt_pool != pool);
+ 		wake_up(&amp;rqstp-&gt;rq_wait);
+@@ -651,11 +644,6 @@ int svc_recv(struct svc_rqst *rqstp, long timeout)
+ 		return -EINTR;
+ 
+ 	spin_lock_bh(&amp;pool-&gt;sp_lock);
+-	if (rqstp-&gt;rq_waking) {
+-		rqstp-&gt;rq_waking = 0;
+-		pool-&gt;sp_nwaking--;
+-		BUG_ON(pool-&gt;sp_nwaking &lt; 0);
+-	}
+ 	xprt = svc_xprt_dequeue(pool);
+ 	if (xprt) {
+ 		rqstp-&gt;rq_xprt = xprt;
+@@ -1204,16 +1192,15 @@ static int svc_pool_stats_show(struct seq_file *m, void *p)
+ 	struct svc_pool *pool = p;
+ 
+ 	if (p == SEQ_START_TOKEN) {
+-		seq_puts(m, "# pool packets-arrived sockets-enqueued threads-woken overloads-avoided threads-timedout\n");
++		seq_puts(m, "# pool packets-arrived sockets-enqueued threads-woken threads-timedout\n");
+ 		return 0;
+ 	}
+ 
+-	seq_printf(m, "%u %lu %lu %lu %lu %lu\n",
++	seq_printf(m, "%u %lu %lu %lu %lu\n",
+ 		pool-&gt;sp_id,
+ 		pool-&gt;sp_stats.packets,
+ 		pool-&gt;sp_stats.sockets_queued,
+ 		pool-&gt;sp_stats.threads_woken,
+-		pool-&gt;sp_stats.overloads_avoided,
+ 		pool-&gt;sp_stats.threads_timedout);
+ 
+ 	return 0;</pre>
+    <div class="pagination">
+        <a href='4_17.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><span>[18]</span><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_19.html'>Next&gt;&gt;</a>
+    <div>
+</body>

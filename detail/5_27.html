@@ -1,0 +1,1272 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_26.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><span>[27]</span><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_28.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 3ed7897242b7efe977f3a8d06d4e5a4ebe28b10e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Jun 11 19:21:00 2008 -0500
+
+    [SCSI] scsi_host regression: fix scsi host leak
+    
+    commit 9c7701088a61cc0cf8a6e1c68d1e74e3cc2ee0b7
+    Author: Dave Young &lt;hidave.darkstar@gmail.com&gt;
+    Date:   Tue Jan 22 14:01:34 2008 +0800
+    
+        scsi: use class iteration api
+    
+    Isn't a correct replacement for the original hand rolled host
+    lookup. The problem is that class_find_child would get a reference to
+    the host's class device which is never released.  Since the host class
+    device holds a reference to the host gendev, the host can never be
+    freed.
+    
+    In 2.6.26 we started using class_find_device, and this function also
+    gets a reference to the device, so we end up with an extra ref
+    and the host will not get released.
+    
+    This patch adds a put_device to balance the class_find_device() get. I
+    kept the scsi_host_get in scsi_host_lookup, because the target layer
+    is using scsi_host_lookup and it looks like it needs the SHOST_DEL
+    check.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/hosts.c b/drivers/scsi/hosts.c
+index 3690360d7a79..c6457bfc8a49 100644
+--- a/drivers/scsi/hosts.c
++++ b/drivers/scsi/hosts.c
+@@ -456,6 +456,10 @@ static int __scsi_host_match(struct device *dev, void *data)
+  *
+  * Return value:
+  *	A pointer to located Scsi_Host or NULL.
++ *
++ *	The caller must do a scsi_host_put() to drop the reference
++ *	that scsi_host_get() took. The put_device() below dropped
++ *	the reference from class_find_device().
+  **/
+ struct Scsi_Host *scsi_host_lookup(unsigned short hostnum)
+ {
+@@ -463,9 +467,10 @@ struct Scsi_Host *scsi_host_lookup(unsigned short hostnum)
+ 	struct Scsi_Host *shost = ERR_PTR(-ENXIO);
+ 
+ 	cdev = class_find_device(&amp;shost_class, &amp;hostnum, __scsi_host_match);
+-	if (cdev)
++	if (cdev) {
+ 		shost = scsi_host_get(class_to_shost(cdev));
+-
++		put_device(cdev);
++	}
+ 	return shost;
+ }
+ EXPORT_SYMBOL(scsi_host_lookup);</pre><hr><pre>commit f6dd337ee4c440f29a873da3779eb3af44bd1623
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu May 1 14:49:59 2008 -0700
+
+    [SCSI] scsi_dh: add hp sw device handler
+    
+    This patch provides the device handler to support the older hp boxes
+    which cannot be upgraded.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Chandra Seetharaman &lt;sekharan@us.ibm.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/device_handler/Kconfig b/drivers/scsi/device_handler/Kconfig
+index 404f37732627..61578d84fa6e 100644
+--- a/drivers/scsi/device_handler/Kconfig
++++ b/drivers/scsi/device_handler/Kconfig
+@@ -16,3 +16,11 @@ config SCSI_DH_RDAC
+ 	depends on SCSI_DH
+ 	help
+ 	If you have a LSI RDAC select y. Otherwise, say N.
++
++config SCSI_DH_HP_SW
++	tristate "HP/COMPAQ MSA Device Handler"
++	depends on SCSI_DH
++	help
++	If you have a HP/COMPAQ MSA device that requires START_STOP to
++	be sent to start it and cannot upgrade the firmware then select y.
++	Otherwise, say N.
+diff --git a/drivers/scsi/device_handler/Makefile b/drivers/scsi/device_handler/Makefile
+index 1a42b3498318..08ec1943f19e 100644
+--- a/drivers/scsi/device_handler/Makefile
++++ b/drivers/scsi/device_handler/Makefile
+@@ -3,3 +3,4 @@
+ #
+ obj-$(CONFIG_SCSI_DH)		+= scsi_dh.o
+ obj-$(CONFIG_SCSI_DH_RDAC)	+= scsi_dh_rdac.o
++obj-$(CONFIG_SCSI_DH_HP_SW)	+= scsi_dh_hp_sw.o
+diff --git a/drivers/scsi/device_handler/scsi_dh_hp_sw.c b/drivers/scsi/device_handler/scsi_dh_hp_sw.c
+new file mode 100644
+index 000000000000..12ceab7b3662
+--- /dev/null
++++ b/drivers/scsi/device_handler/scsi_dh_hp_sw.c
+@@ -0,0 +1,202 @@
++/*
++ * Basic HP/COMPAQ MSA 1000 support. This is only needed if your HW cannot be
++ * upgraded.
++ *
++ * Copyright (C) 2006 Red Hat, Inc.  All rights reserved.
++ * Copyright (C) 2006 Mike Christie
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
++ */
++
++#include &lt;scsi/scsi.h&gt;
++#include &lt;scsi/scsi_dbg.h&gt;
++#include &lt;scsi/scsi_eh.h&gt;
++#include &lt;scsi/scsi_dh.h&gt;
++
++#define HP_SW_NAME	"hp_sw"
++
++#define HP_SW_TIMEOUT (60 * HZ)
++#define HP_SW_RETRIES 3
++
++struct hp_sw_dh_data {
++	unsigned char sense[SCSI_SENSE_BUFFERSIZE];
++	int retries;
++};
++
++static inline struct hp_sw_dh_data *get_hp_sw_data(struct scsi_device *sdev)
++{
++	struct scsi_dh_data *scsi_dh_data = sdev-&gt;scsi_dh_data;
++	BUG_ON(scsi_dh_data == NULL);
++	return ((struct hp_sw_dh_data *) scsi_dh_data-&gt;buf);
++}
++
++static int hp_sw_done(struct scsi_device *sdev)
++{
++	struct hp_sw_dh_data *h = get_hp_sw_data(sdev);
++	struct scsi_sense_hdr sshdr;
++	int rc;
++
++	sdev_printk(KERN_INFO, sdev, "hp_sw_done\n");
++
++	rc = scsi_normalize_sense(h-&gt;sense, SCSI_SENSE_BUFFERSIZE, &amp;sshdr);
++	if (!rc)
++		goto done;
++	switch (sshdr.sense_key) {
++	case NOT_READY:
++		if ((sshdr.asc == 0x04) &amp;&amp; (sshdr.ascq == 3)) {
++			rc = SCSI_DH_RETRY;
++			h-&gt;retries++;
++			break;
++		}
++		/* fall through */
++	default:
++		h-&gt;retries++;
++		rc = SCSI_DH_IMM_RETRY;
++	}
++
++done:
++	if (rc == SCSI_DH_OK || rc == SCSI_DH_IO)
++		h-&gt;retries = 0;
++	else if (h-&gt;retries &gt; HP_SW_RETRIES) {
++		h-&gt;retries = 0;
++		rc = SCSI_DH_IO;
++	}
++	return rc;
++}
++
++static int hp_sw_activate(struct scsi_device *sdev)
++{
++	struct hp_sw_dh_data *h = get_hp_sw_data(sdev);
++	struct request *req;
++	int ret = SCSI_DH_RES_TEMP_UNAVAIL;
++
++	req = blk_get_request(sdev-&gt;request_queue, WRITE, GFP_ATOMIC);
++	if (!req)
++		goto done;
++
++	sdev_printk(KERN_INFO, sdev, "sending START_STOP.");
++
++	req-&gt;cmd_type = REQ_TYPE_BLOCK_PC;
++	req-&gt;cmd_flags |= REQ_FAILFAST;
++	req-&gt;cmd_len = COMMAND_SIZE(START_STOP);
++	memset(req-&gt;cmd, 0, MAX_COMMAND_SIZE);
++	req-&gt;cmd[0] = START_STOP;
++	req-&gt;cmd[4] = 1;	/* Start spin cycle */
++	req-&gt;timeout = HP_SW_TIMEOUT;
++	req-&gt;sense = h-&gt;sense;
++	memset(req-&gt;sense, 0, SCSI_SENSE_BUFFERSIZE);
++	req-&gt;sense_len = 0;
++
++	ret = blk_execute_rq(req-&gt;q, NULL, req, 1);
++	if (!ret) /* SUCCESS */
++		ret = hp_sw_done(sdev);
++	else
++		ret = SCSI_DH_IO;
++done:
++	return ret;
++}
++
++static const struct {
++	char *vendor;
++	char *model;
++} hp_sw_dh_data_list[] = {
++	{"COMPAQ", "MSA"},
++	{"HP", "HSV"},
++	{"DEC", "HSG80"},
++	{NULL, NULL},
++};
++
++static int hp_sw_bus_notify(struct notifier_block *, unsigned long, void *);
++
++static struct scsi_device_handler hp_sw_dh = {
++	.name		= HP_SW_NAME,
++	.module		= THIS_MODULE,
++	.nb.notifier_call = hp_sw_bus_notify,
++	.activate	= hp_sw_activate,
++};
++
++static int hp_sw_bus_notify(struct notifier_block *nb,
++			    unsigned long action, void *data)
++{
++	struct device *dev = data;
++	struct scsi_device *sdev = to_scsi_device(dev);
++	struct scsi_dh_data *scsi_dh_data;
++	int i, found = 0;
++	unsigned long flags;
++
++	if (action == BUS_NOTIFY_ADD_DEVICE) {
++		for (i = 0; hp_sw_dh_data_list[i].vendor; i++) {
++			if (!strncmp(sdev-&gt;vendor, hp_sw_dh_data_list[i].vendor,
++				     strlen(hp_sw_dh_data_list[i].vendor)) &amp;&amp;
++			    !strncmp(sdev-&gt;model, hp_sw_dh_data_list[i].model,
++				     strlen(hp_sw_dh_data_list[i].model))) {
++				found = 1;
++				break;
++			}
++		}
++		if (!found)
++			goto out;
++
++		scsi_dh_data = kzalloc(sizeof(struct scsi_device_handler *)
++				+ sizeof(struct hp_sw_dh_data) , GFP_KERNEL);
++		if (!scsi_dh_data) {
++			sdev_printk(KERN_ERR, sdev, "Attach Failed %s.\n",
++				    HP_SW_NAME);
++			goto out;
++		}
++
++		scsi_dh_data-&gt;scsi_dh = &amp;hp_sw_dh;
++		spin_lock_irqsave(sdev-&gt;request_queue-&gt;queue_lock, flags);
++		sdev-&gt;scsi_dh_data = scsi_dh_data;
++		spin_unlock_irqrestore(sdev-&gt;request_queue-&gt;queue_lock, flags);
++		try_module_get(THIS_MODULE);
++
++		sdev_printk(KERN_NOTICE, sdev, "Attached %s.\n", HP_SW_NAME);
++	} else if (action == BUS_NOTIFY_DEL_DEVICE) {
++		if (sdev-&gt;scsi_dh_data == NULL ||
++				sdev-&gt;scsi_dh_data-&gt;scsi_dh != &amp;hp_sw_dh)
++			goto out;
++
++		spin_lock_irqsave(sdev-&gt;request_queue-&gt;queue_lock, flags);
++		scsi_dh_data = sdev-&gt;scsi_dh_data;
++		sdev-&gt;scsi_dh_data = NULL;
++		spin_unlock_irqrestore(sdev-&gt;request_queue-&gt;queue_lock, flags);
++		module_put(THIS_MODULE);
++
++		sdev_printk(KERN_NOTICE, sdev, "Dettached %s.\n", HP_SW_NAME);
++
++		kfree(scsi_dh_data);
++	}
++
++out:
++	return 0;
++}
++
++static int __init hp_sw_init(void)
++{
++	return scsi_register_device_handler(&amp;hp_sw_dh);
++}
++
++static void __exit hp_sw_exit(void)
++{
++	scsi_unregister_device_handler(&amp;hp_sw_dh);
++}
++
++module_init(hp_sw_init);
++module_exit(hp_sw_exit);
++
++MODULE_DESCRIPTION("HP MSA 1000");
++MODULE_AUTHOR("Mike Christie &lt;michaelc@cs.wisc.edu");
++MODULE_LICENSE("GPL");</pre><hr><pre>commit c8611f975403dd20e6503aff8aded5dcb718f75b
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu May 8 20:15:34 2008 -0500
+
+    [SCSI] libiscsi regression in 2.6.25: fix setting of recv timer
+    
+    If the ping tmo is longer than the recv tmo then we could miss a window
+    where we were supposed to check the recv tmo. This happens because
+    the ping code will set the next timeout for the ping timeout, and if the
+    ping executes quickly there will be a long chunk of time before the
+    timer wakes up again.
+    
+    This patch has the ping processing code kick off a recv
+    tmo check when getting a nop in response to our ping.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Cc: Stable Tree &lt;stable@kernel.org&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 98164f3c3517..b43bf1d60dac 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -730,7 +730,9 @@ static int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+ 				if (iscsi_recv_pdu(conn-&gt;cls_conn, hdr, data,
+ 						   datalen))
+ 					rc = ISCSI_ERR_CONN_FAILED;
+-			}
++			} else
++				mod_timer(&amp;conn-&gt;transport_timer,
++					  jiffies + conn-&gt;recv_timeout);
+ 			iscsi_free_mgmt_task(conn, mtask);
+ 			break;
+ 		default:
+@@ -1478,11 +1480,9 @@ static void iscsi_check_transport_timeouts(unsigned long data)
+ 	}
+ 
+ 	if (time_before_eq(last_recv + recv_timeout, jiffies)) {
+-		if (time_before_eq(conn-&gt;last_ping, last_recv)) {
+-			/* send a ping to try to provoke some traffic */
+-			debug_scsi("Sending nopout as ping on conn %p\n", conn);
+-			iscsi_send_nopout(conn, NULL);
+-		}
++		/* send a ping to try to provoke some traffic */
++		debug_scsi("Sending nopout as ping on conn %p\n", conn);
++		iscsi_send_nopout(conn, NULL);
+ 		next_timeout = conn-&gt;last_ping + (conn-&gt;ping_timeout * HZ);
+ 	} else
+ 		next_timeout = last_recv + recv_timeout;</pre><hr><pre>commit 4cf1043593db6a337f10e006c23c69e5fc93e722
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed May 7 20:43:52 2008 -0500
+
+    [SCSI] libiscsi regression in 2.6.25: fix nop timer handling
+    
+    The following patch fixes a bug in the iscsi nop processing.
+    The target sends iscsi nops to ping the initiator and the
+    initiator has to send nops to reply and can send nops to
+    ping the target.
+    
+    In 2.6.25 we moved the nop processing to the kernel to handle
+    problems when the userspace daemon is not up, but the target
+    is pinging us, and to handle when scsi commands timeout, but
+    the transport may be the cause (we can send a nop to check
+    the transport). When we added this code we added a bug where
+    if the transport timer wakes at the exact same time we are supposed to check
+    for a nop timeout we drop the session instead of checking the transport.
+    
+    This patch checks if a iscsi ping is outstanding and if the ping has
+    timed out, to determine if we need to signal a connection problem.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Cc: Stable Tree &lt;stable@kernel.org&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 010c1b9b178c..98164f3c3517 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -1453,19 +1453,20 @@ static void iscsi_check_transport_timeouts(unsigned long data)
+ {
+ 	struct iscsi_conn *conn = (struct iscsi_conn *)data;
+ 	struct iscsi_session *session = conn-&gt;session;
+-	unsigned long timeout, next_timeout = 0, last_recv;
++	unsigned long recv_timeout, next_timeout = 0, last_recv;
+ 
+ 	spin_lock(&amp;session-&gt;lock);
+ 	if (session-&gt;state != ISCSI_STATE_LOGGED_IN)
+ 		goto done;
+ 
+-	timeout = conn-&gt;recv_timeout;
+-	if (!timeout)
++	recv_timeout = conn-&gt;recv_timeout;
++	if (!recv_timeout)
+ 		goto done;
+ 
+-	timeout *= HZ;
++	recv_timeout *= HZ;
+ 	last_recv = conn-&gt;last_recv;
+-	if (time_before_eq(last_recv + timeout + (conn-&gt;ping_timeout * HZ),
++	if (conn-&gt;ping_mtask &amp;&amp;
++	    time_before_eq(conn-&gt;last_ping + (conn-&gt;ping_timeout * HZ),
+ 			   jiffies)) {
+ 		iscsi_conn_printk(KERN_ERR, conn, "ping timeout of %d secs "
+ 				  "expired, last rx %lu, last ping %lu, "
+@@ -1476,15 +1477,15 @@ static void iscsi_check_transport_timeouts(unsigned long data)
+ 		return;
+ 	}
+ 
+-	if (time_before_eq(last_recv + timeout, jiffies)) {
++	if (time_before_eq(last_recv + recv_timeout, jiffies)) {
+ 		if (time_before_eq(conn-&gt;last_ping, last_recv)) {
+ 			/* send a ping to try to provoke some traffic */
+ 			debug_scsi("Sending nopout as ping on conn %p\n", conn);
+ 			iscsi_send_nopout(conn, NULL);
+ 		}
+-		next_timeout = last_recv + timeout + (conn-&gt;ping_timeout * HZ);
++		next_timeout = conn-&gt;last_ping + (conn-&gt;ping_timeout * HZ);
+ 	} else
+-		next_timeout = last_recv + timeout;
++		next_timeout = last_recv + recv_timeout;
+ 
+ 	debug_scsi("Setting next tmo %lu\n", next_timeout);
+ 	mod_timer(&amp;conn-&gt;transport_timer, next_timeout);</pre><hr><pre>commit ce5450392fa3ab54f0a84aa3b7589f8d6f2a58af
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Feb 29 18:25:20 2008 -0600
+
+    [SCSI] qla4xxx: Add target reset functionality
+    
+    This patch adds target reset functionalty.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: David Somayajulu &lt;david.somayajulu@qlogic.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/qla4xxx/ql4_fw.h b/drivers/scsi/qla4xxx/ql4_fw.h
+index fe415ec85655..ed8ee66a7da5 100644
+--- a/drivers/scsi/qla4xxx/ql4_fw.h
++++ b/drivers/scsi/qla4xxx/ql4_fw.h
+@@ -216,6 +216,7 @@ union external_hw_config_reg {
+ #define MBOX_CMD_ABOUT_FW			0x0009
+ #define MBOX_CMD_PING				0x000B
+ #define MBOX_CMD_LUN_RESET			0x0016
++#define MBOX_CMD_TARGET_WARM_RESET		0x0017
+ #define MBOX_CMD_GET_MANAGEMENT_DATA		0x001E
+ #define MBOX_CMD_GET_FW_STATUS			0x001F
+ #define MBOX_CMD_SET_ISNS_SERVICE		0x0021
+diff --git a/drivers/scsi/qla4xxx/ql4_glbl.h b/drivers/scsi/qla4xxx/ql4_glbl.h
+index a3608e028bf6..b403a17106c5 100644
+--- a/drivers/scsi/qla4xxx/ql4_glbl.h
++++ b/drivers/scsi/qla4xxx/ql4_glbl.h
+@@ -27,6 +27,8 @@ int qla4xxx_relogin_device(struct scsi_qla_host * ha,
+ 			   struct ddb_entry * ddb_entry);
+ int qla4xxx_reset_lun(struct scsi_qla_host * ha, struct ddb_entry * ddb_entry,
+ 		      int lun);
++int qla4xxx_reset_target(struct scsi_qla_host * ha,
++			 struct ddb_entry * ddb_entry);
+ int qla4xxx_get_flash(struct scsi_qla_host * ha, dma_addr_t dma_addr,
+ 		      uint32_t offset, uint32_t len);
+ int qla4xxx_get_firmware_status(struct scsi_qla_host * ha);
+diff --git a/drivers/scsi/qla4xxx/ql4_mbx.c b/drivers/scsi/qla4xxx/ql4_mbx.c
+index 35cd73c72a68..c577d79bd7e8 100644
+--- a/drivers/scsi/qla4xxx/ql4_mbx.c
++++ b/drivers/scsi/qla4xxx/ql4_mbx.c
+@@ -713,6 +713,45 @@ int qla4xxx_reset_lun(struct scsi_qla_host * ha, struct ddb_entry * ddb_entry,
+ 	return status;
+ }
+ 
++/**
++ * qla4xxx_reset_target - issues target Reset
++ * @ha: Pointer to host adapter structure.
++ * @db_entry: Pointer to device database entry
++ * @un_entry: Pointer to lun entry structure
++ *
++ * This routine performs a TARGET RESET on the specified target.
++ * The caller must ensure that the ddb_entry pointers
++ * are valid before calling this routine.
++ **/
++int qla4xxx_reset_target(struct scsi_qla_host *ha,
++			 struct ddb_entry *ddb_entry)
++{
++	uint32_t mbox_cmd[MBOX_REG_COUNT];
++	uint32_t mbox_sts[MBOX_REG_COUNT];
++	int status = QLA_SUCCESS;
++
++	DEBUG2(printk("scsi%ld:%d: target reset issued\n", ha-&gt;host_no,
++		      ddb_entry-&gt;os_target_id));
++
++	/*
++	 * Send target reset command to ISP, so that the ISP will return all
++	 * outstanding requests with RESET status
++	 */
++	memset(&amp;mbox_cmd, 0, sizeof(mbox_cmd));
++	memset(&amp;mbox_sts, 0, sizeof(mbox_sts));
++
++	mbox_cmd[0] = MBOX_CMD_TARGET_WARM_RESET;
++	mbox_cmd[1] = ddb_entry-&gt;fw_ddb_index;
++	mbox_cmd[5] = 0x01;	/* Immediate Command Enable */
++
++	qla4xxx_mailbox_command(ha, MBOX_REG_COUNT, 1, &amp;mbox_cmd[0],
++				&amp;mbox_sts[0]);
++	if (mbox_sts[0] != MBOX_STS_COMMAND_COMPLETE &amp;&amp;
++	    mbox_sts[0] != MBOX_STS_COMMAND_ERROR)
++		status = QLA_ERROR;
++
++	return status;
++}
+ 
+ int qla4xxx_get_flash(struct scsi_qla_host * ha, dma_addr_t dma_addr,
+ 		      uint32_t offset, uint32_t len)
+diff --git a/drivers/scsi/qla4xxx/ql4_os.c b/drivers/scsi/qla4xxx/ql4_os.c
+index 8b92f348f02c..31e605caf0f1 100644
+--- a/drivers/scsi/qla4xxx/ql4_os.c
++++ b/drivers/scsi/qla4xxx/ql4_os.c
+@@ -71,6 +71,7 @@ static void qla4xxx_recovery_timedout(struct iscsi_cls_session *session);
+ static int qla4xxx_queuecommand(struct scsi_cmnd *cmd,
+ 				void (*done) (struct scsi_cmnd *));
+ static int qla4xxx_eh_device_reset(struct scsi_cmnd *cmd);
++static int qla4xxx_eh_target_reset(struct scsi_cmnd *cmd);
+ static int qla4xxx_eh_host_reset(struct scsi_cmnd *cmd);
+ static int qla4xxx_slave_alloc(struct scsi_device *device);
+ static int qla4xxx_slave_configure(struct scsi_device *device);
+@@ -84,6 +85,7 @@ static struct scsi_host_template qla4xxx_driver_template = {
+ 	.queuecommand		= qla4xxx_queuecommand,
+ 
+ 	.eh_device_reset_handler = qla4xxx_eh_device_reset,
++	.eh_target_reset_handler = qla4xxx_eh_target_reset,
+ 	.eh_host_reset_handler	= qla4xxx_eh_host_reset,
+ 
+ 	.slave_configure	= qla4xxx_slave_configure,
+@@ -1482,7 +1484,7 @@ static int qla4xxx_wait_for_hba_online(struct scsi_qla_host *ha)
+ }
+ 
+ /**
+- * qla4xxx_eh_wait_for_active_target_commands - wait for active cmds to finish.
++ * qla4xxx_eh_wait_for_commands - wait for active cmds to finish.
+  * @ha: pointer to to HBA
+  * @t: target id
+  * @l: lun id
+@@ -1490,20 +1492,22 @@ static int qla4xxx_wait_for_hba_online(struct scsi_qla_host *ha)
+  * This function waits for all outstanding commands to a lun to complete. It
+  * returns 0 if all pending commands are returned and 1 otherwise.
+  **/
+-static int qla4xxx_eh_wait_for_active_target_commands(struct scsi_qla_host *ha,
+-						 int t, int l)
++static int qla4xxx_eh_wait_for_commands(struct scsi_qla_host *ha,
++					struct scsi_target *stgt,
++					struct scsi_device *sdev)
+ {
+ 	int cnt;
+ 	int status = 0;
+ 	struct scsi_cmnd *cmd;
+ 
+ 	/*
+-	 * Waiting for all commands for the designated target in the active
+-	 * array
++	 * Waiting for all commands for the designated target or dev
++	 * in the active array
+ 	 */
+ 	for (cnt = 0; cnt &lt; ha-&gt;host-&gt;can_queue; cnt++) {
+ 		cmd = scsi_host_find_tag(ha-&gt;host, cnt);
+-		if (cmd &amp;&amp; cmd-&gt;device-&gt;id == t &amp;&amp; cmd-&gt;device-&gt;lun == l) {
++		if (cmd &amp;&amp; stgt == scsi_target(cmd-&gt;device) &amp;&amp;
++		    (!sdev || sdev == cmd-&gt;device)) {
+ 			if (!qla4xxx_eh_wait_on_command(ha, cmd)) {
+ 				status++;
+ 				break;
+@@ -1551,19 +1555,12 @@ static int qla4xxx_eh_device_reset(struct scsi_cmnd *cmd)
+ 	/* Send marker. */
+ 	ha-&gt;marker_needed = 1;
+ 
+-	/*
+-	 * If we are coming down the EH path, wait for all commands to complete
+-	 * for the device.
+-	 */
+-	if (cmd-&gt;device-&gt;host-&gt;shost_state == SHOST_RECOVERY) {
+-		if (qla4xxx_eh_wait_for_active_target_commands(ha,
+-							  cmd-&gt;device-&gt;id,
+-							  cmd-&gt;device-&gt;lun)){
+-			dev_info(&amp;ha-&gt;pdev-&gt;dev,
+-				   "DEVICE RESET FAILED - waiting for "
+-				   "commands.\n");
+-			goto eh_dev_reset_done;
+-		}
++	if (qla4xxx_eh_wait_for_commands(ha, scsi_target(cmd-&gt;device),
++					 cmd-&gt;device)) {
++		dev_info(&amp;ha-&gt;pdev-&gt;dev,
++			   "DEVICE RESET FAILED - waiting for "
++			   "commands.\n");
++		goto eh_dev_reset_done;
+ 	}
+ 
+ 	dev_info(&amp;ha-&gt;pdev-&gt;dev,
+@@ -1578,6 +1575,53 @@ static int qla4xxx_eh_device_reset(struct scsi_cmnd *cmd)
+ 	return ret;
+ }
+ 
++/**
++ * qla4xxx_eh_target_reset - callback for target reset.
++ * @cmd: Pointer to Linux's SCSI command structure
++ *
++ * This routine is called by the Linux OS to reset the target.
++ **/
++static int qla4xxx_eh_target_reset(struct scsi_cmnd *cmd)
++{
++	struct scsi_qla_host *ha = to_qla_host(cmd-&gt;device-&gt;host);
++	struct ddb_entry *ddb_entry = cmd-&gt;device-&gt;hostdata;
++	int stat;
++
++	if (!ddb_entry)
++		return FAILED;
++
++	starget_printk(KERN_INFO, scsi_target(cmd-&gt;device),
++		       "WARM TARGET RESET ISSUED.\n");
++
++	DEBUG2(printk(KERN_INFO
++		      "scsi%ld: TARGET_DEVICE_RESET cmd=%p jiffies = 0x%lx, "
++		      "to=%x,dpc_flags=%lx, status=%x allowed=%d\n",
++		      ha-&gt;host_no, cmd, jiffies, cmd-&gt;timeout_per_command / HZ,
++		      ha-&gt;dpc_flags, cmd-&gt;result, cmd-&gt;allowed));
++
++	stat = qla4xxx_reset_target(ha, ddb_entry);
++	if (stat != QLA_SUCCESS) {
++		starget_printk(KERN_INFO, scsi_target(cmd-&gt;device),
++			       "WARM TARGET RESET FAILED.\n");
++		return FAILED;
++	}
++
++	/* Send marker. */
++	ha-&gt;marker_needed = 1;
++
++	if (qla4xxx_eh_wait_for_commands(ha, scsi_target(cmd-&gt;device),
++					 NULL)) {
++		starget_printk(KERN_INFO, scsi_target(cmd-&gt;device),
++			       "WARM TARGET DEVICE RESET FAILED - "
++			       "waiting for commands.\n");
++		return FAILED;
++	}
++
++	starget_printk(KERN_INFO, scsi_target(cmd-&gt;device),
++		       "WARM TARGET RESET SUCCEEDED.\n");
++	return SUCCESS;
++}
++
+ /**
+  * qla4xxx_eh_host_reset - kernel callback
+  * @cmd: Pointer to Linux's SCSI command structure</pre><hr><pre>commit 30bd7df8ced23eefec87a5cda96dc99b002ed9da
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Feb 29 18:25:19 2008 -0600
+
+    [SCSI] scsi_error: add target reset handler
+    
+    The problem is that serveral drivers are sending a target reset from the
+    device reset handler, and if we have multiple devices a target reset gets
+    sent for each device when only one would be sufficient. And if we do a target
+    reset it affects all the commands on the target so the device reset handler
+    code only cleaning up one devices's commands makes programming the driver a
+    little more difficult than it should be.
+    
+    This patch adds a target reset handler, which drivers can use to send
+    a target reset. If successful it cleans up the commands for a devices
+    accessed through that starget.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/scsi_error.c b/drivers/scsi/scsi_error.c
+index 045a0868fc7b..1221d2ca0c64 100644
+--- a/drivers/scsi/scsi_error.c
++++ b/drivers/scsi/scsi_error.c
+@@ -524,6 +524,41 @@ static int scsi_try_bus_reset(struct scsi_cmnd *scmd)
+ 	return rtn;
+ }
+ 
++static void __scsi_report_device_reset(struct scsi_device *sdev, void *data)
++{
++	sdev-&gt;was_reset = 1;
++	sdev-&gt;expecting_cc_ua = 1;
++}
++
++/**
++ * scsi_try_target_reset - Ask host to perform a target reset
++ * @scmd:	SCSI cmd used to send a target reset
++ *
++ * Notes:
++ *    There is no timeout for this operation.  if this operation is
++ *    unreliable for a given host, then the host itself needs to put a
++ *    timer on it, and set the host back to a consistent state prior to
++ *    returning.
++ */
++static int scsi_try_target_reset(struct scsi_cmnd *scmd)
++{
++	unsigned long flags;
++	int rtn;
++
++	if (!scmd-&gt;device-&gt;host-&gt;hostt-&gt;eh_target_reset_handler)
++		return FAILED;
++
++	rtn = scmd-&gt;device-&gt;host-&gt;hostt-&gt;eh_target_reset_handler(scmd);
++	if (rtn == SUCCESS) {
++		spin_lock_irqsave(scmd-&gt;device-&gt;host-&gt;host_lock, flags);
++		__starget_for_each_device(scsi_target(scmd-&gt;device), NULL,
++					  __scsi_report_device_reset);
++		spin_unlock_irqrestore(scmd-&gt;device-&gt;host-&gt;host_lock, flags);
++	}
++
++	return rtn;
++}
++
+ /**
+  * scsi_try_bus_device_reset - Ask host to perform a BDR on a dev
+  * @scmd:	SCSI cmd used to send BDR
+@@ -542,11 +577,8 @@ static int scsi_try_bus_device_reset(struct scsi_cmnd *scmd)
+ 		return FAILED;
+ 
+ 	rtn = scmd-&gt;device-&gt;host-&gt;hostt-&gt;eh_device_reset_handler(scmd);
+-	if (rtn == SUCCESS) {
+-		scmd-&gt;device-&gt;was_reset = 1;
+-		scmd-&gt;device-&gt;expecting_cc_ua = 1;
+-	}
+-
++	if (rtn == SUCCESS)
++		__scsi_report_device_reset(scmd-&gt;device, NULL);
+ 	return rtn;
+ }
+ 
+@@ -584,8 +616,9 @@ static void scsi_abort_eh_cmnd(struct scsi_cmnd *scmd)
+ {
+ 	if (__scsi_try_to_abort_cmd(scmd) != SUCCESS)
+ 		if (scsi_try_bus_device_reset(scmd) != SUCCESS)
+-			if (scsi_try_bus_reset(scmd) != SUCCESS)
+-				scsi_try_host_reset(scmd);
++			if (scsi_try_target_reset(scmd) != SUCCESS)
++				if (scsi_try_bus_reset(scmd) != SUCCESS)
++					scsi_try_host_reset(scmd);
+ }
+ 
+ /**
+@@ -1059,6 +1092,56 @@ static int scsi_eh_bus_device_reset(struct Scsi_Host *shost,
+ 	return list_empty(work_q);
+ }
+ 
++/**
++ * scsi_eh_target_reset - send target reset if needed
++ * @shost:	scsi host being recovered.
++ * @work_q:     &amp;list_head for pending commands.
++ * @done_q:	&amp;list_head for processed commands.
++ *
++ * Notes:
++ *    Try a target reset.
++ */
++static int scsi_eh_target_reset(struct Scsi_Host *shost,
++				struct list_head *work_q,
++				struct list_head *done_q)
++{
++	struct scsi_cmnd *scmd, *tgtr_scmd, *next;
++	unsigned int id;
++	int rtn;
++
++	for (id = 0; id &lt;= shost-&gt;max_id; id++) {
++		tgtr_scmd = NULL;
++		list_for_each_entry(scmd, work_q, eh_entry) {
++			if (id == scmd_id(scmd)) {
++				tgtr_scmd = scmd;
++				break;
++			}
++		}
++		if (!tgtr_scmd)
++			continue;
++
++		SCSI_LOG_ERROR_RECOVERY(3, printk("%s: Sending target reset "
++						  "to target %d\n",
++						  current-&gt;comm, id));
++		rtn = scsi_try_target_reset(tgtr_scmd);
++		if (rtn == SUCCESS) {
++			list_for_each_entry_safe(scmd, next, work_q, eh_entry) {
++				if (id == scmd_id(scmd))
++					if (!scsi_device_online(scmd-&gt;device) ||
++					    !scsi_eh_tur(tgtr_scmd))
++						scsi_eh_finish_cmd(scmd,
++								   done_q);
++			}
++		} else
++			SCSI_LOG_ERROR_RECOVERY(3, printk("%s: Target reset"
++							  " failed target: "
++							  "%d\n",
++							  current-&gt;comm, id));
++	}
++
++	return list_empty(work_q);
++}
++
+ /**
+  * scsi_eh_bus_reset - send a bus reset 
+  * @shost:	&amp;scsi host being recovered.
+@@ -1447,9 +1530,11 @@ void scsi_eh_ready_devs(struct Scsi_Host *shost,
+ {
+ 	if (!scsi_eh_stu(shost, work_q, done_q))
+ 		if (!scsi_eh_bus_device_reset(shost, work_q, done_q))
+-			if (!scsi_eh_bus_reset(shost, work_q, done_q))
+-				if (!scsi_eh_host_reset(work_q, done_q))
+-					scsi_eh_offline_sdevs(work_q, done_q);
++			if (!scsi_eh_target_reset(shost, work_q, done_q))
++				if (!scsi_eh_bus_reset(shost, work_q, done_q))
++					if (!scsi_eh_host_reset(work_q, done_q))
++						scsi_eh_offline_sdevs(work_q,
++								      done_q);
+ }
+ EXPORT_SYMBOL_GPL(scsi_eh_ready_devs);
+ 
+@@ -1619,10 +1704,8 @@ void scsi_report_bus_reset(struct Scsi_Host *shost, int channel)
+ 	struct scsi_device *sdev;
+ 
+ 	__shost_for_each_device(sdev, shost) {
+-		if (channel == sdev_channel(sdev)) {
+-			sdev-&gt;was_reset = 1;
+-			sdev-&gt;expecting_cc_ua = 1;
+-		}
++		if (channel == sdev_channel(sdev))
++			__scsi_report_device_reset(sdev, NULL);
+ 	}
+ }
+ EXPORT_SYMBOL(scsi_report_bus_reset);
+@@ -1655,10 +1738,8 @@ void scsi_report_device_reset(struct Scsi_Host *shost, int channel, int target)
+ 
+ 	__shost_for_each_device(sdev, shost) {
+ 		if (channel == sdev_channel(sdev) &amp;&amp;
+-		    target == sdev_id(sdev)) {
+-			sdev-&gt;was_reset = 1;
+-			sdev-&gt;expecting_cc_ua = 1;
+-		}
++		    target == sdev_id(sdev))
++			__scsi_report_device_reset(sdev, NULL);
+ 	}
+ }
+ EXPORT_SYMBOL(scsi_report_device_reset);
+@@ -1714,6 +1795,11 @@ scsi_reset_provider(struct scsi_device *dev, int flag)
+ 		if (rtn == SUCCESS)
+ 			break;
+ 		/* FALLTHROUGH */
++	case SCSI_TRY_RESET_TARGET:
++		rtn = scsi_try_target_reset(scmd);
++		if (rtn == SUCCESS)
++			break;
++		/* FALLTHROUGH */
+ 	case SCSI_TRY_RESET_BUS:
+ 		rtn = scsi_try_bus_reset(scmd);
+ 		if (rtn == SUCCESS)
+diff --git a/include/scsi/scsi_eh.h b/include/scsi/scsi_eh.h
+index 25071d5d9bf8..37a7614f62f4 100644
+--- a/include/scsi/scsi_eh.h
++++ b/include/scsi/scsi_eh.h
+@@ -64,6 +64,7 @@ extern int scsi_get_sense_info_fld(const u8 * sense_buffer, int sb_len,
+ #define SCSI_TRY_RESET_DEVICE	1
+ #define SCSI_TRY_RESET_BUS	2
+ #define SCSI_TRY_RESET_HOST	3
++#define SCSI_TRY_RESET_TARGET	4
+ 
+ extern int scsi_reset_provider(struct scsi_device *, int);
+ 
+diff --git a/include/scsi/scsi_host.h b/include/scsi/scsi_host.h
+index 530ff4c553f8..49132862bfaa 100644
+--- a/include/scsi/scsi_host.h
++++ b/include/scsi/scsi_host.h
+@@ -172,6 +172,7 @@ struct scsi_host_template {
+ 	 */
+ 	int (* eh_abort_handler)(struct scsi_cmnd *);
+ 	int (* eh_device_reset_handler)(struct scsi_cmnd *);
++	int (* eh_target_reset_handler)(struct scsi_cmnd *);
+ 	int (* eh_bus_reset_handler)(struct scsi_cmnd *);
+ 	int (* eh_host_reset_handler)(struct scsi_cmnd *);
+ </pre><hr><pre>commit 4b6f5b3a993cbe34b4280f252bccc76967c185c8
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Mar 11 00:36:51 2008 -0500
+
+    [SCSI] fix bsg queue oops with iscsi logout
+    
+    Delay bsg unregistration, because we want to wait until all the request/cmds
+    have released their reference.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: FUJITA Tomonori &lt;fujita.tomonori@lab.ntt.co.jp&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/scsi_sysfs.c b/drivers/scsi/scsi_sysfs.c
+index ed83cdb6e67d..b9b09a704584 100644
+--- a/drivers/scsi/scsi_sysfs.c
++++ b/drivers/scsi/scsi_sysfs.c
+@@ -294,6 +294,7 @@ static void scsi_device_dev_release_usercontext(struct work_struct *work)
+ 	}
+ 
+ 	if (sdev-&gt;request_queue) {
++		bsg_unregister_queue(sdev-&gt;request_queue);
+ 		sdev-&gt;request_queue-&gt;queuedata = NULL;
+ 		/* user context needed to free queue */
+ 		scsi_free_queue(sdev-&gt;request_queue);
+@@ -857,7 +858,6 @@ void __scsi_remove_device(struct scsi_device *sdev)
+ 	if (scsi_device_set_state(sdev, SDEV_CANCEL) != 0)
+ 		return;
+ 
+-	bsg_unregister_queue(sdev-&gt;request_queue);
+ 	class_device_unregister(&amp;sdev-&gt;sdev_classdev);
+ 	transport_remove_device(dev);
+ 	device_del(dev);</pre><hr><pre>commit 45ab33b6c190c4a8c58f1d13be2ff89ee62024ba
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Mar 4 13:26:55 2008 -0600
+
+    [SCSI] iscsi class: regression - fix races with state manipulation and blocking/unblocking
+    
+    For qla4xxx, we could be starting a session, but some error (network,
+    target, IO from a device that got started, etc) could cause the session
+    to fail and curring the block/unblock and state manipulation could race
+    with each other. This patch just has those operations done in the
+    single threaded iscsi eh work queue, so that way they are serialized.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index dfb026b95a6a..ca7bb6f63bde 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -373,24 +373,25 @@ static void session_recovery_timedout(struct work_struct *work)
+ 	scsi_target_unblock(&amp;session-&gt;dev);
+ }
+ 
+-static void __iscsi_unblock_session(struct iscsi_cls_session *session)
+-{
+-	if (!cancel_delayed_work(&amp;session-&gt;recovery_work))
+-		flush_workqueue(iscsi_eh_timer_workq);
+-	scsi_target_unblock(&amp;session-&gt;dev);
+-}
+-
+-void iscsi_unblock_session(struct iscsi_cls_session *session)
++static void __iscsi_unblock_session(struct work_struct *work)
+ {
++	struct iscsi_cls_session *session =
++			container_of(work, struct iscsi_cls_session,
++				     unblock_work);
+ 	struct Scsi_Host *shost = iscsi_session_to_shost(session);
+ 	struct iscsi_host *ihost = shost-&gt;shost_data;
+ 	unsigned long flags;
+ 
++	/*
++	 * The recovery and unblock work get run from the same workqueue,
++	 * so try to cancel it if it was going to run after this unblock.
++	 */
++	cancel_delayed_work(&amp;session-&gt;recovery_work);
+ 	spin_lock_irqsave(&amp;session-&gt;lock, flags);
+ 	session-&gt;state = ISCSI_SESSION_LOGGED_IN;
+ 	spin_unlock_irqrestore(&amp;session-&gt;lock, flags);
+-
+-	__iscsi_unblock_session(session);
++	/* start IO */
++	scsi_target_unblock(&amp;session-&gt;dev);
+ 	/*
+ 	 * Only do kernel scanning if the driver is properly hooked into
+ 	 * the async scanning code (drivers like iscsi_tcp do login and
+@@ -401,20 +402,43 @@ void iscsi_unblock_session(struct iscsi_cls_session *session)
+ 			atomic_inc(&amp;ihost-&gt;nr_scans);
+ 	}
+ }
++
++/**
++ * iscsi_unblock_session - set a session as logged in and start IO.
++ * @session: iscsi session
++ *
++ * Mark a session as ready to accept IO.
++ */
++void iscsi_unblock_session(struct iscsi_cls_session *session)
++{
++	queue_work(iscsi_eh_timer_workq, &amp;session-&gt;unblock_work);
++	/*
++	 * make sure all the events have completed before tell the driver
++	 * it is safe
++	 */
++	flush_workqueue(iscsi_eh_timer_workq);
++}
+ EXPORT_SYMBOL_GPL(iscsi_unblock_session);
+ 
+-void iscsi_block_session(struct iscsi_cls_session *session)
++static void __iscsi_block_session(struct work_struct *work)
+ {
++	struct iscsi_cls_session *session =
++			container_of(work, struct iscsi_cls_session,
++				     block_work);
+ 	unsigned long flags;
+ 
+ 	spin_lock_irqsave(&amp;session-&gt;lock, flags);
+ 	session-&gt;state = ISCSI_SESSION_FAILED;
+ 	spin_unlock_irqrestore(&amp;session-&gt;lock, flags);
+-
+ 	scsi_target_block(&amp;session-&gt;dev);
+ 	queue_delayed_work(iscsi_eh_timer_workq, &amp;session-&gt;recovery_work,
+ 			   session-&gt;recovery_tmo * HZ);
+ }
++
++void iscsi_block_session(struct iscsi_cls_session *session)
++{
++	queue_work(iscsi_eh_timer_workq, &amp;session-&gt;block_work);
++}
+ EXPORT_SYMBOL_GPL(iscsi_block_session);
+ 
+ static void __iscsi_unbind_session(struct work_struct *work)
+@@ -463,6 +487,8 @@ iscsi_alloc_session(struct Scsi_Host *shost,
+ 	INIT_DELAYED_WORK(&amp;session-&gt;recovery_work, session_recovery_timedout);
+ 	INIT_LIST_HEAD(&amp;session-&gt;host_list);
+ 	INIT_LIST_HEAD(&amp;session-&gt;sess_list);
++	INIT_WORK(&amp;session-&gt;unblock_work, __iscsi_unblock_session);
++	INIT_WORK(&amp;session-&gt;block_work, __iscsi_block_session);
+ 	INIT_WORK(&amp;session-&gt;unbind_work, __iscsi_unbind_session);
+ 	INIT_WORK(&amp;session-&gt;scan_work, iscsi_scan_session);
+ 	spin_lock_init(&amp;session-&gt;lock);
+@@ -575,24 +601,25 @@ void iscsi_remove_session(struct iscsi_cls_session *session)
+ 	list_del(&amp;session-&gt;sess_list);
+ 	spin_unlock_irqrestore(&amp;sesslock, flags);
+ 
++	/* make sure there are no blocks/unblocks queued */
++	flush_workqueue(iscsi_eh_timer_workq);
++	/* make sure the timedout callout is not running */
++	if (!cancel_delayed_work(&amp;session-&gt;recovery_work))
++		flush_workqueue(iscsi_eh_timer_workq);
+ 	/*
+ 	 * If we are blocked let commands flow again. The lld or iscsi
+ 	 * layer should set up the queuecommand to fail commands.
++	 * We assume that LLD will not be calling block/unblock while
++	 * removing the session.
+ 	 */
+ 	spin_lock_irqsave(&amp;session-&gt;lock, flags);
+ 	session-&gt;state = ISCSI_SESSION_FREE;
+ 	spin_unlock_irqrestore(&amp;session-&gt;lock, flags);
+-	__iscsi_unblock_session(session);
+-	__iscsi_unbind_session(&amp;session-&gt;unbind_work);
+ 
+-	/* flush running scans */
++	scsi_target_unblock(&amp;session-&gt;dev);
++	/* flush running scans then delete devices */
+ 	flush_workqueue(ihost-&gt;scan_workq);
+-	/*
+-	 * If the session dropped while removing devices then we need to make
+-	 * sure it is not blocked
+-	 */
+-	if (!cancel_delayed_work(&amp;session-&gt;recovery_work))
+-		flush_workqueue(iscsi_eh_timer_workq);
++	__iscsi_unbind_session(&amp;session-&gt;unbind_work);
+ 
+ 	/* hw iscsi may not have removed all connections from session */
+ 	err = device_for_each_child(&amp;session-&gt;dev, NULL,
+@@ -802,23 +829,16 @@ EXPORT_SYMBOL_GPL(iscsi_recv_pdu);
+ 
+ void iscsi_conn_error(struct iscsi_cls_conn *conn, enum iscsi_err error)
+ {
+-	struct iscsi_cls_session *session = iscsi_conn_to_session(conn);
+ 	struct nlmsghdr	*nlh;
+ 	struct sk_buff	*skb;
+ 	struct iscsi_uevent *ev;
+ 	struct iscsi_internal *priv;
+ 	int len = NLMSG_SPACE(sizeof(*ev));
+-	unsigned long flags;
+ 
+ 	priv = iscsi_if_transport_lookup(conn-&gt;transport);
+ 	if (!priv)
+ 		return;
+ 
+-	spin_lock_irqsave(&amp;session-&gt;lock, flags);
+-	if (session-&gt;state == ISCSI_SESSION_LOGGED_IN)
+-		session-&gt;state = ISCSI_SESSION_FAILED;
+-	spin_unlock_irqrestore(&amp;session-&gt;lock, flags);
+-
+ 	skb = alloc_skb(len, GFP_ATOMIC);
+ 	if (!skb) {
+ 		iscsi_cls_conn_printk(KERN_ERR, conn, "gracefully ignored "
+diff --git a/include/scsi/scsi_transport_iscsi.h b/include/scsi/scsi_transport_iscsi.h
+index dbc96ef4cc72..aab1eae2ec4c 100644
+--- a/include/scsi/scsi_transport_iscsi.h
++++ b/include/scsi/scsi_transport_iscsi.h
+@@ -177,6 +177,8 @@ struct iscsi_cls_session {
+ 	struct list_head host_list;
+ 	struct iscsi_transport *transport;
+ 	spinlock_t lock;
++	struct work_struct block_work;
++	struct work_struct unblock_work;
+ 	struct work_struct scan_work;
+ 	struct work_struct unbind_work;
+ </pre><hr><pre>commit 024f801f528220edc89275a724ea00cd18c5ebb7
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Mar 4 13:26:54 2008 -0600
+
+    [SCSI] qla4xxx: regression - add start scan callout
+    
+    We are seeing EXIST errors from sysfs during device addition.
+    We need a start scan callout so we do not start scanning sessions
+    found during hba setup, before the async scsi scan code is ready.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: David C Somayajulu &lt;david.somayajulu@qlogic.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/qla4xxx/ql4_os.c b/drivers/scsi/qla4xxx/ql4_os.c
+index 10a233e65bc9..8b92f348f02c 100644
+--- a/drivers/scsi/qla4xxx/ql4_os.c
++++ b/drivers/scsi/qla4xxx/ql4_os.c
+@@ -75,6 +75,7 @@ static int qla4xxx_eh_host_reset(struct scsi_cmnd *cmd);
+ static int qla4xxx_slave_alloc(struct scsi_device *device);
+ static int qla4xxx_slave_configure(struct scsi_device *device);
+ static void qla4xxx_slave_destroy(struct scsi_device *sdev);
++static void qla4xxx_scan_start(struct Scsi_Host *shost);
+ 
+ static struct scsi_host_template qla4xxx_driver_template = {
+ 	.module			= THIS_MODULE,
+@@ -90,6 +91,7 @@ static struct scsi_host_template qla4xxx_driver_template = {
+ 	.slave_destroy		= qla4xxx_slave_destroy,
+ 
+ 	.scan_finished		= iscsi_scan_finished,
++	.scan_start		= qla4xxx_scan_start,
+ 
+ 	.this_id		= -1,
+ 	.cmd_per_lun		= 3,
+@@ -299,6 +301,18 @@ struct ddb_entry *qla4xxx_alloc_sess(struct scsi_qla_host *ha)
+ 	return ddb_entry;
+ }
+ 
++static void qla4xxx_scan_start(struct Scsi_Host *shost)
++{
++	struct scsi_qla_host *ha = shost_priv(shost);
++	struct ddb_entry *ddb_entry, *ddbtemp;
++
++	/* finish setup of sessions that were already setup in firmware */
++	list_for_each_entry_safe(ddb_entry, ddbtemp, &amp;ha-&gt;ddb_list, list) {
++		if (ddb_entry-&gt;fw_ddb_device_state == DDB_DS_SESSION_ACTIVE)
++			qla4xxx_add_sess(ddb_entry);
++	}
++}
++
+ /*
+  * Timer routines
+  */
+@@ -1178,7 +1192,6 @@ static int __devinit qla4xxx_probe_adapter(struct pci_dev *pdev,
+ 	int ret = -ENODEV, status;
+ 	struct Scsi_Host *host;
+ 	struct scsi_qla_host *ha;
+-	struct ddb_entry *ddb_entry, *ddbtemp;
+ 	uint8_t init_retry_count = 0;
+ 	char buf[34];
+ 
+@@ -1297,13 +1310,6 @@ static int __devinit qla4xxx_probe_adapter(struct pci_dev *pdev,
+ 	if (ret)
+ 		goto probe_failed;
+ 
+-	/* Update transport device information for all devices. */
+-	list_for_each_entry_safe(ddb_entry, ddbtemp, &amp;ha-&gt;ddb_list, list) {
+-		if (ddb_entry-&gt;fw_ddb_device_state == DDB_DS_SESSION_ACTIVE)
+-			if (qla4xxx_add_sess(ddb_entry))
+-				goto remove_host;
+-	}
+-
+ 	printk(KERN_INFO
+ 	       " QLogic iSCSI HBA Driver version: %s\n"
+ 	       "  QLogic ISP%04x @ %s, host#=%ld, fw=%02d.%02d.%02d.%02d\n",
+@@ -1313,10 +1319,6 @@ static int __devinit qla4xxx_probe_adapter(struct pci_dev *pdev,
+ 	scsi_scan_host(host);
+ 	return 0;
+ 
+-remove_host:
+-	qla4xxx_free_ddb_list(ha);
+-	scsi_remove_host(host);
+-
+ probe_failed:
+ 	qla4xxx_free_adapter(ha);
+ 	scsi_host_put(ha-&gt;host);</pre><hr><pre>commit 50a29aec9c47d26e869df83ef1d69e3b63c83bf4
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Mar 4 13:26:53 2008 -0600
+
+    [SCSI] qla4xxx: fix host reset dpc race
+    
+    The host reset callout could be starting to reset the hba at the same
+    time the dpc thread is. This creates lots of problems because they both
+    want to do wierd things with the firmware and interrupts, etc.
+    
+    This patch just has the host reset function fully shutdown the dpc
+    thread before resetting the hba.
+    
+    This patch also moves the setting of the session online bit to fix
+    a potential race with the dpc thread and iscsi recovery thread.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: David C Somayajulu &lt;david.somayajulu@qlogic.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/qla4xxx/ql4_init.c b/drivers/scsi/qla4xxx/ql4_init.c
+index 10b3b9a620f3..109c5f5985ec 100644
+--- a/drivers/scsi/qla4xxx/ql4_init.c
++++ b/drivers/scsi/qla4xxx/ql4_init.c
+@@ -1299,9 +1299,9 @@ int qla4xxx_process_ddb_changed(struct scsi_qla_host *ha,
+ 	ddb_entry-&gt;fw_ddb_device_state = state;
+ 	/* Device is back online. */
+ 	if (ddb_entry-&gt;fw_ddb_device_state == DDB_DS_SESSION_ACTIVE) {
++		atomic_set(&amp;ddb_entry-&gt;state, DDB_STATE_ONLINE);
+ 		atomic_set(&amp;ddb_entry-&gt;port_down_timer,
+ 			   ha-&gt;port_down_retry_count);
+-		atomic_set(&amp;ddb_entry-&gt;state, DDB_STATE_ONLINE);
+ 		atomic_set(&amp;ddb_entry-&gt;relogin_retry_count, 0);
+ 		atomic_set(&amp;ddb_entry-&gt;relogin_timer, 0);
+ 		clear_bit(DF_RELOGIN, &amp;ddb_entry-&gt;flags);
+diff --git a/drivers/scsi/qla4xxx/ql4_os.c b/drivers/scsi/qla4xxx/ql4_os.c
+index c3c59d763037..10a233e65bc9 100644
+--- a/drivers/scsi/qla4xxx/ql4_os.c
++++ b/drivers/scsi/qla4xxx/ql4_os.c
+@@ -864,8 +864,9 @@ static void qla4xxx_flush_active_srbs(struct scsi_qla_host *ha)
+  * qla4xxx_recover_adapter - recovers adapter after a fatal error
+  * @ha: Pointer to host adapter structure.
+  * @renew_ddb_list: Indicates what to do with the adapter's ddb list
+- *	after adapter recovery has completed.
+- *	0=preserve ddb list, 1=destroy and rebuild ddb list
++ *
++ * renew_ddb_list value can be 0=preserve ddb list, 1=destroy and rebuild
++ * ddb list.
+  **/
+ static int qla4xxx_recover_adapter(struct scsi_qla_host *ha,
+ 				uint8_t renew_ddb_list)
+@@ -874,6 +875,7 @@ static int qla4xxx_recover_adapter(struct scsi_qla_host *ha,
+ 
+ 	/* Stall incoming I/O until we are done */
+ 	clear_bit(AF_ONLINE, &amp;ha-&gt;flags);
++
+ 	DEBUG2(printk("scsi%ld: %s calling qla4xxx_cmd_wait\n", ha-&gt;host_no,
+ 		      __func__));
+ 
+@@ -1600,9 +1602,12 @@ static int qla4xxx_eh_host_reset(struct scsi_cmnd *cmd)
+ 		return FAILED;
+ 	}
+ 
+-	if (qla4xxx_recover_adapter(ha, PRESERVE_DDB_LIST) == QLA_SUCCESS) {
++	/* make sure the dpc thread is stopped while we reset the hba */
++	clear_bit(AF_ONLINE, &amp;ha-&gt;flags);
++	flush_workqueue(ha-&gt;dpc_thread);
++
++	if (qla4xxx_recover_adapter(ha, PRESERVE_DDB_LIST) == QLA_SUCCESS)
+ 		return_status = SUCCESS;
+-	}
+ 
+ 	dev_info(&amp;ha-&gt;pdev-&gt;dev, "HOST RESET %s.\n",
+ 		   return_status == FAILED ? "FAILED" : "SUCCEDED");</pre>
+    <div class="pagination">
+        <a href='5_26.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><span>[27]</span><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_28.html'>Next&gt;&gt;</a>
+    <div>
+</body>

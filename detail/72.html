@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Woods Hole Oceanographic Institution</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Woods Hole Oceanographic Institution</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit 393df744e056ba24e9531d0657d09fc3c7c0dd22
+Author: Ned Forrester &lt;nforrester@whoi.edu&gt;
+Date:   Wed Nov 19 15:36:21 2008 -0800
+
+    pxa2xx_spi: bugfix full duplex dma data corruption
+    
+    Fixes a data corruption bug in pxa2xx_spi.c when operating in full duplex
+    mode with DMA and using buffers that overlap.
+    
+    SPI transmit and receive buffers are allowed to be the same or to overlap.
+     However, this driver fails if such overlap is attempted in DMA mode
+    because it maps the rx and tx buffers in the wrong order.  By mapping
+    DMA_FROM_DEVICE (read) before DMA_TO_DEVICE (write), it invalidates the
+    cache before flushing it, thus discarding data which should have been
+    transmitted.
+    
+    The patch corrects the order of mapping.  This bug exists in all versions
+    of pxa2xx_spi.c; similar bugs are in the drivers for two other SPI
+    controllers (au1500, imx).
+    
+    A version of this patch has been tested on kernel 2.6.20 using
+    verification of loopback data with: random transfer length, random
+    bits-per-word, random positive offsets (both larger and smaller than
+    transfer length) between the start of the rx and tx buffers, and varying
+    clock rates.
+    
+    Signed-off-by: Ned Forrester &lt;nforrester@whoi.edu&gt;
+    Cc: Vernon Sauder &lt;vernoninhand@gmail.com&gt;
+    Cc: J. Scott Merritt &lt;merrij3@rpi.edu&gt;
+    Signed-off-by: David Brownell &lt;dbrownell@users.sourceforge.net&gt;
+    Cc: &lt;stable@kernel.org&gt;         [2.6.27.x]
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/drivers/spi/pxa2xx_spi.c b/drivers/spi/pxa2xx_spi.c
+index dae87b1a4c6e..cf12f2d84be2 100644
+--- a/drivers/spi/pxa2xx_spi.c
++++ b/drivers/spi/pxa2xx_spi.c
+@@ -352,21 +352,21 @@ static int map_dma_buffers(struct driver_data *drv_data)
+ 	} else
+ 		drv_data-&gt;tx_map_len = drv_data-&gt;len;
+ 
+-	/* Stream map the rx buffer */
+-	drv_data-&gt;rx_dma = dma_map_single(dev, drv_data-&gt;rx,
+-						drv_data-&gt;rx_map_len,
+-						DMA_FROM_DEVICE);
+-	if (dma_mapping_error(dev, drv_data-&gt;rx_dma))
+-		return 0;
+-
+-	/* Stream map the tx buffer */
++	/* Stream map the tx buffer. Always do DMA_TO_DEVICE first
++	 * so we flush the cache *before* invalidating it, in case
++	 * the tx and rx buffers overlap.
++	 */
+ 	drv_data-&gt;tx_dma = dma_map_single(dev, drv_data-&gt;tx,
+-						drv_data-&gt;tx_map_len,
+-						DMA_TO_DEVICE);
++					drv_data-&gt;tx_map_len, DMA_TO_DEVICE);
++	if (dma_mapping_error(dev, drv_data-&gt;tx_dma))
++		return 0;
+ 
+-	if (dma_mapping_error(dev, drv_data-&gt;tx_dma)) {
+-		dma_unmap_single(dev, drv_data-&gt;rx_dma,
++	/* Stream map the rx buffer */
++	drv_data-&gt;rx_dma = dma_map_single(dev, drv_data-&gt;rx,
+ 					drv_data-&gt;rx_map_len, DMA_FROM_DEVICE);
++	if (dma_mapping_error(dev, drv_data-&gt;rx_dma)) {
++		dma_unmap_single(dev, drv_data-&gt;tx_dma,
++					drv_data-&gt;tx_map_len, DMA_TO_DEVICE);
+ 		return 0;
+ 	}
+ </pre><hr><pre>commit 7e96445533ac3f4f7964646a202ff3620602fab4
+Author: Ned Forrester &lt;nforrester@whoi.edu&gt;
+Date:   Sat Sep 13 02:33:18 2008 -0700
+
+    pxa2xx_spi: dma bugfixes
+    
+    Fixes two DMA bugs in the pxa2xx_spi driver.  The first bug is in all
+    versions of this driver; the second was introduced in the 2.6.20 kernel,
+    and prevents using the driver with chips like m25p16 flash (which can
+    issue large DMA reads).
+    
+     1. Zero length transfers are permitted for use to insert timing,
+        but pxa2xx_spi.c will fail if this is requested in DMA mode.
+        Fixed by using programmed I/O (PIO) mode for such transfers.
+    
+     2. Transfers larger than 8191 are not permitted in DMA mode.  A
+        test for length rejects all large transfers regardless of DMA
+        or PIO mode.  Worked around by rejecting only large transfers
+        with DMA mapped buffers, and forcing all other transfers
+        larger than 8191 to use PIO mode.  A rate limited warning is
+        issued for DMA transfers forced to PIO mode.
+    
+    This patch should apply to all kernels back to and including 2.6.20;
+    it was test patched against 2.6.20.  An additional patch would be
+    required for older kernels, but those versions are very buggy anyway.
+    
+    Signed-off-by: Ned Forrester &lt;nforrester@whoi.edu&gt;
+    Cc: Vernon Sauder &lt;vernoninhand@gmail.com&gt;
+    Cc: Eric Miao &lt;eric.y.miao@gmail.com&gt;
+    Signed-off-by: David Brownell &lt;dbrownell@users.sourceforge.net&gt;
+    Cc: &lt;stable@kernel.org&gt;         [2.6.25.x, 2.6.26.x]
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/drivers/spi/pxa2xx_spi.c b/drivers/spi/pxa2xx_spi.c
+index a7b9070e1b46..0e53354c1cfe 100644
+--- a/drivers/spi/pxa2xx_spi.c
++++ b/drivers/spi/pxa2xx_spi.c
+@@ -47,9 +47,10 @@ MODULE_ALIAS("platform:pxa2xx-spi");
+ 
+ #define MAX_BUSES 3
+ 
+-#define DMA_INT_MASK (DCSR_ENDINTR | DCSR_STARTINTR | DCSR_BUSERR)
+-#define RESET_DMA_CHANNEL (DCSR_NODESC | DMA_INT_MASK)
+-#define IS_DMA_ALIGNED(x) (((u32)(x)&amp;0x07)==0)
++#define DMA_INT_MASK		(DCSR_ENDINTR | DCSR_STARTINTR | DCSR_BUSERR)
++#define RESET_DMA_CHANNEL	(DCSR_NODESC | DMA_INT_MASK)
++#define IS_DMA_ALIGNED(x)	(((x) &amp; 0x07) == 0)
++#define MAX_DMA_LEN		8191
+ 
+ /*
+  * for testing SSCR1 changes that require SSP restart, basically
+@@ -887,14 +888,27 @@ static void pump_transfers(unsigned long data)
+ 			drv_data-&gt;cs_control(PXA2XX_CS_DEASSERT);
+ 	}
+ 
+-	/* Check transfer length */
+-	if (transfer-&gt;len &gt; 8191)
+-	{
+-		dev_warn(&amp;drv_data-&gt;pdev-&gt;dev, "pump_transfers: transfer "
+-				"length greater than 8191\n");
+-		message-&gt;status = -EINVAL;
+-		giveback(drv_data);
+-		return;
++	/* Check for transfers that need multiple DMA segments */
++	if (transfer-&gt;len &gt; MAX_DMA_LEN &amp;&amp; chip-&gt;enable_dma) {
++
++		/* reject already-mapped transfers; PIO won't always work */
++		if (message-&gt;is_dma_mapped
++				|| transfer-&gt;rx_dma || transfer-&gt;tx_dma) {
++			dev_err(&amp;drv_data-&gt;pdev-&gt;dev,
++				"pump_transfers: mapped transfer length "
++				"of %lu is greater than %d\n",
++				transfer-&gt;len, MAX_DMA_LEN);
++			message-&gt;status = -EINVAL;
++			giveback(drv_data);
++			return;
++		}
++
++		/* warn ... we force this to PIO mode */
++		if (printk_ratelimit())
++			dev_warn(&amp;message-&gt;spi-&gt;dev, "pump_transfers: "
++				"DMA disabled for transfer length %ld "
++				"greater than %d\n",
++				(long)drv_data-&gt;len, MAX_DMA_LEN);
+ 	}
+ 
+ 	/* Setup the transfer state based on the type of transfer */
+@@ -962,7 +976,7 @@ static void pump_transfers(unsigned long data)
+ 							&amp;dma_thresh))
+ 				if (printk_ratelimit())
+ 					dev_warn(&amp;message-&gt;spi-&gt;dev,
+-						"pump_transfer: "
++						"pump_transfers: "
+ 						"DMA burst size reduced to "
+ 						"match bits_per_word\n");
+ 		}
+@@ -976,8 +990,23 @@ static void pump_transfers(unsigned long data)
+ 
+ 	message-&gt;state = RUNNING_STATE;
+ 
+-	/* Try to map dma buffer and do a dma transfer if successful */
+-	if ((drv_data-&gt;dma_mapped = map_dma_buffers(drv_data))) {
++	/* Try to map dma buffer and do a dma transfer if successful, but
++	 * only if the length is non-zero and less than MAX_DMA_LEN.
++	 *
++	 * Zero-length non-descriptor DMA is illegal on PXA2xx; force use
++	 * of PIO instead.  Care is needed above because the transfer may
++	 * have have been passed with buffers that are already dma mapped.
++	 * A zero-length transfer in PIO mode will not try to write/read
++	 * to/from the buffers
++	 *
++	 * REVISIT large transfers are exactly where we most want to be
++	 * using DMA.  If this happens much, split those transfers into
++	 * multiple DMA segments rather than forcing PIO.
++	 */
++	drv_data-&gt;dma_mapped = 0;
++	if (drv_data-&gt;len &gt; 0 &amp;&amp; drv_data-&gt;len &lt;= MAX_DMA_LEN)
++		drv_data-&gt;dma_mapped = map_dma_buffers(drv_data);
++	if (drv_data-&gt;dma_mapped) {
+ 
+ 		/* Ensure we have the correct interrupt handler */
+ 		drv_data-&gt;transfer_handler = dma_transfer;</pre><hr><pre>commit 8423597d676615f3dd2d9ab36f59f147086b90b8
+Author: Ned Forrester &lt;nforrester@whoi.edu&gt;
+Date:   Sat Sep 13 02:33:17 2008 -0700
+
+    pxa2xx_spi: chipselect bugfixes
+    
+    Fixes several chipselect bugs in the pxa2xx_spi driver.  These bugs are in
+    all versions of this driver and prevent using it with chips like m25p16
+    flash.
+    
+     1. The spi_transfer.cs_change flag is handled too early:
+        before spi_transfer.delay_usecs applies, thus making the
+        delay ineffective at holding chip select.
+    
+     2. spi_transfer.delay_usecs is ignored on the last transfer
+        of a message (likewise not holding chipselect long enough).
+    
+     3. If spi_transfer.cs_change is set on the last transfer, the
+        chip select is always disabled, instead of the intended
+        meaning: optionally holding chip select enabled for the
+        next message.
+    
+    Those first three bugs were fixed with a relocation of delays
+    and chip select de-assertions.
+    
+     4. If a message has the cs_change flag set on the last transfer,
+        and had the chip select stayed enabled as requested (see 3,
+        above), it would not have been disabled if the next message is
+        for a different chip.  Fixed by dropping chip select regardless
+        of cs_change at end of a message, if there is no next message
+        or if the next message is for a different chip.
+    
+    This patch should apply to all kernels back to and including 2.6.20;
+    it was test patched against 2.6.20.  An additional patch would be
+    required for older kernels, but those versions are very buggy anyway.
+    
+    Signed-off-by: Ned Forrester &lt;nforrester@whoi.edu&gt;
+    Cc: Vernon Sauder &lt;vernoninhand@gmail.com&gt;
+    Cc: Eric Miao &lt;eric.y.miao@gmail.com&gt;
+    Signed-off-by: David Brownell &lt;dbrownell@users.sourceforge.net&gt;
+    Cc: &lt;stable@kernel.org&gt;         [2.6.25.x, 2.6.26.x]
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/drivers/spi/pxa2xx_spi.c b/drivers/spi/pxa2xx_spi.c
+index 34c7c9875681..a7b9070e1b46 100644
+--- a/drivers/spi/pxa2xx_spi.c
++++ b/drivers/spi/pxa2xx_spi.c
+@@ -144,7 +144,6 @@ struct driver_data {
+ 	size_t tx_map_len;
+ 	u8 n_bytes;
+ 	u32 dma_width;
+-	int cs_change;
+ 	int (*write)(struct driver_data *drv_data);
+ 	int (*read)(struct driver_data *drv_data);
+ 	irqreturn_t (*transfer_handler)(struct driver_data *drv_data);
+@@ -406,8 +405,45 @@ static void giveback(struct driver_data *drv_data)
+ 					struct spi_transfer,
+ 					transfer_list);
+ 
++	/* Delay if requested before any change in chip select */
++	if (last_transfer-&gt;delay_usecs)
++		udelay(last_transfer-&gt;delay_usecs);
++
++	/* Drop chip select UNLESS cs_change is true or we are returning
++	 * a message with an error, or next message is for another chip
++	 */
+ 	if (!last_transfer-&gt;cs_change)
+ 		drv_data-&gt;cs_control(PXA2XX_CS_DEASSERT);
++	else {
++		struct spi_message *next_msg;
++
++		/* Holding of cs was hinted, but we need to make sure
++		 * the next message is for the same chip.  Don't waste
++		 * time with the following tests unless this was hinted.
++		 *
++		 * We cannot postpone this until pump_messages, because
++		 * after calling msg-&gt;complete (below) the driver that
++		 * sent the current message could be unloaded, which
++		 * could invalidate the cs_control() callback...
++		 */
++
++		/* get a pointer to the next message, if any */
++		spin_lock_irqsave(&amp;drv_data-&gt;lock, flags);
++		if (list_empty(&amp;drv_data-&gt;queue))
++			next_msg = NULL;
++		else
++			next_msg = list_entry(drv_data-&gt;queue.next,
++					struct spi_message, queue);
++		spin_unlock_irqrestore(&amp;drv_data-&gt;lock, flags);
++
++		/* see if the next and current messages point
++		 * to the same chip
++		 */
++		if (next_msg &amp;&amp; next_msg-&gt;spi != msg-&gt;spi)
++			next_msg = NULL;
++		if (!next_msg || msg-&gt;state == ERROR_STATE)
++			drv_data-&gt;cs_control(PXA2XX_CS_DEASSERT);
++	}
+ 
+ 	msg-&gt;state = NULL;
+ 	if (msg-&gt;complete)
+@@ -490,10 +526,9 @@ static void dma_transfer_complete(struct driver_data *drv_data)
+ 	msg-&gt;actual_length += drv_data-&gt;len -
+ 				(drv_data-&gt;rx_end - drv_data-&gt;rx);
+ 
+-	/* Release chip select if requested, transfer delays are
+-	 * handled in pump_transfers */
+-	if (drv_data-&gt;cs_change)
+-		drv_data-&gt;cs_control(PXA2XX_CS_DEASSERT);
++	/* Transfer delays and chip select release are
++	 * handled in pump_transfers or giveback
++	 */
+ 
+ 	/* Move to next transfer */
+ 	msg-&gt;state = next_transfer(drv_data);
+@@ -602,10 +637,9 @@ static void int_transfer_complete(struct driver_data *drv_data)
+ 	drv_data-&gt;cur_msg-&gt;actual_length += drv_data-&gt;len -
+ 				(drv_data-&gt;rx_end - drv_data-&gt;rx);
+ 
+-	/* Release chip select if requested, transfer delays are
+-	 * handled in pump_transfers */
+-	if (drv_data-&gt;cs_change)
+-		drv_data-&gt;cs_control(PXA2XX_CS_DEASSERT);
++	/* Transfer delays and chip select release are
++	 * handled in pump_transfers or giveback
++	 */
+ 
+ 	/* Move to next transfer */
+ 	drv_data-&gt;cur_msg-&gt;state = next_transfer(drv_data);
+@@ -840,13 +874,17 @@ static void pump_transfers(unsigned long data)
+ 		return;
+ 	}
+ 
+-	/* Delay if requested at end of transfer*/
++	/* Delay if requested at end of transfer before CS change */
+ 	if (message-&gt;state == RUNNING_STATE) {
+ 		previous = list_entry(transfer-&gt;transfer_list.prev,
+ 					struct spi_transfer,
+ 					transfer_list);
+ 		if (previous-&gt;delay_usecs)
+ 			udelay(previous-&gt;delay_usecs);
++
++		/* Drop chip select only if cs_change is requested */
++		if (previous-&gt;cs_change)
++			drv_data-&gt;cs_control(PXA2XX_CS_DEASSERT);
+ 	}
+ 
+ 	/* Check transfer length */
+@@ -878,7 +916,6 @@ static void pump_transfers(unsigned long data)
+ 	drv_data-&gt;len = transfer-&gt;len &amp; DCMD_LENGTH;
+ 	drv_data-&gt;write = drv_data-&gt;tx ? chip-&gt;write : null_writer;
+ 	drv_data-&gt;read = drv_data-&gt;rx ? chip-&gt;read : null_reader;
+-	drv_data-&gt;cs_change = transfer-&gt;cs_change;
+ 
+ 	/* Change speed and bit per word on a per transfer */
+ 	cr0 = chip-&gt;cr0;</pre><hr><pre>commit b97c74bddce4e2c6fef6b3b58910b4fd9eb7f3b8
+Author: Ned Forrester &lt;nforrester@whoi.edu&gt;
+Date:   Sat Feb 23 15:23:40 2008 -0800
+
+    spi: pxa2xx_spi clock polarity fix
+    
+    Fixes a sequencing bug in spi driver pxa2xx_spi.c in which the chip select
+    for a transfer may be asserted before the clock polarity is set on the
+    interface.  As a result of this bug, the clock signal may have the wrong
+    polarity at transfer start, so it may need to make an extra half transition
+    before the intended clock/data signals begin.  (This probably means all
+    transfers are one bit out of sequence.)
+    
+    This only occurs on the first transfer following a change in clock polarity
+    in systems using more than one more than one such polarity.  The fix
+    assures that the clock mode is properly set before asserting chip select.
+    
+    This bug was introduced in a patch merged on 2006/12/10, kernel 2.6.20.
+    The patch defines an additional bit in: include/asm-arm/arch-pxa/regs-ssp.h
+    for 2.6.25 and newer kernels but this addition must be made in:
+    include/asm-arm/arch-pxa/pxa-regs.h for kernels between 2.6.20 and 2.6.24,
+    inclusive
+    
+    Signed-off-by: Ned Forrester &lt;nforrester@whoi.edu&gt;
+    Signed-off-by: David Brownell &lt;dbrownell@users.sourceforge.net&gt;
+    Cc: Russell King &lt;rmk@arm.linux.org.uk&gt;
+    Cc: &lt;stable@kernel.org&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/drivers/spi/pxa2xx_spi.c b/drivers/spi/pxa2xx_spi.c
+index 365e0e355aea..59deed79e0ab 100644
+--- a/drivers/spi/pxa2xx_spi.c
++++ b/drivers/spi/pxa2xx_spi.c
+@@ -51,13 +51,19 @@ MODULE_LICENSE("GPL");
+ #define RESET_DMA_CHANNEL (DCSR_NODESC | DMA_INT_MASK)
+ #define IS_DMA_ALIGNED(x) (((u32)(x)&amp;0x07)==0)
+ 
+-/* for testing SSCR1 changes that require SSP restart, basically
+- * everything except the service and interrupt enables */
+-#define SSCR1_CHANGE_MASK (SSCR1_TTELP | SSCR1_TTE | SSCR1_EBCEI | SSCR1_SCFR \
++/*
++ * for testing SSCR1 changes that require SSP restart, basically
++ * everything except the service and interrupt enables, the pxa270 developer
++ * manual says only SSCR1_SCFR, SSCR1_SPH, SSCR1_SPO need to be in this
++ * list, but the PXA255 dev man says all bits without really meaning the
++ * service and interrupt enables
++ */
++#define SSCR1_CHANGE_MASK (SSCR1_TTELP | SSCR1_TTE | SSCR1_SCFR \
+ 				| SSCR1_ECRA | SSCR1_ECRB | SSCR1_SCLKDIR \
+-				| SSCR1_RWOT | SSCR1_TRAIL | SSCR1_PINTE \
+-				| SSCR1_STRF | SSCR1_EFWR |SSCR1_RFT \
+-				| SSCR1_TFT | SSCR1_SPH | SSCR1_SPO | SSCR1_LBM)
++				| SSCR1_SFRMDIR | SSCR1_RWOT | SSCR1_TRAIL \
++				| SSCR1_IFS | SSCR1_STRF | SSCR1_EFWR \
++				| SSCR1_RFT | SSCR1_TFT | SSCR1_MWDS \
++				| SSCR1_SPH | SSCR1_SPO | SSCR1_LBM)
+ 
+ #define DEFINE_SSP_REG(reg, off) \
+ static inline u32 read_##reg(void *p) { return __raw_readl(p + (off)); } \
+@@ -973,9 +979,6 @@ static void pump_transfers(unsigned long data)
+ 		if (drv_data-&gt;ssp_type == PXA25x_SSP)
+ 			DCMD(drv_data-&gt;tx_channel) |= DCMD_ENDIRQEN;
+ 
+-		/* Fix me, need to handle cs polarity */
+-		drv_data-&gt;cs_control(PXA2XX_CS_ASSERT);
+-
+ 		/* Clear status and start DMA engine */
+ 		cr1 = chip-&gt;cr1 | dma_thresh | drv_data-&gt;dma_cr1;
+ 		write_SSSR(drv_data-&gt;clear_sr, reg);
+@@ -985,9 +988,6 @@ static void pump_transfers(unsigned long data)
+ 		/* Ensure we have the correct interrupt handler	*/
+ 		drv_data-&gt;transfer_handler = interrupt_transfer;
+ 
+-		/* Fix me, need to handle cs polarity */
+-		drv_data-&gt;cs_control(PXA2XX_CS_ASSERT);
+-
+ 		/* Clear status  */
+ 		cr1 = chip-&gt;cr1 | chip-&gt;threshold | drv_data-&gt;int_cr1;
+ 		write_SSSR(drv_data-&gt;clear_sr, reg);
+@@ -998,16 +998,29 @@ static void pump_transfers(unsigned long data)
+ 		|| (read_SSCR1(reg) &amp; SSCR1_CHANGE_MASK) !=
+ 			(cr1 &amp; SSCR1_CHANGE_MASK)) {
+ 
++		/* stop the SSP, and update the other bits */
+ 		write_SSCR0(cr0 &amp; ~SSCR0_SSE, reg);
+ 		if (drv_data-&gt;ssp_type != PXA25x_SSP)
+ 			write_SSTO(chip-&gt;timeout, reg);
+-		write_SSCR1(cr1, reg);
++		/* first set CR1 without interrupt and service enables */
++		write_SSCR1(cr1 &amp; SSCR1_CHANGE_MASK, reg);
++		/* restart the SSP */
+ 		write_SSCR0(cr0, reg);
++
+ 	} else {
+ 		if (drv_data-&gt;ssp_type != PXA25x_SSP)
+ 			write_SSTO(chip-&gt;timeout, reg);
+-		write_SSCR1(cr1, reg);
+ 	}
++
++	/* FIXME, need to handle cs polarity,
++	 * this driver uses struct pxa2xx_spi_chip.cs_control to
++	 * specify a CS handling function, and it ignores most
++	 * struct spi_device.mode[s], including SPI_CS_HIGH */
++	drv_data-&gt;cs_control(PXA2XX_CS_ASSERT);
++
++	/* after chip select, release the data by enabling service
++	 * requests and interrupts, without changing any mode bits */
++	write_SSCR1(cr1, reg);
+ }
+ 
+ static void pump_messages(struct work_struct *work)
+diff --git a/include/asm-arm/arch-pxa/regs-ssp.h b/include/asm-arm/arch-pxa/regs-ssp.h
+index 991cb688db75..0255328c3c18 100644
+--- a/include/asm-arm/arch-pxa/regs-ssp.h
++++ b/include/asm-arm/arch-pxa/regs-ssp.h
+@@ -85,6 +85,7 @@
+ #define SSCR1_RSRE		(1 &lt;&lt; 20)	/* Receive Service Request Enable */
+ #define SSCR1_TINTE		(1 &lt;&lt; 19)	/* Receiver Time-out Interrupt enable */
+ #define SSCR1_PINTE		(1 &lt;&lt; 18)	/* Peripheral Trailing Byte Interupt Enable */
++#define SSCR1_IFS		(1 &lt;&lt; 16)	/* Invert Frame Signal */
+ #define SSCR1_STRF		(1 &lt;&lt; 15)	/* Select FIFO or EFWR */
+ #define SSCR1_EFWR		(1 &lt;&lt; 14)	/* Enable FIFO Write/Read */
+ </pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

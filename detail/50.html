@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Ohio University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Ohio University</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit f541fb7e20c848f947ca65fbf169efe69400c942
+Author: Samuel Jero &lt;sj323707@ohio.edu&gt;
+Date:   Sun Feb 26 18:22:02 2012 -0700
+
+    dccp: fix bug in sequence number validation during connection setup
+    
+    This fixes a bug in the sequence number validation during the initial handshake.
+    
+    The code did not treat the initial sequence numbers ISS and ISR as read-only and
+    did not keep state for GSR and GSS as required by the specification. This causes
+    problems with retransmissions during the initial handshake, causing the
+    budding connection to be reset.
+    
+    This patch now treats ISS/ISR as read-only and tracks GSS/GSR as required.
+    
+    Signed-off-by: Samuel Jero &lt;sj323707@ohio.edu&gt;
+    Signed-off-by: Gerrit Renker &lt;gerrit@erg.abdn.ac.uk&gt;
+
+diff --git a/include/linux/dccp.h b/include/linux/dccp.h
+index 710c04302a15..eaf95a023af4 100644
+--- a/include/linux/dccp.h
++++ b/include/linux/dccp.h
+@@ -376,8 +376,10 @@ static inline unsigned int dccp_hdr_len(const struct sk_buff *skb)
+ /**
+  * struct dccp_request_sock  -  represent DCCP-specific connection request
+  * @dreq_inet_rsk: structure inherited from
+- * @dreq_iss: initial sequence number sent on the Response (RFC 4340, 7.1)
+- * @dreq_isr: initial sequence number received on the Request
++ * @dreq_iss: initial sequence number, sent on the first Response (RFC 4340, 7.1)
++ * @dreq_gss: greatest sequence number sent (for retransmitted Responses)
++ * @dreq_isr: initial sequence number received in the first Request
++ * @dreq_gsr: greatest sequence number received (for retransmitted Request(s))
+  * @dreq_service: service code present on the Request (there is just one)
+  * @dreq_featneg: feature negotiation options for this connection
+  * The following two fields are analogous to the ones in dccp_sock:
+@@ -387,7 +389,9 @@ static inline unsigned int dccp_hdr_len(const struct sk_buff *skb)
+ struct dccp_request_sock {
+ 	struct inet_request_sock dreq_inet_rsk;
+ 	__u64			 dreq_iss;
++	__u64			 dreq_gss;
+ 	__u64			 dreq_isr;
++	__u64			 dreq_gsr;
+ 	__be32			 dreq_service;
+ 	struct list_head	 dreq_featneg;
+ 	__u32			 dreq_timestamp_echo;
+diff --git a/net/dccp/ipv4.c b/net/dccp/ipv4.c
+index 1c67fe8ff90d..caf6e1734b62 100644
+--- a/net/dccp/ipv4.c
++++ b/net/dccp/ipv4.c
+@@ -300,7 +300,8 @@ static void dccp_v4_err(struct sk_buff *skb, u32 info)
+ 		 */
+ 		WARN_ON(req-&gt;sk);
+ 
+-		if (seq != dccp_rsk(req)-&gt;dreq_iss) {
++		if (!between48(seq, dccp_rsk(req)-&gt;dreq_iss,
++				    dccp_rsk(req)-&gt;dreq_gss)) {
+ 			NET_INC_STATS_BH(net, LINUX_MIB_OUTOFWINDOWICMPS);
+ 			goto out;
+ 		}
+@@ -639,11 +640,12 @@ int dccp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
+ 	 *
+ 	 * Set S.ISR, S.GSR, S.SWL, S.SWH from packet or Init Cookie
+ 	 *
+-	 * In fact we defer setting S.GSR, S.SWL, S.SWH to
+-	 * dccp_create_openreq_child.
++	 * Setting S.SWL/S.SWH to is deferred to dccp_create_openreq_child().
+ 	 */
+ 	dreq-&gt;dreq_isr	   = dcb-&gt;dccpd_seq;
++	dreq-&gt;dreq_gsr	   = dreq-&gt;dreq_isr;
+ 	dreq-&gt;dreq_iss	   = dccp_v4_init_sequence(skb);
++	dreq-&gt;dreq_gss     = dreq-&gt;dreq_iss;
+ 	dreq-&gt;dreq_service = service;
+ 
+ 	if (dccp_v4_send_response(sk, req, NULL))
+diff --git a/net/dccp/ipv6.c b/net/dccp/ipv6.c
+index ce903f747e64..4dc588f520e0 100644
+--- a/net/dccp/ipv6.c
++++ b/net/dccp/ipv6.c
+@@ -193,7 +193,8 @@ static void dccp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
+ 		 */
+ 		WARN_ON(req-&gt;sk != NULL);
+ 
+-		if (seq != dccp_rsk(req)-&gt;dreq_iss) {
++		if (!between48(seq, dccp_rsk(req)-&gt;dreq_iss,
++				    dccp_rsk(req)-&gt;dreq_gss)) {
+ 			NET_INC_STATS_BH(net, LINUX_MIB_OUTOFWINDOWICMPS);
+ 			goto out;
+ 		}
+@@ -440,11 +441,12 @@ static int dccp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
+ 	 *
+ 	 *   Set S.ISR, S.GSR, S.SWL, S.SWH from packet or Init Cookie
+ 	 *
+-	 *   In fact we defer setting S.GSR, S.SWL, S.SWH to
+-	 *   dccp_create_openreq_child.
++	 * Setting S.SWL/S.SWH to is deferred to dccp_create_openreq_child().
+ 	 */
+ 	dreq-&gt;dreq_isr	   = dcb-&gt;dccpd_seq;
++	dreq-&gt;dreq_gsr     = dreq-&gt;dreq_isr;
+ 	dreq-&gt;dreq_iss	   = dccp_v6_init_sequence(skb);
++	dreq-&gt;dreq_gss     = dreq-&gt;dreq_iss;
+ 	dreq-&gt;dreq_service = service;
+ 
+ 	if (dccp_v6_send_response(sk, req, NULL))
+diff --git a/net/dccp/minisocks.c b/net/dccp/minisocks.c
+index 5a7f90bbffac..ea850ce35d4a 100644
+--- a/net/dccp/minisocks.c
++++ b/net/dccp/minisocks.c
+@@ -127,9 +127,11 @@ struct sock *dccp_create_openreq_child(struct sock *sk,
+ 		 *    activation below, as these windows all depend on the local
+ 		 *    and remote Sequence Window feature values (7.5.2).
+ 		 */
+-		newdp-&gt;dccps_gss = newdp-&gt;dccps_iss = dreq-&gt;dreq_iss;
++		newdp-&gt;dccps_iss = dreq-&gt;dreq_iss;
++		newdp-&gt;dccps_gss = dreq-&gt;dreq_gss;
+ 		newdp-&gt;dccps_gar = newdp-&gt;dccps_iss;
+-		newdp-&gt;dccps_gsr = newdp-&gt;dccps_isr = dreq-&gt;dreq_isr;
++		newdp-&gt;dccps_isr = dreq-&gt;dreq_isr;
++		newdp-&gt;dccps_gsr = dreq-&gt;dreq_gsr;
+ 
+ 		/*
+ 		 * Activate features: initialise CCIDs, sequence windows etc.
+@@ -164,9 +166,9 @@ struct sock *dccp_check_req(struct sock *sk, struct sk_buff *skb,
+ 	/* Check for retransmitted REQUEST */
+ 	if (dccp_hdr(skb)-&gt;dccph_type == DCCP_PKT_REQUEST) {
+ 
+-		if (after48(DCCP_SKB_CB(skb)-&gt;dccpd_seq, dreq-&gt;dreq_isr)) {
++		if (after48(DCCP_SKB_CB(skb)-&gt;dccpd_seq, dreq-&gt;dreq_gsr)) {
+ 			dccp_pr_debug("Retransmitted REQUEST\n");
+-			dreq-&gt;dreq_isr = DCCP_SKB_CB(skb)-&gt;dccpd_seq;
++			dreq-&gt;dreq_gsr = DCCP_SKB_CB(skb)-&gt;dccpd_seq;
+ 			/*
+ 			 * Send another RESPONSE packet
+ 			 * To protect against Request floods, increment retrans
+@@ -186,12 +188,14 @@ struct sock *dccp_check_req(struct sock *sk, struct sk_buff *skb,
+ 		goto drop;
+ 
+ 	/* Invalid ACK */
+-	if (DCCP_SKB_CB(skb)-&gt;dccpd_ack_seq != dreq-&gt;dreq_iss) {
++	if (!between48(DCCP_SKB_CB(skb)-&gt;dccpd_ack_seq,
++				dreq-&gt;dreq_iss, dreq-&gt;dreq_gss)) {
+ 		dccp_pr_debug("Invalid ACK number: ack_seq=%llu, "
+-			      "dreq_iss=%llu\n",
++			      "dreq_iss=%llu, dreq_gss=%llu\n",
+ 			      (unsigned long long)
+ 			      DCCP_SKB_CB(skb)-&gt;dccpd_ack_seq,
+-			      (unsigned long long) dreq-&gt;dreq_iss);
++			      (unsigned long long) dreq-&gt;dreq_iss,
++			      (unsigned long long) dreq-&gt;dreq_gss);
+ 		goto drop;
+ 	}
+ 
+diff --git a/net/dccp/output.c b/net/dccp/output.c
+index dede3edb8849..787367308797 100644
+--- a/net/dccp/output.c
++++ b/net/dccp/output.c
+@@ -408,10 +408,10 @@ struct sk_buff *dccp_make_response(struct sock *sk, struct dst_entry *dst,
+ 	skb_dst_set(skb, dst_clone(dst));
+ 
+ 	dreq = dccp_rsk(req);
+-	if (inet_rsk(req)-&gt;acked)	/* increase ISS upon retransmission */
+-		dccp_inc_seqno(&amp;dreq-&gt;dreq_iss);
++	if (inet_rsk(req)-&gt;acked)	/* increase GSS upon retransmission */
++		dccp_inc_seqno(&amp;dreq-&gt;dreq_gss);
+ 	DCCP_SKB_CB(skb)-&gt;dccpd_type = DCCP_PKT_RESPONSE;
+-	DCCP_SKB_CB(skb)-&gt;dccpd_seq  = dreq-&gt;dreq_iss;
++	DCCP_SKB_CB(skb)-&gt;dccpd_seq  = dreq-&gt;dreq_gss;
+ 
+ 	/* Resolve feature dependencies resulting from choice of CCID */
+ 	if (dccp_feat_server_ccid_dependencies(dreq))
+@@ -429,8 +429,8 @@ struct sk_buff *dccp_make_response(struct sock *sk, struct dst_entry *dst,
+ 			   DCCP_SKB_CB(skb)-&gt;dccpd_opt_len) / 4;
+ 	dh-&gt;dccph_type	= DCCP_PKT_RESPONSE;
+ 	dh-&gt;dccph_x	= 1;
+-	dccp_hdr_set_seq(dh, dreq-&gt;dreq_iss);
+-	dccp_hdr_set_ack(dccp_hdr_ack_bits(skb), dreq-&gt;dreq_isr);
++	dccp_hdr_set_seq(dh, dreq-&gt;dreq_gss);
++	dccp_hdr_set_ack(dccp_hdr_ack_bits(skb), dreq-&gt;dreq_gsr);
+ 	dccp_hdr_response(skb)-&gt;dccph_resp_service = dreq-&gt;dreq_service;
+ 
+ 	dccp_csum_outgoing(skb);</pre><hr><pre>commit d96a9e8dd04cf5ab2782ca6192e395c5ca373f7d
+Author: Samuel Jero &lt;sj323707@ohio.edu&gt;
+Date:   Sun Jul 24 20:57:49 2011 -0600
+
+    dccp ccid-2: check Ack Ratio when reducing cwnd
+    
+    This patch causes CCID-2 to check the Ack Ratio after reducing the congestion
+    window. If the Ack Ratio is greater than the congestion window, it is
+    reduced. This prevents timeouts caused by an Ack Ratio larger than the
+    congestion window.
+    
+    In this situation, we choose to set the Ack Ratio to half the congestion window
+    (or one if that's zero) so that if we loose one ack we don't trigger a timeout.
+    
+    Signed-off-by: Samuel Jero &lt;sj323707@ohio.edu&gt;
+    Acked-by: Gerrit Renker &lt;gerrit@erg.abdn.ac.uk&gt;
+
+diff --git a/net/dccp/ccids/ccid2.c b/net/dccp/ccids/ccid2.c
+index d9dbd9ffe8cd..67164bb6ae4d 100644
+--- a/net/dccp/ccids/ccid2.c
++++ b/net/dccp/ccids/ccid2.c
+@@ -101,6 +101,24 @@ static void ccid2_change_l_ack_ratio(struct sock *sk, u32 val)
+ 				   min_t(u32, val, DCCPF_ACK_RATIO_MAX));
+ }
+ 
++static void ccid2_check_l_ack_ratio(struct sock *sk)
++{
++	struct ccid2_hc_tx_sock *hc = ccid2_hc_tx_sk(sk);
++
++	/*
++	 * After a loss, idle period, application limited period, or RTO we
++	 * need to check that the ack ratio is still less than the congestion
++	 * window. Otherwise, we will send an entire congestion window of
++	 * packets and got no response because we haven't sent ack ratio
++	 * packets yet.
++	 * If the ack ratio does need to be reduced, we reduce it to half of
++	 * the congestion window (or 1 if that's zero) instead of to the
++	 * congestion window. This prevents problems if one ack is lost.
++	 */
++	if (dccp_feat_nn_get(sk, DCCPF_ACK_RATIO) &gt; hc-&gt;tx_cwnd)
++		ccid2_change_l_ack_ratio(sk, hc-&gt;tx_cwnd/2 ? : 1U);
++}
++
+ static void ccid2_change_l_seq_window(struct sock *sk, u64 val)
+ {
+ 	dccp_feat_signal_nn_change(sk, DCCPF_SEQUENCE_WINDOW,
+@@ -187,6 +205,8 @@ static void ccid2_cwnd_application_limited(struct sock *sk, const u32 now)
+ 	}
+ 	hc-&gt;tx_cwnd_used  = 0;
+ 	hc-&gt;tx_cwnd_stamp = now;
++
++	ccid2_check_l_ack_ratio(sk);
+ }
+ 
+ /* This borrows the code of tcp_cwnd_restart() */
+@@ -205,6 +225,8 @@ static void ccid2_cwnd_restart(struct sock *sk, const u32 now)
+ 
+ 	hc-&gt;tx_cwnd_stamp = now;
+ 	hc-&gt;tx_cwnd_used  = 0;
++
++	ccid2_check_l_ack_ratio(sk);
+ }
+ 
+ static void ccid2_hc_tx_packet_sent(struct sock *sk, unsigned int len)
+@@ -461,9 +483,7 @@ static void ccid2_congestion_event(struct sock *sk, struct ccid2_seq *seqp)
+ 	hc-&gt;tx_cwnd      = hc-&gt;tx_cwnd / 2 ? : 1U;
+ 	hc-&gt;tx_ssthresh  = max(hc-&gt;tx_cwnd, 2U);
+ 
+-	/* Avoid spurious timeouts resulting from Ack Ratio &gt; cwnd */
+-	if (dccp_sk(sk)-&gt;dccps_l_ack_ratio &gt; hc-&gt;tx_cwnd)
+-		ccid2_change_l_ack_ratio(sk, hc-&gt;tx_cwnd);
++	ccid2_check_l_ack_ratio(sk);
+ }
+ 
+ static int ccid2_hc_tx_parse_options(struct sock *sk, u8 packet_type,</pre><hr><pre>commit 0ce95dc792549e0cf704e74aa8acb15a401f8cca
+Author: Samuel Jero &lt;sj323707@ohio.edu&gt;
+Date:   Sun Jul 24 21:05:16 2011 -0600
+
+    dccp ccid-2: increment cwnd correctly
+    
+    This patch fixes an issue where CCID-2 will not increase the congestion
+    window for numerous RTTs after an idle period, application-limited period,
+    or a loss once the algorithm is in Congestion Avoidance.
+    
+    What happens is that, when CCID-2 is in Congestion Avoidance mode, it will
+    increase hc-&gt;tx_packets_acked by one for every packet and will increment cwnd
+    every cwnd packets. However, if there is now an idle period in the connection,
+    cwnd will be reduced, possibly below the slow start threshold. This will
+    cause the connection to go into Slow Start. However, in Slow Start CCID-2
+    performs this test to increment cwnd every second ack:
+    
+            ++hc-&gt;tx_packets_acked == 2
+    
+    Unfortunately, this will be incorrect, if cwnd previous to the idle period
+    was larger than 2 and if tx_packets_acked was close to cwnd. For example:
+            cwnd=50  and  tx_packets_acked=45.
+    
+    In this case, the current code, will increment tx_packets_acked until it
+    equals two, which will only be once tx_packets_acked (an unsigned 32-bit
+    integer) overflows.
+    
+    My fix is simply to change that test for tx_packets_acked greater than or
+    equal to two in slow start.
+    
+    Signed-off-by: Samuel Jero &lt;sj323707@ohio.edu&gt;
+    Acked-by: Gerrit Renker &lt;gerrit@erg.abdn.ac.uk&gt;
+
+diff --git a/net/dccp/ccids/ccid2.c b/net/dccp/ccids/ccid2.c
+index 9dbc4d88af16..d9dbd9ffe8cd 100644
+--- a/net/dccp/ccids/ccid2.c
++++ b/net/dccp/ccids/ccid2.c
+@@ -411,7 +411,7 @@ static void ccid2_new_ack(struct sock *sk, struct ccid2_seq *seqp,
+ 	if (hc-&gt;tx_cwnd &lt; dp-&gt;dccps_l_seq_win &amp;&amp;
+ 	    r_seq_used &lt; dp-&gt;dccps_r_seq_win) {
+ 		if (hc-&gt;tx_cwnd &lt; hc-&gt;tx_ssthresh) {
+-			if (*maxincr &gt; 0 &amp;&amp; ++hc-&gt;tx_packets_acked == 2) {
++			if (*maxincr &gt; 0 &amp;&amp; ++hc-&gt;tx_packets_acked &gt;= 2) {
+ 				hc-&gt;tx_cwnd += 1;
+ 				*maxincr    -= 1;
+ 				hc-&gt;tx_packets_acked = 0;</pre><hr><pre>commit d346d886a4c7f771c184e73833133f23a18de884
+Author: Samuel Jero &lt;sj323707@ohio.edu&gt;
+Date:   Sun Jul 24 20:49:19 2011 -0600
+
+    dccp ccid-2: prevent cwnd &gt; Sequence Window
+    
+    Add a check to prevent CCID-2 from increasing the cwnd greater than the
+    Sequence Window.
+    
+    When the congestion window becomes bigger than the Sequence Window, CCID-2
+    will attempt to keep more data in the network than the DCCP Sequence Window
+    code considers possible. This results in the Sequence Window code issuing
+    a Sync, thereby inducing needless overhead. Further, if this occurs at the
+    sender, CCID-2 will never detect the problem because the Acks it receives
+    will indicate no losses. I have seen this cause a drop of 1/3rd in throughput
+    for a connection.
+    
+    Also add code to adjust the Sequence Window to be about 5 times the number of
+    packets in the network (RFC 4340, 7.5.2) and to adjust the Ack Ratio so that
+    the remote Sequence Window will hold about 5 times the number of packets in
+    the network. This allows the congestion window to increase correctly without
+    being limited by the Sequence Window.
+    
+    Signed-off-by: Samuel Jero &lt;sj323707@ohio.edu&gt;
+    Acked-by: Gerrit Renker &lt;gerrit@erg.abdn.ac.uk&gt;
+
+diff --git a/net/dccp/ccids/ccid2.c b/net/dccp/ccids/ccid2.c
+index b51cc92376da..9dbc4d88af16 100644
+--- a/net/dccp/ccids/ccid2.c
++++ b/net/dccp/ccids/ccid2.c
+@@ -85,7 +85,6 @@ static int ccid2_hc_tx_send_packet(struct sock *sk, struct sk_buff *skb)
+ 
+ static void ccid2_change_l_ack_ratio(struct sock *sk, u32 val)
+ {
+-	struct dccp_sock *dp = dccp_sk(sk);
+ 	u32 max_ratio = DIV_ROUND_UP(ccid2_hc_tx_sk(sk)-&gt;tx_cwnd, 2);
+ 
+ 	/*
+@@ -98,14 +97,15 @@ static void ccid2_change_l_ack_ratio(struct sock *sk, u32 val)
+ 		DCCP_WARN("Limiting Ack Ratio (%u) to %u\n", val, max_ratio);
+ 		val = max_ratio;
+ 	}
+-	if (val &gt; DCCPF_ACK_RATIO_MAX)
+-		val = DCCPF_ACK_RATIO_MAX;
+-
+-	if (val == dp-&gt;dccps_l_ack_ratio)
+-		return;
++	dccp_feat_signal_nn_change(sk, DCCPF_ACK_RATIO,
++				   min_t(u32, val, DCCPF_ACK_RATIO_MAX));
++}
+ 
+-	ccid2_pr_debug("changing local ack ratio to %u\n", val);
+-	dp-&gt;dccps_l_ack_ratio = val;
++static void ccid2_change_l_seq_window(struct sock *sk, u64 val)
++{
++	dccp_feat_signal_nn_change(sk, DCCPF_SEQUENCE_WINDOW,
++				   clamp_val(val, DCCPF_SEQ_WMIN,
++						  DCCPF_SEQ_WMAX));
+ }
+ 
+ static void ccid2_hc_tx_rto_expire(unsigned long data)
+@@ -405,17 +405,37 @@ static void ccid2_new_ack(struct sock *sk, struct ccid2_seq *seqp,
+ 			  unsigned int *maxincr)
+ {
+ 	struct ccid2_hc_tx_sock *hc = ccid2_hc_tx_sk(sk);
+-
+-	if (hc-&gt;tx_cwnd &lt; hc-&gt;tx_ssthresh) {
+-		if (*maxincr &gt; 0 &amp;&amp; ++hc-&gt;tx_packets_acked == 2) {
++	struct dccp_sock *dp = dccp_sk(sk);
++	int r_seq_used = hc-&gt;tx_cwnd / dp-&gt;dccps_l_ack_ratio;
++
++	if (hc-&gt;tx_cwnd &lt; dp-&gt;dccps_l_seq_win &amp;&amp;
++	    r_seq_used &lt; dp-&gt;dccps_r_seq_win) {
++		if (hc-&gt;tx_cwnd &lt; hc-&gt;tx_ssthresh) {
++			if (*maxincr &gt; 0 &amp;&amp; ++hc-&gt;tx_packets_acked == 2) {
++				hc-&gt;tx_cwnd += 1;
++				*maxincr    -= 1;
++				hc-&gt;tx_packets_acked = 0;
++			}
++		} else if (++hc-&gt;tx_packets_acked &gt;= hc-&gt;tx_cwnd) {
+ 			hc-&gt;tx_cwnd += 1;
+-			*maxincr    -= 1;
+ 			hc-&gt;tx_packets_acked = 0;
+ 		}
+-	} else if (++hc-&gt;tx_packets_acked &gt;= hc-&gt;tx_cwnd) {
+-			hc-&gt;tx_cwnd += 1;
+-			hc-&gt;tx_packets_acked = 0;
+ 	}
++
++	/*
++	 * Adjust the local sequence window and the ack ratio to allow about
++	 * 5 times the number of packets in the network (RFC 4340 7.5.2)
++	 */
++	if (r_seq_used * CCID2_WIN_CHANGE_FACTOR &gt;= dp-&gt;dccps_r_seq_win)
++		ccid2_change_l_ack_ratio(sk, dp-&gt;dccps_l_ack_ratio * 2);
++	else if (r_seq_used * CCID2_WIN_CHANGE_FACTOR &lt; dp-&gt;dccps_r_seq_win/2)
++		ccid2_change_l_ack_ratio(sk, dp-&gt;dccps_l_ack_ratio / 2 ? : 1U);
++
++	if (hc-&gt;tx_cwnd * CCID2_WIN_CHANGE_FACTOR &gt;= dp-&gt;dccps_l_seq_win)
++		ccid2_change_l_seq_window(sk, dp-&gt;dccps_l_seq_win * 2);
++	else if (hc-&gt;tx_cwnd * CCID2_WIN_CHANGE_FACTOR &lt; dp-&gt;dccps_l_seq_win/2)
++		ccid2_change_l_seq_window(sk, dp-&gt;dccps_l_seq_win / 2);
++
+ 	/*
+ 	 * FIXME: RTT is sampled several times per acknowledgment (for each
+ 	 * entry in the Ack Vector), instead of once per Ack (as in TCP SACK).
+diff --git a/net/dccp/ccids/ccid2.h b/net/dccp/ccids/ccid2.h
+index f585d330e1e5..18c97543e522 100644
+--- a/net/dccp/ccids/ccid2.h
++++ b/net/dccp/ccids/ccid2.h
+@@ -43,6 +43,12 @@ struct ccid2_seq {
+ #define CCID2_SEQBUF_LEN 1024
+ #define CCID2_SEQBUF_MAX 128
+ 
++/*
++ * Multiple of congestion window to keep the sequence window at
++ * (RFC 4340 7.5.2)
++ */
++#define CCID2_WIN_CHANGE_FACTOR 5
++
+ /**
+  * struct ccid2_hc_tx_sock - CCID2 TX half connection
+  * @tx_{cwnd,ssthresh,pipe}: as per RFC 4341, section 5</pre><hr><pre>commit a6444f4237af6c9981ddd45ab35a5c06d4e5a4d8
+Author: Samuel Jero &lt;sj323707@ohio.edu&gt;
+Date:   Sun Jul 24 21:06:37 2011 -0600
+
+    dccp: send Confirm options only once
+    
+    If a connection is in the OPEN state, remove feature negotiation Confirm
+    options from the list of options after sending them once; as such options
+    are NOT supposed to be retransmitted and are ONLY supposed to be sent in
+    response to a Change option (RFC 4340 6.2).
+    
+    Signed-off-by: Samuel Jero &lt;sj323707@ohio.edu&gt;
+    Acked-by: Gerrit Renker &lt;gerrit@erg.abdn.ac.uk&gt;
+
+diff --git a/net/dccp/feat.c b/net/dccp/feat.c
+index ad6f9e2cac1a..23cea0ee3101 100644
+--- a/net/dccp/feat.c
++++ b/net/dccp/feat.c
+@@ -665,11 +665,22 @@ int dccp_feat_insert_opts(struct dccp_sock *dp, struct dccp_request_sock *dreq,
+ 			return -1;
+ 		if (pos-&gt;needs_mandatory &amp;&amp; dccp_insert_option_mandatory(skb))
+ 			return -1;
+-		/*
+-		 * Enter CHANGING after transmitting the Change option (6.6.2).
+-		 */
+-		if (pos-&gt;state == FEAT_INITIALISING)
+-			pos-&gt;state = FEAT_CHANGING;
++
++		if (skb-&gt;sk-&gt;sk_state == DCCP_OPEN &amp;&amp;
++		    (opt == DCCPO_CONFIRM_R || opt == DCCPO_CONFIRM_L)) {
++			/*
++			 * Confirms don't get retransmitted (6.6.3) once the
++			 * connection is in state OPEN
++			 */
++			dccp_feat_list_pop(pos);
++		} else {
++			/*
++			 * Enter CHANGING after transmitting the Change
++			 * option (6.6.2).
++			 */
++			if (pos-&gt;state == FEAT_INITIALISING)
++				pos-&gt;state = FEAT_CHANGING;
++		}
+ 	}
+ 	return 0;
+ }</pre><hr><pre>commit 763dadd47c884853a22f2f19ea27e58431303ff3
+Author: Samuel Jero &lt;sj323707@ohio.edu&gt;
+Date:   Thu Dec 30 12:15:41 2010 +0100
+
+    dccp: fix bug in updating the GSR
+    
+    Currently dccp_check_seqno allows any valid packet to update the Greatest
+    Sequence Number Received, even if that packet's sequence number is less than
+    the current GSR. This patch adds a check to make sure that the new packet's
+    sequence number is greater than GSR.
+    
+    Signed-off-by: Samuel Jero &lt;sj323707@ohio.edu&gt;
+    Signed-off-by: Gerrit Renker &lt;gerrit@erg.abdn.ac.uk&gt;
+
+diff --git a/net/dccp/dccp.h b/net/dccp/dccp.h
+index 45087052d894..5fdb07229017 100644
+--- a/net/dccp/dccp.h
++++ b/net/dccp/dccp.h
+@@ -426,7 +426,8 @@ static inline void dccp_update_gsr(struct sock *sk, u64 seq)
+ {
+ 	struct dccp_sock *dp = dccp_sk(sk);
+ 
+-	dp-&gt;dccps_gsr = seq;
++	if (after48(seq, dp-&gt;dccps_gsr))
++		dp-&gt;dccps_gsr = seq;
+ 	/* Sequence validity window depends on remote Sequence Window (7.5.1) */
+ 	dp-&gt;dccps_swl = SUB48(ADD48(dp-&gt;dccps_gsr, 1), dp-&gt;dccps_r_seq_win / 4);
+ 	/*</pre><hr><pre>commit 2cf5be93d1b704f342ad423a49f0e78d73939e66
+Author: Samuel Jero &lt;sj323707@ohio.edu&gt;
+Date:   Thu Dec 30 12:15:16 2010 +0100
+
+    dccp: fix return value for sequence-invalid packets
+    
+    Currently dccp_check_seqno returns 0 (indicating a valid packet) if the
+    acknowledgment number is out of bounds and the sync that RFC 4340 mandates at
+    this point is currently being rate-limited. This function should return -1,
+    indicating an invalid packet.
+    
+    Signed-off-by: Samuel Jero &lt;sj323707@ohio.edu&gt;
+    Acked-by: Gerrit Renker &lt;gerrit@erg.abdn.ac.uk&gt;
+
+diff --git a/net/dccp/input.c b/net/dccp/input.c
+index 15af247ea007..8cde009e8b85 100644
+--- a/net/dccp/input.c
++++ b/net/dccp/input.c
+@@ -260,7 +260,7 @@ static int dccp_check_seqno(struct sock *sk, struct sk_buff *skb)
+ 		 */
+ 		if (time_before(now, (dp-&gt;dccps_rate_last +
+ 				      sysctl_dccp_sync_ratelimit)))
+-			return 0;
++			return -1;
+ 
+ 		DCCP_WARN("Step 6 failed for %s packet, "
+ 			  "(LSWL(%llu) &lt;= P.seqno(%llu) &lt;= S.SWH(%llu)) and "</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

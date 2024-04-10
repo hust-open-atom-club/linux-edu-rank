@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_37.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><span>[38]</span><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_39.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 404ec117be5d36e1a4c4582d0c518594333e32df
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri Nov 23 22:26:18 2007 -0500
+
+    nfsd4: recognize callback channel failure earlier
+    
+    When the callback channel fails, we inform the client of that by
+    returning a cb_path_down error the next time it tries to renew its
+    lease.
+    
+    If we wait most of a lease period before deciding that a callback has
+    failed and that the callback channel is down, then we decrease the
+    chances that the client will find out in time to do anything about it.
+    
+    So, mark the channel down as soon as we recognize that an rpc has
+    failed.  However, continue trying to recall delegations anyway, in hopes
+    it will come back up.  This will prevent more delegations from being
+    given out, and ensure cb_path_down is returned to renew calls earlier,
+    while still making the best effort to deliver recalls of existing
+    delegations.
+    
+    Also fix a couple comments and remove a dprink that doesn't seem likely
+    to be useful.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 6eb5cd2381ab..aae2b29ae2c9 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -457,9 +457,6 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ 	int retries = 1;
+ 	int status = 0;
+ 
+-	if ((!atomic_read(&amp;clp-&gt;cl_callback.cb_set)) || !clnt)
+-		return;
+-
+ 	cbr-&gt;cbr_trunc = 0; /* XXX need to implement truncate optimization */
+ 	cbr-&gt;cbr_dp = dp;
+ 
+@@ -468,6 +465,7 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ 		switch (status) {
+ 			case -EIO:
+ 				/* Network partition? */
++				atomic_set(&amp;clp-&gt;cl_callback.cb_set, 0);
+ 			case -EBADHANDLE:
+ 			case -NFS4ERR_BAD_STATEID:
+ 				/* Race: client probably got cb_recall
+@@ -480,11 +478,10 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ 		status = rpc_call_sync(clnt, &amp;msg, RPC_TASK_SOFT);
+ 	}
+ out_put_cred:
+-	if (status == -EIO)
+-		atomic_set(&amp;clp-&gt;cl_callback.cb_set, 0);
+-	/* Success or failure, now we're either waiting for lease expiration
+-	 * or deleg_return. */
+-	dprintk("NFSD: nfs4_cb_recall: dp %p dl_flock %p dl_count %d\n",dp, dp-&gt;dl_flock, atomic_read(&amp;dp-&gt;dl_count));
++	/*
++	 * Success or failure, now we're either waiting for lease expiration
++	 * or deleg_return.
++	 */
+ 	put_nfs4_client(clp);
+ 	nfs4_put_delegation(dp);
+ 	return;
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index b9d395856b3a..11aa4b6b4fa2 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -361,8 +361,11 @@ shutdown_callback_client(struct nfs4_client *clp)
+ {
+ 	struct rpc_clnt *clnt = clp-&gt;cl_callback.cb_client;
+ 
+-	/* shutdown rpc client, ending any outstanding recall rpcs */
+ 	if (clnt) {
++		/*
++		 * Callback threads take a reference on the client, so there
++		 * should be no outstanding callbacks at this point.
++		 */
+ 		clp-&gt;cl_callback.cb_client = NULL;
+ 		rpc_shutdown_client(clnt);
+ 	}</pre><hr><pre>commit 35bba9a37e68c68a820a1a772f016255c0838f79
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Nov 21 22:07:08 2007 -0500
+
+    nfsd4: miscellaneous nfs4state.c style fixes
+    
+    Fix various minor style violations.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 78b9139cdd0f..b9d395856b3a 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -339,21 +339,20 @@ STALE_CLIENTID(clientid_t *clid)
+  * This type of memory management is somewhat inefficient, but we use it
+  * anyway since SETCLIENTID is not a common operation.
+  */
+-static inline struct nfs4_client *
+-alloc_client(struct xdr_netobj name)
++static struct nfs4_client *alloc_client(struct xdr_netobj name)
+ {
+ 	struct nfs4_client *clp;
+ 
+-	if ((clp = kzalloc(sizeof(struct nfs4_client), GFP_KERNEL))!= NULL) {
+-		if ((clp-&gt;cl_name.data = kmalloc(name.len, GFP_KERNEL)) != NULL) {
+-			memcpy(clp-&gt;cl_name.data, name.data, name.len);
+-			clp-&gt;cl_name.len = name.len;
+-		}
+-		else {
+-			kfree(clp);
+-			clp = NULL;
+-		}
++	clp = kzalloc(sizeof(struct nfs4_client), GFP_KERNEL);
++	if (clp == NULL)
++		return NULL;
++	clp-&gt;cl_name.data = kmalloc(name.len, GFP_KERNEL);
++	if (clp-&gt;cl_name.data == NULL) {
++		kfree(clp);
++		return NULL;
+ 	}
++	memcpy(clp-&gt;cl_name.data, name.data, name.len);
++	clp-&gt;cl_name.len = name.len;
+ 	return clp;
+ }
+ 
+@@ -421,12 +420,13 @@ expire_client(struct nfs4_client *clp)
+ 	put_nfs4_client(clp);
+ }
+ 
+-static struct nfs4_client *
+-create_client(struct xdr_netobj name, char *recdir) {
++static struct nfs4_client *create_client(struct xdr_netobj name, char *recdir)
++{
+ 	struct nfs4_client *clp;
+ 
+-	if (!(clp = alloc_client(name)))
+-		goto out;
++	clp = alloc_client(name);
++	if (clp == NULL)
++		return NULL;
+ 	memcpy(clp-&gt;cl_recdir, recdir, HEXDIR_LEN);
+ 	atomic_set(&amp;clp-&gt;cl_count, 1);
+ 	atomic_set(&amp;clp-&gt;cl_callback.cb_set, 0);
+@@ -435,32 +435,30 @@ create_client(struct xdr_netobj name, char *recdir) {
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_openowners);
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_delegations);
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_lru);
+-out:
+ 	return clp;
+ }
+ 
+-static void
+-copy_verf(struct nfs4_client *target, nfs4_verifier *source) {
+-	memcpy(target-&gt;cl_verifier.data, source-&gt;data, sizeof(target-&gt;cl_verifier.data));
++static void copy_verf(struct nfs4_client *target, nfs4_verifier *source)
++{
++	memcpy(target-&gt;cl_verifier.data, source-&gt;data,
++			sizeof(target-&gt;cl_verifier.data));
+ }
+ 
+-static void
+-copy_clid(struct nfs4_client *target, struct nfs4_client *source) {
++static void copy_clid(struct nfs4_client *target, struct nfs4_client *source)
++{
+ 	target-&gt;cl_clientid.cl_boot = source-&gt;cl_clientid.cl_boot; 
+ 	target-&gt;cl_clientid.cl_id = source-&gt;cl_clientid.cl_id; 
+ }
+ 
+-static void
+-copy_cred(struct svc_cred *target, struct svc_cred *source) {
+-
++static void copy_cred(struct svc_cred *target, struct svc_cred *source)
++{
+ 	target-&gt;cr_uid = source-&gt;cr_uid;
+ 	target-&gt;cr_gid = source-&gt;cr_gid;
+ 	target-&gt;cr_group_info = source-&gt;cr_group_info;
+ 	get_group_info(target-&gt;cr_group_info);
+ }
+ 
+-static inline int
+-same_name(const char *n1, const char *n2)
++static int same_name(const char *n1, const char *n2)
+ {
+ 	return 0 == memcmp(n1, n2, HEXDIR_LEN);
+ }
+@@ -502,9 +500,8 @@ static void gen_confirm(struct nfs4_client *clp)
+ 	*p++ = i++;
+ }
+ 
+-static int
+-check_name(struct xdr_netobj name) {
+-
++static int check_name(struct xdr_netobj name)
++{
+ 	if (name.len == 0) 
+ 		return 0;
+ 	if (name.len &gt; NFS4_OPAQUE_LIMIT) {</pre><hr><pre>commit 5ec7b46c2f4a6f5e136188d598a3f9912ca922e9
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Nov 21 21:58:56 2007 -0500
+
+    nfsd4: make current_clientid local
+    
+    Declare this variable in the one function where it's used, and clean up
+    some minor style problems.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 60cc937b7076..78b9139cdd0f 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -61,7 +61,6 @@ static time_t lease_time = 90;     /* default lease time */
+ static time_t user_lease_time = 90;
+ static time_t boot_time;
+ static int in_grace = 1;
+-static u32 current_clientid = 1;
+ static u32 current_ownerid = 1;
+ static u32 current_fileid = 1;
+ static u32 current_delegid = 1;
+@@ -485,8 +484,10 @@ same_creds(struct svc_cred *cr1, struct svc_cred *cr2)
+ 	return cr1-&gt;cr_uid == cr2-&gt;cr_uid;
+ }
+ 
+-static void
+-gen_clid(struct nfs4_client *clp) {
++static void gen_clid(struct nfs4_client *clp)
++{
++	static u32 current_clientid = 1;
++
+ 	clp-&gt;cl_clientid.cl_boot = boot_time;
+ 	clp-&gt;cl_clientid.cl_id = current_clientid++; 
+ }</pre><hr><pre>commit 99d965eda736b839a63fe85438ee03a0f660053c
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Nov 21 14:10:07 2007 -0500
+
+    nfsd: fix encode_entryplus_baggage() indentation
+    
+    Fix bizarre indentation.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs3xdr.c b/fs/nfsd/nfs3xdr.c
+index 4b1ffe3be7e2..d7647f70e02b 100644
+--- a/fs/nfsd/nfs3xdr.c
++++ b/fs/nfsd/nfs3xdr.c
+@@ -817,11 +817,11 @@ static __be32 *
+ encode_entryplus_baggage(struct nfsd3_readdirres *cd, __be32 *p,
+ 		struct svc_fh *fhp)
+ {
+-		p = encode_post_op_attr(cd-&gt;rqstp, p, fhp);
+-		*p++ = xdr_one;			/* yes, a file handle follows */
+-		p = encode_fh(p, fhp);
+-		fh_put(fhp);
+-		return p;
++	p = encode_post_op_attr(cd-&gt;rqstp, p, fhp);
++	*p++ = xdr_one;			/* yes, a file handle follows */
++	p = encode_fh(p, fhp);
++	fh_put(fhp);
++	return p;
+ }
+ 
+ static int</pre><hr><pre>commit 366e0c1d9116ed03320779ecf9c162204f4c712e
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Nov 20 15:54:10 2007 -0500
+
+    nfsd4: kill unneeded cl_confirm check
+    
+    We generate a unique cl_confirm for every new client; so if we've
+    already checked that this cl_confirm agrees with the cl_confirm of
+    unconf, then we already know that it does not agree with the cl_confirm
+    of conf.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 23b5fc71f9fb..60cc937b7076 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -835,9 +835,7 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 	 * SETCLIENTID_CONFIRM request processing consisting
+ 	 * of 4 bullet points, labeled as CASE1 - CASE4 below.
+ 	 */
+-	if ((conf &amp;&amp; unconf) &amp;&amp; 
+-	    (same_verf(&amp;unconf-&gt;cl_confirm, &amp;confirm)) &amp;&amp;
+-	    (!same_verf(&amp;conf-&gt;cl_confirm, &amp;unconf-&gt;cl_confirm))) {
++	if (conf &amp;&amp; unconf &amp;&amp; same_verf(&amp;confirm, &amp;unconf-&gt;cl_confirm)) {
+ 		/*
+ 		 * RFC 3530 14.2.34 CASE 1:
+ 		 * callback update</pre><hr><pre>commit f3aba4e5a1b963c8bd43394cb15fb9fb6a229cd2
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Nov 20 16:52:07 2007 -0500
+
+    nfsd4: remove unnecessary cl_verifier check from setclientid_confirm
+    
+    Again, the only way conf and unconf can have the same clientid is if
+    they were created in the "probable callback update" case of setclientid,
+    in which case we already know that the cl_verifier fields must agree.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index df3e7a7ad31e..23b5fc71f9fb 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -837,7 +837,6 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 	 */
+ 	if ((conf &amp;&amp; unconf) &amp;&amp; 
+ 	    (same_verf(&amp;unconf-&gt;cl_confirm, &amp;confirm)) &amp;&amp;
+-	    (same_verf(&amp;conf-&gt;cl_verifier, &amp;unconf-&gt;cl_verifier)) &amp;&amp;
+ 	    (!same_verf(&amp;conf-&gt;cl_confirm, &amp;unconf-&gt;cl_confirm))) {
+ 		/*
+ 		 * RFC 3530 14.2.34 CASE 1:
+@@ -855,9 +854,7 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 			status = nfs_ok;
+ 
+ 		}
+-	} else if ((conf &amp;&amp; !unconf) ||
+-	    ((conf &amp;&amp; unconf) &amp;&amp; 
+-	     !same_verf(&amp;conf-&gt;cl_verifier, &amp;unconf-&gt;cl_verifier))) {
++	} else if (conf &amp;&amp; !unconf) {
+ 		/*
+ 		 * RFC 3530 14.2.34 CASE 2:
+ 		 * probable retransmitted request; play it safe and</pre><hr><pre>commit f394baad139f8a67a40b4246d53d3b818af2eb88
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Nov 20 15:39:07 2007 -0500
+
+    nfsd4: kill unnecessary same_name() in setclientid_confirm
+    
+    If conf and unconf are both found in the lookup by cl_clientid, then
+    they share the same cl_clientid.  We always create a unique new
+    cl_clientid field when creating a new client--the only exception is the
+    "probable callback update" case in setclientid, where we copy the old
+    cl_clientid from another clientid with the same name.
+    
+    Therefore two clients with the same cl_client field also always share
+    the same cl_name field, and a couple of the checks here are redundant.
+    
+    Thanks to Simon Holm Thøgersen for a compile fix.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Simon Holm Thøgersen &lt;odie@cs.aau.dk&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 9f6322e830fa..df3e7a7ad31e 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -838,7 +838,6 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 	if ((conf &amp;&amp; unconf) &amp;&amp; 
+ 	    (same_verf(&amp;unconf-&gt;cl_confirm, &amp;confirm)) &amp;&amp;
+ 	    (same_verf(&amp;conf-&gt;cl_verifier, &amp;unconf-&gt;cl_verifier)) &amp;&amp;
+-	    (same_name(conf-&gt;cl_recdir,unconf-&gt;cl_recdir))  &amp;&amp;
+ 	    (!same_verf(&amp;conf-&gt;cl_confirm, &amp;unconf-&gt;cl_confirm))) {
+ 		/*
+ 		 * RFC 3530 14.2.34 CASE 1:
+@@ -858,8 +857,7 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 		}
+ 	} else if ((conf &amp;&amp; !unconf) ||
+ 	    ((conf &amp;&amp; unconf) &amp;&amp; 
+-	     (!same_verf(&amp;conf-&gt;cl_verifier, &amp;unconf-&gt;cl_verifier) ||
+-	      !same_name(conf-&gt;cl_recdir, unconf-&gt;cl_recdir)))) {
++	     !same_verf(&amp;conf-&gt;cl_verifier, &amp;unconf-&gt;cl_verifier))) {
+ 		/*
+ 		 * RFC 3530 14.2.34 CASE 2:
+ 		 * probable retransmitted request; play it safe and</pre><hr><pre>commit deda2faa8e71474c828d8eefc8bc0f19d02062ef
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Nov 19 20:31:04 2007 -0500
+
+    nfsd: uniquify cl_confirm values
+    
+    Using a counter instead of the nanoseconds value seems more likely to
+    produce a unique cl_confirm.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 035e70a01027..9f6322e830fa 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -491,15 +491,14 @@ gen_clid(struct nfs4_client *clp) {
+ 	clp-&gt;cl_clientid.cl_id = current_clientid++; 
+ }
+ 
+-static void
+-gen_confirm(struct nfs4_client *clp) {
+-	struct timespec 	tv;
+-	u32 *			p;
++static void gen_confirm(struct nfs4_client *clp)
++{
++	static u32 i;
++	u32 *p;
+ 
+-	tv = CURRENT_TIME;
+ 	p = (u32 *)clp-&gt;cl_confirm.data;
+-	*p++ = tv.tv_sec;
+-	*p++ = tv.tv_nsec;
++	*p++ = get_seconds();
++	*p++ = i++;
+ }
+ 
+ static int</pre><hr><pre>commit 49ba87811f34a0219dc7a373cd24aa68450f2058
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Nov 19 19:09:50 2007 -0500
+
+    nfsd: eliminate final bogus case from setclientid logic
+    
+    We're supposed to generate a different cl_confirm verifier for each new
+    client, so these to cl_confirm values should never be the same.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 242fee7c1018..035e70a01027 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -769,7 +769,7 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 		if (new == NULL)
+ 			goto out;
+ 		gen_clid(new);
+-	} else if (!same_verf(&amp;conf-&gt;cl_confirm, &amp;unconf-&gt;cl_confirm)) {
++	} else {
+ 		/*
+ 		 * RFC 3530 14.2.33 CASE 3:
+ 		 * probable client reboot; state will be removed if
+@@ -780,11 +780,6 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 		if (new == NULL)
+ 			goto out;
+ 		gen_clid(new);
+-	} else {
+-		/* No cases hit !!! */
+-		status = nfserr_inval;
+-		goto out;
+-
+ 	}
+ 	copy_verf(new, &amp;clverifier);
+ 	new-&gt;cl_addr = sin-&gt;sin_addr.s_addr;</pre><hr><pre>commit a186e767473bd329122f0229b91573b9b6fa43c1
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Nov 20 16:11:27 2007 -0500
+
+    nfsd4: kill some unneeded setclientid comments
+    
+    Most of these comments just summarize the code.
+    
+    The matching of code to the cases described in the RFC may still be
+    useful, though; add specific section references to make that easier to
+    follow.  Also update references to the outdated RFC 3010.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 9d81c7117ae6..242fee7c1018 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -683,39 +683,6 @@ gen_callback(struct nfs4_client *clp, struct nfsd4_setclientid *se)
+ 	return;
+ }
+ 
+-/*
+- * RFC 3010 has a complex implmentation description of processing a 
+- * SETCLIENTID request consisting of 5 bullets, labeled as 
+- * CASE0 - CASE4 below.
+- *
+- * NOTES:
+- * 	callback information will be processed in a future patch
+- *
+- *	an unconfirmed record is added when:
+- *      NORMAL (part of CASE 4): there is no confirmed nor unconfirmed record.
+- *	CASE 1: confirmed record found with matching name, principal,
+- *		verifier, and clientid.
+- *	CASE 2: confirmed record found with matching name, principal,
+- *		and there is no unconfirmed record with matching
+- *		name and principal
+- *
+- *      an unconfirmed record is replaced when:
+- *	CASE 3: confirmed record found with matching name, principal,
+- *		and an unconfirmed record is found with matching 
+- *		name, principal, and with clientid and
+- *		confirm that does not match the confirmed record.
+- *	CASE 4: there is no confirmed record with matching name and 
+- *		principal. there is an unconfirmed record with 
+- *		matching name, principal.
+- *
+- *	an unconfirmed record is deleted when:
+- *	CASE 1: an unconfirmed record that matches input name, verifier,
+- *		and confirmed clientid.
+- *	CASE 4: any unconfirmed records with matching name and principal
+- *		that exist after an unconfirmed record has been replaced
+- *		as described above.
+- *
+- */
+ __be32
+ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 		  struct nfsd4_setclientid *setclid)
+@@ -748,11 +715,7 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	nfs4_lock_state();
+ 	conf = find_confirmed_client_by_str(dname, strhashval);
+ 	if (conf) {
+-		/* 
+-		 * CASE 0:
+-		 * clname match, confirmed, different principal
+-		 * or different ip_address
+-		 */
++		/* RFC 3530 14.2.33 CASE 0: */
+ 		status = nfserr_clid_inuse;
+ 		if (!same_creds(&amp;conf-&gt;cl_cred, &amp;rqstp-&gt;rq_cred)
+ 				|| conf-&gt;cl_addr != sin-&gt;sin_addr.s_addr) {
+@@ -761,12 +724,17 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 			goto out;
+ 		}
+ 	}
++	/*
++	 * section 14.2.33 of RFC 3530 (under the heading "IMPLEMENTATION")
++	 * has a description of SETCLIENTID request processing consisting
++	 * of 5 bullet points, labeled as CASE0 - CASE4 below.
++	 */
+ 	unconf = find_unconfirmed_client_by_str(dname, strhashval);
+ 	status = nfserr_resource;
+ 	if (!conf) {
+-		/* 
+-		 * CASE 4:
+-		 * placed first, because it is the normal case.
++		/*
++		 * RFC 3530 14.2.33 CASE 4:
++		 * placed first, because it is the normal case
+ 		 */
+ 		if (unconf)
+ 			expire_client(unconf);
+@@ -776,17 +744,8 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 		gen_clid(new);
+ 	} else if (same_verf(&amp;conf-&gt;cl_verifier, &amp;clverifier)) {
+ 		/*
+-		 * CASE 1:
+-		 * cl_name match, confirmed, principal match
+-		 * verifier match: probable callback update
+-		 *
+-		 * remove any unconfirmed nfs4_client with 
+-		 * matching cl_name, cl_verifier, and cl_clientid
+-		 *
+-		 * create and insert an unconfirmed nfs4_client with same 
+-		 * cl_name, cl_verifier, and cl_clientid as existing 
+-		 * nfs4_client,  but with the new callback info and a 
+-		 * new cl_confirm
++		 * RFC 3530 14.2.33 CASE 1:
++		 * probable callback update
+ 		 */
+ 		if (unconf) {
+ 			/* Note this is removing unconfirmed {*x***},
+@@ -802,32 +761,19 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 		copy_clid(new, conf);
+ 	} else if (!unconf) {
+ 		/*
+-		 * CASE 2:
+-		 * clname match, confirmed, principal match
+-		 * verfier does not match
+-		 * no unconfirmed. create a new unconfirmed nfs4_client
+-		 * using input clverifier, clname, and callback info
+-		 * and generate a new cl_clientid and cl_confirm.
++		 * RFC 3530 14.2.33 CASE 2:
++		 * probable client reboot; state will be removed if
++		 * confirmed.
+ 		 */
+ 		new = create_client(clname, dname);
+ 		if (new == NULL)
+ 			goto out;
+ 		gen_clid(new);
+ 	} else if (!same_verf(&amp;conf-&gt;cl_confirm, &amp;unconf-&gt;cl_confirm)) {
+-		/*	
+-		 * CASE3:
+-		 * confirmed found (name, principal match)
+-		 * confirmed verifier does not match input clverifier
+-		 *
+-		 * unconfirmed found (name match)
+-		 * confirmed-&gt;cl_confirm != unconfirmed-&gt;cl_confirm
+-		 *
+-		 * remove unconfirmed.
+-		 *
+-		 * create an unconfirmed nfs4_client 
+-		 * with same cl_name as existing confirmed nfs4_client, 
+-		 * but with new callback info, new cl_clientid,
+-		 * new cl_verifier and a new cl_confirm
++		/*
++		 * RFC 3530 14.2.33 CASE 3:
++		 * probable client reboot; state will be removed if
++		 * confirmed.
+ 		 */
+ 		expire_client(unconf);
+ 		new = create_client(clname, dname);
+@@ -857,11 +803,9 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 
+ 
+ /*
+- * RFC 3010 has a complex implmentation description of processing a 
+- * SETCLIENTID_CONFIRM request consisting of 4 bullets describing
+- * processing on a DRC miss, labeled as CASE1 - CASE4 below.
+- *
+- * NOTE: callback information will be processed here in a future patch
++ * Section 14.2.34 of RFC 3530 (under the heading "IMPLEMENTATION") has
++ * a description of SETCLIENTID_CONFIRM request processing consisting of 4
++ * bullets, labeled as CASE1 - CASE4 below.
+  */
+ __be32
+ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+@@ -892,16 +836,20 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 	if (unconf &amp;&amp; unconf-&gt;cl_addr != sin-&gt;sin_addr.s_addr)
+ 		goto out;
+ 
++	/*
++	 * section 14.2.34 of RFC 3530 has a description of
++	 * SETCLIENTID_CONFIRM request processing consisting
++	 * of 4 bullet points, labeled as CASE1 - CASE4 below.
++	 */
+ 	if ((conf &amp;&amp; unconf) &amp;&amp; 
+ 	    (same_verf(&amp;unconf-&gt;cl_confirm, &amp;confirm)) &amp;&amp;
+ 	    (same_verf(&amp;conf-&gt;cl_verifier, &amp;unconf-&gt;cl_verifier)) &amp;&amp;
+ 	    (same_name(conf-&gt;cl_recdir,unconf-&gt;cl_recdir))  &amp;&amp;
+ 	    (!same_verf(&amp;conf-&gt;cl_confirm, &amp;unconf-&gt;cl_confirm))) {
+-		/* CASE 1:
+-		* unconf record that matches input clientid and input confirm.
+-		* conf record that matches input clientid.
+-		* conf and unconf records match names, verifiers
+-		*/
++		/*
++		 * RFC 3530 14.2.34 CASE 1:
++		 * callback update
++		 */
+ 		if (!same_creds(&amp;conf-&gt;cl_cred, &amp;unconf-&gt;cl_cred))
+ 			status = nfserr_clid_inuse;
+ 		else {
+@@ -918,11 +866,10 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 	    ((conf &amp;&amp; unconf) &amp;&amp; 
+ 	     (!same_verf(&amp;conf-&gt;cl_verifier, &amp;unconf-&gt;cl_verifier) ||
+ 	      !same_name(conf-&gt;cl_recdir, unconf-&gt;cl_recdir)))) {
+-		/* CASE 2:
+-		 * conf record that matches input clientid.
+-		 * if unconf record matches input clientid, then
+-		 * unconf-&gt;cl_name or unconf-&gt;cl_verifier don't match the
+-		 * conf record.
++		/*
++		 * RFC 3530 14.2.34 CASE 2:
++		 * probable retransmitted request; play it safe and
++		 * do nothing.
+ 		 */
+ 		if (!same_creds(&amp;conf-&gt;cl_cred, &amp;rqstp-&gt;rq_cred))
+ 			status = nfserr_clid_inuse;
+@@ -930,10 +877,9 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 			status = nfs_ok;
+ 	} else if (!conf &amp;&amp; unconf
+ 			&amp;&amp; same_verf(&amp;unconf-&gt;cl_confirm, &amp;confirm)) {
+-		/* CASE 3:
+-		 * conf record not found.
+-		 * unconf record found.
+-		 * unconf-&gt;cl_confirm matches input confirm
++		/*
++		 * RFC 3530 14.2.34 CASE 3:
++		 * Normal case; new or rebooted client:
+ 		 */
+ 		if (!same_creds(&amp;unconf-&gt;cl_cred, &amp;rqstp-&gt;rq_cred)) {
+ 			status = nfserr_clid_inuse;
+@@ -954,11 +900,9 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 	} else if ((!conf || (conf &amp;&amp; !same_verf(&amp;conf-&gt;cl_confirm, &amp;confirm)))
+ 	    &amp;&amp; (!unconf || (unconf &amp;&amp; !same_verf(&amp;unconf-&gt;cl_confirm,
+ 				    				&amp;confirm)))) {
+-		/* CASE 4:
+-		 * conf record not found, or if conf, conf-&gt;cl_confirm does not
+-		 * match input confirm.
+-		 * unconf record not found, or if unconf, unconf-&gt;cl_confirm
+-		 * does not match input confirm.
++		/*
++		 * RFC 3530 14.2.34 CASE 4:
++		 * Client probably hasn't noticed that we rebooted yet.
+ 		 */
+ 		status = nfserr_stale_clientid;
+ 	} else {</pre>
+    <div class="pagination">
+        <a href='4_37.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><span>[38]</span><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_39.html'>Next&gt;&gt;</a>
+    <div>
+</body>

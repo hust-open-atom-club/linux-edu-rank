@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Washington</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Washington</h1>
+    <div class="pagination">
+        <a href='13_6.html'>&lt;&lt;Prev</a><a href='13.html'>1</a><a href='13_2.html'>2</a><a href='13_3.html'>3</a><a href='13_4.html'>4</a><a href='13_5.html'>5</a><a href='13_6.html'>6</a><span>[7]</span><a href='13_8.html'>8</a><a href='13_8.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 5e2f75b8993a0d83d469388b50716dd5551f2eb4
+Author: Dan Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Thu Feb 18 22:01:39 2010 -0800
+
+    iwlwifi: set HT flags after channel in rxon
+    
+    The HT extension channel settings require priv-&gt;staging_rxon.channel to be
+    accurate. However, iwl_set_rxon_ht was being called before iwl_set_rxon_channel
+    and thus HT40 could be broken unless another call to iwl_mac_config came in.
+    
+    This problem was recently introduced by "iwlwifi: Fix to set correct ht
+    configuration"
+    
+    The particular setting in which I noticed this was monitor mode:
+    
+            iwconfig wlan0 mode monitor
+            ifconfig wlan0 up
+            ./iw wlan0 set channel 64 HT40-
+            #./iw wlan0 set channel 64 HT40-
+            tcpdump -i wlan0 -y IEEE802_11_RADIO
+    
+    would only catch HT40 packets if I issued the IW command twice.
+    
+    From visual inspection, iwl_set_rxon_channel does not depend on
+    iwl_set_rxon_ht, so simply swapping them should be safe and fixes this problem.
+    
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Acked-by: Wey-Yi Guy &lt;wey-yi.w.guy@intel.com&gt;
+    Signed-off-by: Reinette Chatre &lt;reinette.chatre@intel.com&gt;
+    CC: stable@kernel.org
+    Signed-off-by: John W. Linville &lt;linville@tuxdriver.com&gt;
+
+diff --git a/drivers/net/wireless/iwlwifi/iwl-core.c b/drivers/net/wireless/iwlwifi/iwl-core.c
+index d10bea64fce3..f36f804804fc 100644
+--- a/drivers/net/wireless/iwlwifi/iwl-core.c
++++ b/drivers/net/wireless/iwlwifi/iwl-core.c
+@@ -2744,8 +2744,8 @@ int iwl_mac_config(struct ieee80211_hw *hw, u32 changed)
+ 		if ((le16_to_cpu(priv-&gt;staging_rxon.channel) != ch))
+ 			priv-&gt;staging_rxon.flags = 0;
+ 
+-		iwl_set_rxon_ht(priv, ht_conf);
+ 		iwl_set_rxon_channel(priv, conf-&gt;channel);
++		iwl_set_rxon_ht(priv, ht_conf);
+ 
+ 		iwl_set_flags_for_band(priv, conf-&gt;channel-&gt;band);
+ 		spin_unlock_irqrestore(&amp;priv-&gt;lock, flags);</pre><hr><pre>commit 49dcc819b077c2d473062e17d5a1373a8b660e02
+Author: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Tue Jan 19 10:22:19 2010 -0800
+
+    iwlwifi: optimize power saving
+    
+    In hostap AP mode, every time the client sends the AP
+    a packet the STA_NOTIFY_AWAKE code is sent from mac80211.
+    This results in a command being sent to the uCode even if
+    the client was not asleep.
+    
+    The following simple patch has fixed the issue for me without any
+    degradation that I can find.
+    
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Acked-by: Johannes Berg &lt;johannes@sipsolutions.net&gt;
+    Signed-off-by: Reinette Chatre &lt;reinette.chatre@intel.com&gt;
+
+diff --git a/drivers/net/wireless/iwlwifi/iwl-agn.c b/drivers/net/wireless/iwlwifi/iwl-agn.c
+index 4a268927377b..380d2087bf3a 100644
+--- a/drivers/net/wireless/iwlwifi/iwl-agn.c
++++ b/drivers/net/wireless/iwlwifi/iwl-agn.c
+@@ -3007,6 +3007,8 @@ static void iwl_mac_sta_notify(struct ieee80211_hw *hw,
+ 		break;
+ 	case STA_NOTIFY_AWAKE:
+ 		WARN_ON(!sta_priv-&gt;client);
++		if (!sta_priv-&gt;asleep)
++			break;
+ 		sta_priv-&gt;asleep = false;
+ 		sta_id = iwl_find_station(priv, sta-&gt;addr);
+ 		if (sta_id != IWL_INVALID_STATION)</pre><hr><pre>commit ff27fabe62d288038b36f41ac6a2190ed7d15993
+Author: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+Date:   Fri Jan 22 14:22:58 2010 -0800
+
+    iwlwifi: fix throughput degradation in aggregation mode
+    
+    The following commit
+    
+            commit e4da8c37af626001ff704fb29ea14eb58f5f7208
+            Author: Johannes Berg &lt;johannes@sipsolutions.net&gt;
+            Date:   Wed Dec 23 13:15:43 2009 +0100
+    
+               mac80211: make off-channel work generic
+    
+    triggered a bug in iwlwifi where HT parameters would not be correctly set in
+    some mac80211 pathways. The aggregation (and possibly other) station flags were
+    not being set, which limited the size of aggregation blocks and reduced
+    throughput at high rates.
+    
+    &gt;From Johannes:
+    """
+    Due to Wey-Yi's patch to use the set-channel command when the channel changes
+    while associated, we don't get a full new RXON. Therefore, we don't re-set the
+    rxon-station either. However, under some circumstances that apparently have
+    gotten more likely mac80211 will first set up the BSS info, then add the
+    station and then switch to an HT channel type.
+    
+    Therefore, the check for "priv-&gt;current_ht_config.is_ht" in
+    iwl_rxon_add_station() will hit false and not fill in the HT information.
+    
+    However, that check can just be removed, which is the easiest fix for all this,
+    because the HT capa struct is always there, just could possibly have the
+    ht_supported member set to false.
+    """
+    
+    A sample good link in my 3x3 network improves by approximately 25% TCP
+    throughput. This fixes Bug 2144
+    (http://bugzilla.intellinuxwireless.org/show_bug.cgi?id=2144).
+    
+    Signed-off-by: Daniel Halperin &lt;dhalperi@cs.washington.edu&gt;
+    Signed-off-by: Reinette Chatre &lt;reinette.chatre@intel.com&gt;
+    Signed-off-by: John W. Linville &lt;linville@tuxdriver.com&gt;
+
+diff --git a/drivers/net/wireless/iwlwifi/iwl-sta.c b/drivers/net/wireless/iwlwifi/iwl-sta.c
+index fcac73cf82bc..e0b13fb78653 100644
+--- a/drivers/net/wireless/iwlwifi/iwl-sta.c
++++ b/drivers/net/wireless/iwlwifi/iwl-sta.c
+@@ -1045,24 +1045,19 @@ int iwl_rxon_add_station(struct iwl_priv *priv, const u8 *addr, bool is_ap)
+ 	struct ieee80211_sta_ht_cap *cur_ht_config = NULL;
+ 	u8 sta_id;
+ 
+-	/* Add station to device's station table */
+-
+ 	/*
+-	 * XXX: This check is definitely not correct, if we're an AP
+-	 *	it'll always be false which is not what we want, but
+-	 *	it doesn't look like iwlagn is prepared to be an HT
+-	 *	AP anyway.
++	 * Set HT capabilities. It is ok to set this struct even if not using
++	 * HT config: the priv-&gt;current_ht_config.is_ht flag will just be false
+ 	 */
+-	if (priv-&gt;current_ht_config.is_ht) {
+-		rcu_read_lock();
+-		sta = ieee80211_find_sta(priv-&gt;vif, addr);
+-		if (sta) {
+-			memcpy(&amp;ht_config, &amp;sta-&gt;ht_cap, sizeof(ht_config));
+-			cur_ht_config = &amp;ht_config;
+-		}
+-		rcu_read_unlock();
++	rcu_read_lock();
++	sta = ieee80211_find_sta(priv-&gt;vif, addr);
++	if (sta) {
++		memcpy(&amp;ht_config, &amp;sta-&gt;ht_cap, sizeof(ht_config));
++		cur_ht_config = &amp;ht_config;
+ 	}
++	rcu_read_unlock();
+ 
++	/* Add station to device's station table */
+ 	sta_id = iwl_add_station(priv, addr, is_ap, CMD_SYNC, cur_ht_config);
+ 
+ 	/* Set up default rate scaling table in device's station table */</pre><hr><pre>commit 0c875c28649eac0adb8d2e2efac2186c3089e100
+Author: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+Date:   Sun Dec 3 11:55:34 2006 -0800
+
+    PCI quirks: remove redundant check
+    
+    Removes redundant check for dev-&gt;subordinate; if it is NULL, the function
+    returns before the patch-affected code region.
+    
+    Signed-off-by: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+    Acked-by: Brice Goglin &lt;brice@myri.com&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@suse.de&gt;
+
+diff --git a/drivers/pci/quirks.c b/drivers/pci/quirks.c
+index 9ca9b9bf6160..757186390d83 100644
+--- a/drivers/pci/quirks.c
++++ b/drivers/pci/quirks.c
+@@ -1688,8 +1688,7 @@ static void __devinit quirk_nvidia_ck804_msi_ht_cap(struct pci_dev *dev)
+ 	 * a single one having MSI is enough to be sure that MSI are supported.
+ 	 */
+ 	pdev = pci_get_slot(dev-&gt;bus, 0);
+-	if (dev-&gt;subordinate &amp;&amp; !msi_ht_cap_enabled(dev)
+-	    &amp;&amp; !msi_ht_cap_enabled(pdev)) {
++	if (!msi_ht_cap_enabled(dev) &amp;&amp; !msi_ht_cap_enabled(pdev)) {
+ 		printk(KERN_WARNING "PCI: MSI quirk detected. "
+ 		       "MSI disabled on chipset %s.\n",
+ 		       pci_name(dev));</pre><hr><pre>commit b860e73a5488d9e75c2f2907174cb4277c2f9d21
+Author: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+Date:   Fri Dec 8 02:40:19 2006 -0800
+
+    [PATCH] video SiS: remove unnecessary variables in SiS_DDC2Delay
+    
+    Remove unnecesary iteration and accumulator variables from SiS_DDC2Delay.
+    
+    Originally spotted by Jesper Juhl &lt;jesper.juhl@gmail.com&gt;.
+    
+    Cc: Jesper Juhl &lt;jesper.juhl@gmail.com&gt;
+    Cc: Thomas Winischhofer &lt;thomas@winischhofer.net&gt;
+    Signed-off-by: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+    Cc: "Antonino A. Daplas" &lt;adaplas@pol.net&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/video/sis/init301.c b/drivers/video/sis/init301.c
+index f13faddc6181..47e1896cffeb 100644
+--- a/drivers/video/sis/init301.c
++++ b/drivers/video/sis/init301.c
+@@ -445,11 +445,8 @@ SiS_CR36BIOSWord23d(struct SiS_Private *SiS_Pr)
+ void
+ SiS_DDC2Delay(struct SiS_Private *SiS_Pr, unsigned int delaytime)
+ {
+-   unsigned int i, j;
+-
+-   for(i = 0; i &lt; delaytime; i++) {
+-      j += SiS_GetReg(SiS_Pr-&gt;SiS_P3c4,0x05);
+-   }
++   while (delaytime-- &gt; 0)
++      SiS_GetReg(SiS_Pr-&gt;SiS_P3c4, 0x05);
+ }
+ 
+ #if defined(SIS300) || defined(SIS315H)</pre><hr><pre>commit a09c17a6fdad9ae5b5ea1c3383080f84ec76ab20
+Author: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+Date:   Wed Dec 6 20:40:18 2006 -0800
+
+    [PATCH] sys: remove unused variable
+    
+    Remove unused 'new_ruid' variable.
+    
+    Reported by David Binderman &lt;dcb314@hotmail.com&gt;.
+    
+    Signed-off-by: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/kernel/sys.c b/kernel/sys.c
+index c87b461de38d..a0c1a29a507f 100644
+--- a/kernel/sys.c
++++ b/kernel/sys.c
+@@ -1102,14 +1102,14 @@ asmlinkage long sys_setreuid(uid_t ruid, uid_t euid)
+ asmlinkage long sys_setuid(uid_t uid)
+ {
+ 	int old_euid = current-&gt;euid;
+-	int old_ruid, old_suid, new_ruid, new_suid;
++	int old_ruid, old_suid, new_suid;
+ 	int retval;
+ 
+ 	retval = security_task_setuid(uid, (uid_t)-1, (uid_t)-1, LSM_SETID_ID);
+ 	if (retval)
+ 		return retval;
+ 
+-	old_ruid = new_ruid = current-&gt;uid;
++	old_ruid = current-&gt;uid;
+ 	old_suid = current-&gt;suid;
+ 	new_suid = old_suid;
+ 	</pre><hr><pre>commit 8de61e69c2feb10e5391cca67a3faf1d2bf77ce0
+Author: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+Date:   Wed Dec 6 20:40:16 2006 -0800
+
+    [PATCH] fs: remove unused variable
+    
+    Removed unused 'have_pt_gnu_stack' variable.
+    
+    Reported by David Binderman &lt;dcb314@hotmail.com&gt;
+    
+    Signed-off-by: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/binfmt_elf.c b/fs/binfmt_elf.c
+index 14ea630a857c..be5869d34999 100644
+--- a/fs/binfmt_elf.c
++++ b/fs/binfmt_elf.c
+@@ -544,7 +544,7 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
+ 	unsigned long reloc_func_desc = 0;
+ 	char passed_fileno[6];
+ 	struct files_struct *files;
+-	int have_pt_gnu_stack, executable_stack = EXSTACK_DEFAULT;
++	int executable_stack = EXSTACK_DEFAULT;
+ 	unsigned long def_flags = 0;
+ 	struct {
+ 		struct elfhdr elf_ex;
+@@ -707,7 +707,6 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
+ 				executable_stack = EXSTACK_DISABLE_X;
+ 			break;
+ 		}
+-	have_pt_gnu_stack = (i &lt; loc-&gt;elf_ex.e_phnum);
+ 
+ 	/* Some simple consistency checks for the interpreter */
+ 	if (elf_interpreter) {</pre><hr><pre>commit f475ff352c5e05d473c462b97c3a13a5b803af5a
+Author: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+Date:   Thu Dec 7 02:14:13 2006 +0100
+
+    [PATCH] x86-64: remove unused variable
+    
+    Remove unused variable in msr_write().
+    
+    Reported by D Binderman &lt;dcb314@hotmail.com&gt;.
+    
+    Cc: H. Peter Anvin &lt;hpa@zytor.com&gt;
+    Signed-off-by: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Andi Kleen &lt;ak@suse.de&gt;
+
+diff --git a/arch/i386/kernel/msr.c b/arch/i386/kernel/msr.c
+index a773f776c9ea..fd45059c9084 100644
+--- a/arch/i386/kernel/msr.c
++++ b/arch/i386/kernel/msr.c
+@@ -195,7 +195,6 @@ static ssize_t msr_write(struct file *file, const char __user *buf,
+ {
+ 	const u32 __user *tmp = (const u32 __user *)buf;
+ 	u32 data[2];
+-	size_t rv;
+ 	u32 reg = *ppos;
+ 	int cpu = iminor(file-&gt;f_dentry-&gt;d_inode);
+ 	int err;
+@@ -203,7 +202,7 @@ static ssize_t msr_write(struct file *file, const char __user *buf,
+ 	if (count % 8)
+ 		return -EINVAL;	/* Invalid chunk size */
+ 
+-	for (rv = 0; count; count -= 8) {
++	for (; count; count -= 8) {
+ 		if (copy_from_user(&amp;data, tmp, 8))
+ 			return -EFAULT;
+ 		err = do_wrmsr(cpu, reg, data[0], data[1]);</pre><hr><pre>commit 86bd58bf4c383fde4e99b83ce917b091a072040d
+Author: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+Date:   Thu Dec 7 02:14:11 2006 +0100
+
+    [PATCH] x86-64: Remove unused GET_APIC_VERSION call from clear_local_APIC
+    
+    Remove unused GET_APIC_VERSION call from clear_local_APIC() and
+    __setup_APIC_LVTT().
+    
+    Reported by D Binderman &lt;dcb314@hotmail.com&gt;.
+    
+    Cc: Andi Kleen &lt;ak@suse.de&gt;
+    Cc: Ingo Molnar &lt;mingo@redhat.com&gt;
+    Signed-off-by: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+    Signed-off-by: Andi Kleen &lt;ak@suse.de&gt;
+
+diff --git a/arch/x86_64/kernel/apic.c b/arch/x86_64/kernel/apic.c
+index f0b00d8731cb..124b2d27b4ac 100644
+--- a/arch/x86_64/kernel/apic.c
++++ b/arch/x86_64/kernel/apic.c
+@@ -140,7 +140,6 @@ void clear_local_APIC(void)
+ 		apic_write(APIC_LVTERR, APIC_LVT_MASKED);
+ 	if (maxlvt &gt;= 4)
+ 		apic_write(APIC_LVTPC, APIC_LVT_MASKED);
+-	v = GET_APIC_VERSION(apic_read(APIC_LVR));
+ 	apic_write(APIC_ESR, 0);
+ 	apic_read(APIC_ESR);
+ }
+@@ -736,10 +735,9 @@ void __init init_apic_mappings(void)
+ 
+ static void __setup_APIC_LVTT(unsigned int clocks)
+ {
+-	unsigned int lvtt_value, tmp_value, ver;
++	unsigned int lvtt_value, tmp_value;
+ 	int cpu = smp_processor_id();
+ 
+-	ver = GET_APIC_VERSION(apic_read(APIC_LVR));
+ 	lvtt_value = APIC_LVT_TIMER_PERIODIC | LOCAL_TIMER_VECTOR;
+ 
+ 	if (cpu_isset(cpu, timer_interrupt_broadcast_ipi_mask))</pre><hr><pre>commit 3529833f1ca8790df06ce218b5d9d438776696ed
+Author: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+Date:   Thu Dec 7 02:14:07 2006 +0100
+
+    [PATCH] i386: substitute __va lookup with pfn_to_kaddr
+    
+    Substitutes allocate_pgdat virtual address lookup with pfn_to_kaddr macro.
+    
+    Signed-off-by: David Rientjes &lt;rientjes@cs.washington.edu&gt;
+    Signed-off-by: Andi Kleen &lt;ak@suse.de&gt;
+    Cc: Andi Kleen &lt;ak@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+
+diff --git a/arch/i386/mm/discontig.c b/arch/i386/mm/discontig.c
+index ddbdb0336f28..103b76e56a94 100644
+--- a/arch/i386/mm/discontig.c
++++ b/arch/i386/mm/discontig.c
+@@ -168,7 +168,7 @@ static void __init allocate_pgdat(int nid)
+ 	if (nid &amp;&amp; node_has_online_mem(nid))
+ 		NODE_DATA(nid) = (pg_data_t *)node_remap_start_vaddr[nid];
+ 	else {
+-		NODE_DATA(nid) = (pg_data_t *)(__va(min_low_pfn &lt;&lt; PAGE_SHIFT));
++		NODE_DATA(nid) = (pg_data_t *)(pfn_to_kaddr(min_low_pfn));
+ 		min_low_pfn += PFN_UP(sizeof(pg_data_t));
+ 	}
+ }</pre>
+    <div class="pagination">
+        <a href='13_6.html'>&lt;&lt;Prev</a><a href='13.html'>1</a><a href='13_2.html'>2</a><a href='13_3.html'>3</a><a href='13_4.html'>4</a><a href='13_5.html'>5</a><a href='13_6.html'>6</a><span>[7]</span><a href='13_8.html'>8</a><a href='13_8.html'>Next&gt;&gt;</a>
+    <div>
+</body>

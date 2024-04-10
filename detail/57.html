@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Tsinghua University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Tsinghua University</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit f87905660ed01d85e45eac22d479f31f380b2f50
+Author: tangzhenhao &lt;tzh18@mails.tsinghua.edu.cn&gt;
+Date:   Sun Nov 29 23:23:56 2020 -0800
+
+    drivers/lightnvm: fix a null-ptr-deref bug in pblk-core.c
+    
+    At line 294 in drivers/lightnvm/pblk-write.c, function pblk_gen_run_ws is
+    called with actual param GFP_ATOMIC. pblk_gen_run_ws call mempool_alloc
+    using "GFP_ATOMIC" flag, so mempool_alloc can return null. So we need to
+    check the return-val of mempool_alloc to avoid null-ptr-deref bug.
+    
+    Signed-off-by: tangzhenhao &lt;tzh18@mails.tsinghua.edu.cn&gt;
+    Reviewed-by: Matias Bjørling &lt;mb@lightnvm.io&gt;
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/drivers/lightnvm/pblk-core.c b/drivers/lightnvm/pblk-core.c
+index 97c68731406b..1dddba11e721 100644
+--- a/drivers/lightnvm/pblk-core.c
++++ b/drivers/lightnvm/pblk-core.c
+@@ -1869,6 +1869,10 @@ void pblk_gen_run_ws(struct pblk *pblk, struct pblk_line *line, void *priv,
+ 	struct pblk_line_ws *line_ws;
+ 
+ 	line_ws = mempool_alloc(&amp;pblk-&gt;gen_ws_pool, gfp_mask);
++	if (!line_ws) {
++		pblk_err(pblk, "pblk: could not allocate memory\n");
++		return;
++	}
+ 
+ 	line_ws-&gt;pblk = pblk;
+ 	line_ws-&gt;line = line;</pre><hr><pre>commit 478762855b5ae9f68fa6ead1edf7abada70fcd5f
+Author: Jia-Ju Bai &lt;baijiaju@tsinghua.edu.cn&gt;
+Date:   Sun Aug 2 21:29:49 2020 +0800
+
+    p54: avoid accessing the data mapped to streaming DMA
+    
+    In p54p_tx(), skb-&gt;data is mapped to streaming DMA on line 337:
+      mapping = pci_map_single(..., skb-&gt;data, ...);
+    
+    Then skb-&gt;data is accessed on line 349:
+      desc-&gt;device_addr = ((struct p54_hdr *)skb-&gt;data)-&gt;req_id;
+    
+    This access may cause data inconsistency between CPU cache and hardware.
+    
+    To fix this problem, ((struct p54_hdr *)skb-&gt;data)-&gt;req_id is stored in
+    a local variable before DMA mapping, and then the driver accesses this
+    local variable instead of skb-&gt;data.
+    
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Signed-off-by: Jia-Ju Bai &lt;baijiaju@tsinghua.edu.cn&gt;
+    Acked-by: Christian Lamparter &lt;chunkeey@gmail.com&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@codeaurora.org&gt;
+    Link: https://lore.kernel.org/r/20200802132949.26788-1-baijiaju@tsinghua.edu.cn
+
+diff --git a/drivers/net/wireless/intersil/p54/p54pci.c b/drivers/net/wireless/intersil/p54/p54pci.c
+index 94064d7cff52..e97ee547b9f3 100644
+--- a/drivers/net/wireless/intersil/p54/p54pci.c
++++ b/drivers/net/wireless/intersil/p54/p54pci.c
+@@ -333,10 +333,12 @@ static void p54p_tx(struct ieee80211_hw *dev, struct sk_buff *skb)
+ 	struct p54p_desc *desc;
+ 	dma_addr_t mapping;
+ 	u32 idx, i;
++	__le32 device_addr;
+ 
+ 	spin_lock_irqsave(&amp;priv-&gt;lock, flags);
+ 	idx = le32_to_cpu(ring_control-&gt;host_idx[1]);
+ 	i = idx % ARRAY_SIZE(ring_control-&gt;tx_data);
++	device_addr = ((struct p54_hdr *)skb-&gt;data)-&gt;req_id;
+ 
+ 	mapping = dma_map_single(&amp;priv-&gt;pdev-&gt;dev, skb-&gt;data, skb-&gt;len,
+ 				 DMA_TO_DEVICE);
+@@ -350,7 +352,7 @@ static void p54p_tx(struct ieee80211_hw *dev, struct sk_buff *skb)
+ 
+ 	desc = &amp;ring_control-&gt;tx_data[i];
+ 	desc-&gt;host_addr = cpu_to_le32(mapping);
+-	desc-&gt;device_addr = ((struct p54_hdr *)skb-&gt;data)-&gt;req_id;
++	desc-&gt;device_addr = device_addr;
+ 	desc-&gt;len = cpu_to_le16(skb-&gt;len);
+ 	desc-&gt;flags = 0;
+ </pre><hr><pre>commit cbbb64f62acd97429f517bd382ada9d618c8856a
+Author: Jia-Ju Bai &lt;baijiaju@tsinghua.edu.cn&gt;
+Date:   Sun Aug 2 17:33:40 2020 +0800
+
+    atm: idt77252: avoid accessing the data mapped to streaming DMA
+    
+    In queue_skb(), skb-&gt;data is mapped to streaming DMA on line 850:
+      dma_map_single(..., skb-&gt;data, ...);
+    
+    Then skb-&gt;data is accessed on lines 862 and 863:
+      tbd-&gt;word_4 = (skb-&gt;data[0] &lt;&lt; 24) | (skb-&gt;data[1] &lt;&lt; 16) |
+               (skb-&gt;data[2] &lt;&lt;  8) | (skb-&gt;data[3] &lt;&lt;  0);
+    and on lines 893 and 894:
+      tbd-&gt;word_4 = (skb-&gt;data[0] &lt;&lt; 24) | (skb-&gt;data[1] &lt;&lt; 16) |
+               (skb-&gt;data[2] &lt;&lt;  8) | (skb-&gt;data[3] &lt;&lt;  0);
+    
+    These accesses may cause data inconsistency between CPU cache and
+    hardware.
+    
+    To fix this problem, the calculation result of skb-&gt;data is stored in a
+    local variable before DMA mapping, and then the driver accesses this
+    local variable instead of skb-&gt;data.
+    
+    Signed-off-by: Jia-Ju Bai &lt;baijiaju@tsinghua.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/atm/idt77252.c b/drivers/atm/idt77252.c
+index df51680e8931..65a3886f68c9 100644
+--- a/drivers/atm/idt77252.c
++++ b/drivers/atm/idt77252.c
+@@ -835,6 +835,7 @@ queue_skb(struct idt77252_dev *card, struct vc_map *vc,
+ 	unsigned long flags;
+ 	int error;
+ 	int aal;
++	u32 word4;
+ 
+ 	if (skb-&gt;len == 0) {
+ 		printk("%s: invalid skb-&gt;len (%d)\n", card-&gt;name, skb-&gt;len);
+@@ -846,6 +847,8 @@ queue_skb(struct idt77252_dev *card, struct vc_map *vc,
+ 
+ 	tbd = &amp;IDT77252_PRV_TBD(skb);
+ 	vcc = ATM_SKB(skb)-&gt;vcc;
++	word4 = (skb-&gt;data[0] &lt;&lt; 24) | (skb-&gt;data[1] &lt;&lt; 16) |
++			(skb-&gt;data[2] &lt;&lt;  8) | (skb-&gt;data[3] &lt;&lt;  0);
+ 
+ 	IDT77252_PRV_PADDR(skb) = dma_map_single(&amp;card-&gt;pcidev-&gt;dev, skb-&gt;data,
+ 						 skb-&gt;len, DMA_TO_DEVICE);
+@@ -859,8 +862,7 @@ queue_skb(struct idt77252_dev *card, struct vc_map *vc,
+ 		tbd-&gt;word_1 = SAR_TBD_OAM | ATM_CELL_PAYLOAD | SAR_TBD_EPDU;
+ 		tbd-&gt;word_2 = IDT77252_PRV_PADDR(skb) + 4;
+ 		tbd-&gt;word_3 = 0x00000000;
+-		tbd-&gt;word_4 = (skb-&gt;data[0] &lt;&lt; 24) | (skb-&gt;data[1] &lt;&lt; 16) |
+-			      (skb-&gt;data[2] &lt;&lt;  8) | (skb-&gt;data[3] &lt;&lt;  0);
++		tbd-&gt;word_4 = word4;
+ 
+ 		if (test_bit(VCF_RSV, &amp;vc-&gt;flags))
+ 			vc = card-&gt;vcs[0];
+@@ -890,8 +892,7 @@ queue_skb(struct idt77252_dev *card, struct vc_map *vc,
+ 
+ 		tbd-&gt;word_2 = IDT77252_PRV_PADDR(skb) + 4;
+ 		tbd-&gt;word_3 = 0x00000000;
+-		tbd-&gt;word_4 = (skb-&gt;data[0] &lt;&lt; 24) | (skb-&gt;data[1] &lt;&lt; 16) |
+-			      (skb-&gt;data[2] &lt;&lt;  8) | (skb-&gt;data[3] &lt;&lt;  0);
++		tbd-&gt;word_4 = word4;
+ 		break;
+ 
+ 	case ATM_AAL5:</pre><hr><pre>commit a45a9e8a768c32103ffec67f9b173968a6154a11
+Author: Jia-Ju Bai &lt;baijiaju@tsinghua.edu.cn&gt;
+Date:   Sun Aug 2 17:16:11 2020 +0800
+
+    atm: eni: avoid accessing the data mapped to streaming DMA
+    
+    In do_tx(), skb-&gt;data is mapped to streaming DMA on line 1111:
+      paddr = dma_map_single(...,skb-&gt;data,DMA_TO_DEVICE);
+    
+    Then skb-&gt;data is accessed on line 1153:
+      (skb-&gt;data[3] &amp; 0xf)
+    
+    This access may cause data inconsistency between CPU cache and hardware.
+    
+    To fix this problem, skb-&gt;data[3] is assigned to a local variable before
+    DMA mapping, and then the driver accesses this local variable instead of
+    skb-&gt;data[3].
+    
+    Signed-off-by: Jia-Ju Bai &lt;baijiaju@tsinghua.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/atm/eni.c b/drivers/atm/eni.c
+index b3d8e00e7671..39be444534d0 100644
+--- a/drivers/atm/eni.c
++++ b/drivers/atm/eni.c
+@@ -1034,6 +1034,7 @@ static enum enq_res do_tx(struct sk_buff *skb)
+ 	u32 dma_rd,dma_wr;
+ 	u32 size; /* in words */
+ 	int aal5,dma_size,i,j;
++	unsigned char skb_data3;
+ 
+ 	DPRINTK("&gt;do_tx\n");
+ 	NULLCHECK(skb);
+@@ -1108,6 +1109,7 @@ DPRINTK("iovcnt = %d\n",skb_shinfo(skb)-&gt;nr_frags);
+ 		    vcc-&gt;dev-&gt;number);
+ 		return enq_jam;
+ 	}
++	skb_data3 = skb-&gt;data[3];
+ 	paddr = dma_map_single(&amp;eni_dev-&gt;pci_dev-&gt;dev,skb-&gt;data,skb-&gt;len,
+ 			       DMA_TO_DEVICE);
+ 	ENI_PRV_PADDR(skb) = paddr;
+@@ -1150,7 +1152,7 @@ DPRINTK("doing direct send\n"); /* @@@ well, this doesn't work anyway */
+ 	    (size/(ATM_CELL_PAYLOAD/4)),tx-&gt;send+tx-&gt;tx_pos*4);
+ /*printk("dsc = 0x%08lx\n",(unsigned long) readl(tx-&gt;send+tx-&gt;tx_pos*4));*/
+ 	writel((vcc-&gt;vci &lt;&lt; MID_SEG_VCI_SHIFT) |
+-            (aal5 ? 0 : (skb-&gt;data[3] &amp; 0xf)) |
++            (aal5 ? 0 : (skb_data3 &amp; 0xf)) |
+ 	    (ATM_SKB(skb)-&gt;atm_options &amp; ATM_ATMOPT_CLP ? MID_SEG_CLP : 0),
+ 	    tx-&gt;send+((tx-&gt;tx_pos+1) &amp; (tx-&gt;words-1))*4);
+ 	DPRINTK("size: %d, len:%d\n",size,skb-&gt;len);</pre><hr><pre>commit 6499a0db9b0f1e903d52f8244eacc1d4be00eea2
+Author: Jia-Ju Bai &lt;baijiaju@tsinghua.edu.cn&gt;
+Date:   Sat May 30 16:42:08 2020 +0200
+
+    media: pci: ttpci: av7110: fix possible buffer overflow caused by bad DMA value in debiirq()
+    
+    The value av7110-&gt;debi_virt is stored in DMA memory, and it is assigned
+    to data, and thus data[0] can be modified at any time by malicious
+    hardware. In this case, "if (data[0] &lt; 2)" can be passed, but then
+    data[0] can be changed into a large number, which may cause buffer
+    overflow when the code "av7110-&gt;ci_slot[data[0]]" is used.
+    
+    To fix this possible bug, data[0] is assigned to a local variable, which
+    replaces the use of data[0].
+    
+    Signed-off-by: Jia-Ju Bai &lt;baijiaju@tsinghua.edu.cn&gt;
+    Signed-off-by: Sean Young &lt;sean@mess.org&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+huawei@kernel.org&gt;
+
+diff --git a/drivers/media/pci/ttpci/av7110.c b/drivers/media/pci/ttpci/av7110.c
+index d0cdee1c6eb0..bf36b1e22b63 100644
+--- a/drivers/media/pci/ttpci/av7110.c
++++ b/drivers/media/pci/ttpci/av7110.c
+@@ -406,14 +406,15 @@ static void debiirq(unsigned long cookie)
+ 	case DATA_CI_GET:
+ 	{
+ 		u8 *data = av7110-&gt;debi_virt;
++		u8 data_0 = data[0];
+ 
+-		if ((data[0] &lt; 2) &amp;&amp; data[2] == 0xff) {
++		if (data_0 &lt; 2 &amp;&amp; data[2] == 0xff) {
+ 			int flags = 0;
+ 			if (data[5] &gt; 0)
+ 				flags |= CA_CI_MODULE_PRESENT;
+ 			if (data[5] &gt; 5)
+ 				flags |= CA_CI_MODULE_READY;
+-			av7110-&gt;ci_slot[data[0]].flags = flags;
++			av7110-&gt;ci_slot[data_0].flags = flags;
+ 		} else
+ 			ci_get_data(&amp;av7110-&gt;ci_rbuffer,
+ 				    av7110-&gt;debi_virt,</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

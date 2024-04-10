@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Fudan University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Fudan University</h1>
+    <div class="pagination">
+        <a href='15.html'>&lt;&lt;Prev</a><a href='15.html'>1</a><span>[2]</span><a href='15_3.html'>3</a><a href='15_4.html'>4</a><a href='15_5.html'>5</a><a href='15_6.html'>6</a><a href='15_7.html'>7</a><a href='15_3.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 776d794f28c95051bc70405a7b1fa40115658a18
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Thu Sep 9 12:32:38 2021 +0800
+
+    net/sunrpc: fix reference count leaks in rpc_sysfs_xprt_state_change
+    
+    The refcount leak issues take place in an error handling path. When the
+    3rd argument buf doesn't match with "offline", "online" or "remove", the
+    function simply returns -EINVAL and forgets to decrease the reference
+    count of a rpc_xprt object and a rpc_xprt_switch object increased by
+    rpc_sysfs_xprt_kobj_get_xprt() and
+    rpc_sysfs_xprt_kobj_get_xprt_switch(), causing reference count leaks of
+    both unused objects.
+    
+    Fix this issue by jumping to the error handling path labelled with
+    out_put when buf matches none of "offline", "online" or "remove".
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Anna Schumaker &lt;Anna.Schumaker@Netapp.com&gt;
+
+diff --git a/net/sunrpc/sysfs.c b/net/sunrpc/sysfs.c
+index b1aea3419218..49fd0339dc59 100644
+--- a/net/sunrpc/sysfs.c
++++ b/net/sunrpc/sysfs.c
+@@ -295,8 +295,10 @@ static ssize_t rpc_sysfs_xprt_state_change(struct kobject *kobj,
+ 		online = 1;
+ 	else if (!strncmp(buf, "remove", 6))
+ 		remove = 1;
+-	else
+-		return -EINVAL;
++	else {
++		count = -EINVAL;
++		goto out_put;
++	}
+ 
+ 	if (wait_on_bit_lock(&amp;xprt-&gt;state, XPRT_LOCKED, TASK_KILLABLE)) {
+ 		count = -EINTR;</pre><hr><pre>commit d94a69cb2cfa77294921aae9afcfb866e723a2da
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Thu Dec 23 10:48:12 2021 +0800
+
+    netfilter: ipt_CLUSTERIP: fix refcount leak in clusterip_tg_check()
+    
+    The issue takes place in one error path of clusterip_tg_check(). When
+    memcmp() returns nonzero, the function simply returns the error code,
+    forgetting to decrease the reference count of a clusterip_config
+    object, which is bumped earlier by clusterip_config_find_get(). This
+    may incur reference count leak.
+    
+    Fix this issue by decrementing the refcount of the object in specific
+    error path.
+    
+    Fixes: 06aa151ad1fc74 ("netfilter: ipt_CLUSTERIP: check MAC address when duplicate config is set")
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Pablo Neira Ayuso &lt;pablo@netfilter.org&gt;
+
+diff --git a/net/ipv4/netfilter/ipt_CLUSTERIP.c b/net/ipv4/netfilter/ipt_CLUSTERIP.c
+index 8fd1aba8af31..b518f20c9a24 100644
+--- a/net/ipv4/netfilter/ipt_CLUSTERIP.c
++++ b/net/ipv4/netfilter/ipt_CLUSTERIP.c
+@@ -520,8 +520,11 @@ static int clusterip_tg_check(const struct xt_tgchk_param *par)
+ 			if (IS_ERR(config))
+ 				return PTR_ERR(config);
+ 		}
+-	} else if (memcmp(&amp;config-&gt;clustermac, &amp;cipinfo-&gt;clustermac, ETH_ALEN))
++	} else if (memcmp(&amp;config-&gt;clustermac, &amp;cipinfo-&gt;clustermac, ETH_ALEN)) {
++		clusterip_config_entry_put(config);
++		clusterip_config_put(config);
+ 		return -EINVAL;
++	}
+ 
+ 	ret = nf_ct_netns_get(par-&gt;net, par-&gt;family);
+ 	if (ret &lt; 0) {</pre><hr><pre>commit 1077c2857791076a7e81b0ba91571f136cee08e4
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Mon Nov 8 18:34:48 2021 -0800
+
+    coda: convert from atomic_t to refcount_t on coda_vm_ops-&gt;refcnt
+    
+    refcount_t type and corresponding API can protect refcounters from
+    accidental underflow and overflow and further use-after-free situations.
+    
+    Link: https://lkml.kernel.org/r/20210908140308.18491-8-jaharkes@cs.cmu.edu
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Jan Harkes &lt;jaharkes@cs.cmu.edu&gt;
+    Cc: Alex Shi &lt;alex.shi@linux.alibaba.com&gt;
+    Cc: Jing Yangyang &lt;jing.yangyang@zte.com.cn&gt;
+    Cc: Zeal Robot &lt;zealci@zte.com.cn&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/coda/file.c b/fs/coda/file.c
+index 52deab784667..29dd87be2fb8 100644
+--- a/fs/coda/file.c
++++ b/fs/coda/file.c
+@@ -8,6 +8,7 @@
+  * to the Coda project. Contact Peter Braam &lt;coda@cs.cmu.edu&gt;.
+  */
+ 
++#include &lt;linux/refcount.h&gt;
+ #include &lt;linux/types.h&gt;
+ #include &lt;linux/kernel.h&gt;
+ #include &lt;linux/time.h&gt;
+@@ -28,7 +29,7 @@
+ #include "coda_int.h"
+ 
+ struct coda_vm_ops {
+-	atomic_t refcnt;
++	refcount_t refcnt;
+ 	struct file *coda_file;
+ 	const struct vm_operations_struct *host_vm_ops;
+ 	struct vm_operations_struct vm_ops;
+@@ -98,7 +99,7 @@ coda_vm_open(struct vm_area_struct *vma)
+ 	struct coda_vm_ops *cvm_ops =
+ 		container_of(vma-&gt;vm_ops, struct coda_vm_ops, vm_ops);
+ 
+-	atomic_inc(&amp;cvm_ops-&gt;refcnt);
++	refcount_inc(&amp;cvm_ops-&gt;refcnt);
+ 
+ 	if (cvm_ops-&gt;host_vm_ops &amp;&amp; cvm_ops-&gt;host_vm_ops-&gt;open)
+ 		cvm_ops-&gt;host_vm_ops-&gt;open(vma);
+@@ -113,7 +114,7 @@ coda_vm_close(struct vm_area_struct *vma)
+ 	if (cvm_ops-&gt;host_vm_ops &amp;&amp; cvm_ops-&gt;host_vm_ops-&gt;close)
+ 		cvm_ops-&gt;host_vm_ops-&gt;close(vma);
+ 
+-	if (atomic_dec_and_test(&amp;cvm_ops-&gt;refcnt)) {
++	if (refcount_dec_and_test(&amp;cvm_ops-&gt;refcnt)) {
+ 		vma-&gt;vm_ops = cvm_ops-&gt;host_vm_ops;
+ 		fput(cvm_ops-&gt;coda_file);
+ 		kfree(cvm_ops);
+@@ -189,7 +190,7 @@ coda_file_mmap(struct file *coda_file, struct vm_area_struct *vma)
+ 		cvm_ops-&gt;vm_ops.open = coda_vm_open;
+ 		cvm_ops-&gt;vm_ops.close = coda_vm_close;
+ 		cvm_ops-&gt;coda_file = coda_file;
+-		atomic_set(&amp;cvm_ops-&gt;refcnt, 1);
++		refcount_set(&amp;cvm_ops-&gt;refcnt, 1);
+ 
+ 		vma-&gt;vm_ops = &amp;cvm_ops-&gt;vm_ops;
+ 	}</pre><hr><pre>commit ae3fab5bcc725271a50843e5e284ee20d8b3532b
+Author: Chenyuan Mi &lt;cymi20@fudan.edu.cn&gt;
+Date:   Fri Nov 5 13:34:45 2021 -0700
+
+    ocfs2: fix handle refcount leak in two exception handling paths
+    
+    The reference counting issue happens in two exception handling paths of
+    ocfs2_replay_truncate_records().  When executing these two exception
+    handling paths, the function forgets to decrease the refcount of handle
+    increased by ocfs2_start_trans(), causing a refcount leak.
+    
+    Fix this issue by using ocfs2_commit_trans() to decrease the refcount of
+    handle in two handling paths.
+    
+    Link: https://lkml.kernel.org/r/20210908102055.10168-1-cymi20@fudan.edu.cn
+    Signed-off-by: Chenyuan Mi &lt;cymi20@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Reviewed-by: Joseph Qi &lt;joseph.qi@linux.alibaba.com&gt;
+    Cc: Wengang Wang &lt;wen.gang.wang@oracle.com&gt;
+    Cc: Mark Fasheh &lt;mark@fasheh.com&gt;
+    Cc: Joel Becker &lt;jlbec@evilplan.org&gt;
+    Cc: Junxiao Bi &lt;junxiao.bi@oracle.com&gt;
+    Cc: Changwei Ge &lt;gechangwei@live.cn&gt;
+    Cc: Gang He &lt;ghe@suse.com&gt;
+    Cc: Jun Piao &lt;piaojun@huawei.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/ocfs2/alloc.c b/fs/ocfs2/alloc.c
+index 5d9ae17bd443..1550f18be451 100644
+--- a/fs/ocfs2/alloc.c
++++ b/fs/ocfs2/alloc.c
+@@ -5940,6 +5940,7 @@ static int ocfs2_replay_truncate_records(struct ocfs2_super *osb,
+ 		status = ocfs2_journal_access_di(handle, INODE_CACHE(tl_inode), tl_bh,
+ 						 OCFS2_JOURNAL_ACCESS_WRITE);
+ 		if (status &lt; 0) {
++			ocfs2_commit_trans(osb, handle);
+ 			mlog_errno(status);
+ 			goto bail;
+ 		}
+@@ -5964,6 +5965,7 @@ static int ocfs2_replay_truncate_records(struct ocfs2_super *osb,
+ 						     data_alloc_bh, start_blk,
+ 						     num_clusters);
+ 			if (status &lt; 0) {
++				ocfs2_commit_trans(osb, handle);
+ 				mlog_errno(status);
+ 				goto bail;
+ 			}</pre><hr><pre>commit 31d21d219b51dcfb16e18427eddae5394d402820
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Mon Jul 19 13:59:14 2021 +0800
+
+    ext4: convert from atomic_t to refcount_t on ext4_io_end-&gt;count
+    
+    refcount_t type and corresponding API can protect refcounters from
+    accidental underflow and overflow and further use-after-free situations.
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Reviewed-by: Jan Kara &lt;jack@suse.cz&gt;
+    Link: https://lore.kernel.org/r/1626674355-55795-1-git-send-email-xiyuyang19@fudan.edu.cn
+    Signed-off-by: Theodore Ts'o &lt;tytso@mit.edu&gt;
+
+diff --git a/fs/ext4/ext4.h b/fs/ext4/ext4.h
+index 3825195539d7..404dd50856e5 100644
+--- a/fs/ext4/ext4.h
++++ b/fs/ext4/ext4.h
+@@ -17,6 +17,7 @@
+ #ifndef _EXT4_H
+ #define _EXT4_H
+ 
++#include &lt;linux/refcount.h&gt;
+ #include &lt;linux/types.h&gt;
+ #include &lt;linux/blkdev.h&gt;
+ #include &lt;linux/magic.h&gt;
+@@ -241,7 +242,7 @@ typedef struct ext4_io_end {
+ 	struct bio		*bio;		/* Linked list of completed
+ 						 * bios covering the extent */
+ 	unsigned int		flag;		/* unwritten or not */
+-	atomic_t		count;		/* reference counter */
++	refcount_t		count;		/* reference counter */
+ 	struct list_head	list_vec;	/* list of ext4_io_end_vec */
+ } ext4_io_end_t;
+ 
+diff --git a/fs/ext4/page-io.c b/fs/ext4/page-io.c
+index f038d578d8d8..9cb261714991 100644
+--- a/fs/ext4/page-io.c
++++ b/fs/ext4/page-io.c
+@@ -279,14 +279,14 @@ ext4_io_end_t *ext4_init_io_end(struct inode *inode, gfp_t flags)
+ 		io_end-&gt;inode = inode;
+ 		INIT_LIST_HEAD(&amp;io_end-&gt;list);
+ 		INIT_LIST_HEAD(&amp;io_end-&gt;list_vec);
+-		atomic_set(&amp;io_end-&gt;count, 1);
++		refcount_set(&amp;io_end-&gt;count, 1);
+ 	}
+ 	return io_end;
+ }
+ 
+ void ext4_put_io_end_defer(ext4_io_end_t *io_end)
+ {
+-	if (atomic_dec_and_test(&amp;io_end-&gt;count)) {
++	if (refcount_dec_and_test(&amp;io_end-&gt;count)) {
+ 		if (!(io_end-&gt;flag &amp; EXT4_IO_END_UNWRITTEN) ||
+ 				list_empty(&amp;io_end-&gt;list_vec)) {
+ 			ext4_release_io_end(io_end);
+@@ -300,7 +300,7 @@ int ext4_put_io_end(ext4_io_end_t *io_end)
+ {
+ 	int err = 0;
+ 
+-	if (atomic_dec_and_test(&amp;io_end-&gt;count)) {
++	if (refcount_dec_and_test(&amp;io_end-&gt;count)) {
+ 		if (io_end-&gt;flag &amp; EXT4_IO_END_UNWRITTEN) {
+ 			err = ext4_convert_unwritten_io_end_vec(io_end-&gt;handle,
+ 								io_end);
+@@ -314,7 +314,7 @@ int ext4_put_io_end(ext4_io_end_t *io_end)
+ 
+ ext4_io_end_t *ext4_get_io_end(ext4_io_end_t *io_end)
+ {
+-	atomic_inc(&amp;io_end-&gt;count);
++	refcount_inc(&amp;io_end-&gt;count);
+ 	return io_end;
+ }
+ </pre><hr><pre>commit 6bb8c2d51811eb5e6504f49efe3b089d026009d2
+Author: Chenyuan Mi &lt;cymi20@fudan.edu.cn&gt;
+Date:   Tue Sep 7 20:26:33 2021 +0800
+
+    drm/nouveau/svm: Fix refcount leak bug and missing check against null bug
+    
+    The reference counting issue happens in one exception handling path of
+    nouveau_svmm_bind(). When cli-&gt;svm.svmm is null, the function forgets
+    to decrease the refcount of mm increased by get_task_mm(), causing a
+    refcount leak.
+    
+    Fix this issue by using mmput() to decrease the refcount in the
+    exception handling path.
+    
+    Also, the function forgets to do check against null when get mm
+    by get_task_mm().
+    
+    Fix this issue by adding null check after get mm by get_task_mm().
+    
+    Signed-off-by: Chenyuan Mi &lt;cymi20@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Fixes: 822cab6150d3 ("drm/nouveau/svm: check for SVM initialized before migrating")
+    Reviewed-by: Lyude Paul &lt;lyude@redhat.com&gt;
+    Reviewed-by: Ben Skeggs &lt;bskeggs@redhat.com&gt;
+    Reviewed-by: Karol Herbst &lt;kherbst@redhat.com&gt;
+    Signed-off-by: Karol Herbst &lt;kherbst@redhat.com&gt;
+    Link: https://patchwork.freedesktop.org/patch/msgid/20210907122633.16665-1-cymi20@fudan.edu.cn
+    Link: https://gitlab.freedesktop.org/drm/nouveau/-/merge_requests/14
+
+diff --git a/drivers/gpu/drm/nouveau/nouveau_svm.c b/drivers/gpu/drm/nouveau/nouveau_svm.c
+index b0c3422cb01f..9985bfde015a 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_svm.c
++++ b/drivers/gpu/drm/nouveau/nouveau_svm.c
+@@ -162,10 +162,14 @@ nouveau_svmm_bind(struct drm_device *dev, void *data,
+ 	 */
+ 
+ 	mm = get_task_mm(current);
++	if (!mm) {
++		return -EINVAL;
++	}
+ 	mmap_read_lock(mm);
+ 
+ 	if (!cli-&gt;svm.svmm) {
+ 		mmap_read_unlock(mm);
++		mmput(mm);
+ 		return -EINVAL;
+ 	}
+ </pre><hr><pre>commit 9bf9e0b44104d05b21761441227ae566c732ecb9
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Sat Sep 11 15:05:33 2021 +0800
+
+    dmaengine: mmp_pdma: fix reference count leaks in mmp_pdma_probe
+    
+    The issue happens in an error handling path. If
+    of_dma_controller_register() fails, the function simply prints error
+    messages and returns error code, without decrementing the reference
+    count of pdev-&gt;device incremented earlier by
+    dma_async_device_register(), which may result in refcount leaks.
+    
+    Fix it by invoking dma_async_device_unregister() before returning the
+    error code.
+    
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Link: https://lore.kernel.org/r/20210911070533.3114-1-xiongx18@fudan.edu.cn
+    Signed-off-by: Vinod Koul &lt;vkoul@kernel.org&gt;
+
+diff --git a/drivers/dma/mmp_pdma.c b/drivers/dma/mmp_pdma.c
+index 89f1814ff27a..a23563cd118b 100644
+--- a/drivers/dma/mmp_pdma.c
++++ b/drivers/dma/mmp_pdma.c
+@@ -1123,6 +1123,7 @@ static int mmp_pdma_probe(struct platform_device *op)
+ 						 mmp_pdma_dma_xlate, pdev);
+ 		if (ret &lt; 0) {
+ 			dev_err(&amp;op-&gt;dev, "of_dma_controller_register failed\n");
++			dma_async_device_unregister(&amp;pdev-&gt;device);
+ 			return ret;
+ 		}
+ 	}</pre><hr><pre>commit 8105c2abbf36296bf38ca44f55ee45d160db476a
+Author: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+Date:   Sat Oct 9 12:19:18 2021 +0800
+
+    mmc: moxart: Fix reference count leaks in moxart_probe
+    
+    The issue happens in several error handling paths on two refcounted
+    object related to the object "host" (dma_chan_rx, dma_chan_tx). In
+    these paths, the function forgets to decrement one or both objects'
+    reference count increased earlier by dma_request_chan(), causing
+    reference count leaks.
+    
+    Fix it by balancing the refcounts of both objects in some error
+    handling paths. In correspondence with the changes in moxart_probe(),
+    IS_ERR() is replaced with IS_ERR_OR_NULL() in moxart_remove() as well.
+    
+    Signed-off-by: Xin Xiong &lt;xiongx18@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Link: https://lore.kernel.org/r/20211009041918.28419-1-xiongx18@fudan.edu.cn
+    Signed-off-by: Ulf Hansson &lt;ulf.hansson@linaro.org&gt;
+
+diff --git a/drivers/mmc/host/moxart-mmc.c b/drivers/mmc/host/moxart-mmc.c
+index 6c9d38132f74..7b9fcef490de 100644
+--- a/drivers/mmc/host/moxart-mmc.c
++++ b/drivers/mmc/host/moxart-mmc.c
+@@ -621,6 +621,14 @@ static int moxart_probe(struct platform_device *pdev)
+ 			ret = -EPROBE_DEFER;
+ 			goto out;
+ 		}
++		if (!IS_ERR(host-&gt;dma_chan_tx)) {
++			dma_release_channel(host-&gt;dma_chan_tx);
++			host-&gt;dma_chan_tx = NULL;
++		}
++		if (!IS_ERR(host-&gt;dma_chan_rx)) {
++			dma_release_channel(host-&gt;dma_chan_rx);
++			host-&gt;dma_chan_rx = NULL;
++		}
+ 		dev_dbg(dev, "PIO mode transfer enabled\n");
+ 		host-&gt;have_dma = false;
+ 	} else {
+@@ -675,6 +683,10 @@ static int moxart_probe(struct platform_device *pdev)
+ 	return 0;
+ 
+ out:
++	if (!IS_ERR_OR_NULL(host-&gt;dma_chan_tx))
++		dma_release_channel(host-&gt;dma_chan_tx);
++	if (!IS_ERR_OR_NULL(host-&gt;dma_chan_rx))
++		dma_release_channel(host-&gt;dma_chan_rx);
+ 	if (mmc)
+ 		mmc_free_host(mmc);
+ 	return ret;
+@@ -687,9 +699,9 @@ static int moxart_remove(struct platform_device *pdev)
+ 
+ 	dev_set_drvdata(&amp;pdev-&gt;dev, NULL);
+ 
+-	if (!IS_ERR(host-&gt;dma_chan_tx))
++	if (!IS_ERR_OR_NULL(host-&gt;dma_chan_tx))
+ 		dma_release_channel(host-&gt;dma_chan_tx);
+-	if (!IS_ERR(host-&gt;dma_chan_rx))
++	if (!IS_ERR_OR_NULL(host-&gt;dma_chan_rx))
+ 		dma_release_channel(host-&gt;dma_chan_rx);
+ 	mmc_remove_host(mmc);
+ 	mmc_free_host(mmc);</pre><hr><pre>commit ac2c63757f4f413980d6c676dbe1ae2941b94afa
+Author: Chenyuan Mi &lt;cymi20@fudan.edu.cn&gt;
+Date:   Tue Sep 7 19:41:05 2021 +0800
+
+    orangefs: Fix sb refcount leak when allocate sb info failed.
+    
+    The reference counting issue happens in one exception handling
+    path of orangefs_mount(). When failing to allocate sb info, the
+    function forgets to decrease the refcount of sb increased by
+    sget(), causing a refcount leak.
+    
+    Fix this issue by jumping to the label "free_sb_and_op" instead
+    of "free_op"
+    
+    Signed-off-by: Chenyuan Mi &lt;cymi20@fudan.edu.cn&gt;
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Signed-off-by: Mike Marshall &lt;hubcap@omnibond.com&gt;
+
+diff --git a/fs/orangefs/super.c b/fs/orangefs/super.c
+index 897fb6c3f161..18341cde3f34 100644
+--- a/fs/orangefs/super.c
++++ b/fs/orangefs/super.c
+@@ -526,7 +526,7 @@ struct dentry *orangefs_mount(struct file_system_type *fst,
+ 	sb-&gt;s_fs_info = kzalloc(sizeof(struct orangefs_sb_info_s), GFP_KERNEL);
+ 	if (!ORANGEFS_SB(sb)) {
+ 		d = ERR_PTR(-ENOMEM);
+-		goto free_op;
++		goto free_sb_and_op;
+ 	}
+ 
+ 	ret = orangefs_fill_sb(sb,</pre><hr><pre>commit f62314b1ced25c58b86e044fc951cd6a1ea234cf
+Author: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+Date:   Thu Sep 9 15:24:36 2021 +0800
+
+    kunit: fix reference count leak in kfree_at_end
+    
+    The reference counting issue happens in the normal path of
+    kfree_at_end(). When kunit_alloc_and_get_resource() is invoked, the
+    function forgets to handle the returned resource object, whose refcount
+    increased inside, causing a refcount leak.
+    
+    Fix this issue by calling kunit_alloc_resource() instead of
+    kunit_alloc_and_get_resource().
+    
+    Fixed the following when applying:
+    Shuah Khan &lt;skhan@linuxfoundation.org&gt;
+    
+    CHECK: Alignment should match open parenthesis
+    +       kunit_alloc_resource(test, NULL, kfree_res_free, GFP_KERNEL,
+                                         (void *)to_free);
+    
+    Signed-off-by: Xiyu Yang &lt;xiyuyang19@fudan.edu.cn&gt;
+    Signed-off-by: Xin Tan &lt;tanxin.ctf@gmail.com&gt;
+    Reviewed-by: Daniel Latypov &lt;dlatypov@google.com&gt;
+    Reviewed-by: Brendan Higgins &lt;brendanhiggins@google.com&gt;
+    Signed-off-by: Shuah Khan &lt;skhan@linuxfoundation.org&gt;
+
+diff --git a/lib/kunit/executor_test.c b/lib/kunit/executor_test.c
+index cdbe54b16501..e14a18af573d 100644
+--- a/lib/kunit/executor_test.c
++++ b/lib/kunit/executor_test.c
+@@ -116,8 +116,8 @@ static void kfree_at_end(struct kunit *test, const void *to_free)
+ 	/* kfree() handles NULL already, but avoid allocating a no-op cleanup. */
+ 	if (IS_ERR_OR_NULL(to_free))
+ 		return;
+-	kunit_alloc_and_get_resource(test, NULL, kfree_res_free, GFP_KERNEL,
+-				     (void *)to_free);
++	kunit_alloc_resource(test, NULL, kfree_res_free, GFP_KERNEL,
++			     (void *)to_free);
+ }
+ 
+ static struct kunit_suite *alloc_fake_suite(struct kunit *test,</pre>
+    <div class="pagination">
+        <a href='15.html'>&lt;&lt;Prev</a><a href='15.html'>1</a><span>[2]</span><a href='15_3.html'>3</a><a href='15_4.html'>4</a><a href='15_5.html'>5</a><a href='15_6.html'>6</a><a href='15_7.html'>7</a><a href='15_3.html'>Next&gt;&gt;</a>
+    <div>
+</body>

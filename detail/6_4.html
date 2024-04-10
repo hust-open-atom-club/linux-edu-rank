@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6_3.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><span>[4]</span><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_5.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 89f45c30172c80e55c887f32f1af8e184124577b
+Author: Dinghao Liu &lt;dinghao.liu@zju.edu.cn&gt;
+Date:   Wed Dec 27 15:02:27 2023 +0800
+
+    net/qla3xxx: fix potential memleak in ql_alloc_buffer_queues
+    
+    When dma_alloc_coherent() fails, we should free qdev-&gt;lrg_buf
+    to prevent potential memleak.
+    
+    Fixes: 1357bfcf7106 ("qla3xxx: Dynamically size the rx buffer queue based on the MTU.")
+    Signed-off-by: Dinghao Liu &lt;dinghao.liu@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20231227070227.10527-1-dinghao.liu@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/drivers/net/ethernet/qlogic/qla3xxx.c b/drivers/net/ethernet/qlogic/qla3xxx.c
+index 0d57ffcedf0c..fc78bc959ded 100644
+--- a/drivers/net/ethernet/qlogic/qla3xxx.c
++++ b/drivers/net/ethernet/qlogic/qla3xxx.c
+@@ -2591,6 +2591,7 @@ static int ql_alloc_buffer_queues(struct ql3_adapter *qdev)
+ 
+ 	if (qdev-&gt;lrg_buf_q_alloc_virt_addr == NULL) {
+ 		netdev_err(qdev-&gt;ndev, "lBufQ failed\n");
++		kfree(qdev-&gt;lrg_buf);
+ 		return -ENOMEM;
+ 	}
+ 	qdev-&gt;lrg_buf_q_virt_addr = qdev-&gt;lrg_buf_q_alloc_virt_addr;
+@@ -2615,6 +2616,7 @@ static int ql_alloc_buffer_queues(struct ql3_adapter *qdev)
+ 				  qdev-&gt;lrg_buf_q_alloc_size,
+ 				  qdev-&gt;lrg_buf_q_alloc_virt_addr,
+ 				  qdev-&gt;lrg_buf_q_alloc_phy_addr);
++		kfree(qdev-&gt;lrg_buf);
+ 		return -ENOMEM;
+ 	}
+ </pre><hr><pre>commit 9aa6543ee6d3a717268f210b263b0f1286a0bf1e
+Author: Dinghao Liu &lt;dinghao.liu@zju.edu.cn&gt;
+Date:   Thu Dec 14 16:39:19 2023 +0800
+
+    nvdimm-btt: simplify code with the scope based resource management
+    
+    Use the scope based resource management (defined in
+    linux/cleanup.h) to automate resource lifetime
+    control on struct btt_sb *super in discover_arenas().
+    
+    Signed-off-by: Dinghao Liu &lt;dinghao.liu@zju.edu.cn&gt;
+    Reviewed-by: Dave Jiang &lt;dave.jiang@intel.com&gt;
+    Link: https://lore.kernel.org/r/20231214083919.22218-1-dinghao.liu@zju.edu.cn
+    Signed-off-by: Ira Weiny &lt;ira.weiny@intel.com&gt;
+
+diff --git a/drivers/nvdimm/btt.c b/drivers/nvdimm/btt.c
+index d5593b0dc700..32a9e2f543c5 100644
+--- a/drivers/nvdimm/btt.c
++++ b/drivers/nvdimm/btt.c
+@@ -16,6 +16,7 @@
+ #include &lt;linux/fs.h&gt;
+ #include &lt;linux/nd.h&gt;
+ #include &lt;linux/backing-dev.h&gt;
++#include &lt;linux/cleanup.h&gt;
+ #include "btt.h"
+ #include "nd.h"
+ 
+@@ -847,23 +848,20 @@ static int discover_arenas(struct btt *btt)
+ {
+ 	int ret = 0;
+ 	struct arena_info *arena;
+-	struct btt_sb *super;
+ 	size_t remaining = btt-&gt;rawsize;
+ 	u64 cur_nlba = 0;
+ 	size_t cur_off = 0;
+ 	int num_arenas = 0;
+ 
+-	super = kzalloc(sizeof(*super), GFP_KERNEL);
++	struct btt_sb *super __free(kfree) = kzalloc(sizeof(*super), GFP_KERNEL);
+ 	if (!super)
+ 		return -ENOMEM;
+ 
+ 	while (remaining) {
+ 		/* Alloc memory for arena */
+ 		arena = alloc_arena(btt, 0, 0, 0);
+-		if (!arena) {
+-			ret = -ENOMEM;
+-			goto out_super;
+-		}
++		if (!arena)
++			return -ENOMEM;
+ 
+ 		arena-&gt;infooff = cur_off;
+ 		ret = btt_info_read(arena, super);
+@@ -919,14 +917,11 @@ static int discover_arenas(struct btt *btt)
+ 	btt-&gt;nlba = cur_nlba;
+ 	btt-&gt;init_state = INIT_READY;
+ 
+-	kfree(super);
+ 	return ret;
+ 
+  out:
+ 	kfree(arena);
+ 	free_arenas(btt);
+- out_super:
+-	kfree(super);
+ 	return ret;
+ }
+ </pre><hr><pre>commit 2ab1efad60ad119b616722b81eeb73060728028c
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Thu Dec 28 14:43:58 2023 +0800
+
+    net/sched: cls_api: complement tcf_tfilter_dump_policy
+    
+    In function `tc_dump_tfilter`, the attributes array is parsed via
+    tcf_tfilter_dump_policy which only describes TCA_DUMP_FLAGS. However,
+    the NLA TCA_CHAIN is also accessed with `nla_get_u32`.
+    
+    The access to TCA_CHAIN is introduced in commit 5bc1701881e3 ("net:
+    sched: introduce multichain support for filters") and no nla_policy is
+    provided for parsing at that point. Later on, tcf_tfilter_dump_policy is
+    introduced in commit f8ab1807a9c9 ("net: sched: introduce terse dump
+    flag") while still ignoring the fact that TCA_CHAIN needs a check. This
+    patch does that by complementing the policy to allow the access
+    discussed here can be safe as other cases just choose rtm_tca_policy as
+    the parsing policy.
+    
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Acked-by: Jamal Hadi Salim &lt;jhs@mojatatu.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/sched/cls_api.c b/net/sched/cls_api.c
+index 3c50b4037755..adf5de1ff773 100644
+--- a/net/sched/cls_api.c
++++ b/net/sched/cls_api.c
+@@ -2735,6 +2735,7 @@ static bool tcf_chain_dump(struct tcf_chain *chain, struct Qdisc *q, u32 parent,
+ }
+ 
+ static const struct nla_policy tcf_tfilter_dump_policy[TCA_MAX + 1] = {
++	[TCA_CHAIN]      = { .type = NLA_U32 },
+ 	[TCA_DUMP_FLAGS] = NLA_POLICY_BITFIELD32(TCA_DUMP_FLAGS_TERSE),
+ };
+ </pre><hr><pre>commit d5a306aedba34e640b11d7026dbbafb78ee3a5f6
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Mon Dec 25 19:29:14 2023 +0800
+
+    sfc: fix a double-free bug in efx_probe_filters
+    
+    In efx_probe_filters, the channel-&gt;rps_flow_id is freed in a
+    efx_for_each_channel marco  when success equals to 0.
+    However, after the following call chain:
+    
+    ef100_net_open
+      |-&gt; efx_probe_filters
+      |-&gt; ef100_net_stop
+            |-&gt; efx_remove_filters
+    
+    The channel-&gt;rps_flow_id is freed again in the efx_for_each_channel of
+    efx_remove_filters, triggering a double-free bug.
+    
+    Fixes: a9dc3d5612ce ("sfc_ef100: RX filter table management and related gubbins")
+    Reviewed-by: Simon Horman &lt;horms@kernel.org&gt;
+    Reviewed-by: Edward Cree &lt;ecree.xilinx@gmail.com&gt;
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20231225112915.3544581-1-alexious@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/drivers/net/ethernet/sfc/rx_common.c b/drivers/net/ethernet/sfc/rx_common.c
+index d2f35ee15eff..fac227d372db 100644
+--- a/drivers/net/ethernet/sfc/rx_common.c
++++ b/drivers/net/ethernet/sfc/rx_common.c
+@@ -823,8 +823,10 @@ int efx_probe_filters(struct efx_nic *efx)
+ 		}
+ 
+ 		if (!success) {
+-			efx_for_each_channel(channel, efx)
++			efx_for_each_channel(channel, efx) {
+ 				kfree(channel-&gt;rps_flow_id);
++				channel-&gt;rps_flow_id = NULL;
++			}
+ 			efx-&gt;type-&gt;filter_table_remove(efx);
+ 			rc = -ENOMEM;
+ 			goto out_unlock;</pre><hr><pre>commit c2b2ee36250d967c21890cb801e24af4b6a9eaa5
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Thu Dec 21 00:34:51 2023 +0800
+
+    bridge: cfm: fix enum typo in br_cc_ccm_tx_parse
+    
+    It appears that there is a typo in the code where the nlattr array is
+    being parsed with policy br_cfm_cc_ccm_tx_policy, but the instance is
+    being accessed via IFLA_BRIDGE_CFM_CC_RDI_INSTANCE, which is associated
+    with the policy br_cfm_cc_rdi_policy.
+    
+    This problem was introduced by commit 2be665c3940d ("bridge: cfm: Netlink
+    SET configuration Interface.").
+    
+    Though it seems like a harmless typo since these two enum owns the exact
+    same value (1 here), it is quite misleading hence fix it by using the
+    correct enum IFLA_BRIDGE_CFM_CC_CCM_TX_INSTANCE here.
+    
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Simon Horman &lt;horms@kernel.org&gt;
+    Acked-by: Nikolay Aleksandrov &lt;razor@blackwall.org&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/bridge/br_cfm_netlink.c b/net/bridge/br_cfm_netlink.c
+index 5c4c369f8536..2faab44652e7 100644
+--- a/net/bridge/br_cfm_netlink.c
++++ b/net/bridge/br_cfm_netlink.c
+@@ -362,7 +362,7 @@ static int br_cc_ccm_tx_parse(struct net_bridge *br, struct nlattr *attr,
+ 
+ 	memset(&amp;tx_info, 0, sizeof(tx_info));
+ 
+-	instance = nla_get_u32(tb[IFLA_BRIDGE_CFM_CC_RDI_INSTANCE]);
++	instance = nla_get_u32(tb[IFLA_BRIDGE_CFM_CC_CCM_TX_INSTANCE]);
+ 	nla_memcpy(&amp;tx_info.dmac.addr,
+ 		   tb[IFLA_BRIDGE_CFM_CC_CCM_TX_DMAC],
+ 		   sizeof(tx_info.dmac.addr));</pre><hr><pre>commit 309fdb1c33fe726d92d0030481346f24e1b01f07
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Thu Dec 14 21:04:04 2023 +0800
+
+    ethernet: atheros: fix a memleak in atl1e_setup_ring_resources
+    
+    In the error handling of 'offset &gt; adapter-&gt;ring_size', the
+    tx_ring-&gt;tx_buffer allocated by kzalloc should be freed,
+    instead of 'goto failed' instantly.
+    
+    Fixes: a6a5325239c2 ("atl1e: Atheros L1E Gigabit Ethernet driver")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Reviewed-by: Suman Ghosh &lt;sumang@marvell.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/atheros/atl1e/atl1e_main.c b/drivers/net/ethernet/atheros/atl1e/atl1e_main.c
+index 5935be190b9e..5f2a6fcba967 100644
+--- a/drivers/net/ethernet/atheros/atl1e/atl1e_main.c
++++ b/drivers/net/ethernet/atheros/atl1e/atl1e_main.c
+@@ -866,10 +866,13 @@ static int atl1e_setup_ring_resources(struct atl1e_adapter *adapter)
+ 		netdev_err(adapter-&gt;netdev, "offset(%d) &gt; ring size(%d) !!\n",
+ 			   offset, adapter-&gt;ring_size);
+ 		err = -1;
+-		goto failed;
++		goto free_buffer;
+ 	}
+ 
+ 	return 0;
++free_buffer:
++	kfree(tx_ring-&gt;tx_buffer);
++	tx_ring-&gt;tx_buffer = NULL;
+ failed:
+ 	if (adapter-&gt;ring_vir_addr != NULL) {
+ 		dma_free_coherent(&amp;pdev-&gt;dev, adapter-&gt;ring_size,</pre><hr><pre>commit a6582701178a47c4d0cb2188c965c59c0c0647c8
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Fri Dec 15 00:59:38 2023 +0800
+
+    drm/amd/pm: fix a double-free in amdgpu_parse_extended_power_table
+    
+    The amdgpu_free_extended_power_table is called in every error-handling
+    paths of amdgpu_parse_extended_power_table. However, after the following
+    call chain of returning:
+    
+    amdgpu_parse_extended_power_table
+      |-&gt; kv_dpm_init / si_dpm_init
+          (the only two caller of amdgpu_parse_extended_power_table)
+            |-&gt; kv_dpm_sw_init / si_dpm_sw_init
+                (the only caller of kv_dpm_init / si_dpm_init, accordingly)
+                  |-&gt; kv_dpm_fini / si_dpm_fini
+                      (goto dpm_failed in xx_dpm_sw_init)
+                        |-&gt; amdgpu_free_extended_power_table
+    
+    As above, the amdgpu_free_extended_power_table is called twice in this
+    returning chain and thus a double-free is triggered. Similarily, the
+    last kfree in amdgpu_parse_extended_power_table also cause a double free
+    with amdgpu_free_extended_power_table in kv_dpm_fini.
+    
+    Fixes: 84176663e70d ("drm/amd/pm: create a new holder for those APIs used only by legacy ASICs(si/kv)")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Alex Deucher &lt;alexander.deucher@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/amd/pm/legacy-dpm/legacy_dpm.c b/drivers/gpu/drm/amd/pm/legacy-dpm/legacy_dpm.c
+index 81fb4e5dd804..60377747bab4 100644
+--- a/drivers/gpu/drm/amd/pm/legacy-dpm/legacy_dpm.c
++++ b/drivers/gpu/drm/amd/pm/legacy-dpm/legacy_dpm.c
+@@ -272,10 +272,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 				 le16_to_cpu(power_info-&gt;pplib4.usVddcDependencyOnSCLKOffset));
+ 			ret = amdgpu_parse_clk_voltage_dep_table(&amp;adev-&gt;pm.dpm.dyn_state.vddc_dependency_on_sclk,
+ 								 dep_table);
+-			if (ret) {
+-				amdgpu_free_extended_power_table(adev);
++			if (ret)
+ 				return ret;
+-			}
+ 		}
+ 		if (power_info-&gt;pplib4.usVddciDependencyOnMCLKOffset) {
+ 			dep_table = (ATOM_PPLIB_Clock_Voltage_Dependency_Table *)
+@@ -283,10 +281,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 				 le16_to_cpu(power_info-&gt;pplib4.usVddciDependencyOnMCLKOffset));
+ 			ret = amdgpu_parse_clk_voltage_dep_table(&amp;adev-&gt;pm.dpm.dyn_state.vddci_dependency_on_mclk,
+ 								 dep_table);
+-			if (ret) {
+-				amdgpu_free_extended_power_table(adev);
++			if (ret)
+ 				return ret;
+-			}
+ 		}
+ 		if (power_info-&gt;pplib4.usVddcDependencyOnMCLKOffset) {
+ 			dep_table = (ATOM_PPLIB_Clock_Voltage_Dependency_Table *)
+@@ -294,10 +290,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 				 le16_to_cpu(power_info-&gt;pplib4.usVddcDependencyOnMCLKOffset));
+ 			ret = amdgpu_parse_clk_voltage_dep_table(&amp;adev-&gt;pm.dpm.dyn_state.vddc_dependency_on_mclk,
+ 								 dep_table);
+-			if (ret) {
+-				amdgpu_free_extended_power_table(adev);
++			if (ret)
+ 				return ret;
+-			}
+ 		}
+ 		if (power_info-&gt;pplib4.usMvddDependencyOnMCLKOffset) {
+ 			dep_table = (ATOM_PPLIB_Clock_Voltage_Dependency_Table *)
+@@ -305,10 +299,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 				 le16_to_cpu(power_info-&gt;pplib4.usMvddDependencyOnMCLKOffset));
+ 			ret = amdgpu_parse_clk_voltage_dep_table(&amp;adev-&gt;pm.dpm.dyn_state.mvdd_dependency_on_mclk,
+ 								 dep_table);
+-			if (ret) {
+-				amdgpu_free_extended_power_table(adev);
++			if (ret)
+ 				return ret;
+-			}
+ 		}
+ 		if (power_info-&gt;pplib4.usMaxClockVoltageOnDCOffset) {
+ 			ATOM_PPLIB_Clock_Voltage_Limit_Table *clk_v =
+@@ -339,10 +331,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 				kcalloc(psl-&gt;ucNumEntries,
+ 					sizeof(struct amdgpu_phase_shedding_limits_entry),
+ 					GFP_KERNEL);
+-			if (!adev-&gt;pm.dpm.dyn_state.phase_shedding_limits_table.entries) {
+-				amdgpu_free_extended_power_table(adev);
++			if (!adev-&gt;pm.dpm.dyn_state.phase_shedding_limits_table.entries)
+ 				return -ENOMEM;
+-			}
+ 
+ 			entry = &amp;psl-&gt;entries[0];
+ 			for (i = 0; i &lt; psl-&gt;ucNumEntries; i++) {
+@@ -383,10 +373,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 			ATOM_PPLIB_CAC_Leakage_Record *entry;
+ 			u32 size = cac_table-&gt;ucNumEntries * sizeof(struct amdgpu_cac_leakage_table);
+ 			adev-&gt;pm.dpm.dyn_state.cac_leakage_table.entries = kzalloc(size, GFP_KERNEL);
+-			if (!adev-&gt;pm.dpm.dyn_state.cac_leakage_table.entries) {
+-				amdgpu_free_extended_power_table(adev);
++			if (!adev-&gt;pm.dpm.dyn_state.cac_leakage_table.entries)
+ 				return -ENOMEM;
+-			}
+ 			entry = &amp;cac_table-&gt;entries[0];
+ 			for (i = 0; i &lt; cac_table-&gt;ucNumEntries; i++) {
+ 				if (adev-&gt;pm.dpm.platform_caps &amp; ATOM_PP_PLATFORM_CAP_EVV) {
+@@ -438,10 +426,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 				sizeof(struct amdgpu_vce_clock_voltage_dependency_entry);
+ 			adev-&gt;pm.dpm.dyn_state.vce_clock_voltage_dependency_table.entries =
+ 				kzalloc(size, GFP_KERNEL);
+-			if (!adev-&gt;pm.dpm.dyn_state.vce_clock_voltage_dependency_table.entries) {
+-				amdgpu_free_extended_power_table(adev);
++			if (!adev-&gt;pm.dpm.dyn_state.vce_clock_voltage_dependency_table.entries)
+ 				return -ENOMEM;
+-			}
+ 			adev-&gt;pm.dpm.dyn_state.vce_clock_voltage_dependency_table.count =
+ 				limits-&gt;numEntries;
+ 			entry = &amp;limits-&gt;entries[0];
+@@ -493,10 +479,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 				sizeof(struct amdgpu_uvd_clock_voltage_dependency_entry);
+ 			adev-&gt;pm.dpm.dyn_state.uvd_clock_voltage_dependency_table.entries =
+ 				kzalloc(size, GFP_KERNEL);
+-			if (!adev-&gt;pm.dpm.dyn_state.uvd_clock_voltage_dependency_table.entries) {
+-				amdgpu_free_extended_power_table(adev);
++			if (!adev-&gt;pm.dpm.dyn_state.uvd_clock_voltage_dependency_table.entries)
+ 				return -ENOMEM;
+-			}
+ 			adev-&gt;pm.dpm.dyn_state.uvd_clock_voltage_dependency_table.count =
+ 				limits-&gt;numEntries;
+ 			entry = &amp;limits-&gt;entries[0];
+@@ -525,10 +509,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 				sizeof(struct amdgpu_clock_voltage_dependency_entry);
+ 			adev-&gt;pm.dpm.dyn_state.samu_clock_voltage_dependency_table.entries =
+ 				kzalloc(size, GFP_KERNEL);
+-			if (!adev-&gt;pm.dpm.dyn_state.samu_clock_voltage_dependency_table.entries) {
+-				amdgpu_free_extended_power_table(adev);
++			if (!adev-&gt;pm.dpm.dyn_state.samu_clock_voltage_dependency_table.entries)
+ 				return -ENOMEM;
+-			}
+ 			adev-&gt;pm.dpm.dyn_state.samu_clock_voltage_dependency_table.count =
+ 				limits-&gt;numEntries;
+ 			entry = &amp;limits-&gt;entries[0];
+@@ -548,10 +530,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 				 le16_to_cpu(ext_hdr-&gt;usPPMTableOffset));
+ 			adev-&gt;pm.dpm.dyn_state.ppm_table =
+ 				kzalloc(sizeof(struct amdgpu_ppm_table), GFP_KERNEL);
+-			if (!adev-&gt;pm.dpm.dyn_state.ppm_table) {
+-				amdgpu_free_extended_power_table(adev);
++			if (!adev-&gt;pm.dpm.dyn_state.ppm_table)
+ 				return -ENOMEM;
+-			}
+ 			adev-&gt;pm.dpm.dyn_state.ppm_table-&gt;ppm_design = ppm-&gt;ucPpmDesign;
+ 			adev-&gt;pm.dpm.dyn_state.ppm_table-&gt;cpu_core_number =
+ 				le16_to_cpu(ppm-&gt;usCpuCoreNumber);
+@@ -583,10 +563,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 				sizeof(struct amdgpu_clock_voltage_dependency_entry);
+ 			adev-&gt;pm.dpm.dyn_state.acp_clock_voltage_dependency_table.entries =
+ 				kzalloc(size, GFP_KERNEL);
+-			if (!adev-&gt;pm.dpm.dyn_state.acp_clock_voltage_dependency_table.entries) {
+-				amdgpu_free_extended_power_table(adev);
++			if (!adev-&gt;pm.dpm.dyn_state.acp_clock_voltage_dependency_table.entries)
+ 				return -ENOMEM;
+-			}
+ 			adev-&gt;pm.dpm.dyn_state.acp_clock_voltage_dependency_table.count =
+ 				limits-&gt;numEntries;
+ 			entry = &amp;limits-&gt;entries[0];
+@@ -606,10 +584,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 			ATOM_PowerTune_Table *pt;
+ 			adev-&gt;pm.dpm.dyn_state.cac_tdp_table =
+ 				kzalloc(sizeof(struct amdgpu_cac_tdp_table), GFP_KERNEL);
+-			if (!adev-&gt;pm.dpm.dyn_state.cac_tdp_table) {
+-				amdgpu_free_extended_power_table(adev);
++			if (!adev-&gt;pm.dpm.dyn_state.cac_tdp_table)
+ 				return -ENOMEM;
+-			}
+ 			if (rev &gt; 0) {
+ 				ATOM_PPLIB_POWERTUNE_Table_V1 *ppt = (ATOM_PPLIB_POWERTUNE_Table_V1 *)
+ 					(mode_info-&gt;atom_context-&gt;bios + data_offset +
+@@ -645,10 +621,8 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
+ 			ret = amdgpu_parse_clk_voltage_dep_table(
+ 					&amp;adev-&gt;pm.dpm.dyn_state.vddgfx_dependency_on_sclk,
+ 					dep_table);
+-			if (ret) {
+-				kfree(adev-&gt;pm.dpm.dyn_state.vddgfx_dependency_on_sclk.entries);
++			if (ret)
+ 				return ret;
+-			}
+ 		}
+ 	}
+ </pre><hr><pre>commit c2709b2d6a537ca0fa0f1da36fdaf07e48ef447d
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Fri Dec 15 00:58:42 2023 +0800
+
+    gpu/drm/radeon: fix two memleaks in radeon_vm_init
+    
+    When radeon_bo_create and radeon_vm_clear_bo fail, the vm-&gt;page_tables
+    allocated before need to be freed. However, neither radeon_vm_init
+    itself nor its caller have done such deallocation.
+    
+    Fixes: 6d2f2944e95e ("drm/radeon: use normal BOs for the page tables v4")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Alex Deucher &lt;alexander.deucher@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/radeon/radeon_vm.c b/drivers/gpu/drm/radeon/radeon_vm.c
+index 987cabbf1318..c38b4d5d6a14 100644
+--- a/drivers/gpu/drm/radeon/radeon_vm.c
++++ b/drivers/gpu/drm/radeon/radeon_vm.c
+@@ -1204,13 +1204,17 @@ int radeon_vm_init(struct radeon_device *rdev, struct radeon_vm *vm)
+ 	r = radeon_bo_create(rdev, pd_size, align, true,
+ 			     RADEON_GEM_DOMAIN_VRAM, 0, NULL,
+ 			     NULL, &amp;vm-&gt;page_directory);
+-	if (r)
++	if (r) {
++		kfree(vm-&gt;page_tables);
++		vm-&gt;page_tables = NULL;
+ 		return r;
+-
++	}
+ 	r = radeon_vm_clear_bo(rdev, vm-&gt;page_directory);
+ 	if (r) {
+ 		radeon_bo_unref(&amp;vm-&gt;page_directory);
+ 		vm-&gt;page_directory = NULL;
++		kfree(vm-&gt;page_tables);
++		vm-&gt;page_tables = NULL;
+ 		return r;
+ 	}
+ </pre><hr><pre>commit 28dd788382c43b330480f57cd34cde0840896743
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Fri Dec 15 00:24:58 2023 +0800
+
+    drivers/amd/pm: fix a use-after-free in kv_parse_power_table
+    
+    When ps allocated by kzalloc equals to NULL, kv_parse_power_table
+    frees adev-&gt;pm.dpm.ps that allocated before. However, after the control
+    flow goes through the following call chains:
+    
+    kv_parse_power_table
+      |-&gt; kv_dpm_init
+            |-&gt; kv_dpm_sw_init
+                  |-&gt; kv_dpm_fini
+    
+    The adev-&gt;pm.dpm.ps is used in the for loop of kv_dpm_fini after its
+    first free in kv_parse_power_table and causes a use-after-free bug.
+    
+    Fixes: a2e73f56fa62 ("drm/amdgpu: Add support for CIK parts")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Alex Deucher &lt;alexander.deucher@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/amd/pm/legacy-dpm/kv_dpm.c b/drivers/gpu/drm/amd/pm/legacy-dpm/kv_dpm.c
+index 5d28c951a319..5cb4725c773f 100644
+--- a/drivers/gpu/drm/amd/pm/legacy-dpm/kv_dpm.c
++++ b/drivers/gpu/drm/amd/pm/legacy-dpm/kv_dpm.c
+@@ -2735,10 +2735,8 @@ static int kv_parse_power_table(struct amdgpu_device *adev)
+ 		non_clock_info = (struct _ATOM_PPLIB_NONCLOCK_INFO *)
+ 			&amp;non_clock_info_array-&gt;nonClockInfo[non_clock_array_index];
+ 		ps = kzalloc(sizeof(struct kv_ps), GFP_KERNEL);
+-		if (ps == NULL) {
+-			kfree(adev-&gt;pm.dpm.ps);
++		if (ps == NULL)
+ 			return -ENOMEM;
+-		}
+ 		adev-&gt;pm.dpm.ps[i].ps_priv = ps;
+ 		k = 0;
+ 		idx = (u8 *)&amp;power_state-&gt;v2.clockInfoIndex[0];</pre><hr><pre>commit ac16667237a82e2597e329eb9bc520d1cf9dff30
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Thu Dec 14 23:24:11 2023 +0800
+
+    drm/amd/pm: fix a double-free in si_dpm_init
+    
+    When the allocation of
+    adev-&gt;pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries fails,
+    amdgpu_free_extended_power_table is called to free some fields of adev.
+    However, when the control flow returns to si_dpm_sw_init, it goes to
+    label dpm_failed and calls si_dpm_fini, which calls
+    amdgpu_free_extended_power_table again and free those fields again. Thus
+    a double-free is triggered.
+    
+    Fixes: 841686df9f7d ("drm/amdgpu: add SI DPM support (v4)")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Alex Deucher &lt;alexander.deucher@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/amd/pm/legacy-dpm/si_dpm.c b/drivers/gpu/drm/amd/pm/legacy-dpm/si_dpm.c
+index fc8e4ac6c8e7..df4f20293c16 100644
+--- a/drivers/gpu/drm/amd/pm/legacy-dpm/si_dpm.c
++++ b/drivers/gpu/drm/amd/pm/legacy-dpm/si_dpm.c
+@@ -7379,10 +7379,9 @@ static int si_dpm_init(struct amdgpu_device *adev)
+ 		kcalloc(4,
+ 			sizeof(struct amdgpu_clock_voltage_dependency_entry),
+ 			GFP_KERNEL);
+-	if (!adev-&gt;pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries) {
+-		amdgpu_free_extended_power_table(adev);
++	if (!adev-&gt;pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries)
+ 		return -ENOMEM;
+-	}
++
+ 	adev-&gt;pm.dpm.dyn_state.vddc_dependency_on_dispclk.count = 4;
+ 	adev-&gt;pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries[0].clk = 0;
+ 	adev-&gt;pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries[0].v = 0;</pre>
+    <div class="pagination">
+        <a href='6_3.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><span>[4]</span><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_5.html'>Next&gt;&gt;</a>
+    <div>
+</body>

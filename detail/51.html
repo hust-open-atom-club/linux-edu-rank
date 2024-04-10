@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of California, Santa Cruz</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of California, Santa Cruz</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit 510fd8ea98fcb586c01aef93d87c060a159ac30a
+Author: Heiner Litz &lt;hlitz@ucsc.edu&gt;
+Date:   Fri Jun 21 11:11:59 2019 +0200
+
+    lightnvm: pblk: fix freeing of merged pages
+    
+    bio_add_pc_page() may merge pages when a bio is padded due to a flush.
+    Fix iteration over the bio to free the correct pages in case of a merge.
+    
+    Signed-off-by: Heiner Litz &lt;hlitz@ucsc.edu&gt;
+    Reviewed-by: Javier González &lt;javier@javigon.com&gt;
+    Signed-off-by: Matias Bjørling &lt;mb@lightnvm.io&gt;
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/drivers/lightnvm/pblk-core.c b/drivers/lightnvm/pblk-core.c
+index 773537804319..f546e6f28b8a 100644
+--- a/drivers/lightnvm/pblk-core.c
++++ b/drivers/lightnvm/pblk-core.c
+@@ -323,14 +323,16 @@ void pblk_free_rqd(struct pblk *pblk, struct nvm_rq *rqd, int type)
+ void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
+ 			 int nr_pages)
+ {
+-	struct bio_vec bv;
+-	int i;
+-
+-	WARN_ON(off + nr_pages != bio-&gt;bi_vcnt);
+-
+-	for (i = off; i &lt; nr_pages + off; i++) {
+-		bv = bio-&gt;bi_io_vec[i];
+-		mempool_free(bv.bv_page, &amp;pblk-&gt;page_bio_pool);
++	struct bio_vec *bv;
++	struct page *page;
++	int i, e, nbv = 0;
++
++	for (i = 0; i &lt; bio-&gt;bi_vcnt; i++) {
++		bv = &amp;bio-&gt;bi_io_vec[i];
++		page = bv-&gt;bv_page;
++		for (e = 0; e &lt; bv-&gt;bv_len; e += PBLK_EXPOSED_PAGE_SIZE, nbv++)
++			if (nbv &gt;= off)
++				mempool_free(page++, &amp;pblk-&gt;page_bio_pool);
+ 	}
+ }
+ </pre><hr><pre>commit 0586942f03b71bc95b0ee356ff6b09d53acbad06
+Author: Heiner Litz &lt;hlitz@ucsc.edu&gt;
+Date:   Mon Feb 11 13:25:09 2019 +0100
+
+    lightnvm: pblk: fix race condition on GC
+    
+    This patch fixes a race condition where a write is mapped to the last
+    sectors of a line. The write is synced to the device but the L2P is not
+    updated yet. When the line is garbage collected before the L2P update
+    is performed, the sectors are ignored by the GC logic and the line is
+    freed before all sectors are moved. When the L2P is finally updated, it
+    contains a mapping to a freed line, subsequent reads of the
+    corresponding LBAs fail.
+    
+    This patch introduces a per line counter specifying the number of
+    sectors that are synced to the device but have not been updated in the
+    L2P. Lines with a counter of greater than zero will not be selected
+    for GC.
+    
+    Signed-off-by: Heiner Litz &lt;hlitz@ucsc.edu&gt;
+    Reviewed-by: Hans Holmberg &lt;hans.holmberg@cnexlabs.com&gt;
+    Reviewed-by: Javier González &lt;javier@javigon.com&gt;
+    Signed-off-by: Matias Bjørling &lt;mb@lightnvm.io&gt;
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/drivers/lightnvm/pblk-core.c b/drivers/lightnvm/pblk-core.c
+index 2a9e9facf44f..6ca868868fee 100644
+--- a/drivers/lightnvm/pblk-core.c
++++ b/drivers/lightnvm/pblk-core.c
+@@ -1278,6 +1278,7 @@ static int pblk_line_prepare(struct pblk *pblk, struct pblk_line *line)
+ 	spin_unlock(&amp;line-&gt;lock);
+ 
+ 	kref_init(&amp;line-&gt;ref);
++	atomic_set(&amp;line-&gt;sec_to_update, 0);
+ 
+ 	return 0;
+ }
+diff --git a/drivers/lightnvm/pblk-gc.c b/drivers/lightnvm/pblk-gc.c
+index 2fa118c8eb71..26a52ea7ec45 100644
+--- a/drivers/lightnvm/pblk-gc.c
++++ b/drivers/lightnvm/pblk-gc.c
+@@ -365,16 +365,22 @@ static struct pblk_line *pblk_gc_get_victim_line(struct pblk *pblk,
+ 						 struct list_head *group_list)
+ {
+ 	struct pblk_line *line, *victim;
+-	int line_vsc, victim_vsc;
++	unsigned int line_vsc = ~0x0L, victim_vsc = ~0x0L;
+ 
+ 	victim = list_first_entry(group_list, struct pblk_line, list);
++
+ 	list_for_each_entry(line, group_list, list) {
+-		line_vsc = le32_to_cpu(*line-&gt;vsc);
+-		victim_vsc = le32_to_cpu(*victim-&gt;vsc);
+-		if (line_vsc &lt; victim_vsc)
++		if (!atomic_read(&amp;line-&gt;sec_to_update))
++			line_vsc = le32_to_cpu(*line-&gt;vsc);
++		if (line_vsc &lt; victim_vsc) {
+ 			victim = line;
++			victim_vsc = le32_to_cpu(*victim-&gt;vsc);
++		}
+ 	}
+ 
++	if (victim_vsc == ~0x0)
++		return NULL;
++
+ 	return victim;
+ }
+ 
+@@ -448,13 +454,13 @@ static void pblk_gc_run(struct pblk *pblk)
+ 
+ 	do {
+ 		spin_lock(&amp;l_mg-&gt;gc_lock);
+-		if (list_empty(group_list)) {
++
++		line = pblk_gc_get_victim_line(pblk, group_list);
++		if (!line) {
+ 			spin_unlock(&amp;l_mg-&gt;gc_lock);
+ 			break;
+ 		}
+ 
+-		line = pblk_gc_get_victim_line(pblk, group_list);
+-
+ 		spin_lock(&amp;line-&gt;lock);
+ 		WARN_ON(line-&gt;state != PBLK_LINESTATE_CLOSED);
+ 		line-&gt;state = PBLK_LINESTATE_GC;
+diff --git a/drivers/lightnvm/pblk-map.c b/drivers/lightnvm/pblk-map.c
+index 79df583ea709..7fbc99b60cac 100644
+--- a/drivers/lightnvm/pblk-map.c
++++ b/drivers/lightnvm/pblk-map.c
+@@ -73,6 +73,7 @@ static int pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
+ 		 */
+ 		if (i &lt; valid_secs) {
+ 			kref_get(&amp;line-&gt;ref);
++			atomic_inc(&amp;line-&gt;sec_to_update);
+ 			w_ctx = pblk_rb_w_ctx(&amp;pblk-&gt;rwb, sentry + i);
+ 			w_ctx-&gt;ppa = ppa_list[i];
+ 			meta-&gt;lba = cpu_to_le64(w_ctx-&gt;lba);
+diff --git a/drivers/lightnvm/pblk-rb.c b/drivers/lightnvm/pblk-rb.c
+index a6133b50ed9c..03c241b340ea 100644
+--- a/drivers/lightnvm/pblk-rb.c
++++ b/drivers/lightnvm/pblk-rb.c
+@@ -260,6 +260,7 @@ static int __pblk_rb_update_l2p(struct pblk_rb *rb, unsigned int to_update)
+ 							entry-&gt;cacheline);
+ 
+ 		line = pblk_ppa_to_line(pblk, w_ctx-&gt;ppa);
++		atomic_dec(&amp;line-&gt;sec_to_update);
+ 		kref_put(&amp;line-&gt;ref, pblk_line_put);
+ 		clean_wctx(w_ctx);
+ 		rb-&gt;l2p_update = pblk_rb_ptr_wrap(rb, rb-&gt;l2p_update, 1);
+diff --git a/drivers/lightnvm/pblk-write.c b/drivers/lightnvm/pblk-write.c
+index 06d56deb645d..6593deab52da 100644
+--- a/drivers/lightnvm/pblk-write.c
++++ b/drivers/lightnvm/pblk-write.c
+@@ -177,6 +177,7 @@ static void pblk_prepare_resubmit(struct pblk *pblk, unsigned int sentry,
+ 		 * re-map these entries
+ 		 */
+ 		line = pblk_ppa_to_line(pblk, w_ctx-&gt;ppa);
++		atomic_dec(&amp;line-&gt;sec_to_update);
+ 		kref_put(&amp;line-&gt;ref, pblk_line_put);
+ 	}
+ 	spin_unlock(&amp;pblk-&gt;trans_lock);
+diff --git a/drivers/lightnvm/pblk.h b/drivers/lightnvm/pblk.h
+index a6386d5acd73..ac3ab778e976 100644
+--- a/drivers/lightnvm/pblk.h
++++ b/drivers/lightnvm/pblk.h
+@@ -487,6 +487,7 @@ struct pblk_line {
+ 	__le32 *vsc;			/* Valid sector count in line */
+ 
+ 	struct kref ref;		/* Write buffer L2P references */
++	atomic_t sec_to_update;         /* Outstanding L2P updates to ppa */
+ 
+ 	struct pblk_w_err_gc *w_err_gc;	/* Write error gc recovery metadata */
+ </pre><hr><pre>commit 11f6ad699a32f3be1232741e4bfa34abf6677cb8
+Author: Heiner Litz &lt;hlitz@ucsc.edu&gt;
+Date:   Fri Jul 13 10:48:44 2018 +0200
+
+    lightnvm: pblk: add asynchronous partial read
+    
+    In the read path, partial reads are currently performed synchronously
+    which affects performance for workloads that generate many partial
+    reads. This patch adds an asynchronous partial read path as well as
+    the required partial read ctx.
+    
+    Signed-off-by: Heiner Litz &lt;hlitz@ucsc.edu&gt;
+    Reviewed-by: Igor Konopko &lt;igor.j.konopko@intel.com&gt;
+    Signed-off-by: Matias Bjørling &lt;mb@lightnvm.io&gt;
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/drivers/lightnvm/pblk-read.c b/drivers/lightnvm/pblk-read.c
+index 9c9362b20861..26d414ae25b6 100644
+--- a/drivers/lightnvm/pblk-read.c
++++ b/drivers/lightnvm/pblk-read.c
+@@ -231,74 +231,36 @@ static void pblk_end_io_read(struct nvm_rq *rqd)
+ 	__pblk_end_io_read(pblk, rqd, true);
+ }
+ 
+-static int pblk_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
+-			     struct bio *orig_bio, unsigned int bio_init_idx,
+-			     unsigned long *read_bitmap)
++static void pblk_end_partial_read(struct nvm_rq *rqd)
+ {
+-	struct pblk_sec_meta *meta_list = rqd-&gt;meta_list;
+-	struct bio *new_bio;
++	struct pblk *pblk = rqd-&gt;private;
++	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
++	struct pblk_pr_ctx *pr_ctx = r_ctx-&gt;private;
++	struct bio *new_bio = rqd-&gt;bio;
++	struct bio *bio = pr_ctx-&gt;orig_bio;
+ 	struct bio_vec src_bv, dst_bv;
+-	void *ppa_ptr = NULL;
+-	void *src_p, *dst_p;
+-	dma_addr_t dma_ppa_list = 0;
+-	__le64 *lba_list_mem, *lba_list_media;
+-	int nr_secs = rqd-&gt;nr_ppas;
++	struct pblk_sec_meta *meta_list = rqd-&gt;meta_list;
++	int bio_init_idx = pr_ctx-&gt;bio_init_idx;
++	unsigned long *read_bitmap = pr_ctx-&gt;bitmap;
++	int nr_secs = pr_ctx-&gt;orig_nr_secs;
+ 	int nr_holes = nr_secs - bitmap_weight(read_bitmap, nr_secs);
+-	int i, ret, hole;
+-
+-	/* Re-use allocated memory for intermediate lbas */
+-	lba_list_mem = (((void *)rqd-&gt;ppa_list) + pblk_dma_ppa_size);
+-	lba_list_media = (((void *)rqd-&gt;ppa_list) + 2 * pblk_dma_ppa_size);
+-
+-	new_bio = bio_alloc(GFP_KERNEL, nr_holes);
+-
+-	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes))
+-		goto fail_add_pages;
+-
+-	if (nr_holes != new_bio-&gt;bi_vcnt) {
+-		pblk_err(pblk, "malformed bio\n");
+-		goto fail;
+-	}
+-
+-	for (i = 0; i &lt; nr_secs; i++)
+-		lba_list_mem[i] = meta_list[i].lba;
+-
+-	new_bio-&gt;bi_iter.bi_sector = 0; /* internal bio */
+-	bio_set_op_attrs(new_bio, REQ_OP_READ, 0);
+-
+-	rqd-&gt;bio = new_bio;
+-	rqd-&gt;nr_ppas = nr_holes;
+-	rqd-&gt;flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
+-
+-	if (unlikely(nr_holes == 1)) {
+-		ppa_ptr = rqd-&gt;ppa_list;
+-		dma_ppa_list = rqd-&gt;dma_ppa_list;
+-		rqd-&gt;ppa_addr = rqd-&gt;ppa_list[0];
+-	}
+-
+-	ret = pblk_submit_io_sync(pblk, rqd);
+-	if (ret) {
+-		bio_put(rqd-&gt;bio);
+-		pblk_err(pblk, "sync read IO submission failed\n");
+-		goto fail;
+-	}
+-
+-	if (rqd-&gt;error) {
+-		atomic_long_inc(&amp;pblk-&gt;read_failed);
+-#ifdef CONFIG_NVM_PBLK_DEBUG
+-		pblk_print_failed_rqd(pblk, rqd, rqd-&gt;error);
+-#endif
+-	}
++	__le64 *lba_list_mem, *lba_list_media;
++	void *src_p, *dst_p;
++	int hole, i;
+ 
+ 	if (unlikely(nr_holes == 1)) {
+ 		struct ppa_addr ppa;
+ 
+ 		ppa = rqd-&gt;ppa_addr;
+-		rqd-&gt;ppa_list = ppa_ptr;
+-		rqd-&gt;dma_ppa_list = dma_ppa_list;
++		rqd-&gt;ppa_list = pr_ctx-&gt;ppa_ptr;
++		rqd-&gt;dma_ppa_list = pr_ctx-&gt;dma_ppa_list;
+ 		rqd-&gt;ppa_list[0] = ppa;
+ 	}
+ 
++	/* Re-use allocated memory for intermediate lbas */
++	lba_list_mem = (((void *)rqd-&gt;ppa_list) + pblk_dma_ppa_size);
++	lba_list_media = (((void *)rqd-&gt;ppa_list) + 2 * pblk_dma_ppa_size);
++
+ 	for (i = 0; i &lt; nr_secs; i++) {
+ 		lba_list_media[i] = meta_list[i].lba;
+ 		meta_list[i].lba = lba_list_mem[i];
+@@ -316,7 +278,7 @@ static int pblk_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
+ 		meta_list[hole].lba = lba_list_media[i];
+ 
+ 		src_bv = new_bio-&gt;bi_io_vec[i++];
+-		dst_bv = orig_bio-&gt;bi_io_vec[bio_init_idx + hole];
++		dst_bv = bio-&gt;bi_io_vec[bio_init_idx + hole];
+ 
+ 		src_p = kmap_atomic(src_bv.bv_page);
+ 		dst_p = kmap_atomic(dst_bv.bv_page);
+@@ -334,19 +296,107 @@ static int pblk_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
+ 	} while (hole &lt; nr_secs);
+ 
+ 	bio_put(new_bio);
++	kfree(pr_ctx);
+ 
+ 	/* restore original request */
+ 	rqd-&gt;bio = NULL;
+ 	rqd-&gt;nr_ppas = nr_secs;
+ 
++	bio_endio(bio);
+ 	__pblk_end_io_read(pblk, rqd, false);
+-	return NVM_IO_DONE;
++}
+ 
+-fail:
+-	/* Free allocated pages in new bio */
++static int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
++			    unsigned int bio_init_idx,
++			    unsigned long *read_bitmap,
++			    int nr_holes)
++{
++	struct pblk_sec_meta *meta_list = rqd-&gt;meta_list;
++	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
++	struct pblk_pr_ctx *pr_ctx;
++	struct bio *new_bio, *bio = r_ctx-&gt;private;
++	__le64 *lba_list_mem;
++	int nr_secs = rqd-&gt;nr_ppas;
++	int i;
++
++	/* Re-use allocated memory for intermediate lbas */
++	lba_list_mem = (((void *)rqd-&gt;ppa_list) + pblk_dma_ppa_size);
++
++	new_bio = bio_alloc(GFP_KERNEL, nr_holes);
++
++	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes))
++		goto fail_bio_put;
++
++	if (nr_holes != new_bio-&gt;bi_vcnt) {
++		WARN_ONCE(1, "pblk: malformed bio\n");
++		goto fail_free_pages;
++	}
++
++	pr_ctx = kmalloc(sizeof(struct pblk_pr_ctx), GFP_KERNEL);
++	if (!pr_ctx)
++		goto fail_free_pages;
++
++	for (i = 0; i &lt; nr_secs; i++)
++		lba_list_mem[i] = meta_list[i].lba;
++
++	new_bio-&gt;bi_iter.bi_sector = 0; /* internal bio */
++	bio_set_op_attrs(new_bio, REQ_OP_READ, 0);
++
++	rqd-&gt;bio = new_bio;
++	rqd-&gt;nr_ppas = nr_holes;
++	rqd-&gt;flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
++
++	pr_ctx-&gt;ppa_ptr = NULL;
++	pr_ctx-&gt;orig_bio = bio;
++	bitmap_copy(pr_ctx-&gt;bitmap, read_bitmap, NVM_MAX_VLBA);
++	pr_ctx-&gt;bio_init_idx = bio_init_idx;
++	pr_ctx-&gt;orig_nr_secs = nr_secs;
++	r_ctx-&gt;private = pr_ctx;
++
++	if (unlikely(nr_holes == 1)) {
++		pr_ctx-&gt;ppa_ptr = rqd-&gt;ppa_list;
++		pr_ctx-&gt;dma_ppa_list = rqd-&gt;dma_ppa_list;
++		rqd-&gt;ppa_addr = rqd-&gt;ppa_list[0];
++	}
++	return 0;
++
++fail_free_pages:
+ 	pblk_bio_free_pages(pblk, new_bio, 0, new_bio-&gt;bi_vcnt);
+-fail_add_pages:
++fail_bio_put:
++	bio_put(new_bio);
++
++	return -ENOMEM;
++}
++
++static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
++				 unsigned int bio_init_idx,
++				 unsigned long *read_bitmap, int nr_secs)
++{
++	int nr_holes;
++	int ret;
++
++	nr_holes = nr_secs - bitmap_weight(read_bitmap, nr_secs);
++
++	if (pblk_setup_partial_read(pblk, rqd, bio_init_idx, read_bitmap,
++				    nr_holes))
++		return NVM_IO_ERR;
++
++	rqd-&gt;end_io = pblk_end_partial_read;
++
++	ret = pblk_submit_io(pblk, rqd);
++	if (ret) {
++		bio_put(rqd-&gt;bio);
++		pblk_err(pblk, "partial read IO submission failed\n");
++		goto err;
++	}
++
++	return NVM_IO_OK;
++
++err:
+ 	pblk_err(pblk, "failed to perform partial read\n");
++
++	/* Free allocated pages in new bio */
++	pblk_bio_free_pages(pblk, rqd-&gt;bio, 0, rqd-&gt;bio-&gt;bi_vcnt);
+ 	__pblk_end_io_read(pblk, rqd, false);
+ 	return NVM_IO_ERR;
+ }
+@@ -480,8 +530,15 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
+ 	/* The read bio request could be partially filled by the write buffer,
+ 	 * but there are some holes that need to be read from the drive.
+ 	 */
+-	return pblk_partial_read(pblk, rqd, bio, bio_init_idx, read_bitmap);
++	ret = pblk_partial_read_bio(pblk, rqd, bio_init_idx, read_bitmap,
++				    nr_secs);
++	if (ret)
++		goto fail_meta_free;
++
++	return NVM_IO_OK;
+ 
++fail_meta_free:
++	nvm_dev_dma_free(dev-&gt;parent, rqd-&gt;meta_list, rqd-&gt;dma_meta_list);
+ fail_rqd_free:
+ 	pblk_free_rqd(pblk, rqd, PBLK_READ);
+ 	return ret;
+diff --git a/drivers/lightnvm/pblk.h b/drivers/lightnvm/pblk.h
+index 5c6904eb8557..4760af7b6499 100644
+--- a/drivers/lightnvm/pblk.h
++++ b/drivers/lightnvm/pblk.h
+@@ -119,6 +119,16 @@ struct pblk_g_ctx {
+ 	u64 lba;
+ };
+ 
++/* partial read context */
++struct pblk_pr_ctx {
++	struct bio *orig_bio;
++	DECLARE_BITMAP(bitmap, NVM_MAX_VLBA);
++	unsigned int orig_nr_secs;
++	unsigned int bio_init_idx;
++	void *ppa_ptr;
++	dma_addr_t dma_ppa_list;
++};
++
+ /* Pad context */
+ struct pblk_pad_rq {
+ 	struct pblk *pblk;</pre><hr><pre>commit 9d7aa4a484872cb2b4dc81bd6f058cb8351ca9ed
+Author: Heiner Litz &lt;hlitz@ucsc.edu&gt;
+Date:   Fri Mar 30 00:05:08 2018 +0200
+
+    lightnvm: Avoid validation of default op value
+    
+    Fixes: 38401d231de65 ("lightnvm: set target over-provision on create ioctl")
+    Signed-off-by: Heiner Litz &lt;hlitz@ucsc.edu&gt;
+    Reviewed-by: Javier González &lt;javier@cnexlabs.com&gt;
+    Signed-off-by: Matias Bjørling &lt;mb@lightnvm.io&gt;
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/drivers/lightnvm/core.c b/drivers/lightnvm/core.c
+index 5b197d6bb6d9..c4f12b1ae8b8 100644
+--- a/drivers/lightnvm/core.c
++++ b/drivers/lightnvm/core.c
+@@ -304,11 +304,9 @@ static int __nvm_config_extended(struct nvm_dev *dev,
+ 	}
+ 
+ 	/* op not set falls into target's default */
+-	if (e-&gt;op == 0xFFFF)
++	if (e-&gt;op == 0xFFFF) {
+ 		e-&gt;op = NVM_TARGET_DEFAULT_OP;
+-
+-	if (e-&gt;op &lt; NVM_TARGET_MIN_OP ||
+-	    e-&gt;op &gt; NVM_TARGET_MAX_OP) {
++	} else if (e-&gt;op &lt; NVM_TARGET_MIN_OP || e-&gt;op &gt; NVM_TARGET_MAX_OP) {
+ 		pr_err("nvm: invalid over provisioning value\n");
+ 		return -EINVAL;
+ 	}</pre><hr><pre>commit a38c78d82dd38ce178c994a777751fae61ae31c8
+Author: Heiner Litz &lt;hlitz@ucsc.edu&gt;
+Date:   Fri Mar 30 00:05:06 2018 +0200
+
+    lightnvm: fix bad block initialization
+    
+    fix reading bad block device information to correctly setup the per line
+    blk_bitmap during lightnvm initialization
+    
+    Signed-off-by: Heiner Litz &lt;hlitz@ucsc.edu&gt;
+    Signed-off-by: Matias Bjørling &lt;mb@lightnvm.io&gt;
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/drivers/lightnvm/pblk-init.c b/drivers/lightnvm/pblk-init.c
+index 43b835678f48..ee936c1ff764 100644
+--- a/drivers/lightnvm/pblk-init.c
++++ b/drivers/lightnvm/pblk-init.c
+@@ -460,10 +460,11 @@ static int pblk_bb_line(struct pblk *pblk, struct pblk_line *line,
+ 	struct nvm_tgt_dev *dev = pblk-&gt;dev;
+ 	struct nvm_geo *geo = &amp;dev-&gt;geo;
+ 	int i, bb_cnt = 0;
++	int blk_per_lun = geo-&gt;nr_chks * geo-&gt;plane_mode;
+ 
+ 	for (i = 0; i &lt; blk_per_line; i++) {
+ 		struct pblk_lun *rlun = &amp;pblk-&gt;luns[i];
+-		u8 *lun_bb_log = bb_log + i * blk_per_line;
++		u8 *lun_bb_log = bb_log + i * blk_per_lun;
+ 
+ 		if (lun_bb_log[line-&gt;id] == NVM_BLK_T_FREE)
+ 			continue;</pre><hr><pre>commit 6ca7227b3e24e4ba445464779a66558a8b9e0617
+Author: Naga Venkata Sai Indubhaskar Jupudi &lt;njupudi@ucsc.edu&gt;
+Date:   Tue Feb 9 14:10:16 2016 -0800
+
+    PCI: Fix broken URL for Dell biosdevname
+    
+    Dell developed a way to consistently name devices, and their last proposal
+    was accepted under the name biosdevname.  Fix a broken URL to biosdevname
+    documentation.
+    
+    Signed-off-by: Naga Venkata Sai Indubhaskar Jupudi &lt;njupudi@ucsc.edu&gt;
+    Signed-off-by: Bjorn Helgaas &lt;bhelgaas@google.com&gt;
+
+diff --git a/drivers/pci/pci-label.c b/drivers/pci/pci-label.c
+index 0ae74d96ed85..51357377efbc 100644
+--- a/drivers/pci/pci-label.c
++++ b/drivers/pci/pci-label.c
+@@ -16,7 +16,7 @@
+  * the instance number and string from the type 41 record and exports
+  * it to sysfs.
+  *
+- * Please see http://linux.dell.com/wiki/index.php/Oss/libnetdevname for more
++ * Please see http://linux.dell.com/files/biosdevname/ for more
+  * information.
+  */
+ </pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Minnesota</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Minnesota</h1>
+    <div class="pagination">
+        <a href='7_15.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><span>[16]</span><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><a href='7_28.html'>28</a><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_17.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit e2a438bd7116889af36304903b92e56d0f347228
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Fri Mar 15 01:57:14 2019 -0500
+
+    RDMA/i40iw: Handle workqueue allocation failure
+    
+    alloc_ordered_workqueue may fail and return NULL.  The fix captures the
+    failure and handles it properly to avoid potential NULL pointer
+    dereferences.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Reviewed-by: Shiraz, Saleem &lt;shiraz.saleem@intel.com&gt;
+    Signed-off-by: Jason Gunthorpe &lt;jgg@mellanox.com&gt;
+
+diff --git a/drivers/infiniband/hw/i40iw/i40iw.h b/drivers/infiniband/hw/i40iw/i40iw.h
+index 2f2b4426ded7..8feec35f95a7 100644
+--- a/drivers/infiniband/hw/i40iw/i40iw.h
++++ b/drivers/infiniband/hw/i40iw/i40iw.h
+@@ -552,7 +552,7 @@ enum i40iw_status_code i40iw_obj_aligned_mem(struct i40iw_device *iwdev,
+ 
+ void i40iw_request_reset(struct i40iw_device *iwdev);
+ void i40iw_destroy_rdma_device(struct i40iw_ib_device *iwibdev);
+-void i40iw_setup_cm_core(struct i40iw_device *iwdev);
++int i40iw_setup_cm_core(struct i40iw_device *iwdev);
+ void i40iw_cleanup_cm_core(struct i40iw_cm_core *cm_core);
+ void i40iw_process_ceq(struct i40iw_device *, struct i40iw_ceq *iwceq);
+ void i40iw_process_aeq(struct i40iw_device *);
+diff --git a/drivers/infiniband/hw/i40iw/i40iw_cm.c b/drivers/infiniband/hw/i40iw/i40iw_cm.c
+index 206cfb0016f8..1c6aa0efd2b6 100644
+--- a/drivers/infiniband/hw/i40iw/i40iw_cm.c
++++ b/drivers/infiniband/hw/i40iw/i40iw_cm.c
+@@ -3237,7 +3237,7 @@ void i40iw_receive_ilq(struct i40iw_sc_vsi *vsi, struct i40iw_puda_buf *rbuf)
+  * core
+  * @iwdev: iwarp device structure
+  */
+-void i40iw_setup_cm_core(struct i40iw_device *iwdev)
++int i40iw_setup_cm_core(struct i40iw_device *iwdev)
+ {
+ 	struct i40iw_cm_core *cm_core = &amp;iwdev-&gt;cm_core;
+ 
+@@ -3256,9 +3256,19 @@ void i40iw_setup_cm_core(struct i40iw_device *iwdev)
+ 
+ 	cm_core-&gt;event_wq = alloc_ordered_workqueue("iwewq",
+ 						    WQ_MEM_RECLAIM);
++	if (!cm_core-&gt;event_wq)
++		goto error;
+ 
+ 	cm_core-&gt;disconn_wq = alloc_ordered_workqueue("iwdwq",
+ 						      WQ_MEM_RECLAIM);
++	if (!cm_core-&gt;disconn_wq)
++		goto error;
++
++	return 0;
++error:
++	i40iw_cleanup_cm_core(&amp;iwdev-&gt;cm_core);
++
++	return -ENOMEM;
+ }
+ 
+ /**
+@@ -3278,8 +3288,10 @@ void i40iw_cleanup_cm_core(struct i40iw_cm_core *cm_core)
+ 		del_timer_sync(&amp;cm_core-&gt;tcp_timer);
+ 	spin_unlock_irqrestore(&amp;cm_core-&gt;ht_lock, flags);
+ 
+-	destroy_workqueue(cm_core-&gt;event_wq);
+-	destroy_workqueue(cm_core-&gt;disconn_wq);
++	if (cm_core-&gt;event_wq)
++		destroy_workqueue(cm_core-&gt;event_wq);
++	if (cm_core-&gt;disconn_wq)
++		destroy_workqueue(cm_core-&gt;disconn_wq);
+ }
+ 
+ /**
+diff --git a/drivers/infiniband/hw/i40iw/i40iw_main.c b/drivers/infiniband/hw/i40iw/i40iw_main.c
+index 68095f00d08f..10932baee279 100644
+--- a/drivers/infiniband/hw/i40iw/i40iw_main.c
++++ b/drivers/infiniband/hw/i40iw/i40iw_main.c
+@@ -1641,7 +1641,10 @@ static int i40iw_open(struct i40e_info *ldev, struct i40e_client *client)
+ 	iwdev = &amp;hdl-&gt;device;
+ 	iwdev-&gt;hdl = hdl;
+ 	dev = &amp;iwdev-&gt;sc_dev;
+-	i40iw_setup_cm_core(iwdev);
++	if (i40iw_setup_cm_core(iwdev)) {
++		kfree(iwdev-&gt;hdl);
++		return -ENOMEM;
++	}
+ 
+ 	dev-&gt;back_dev = (void *)iwdev;
+ 	iwdev-&gt;ldev = &amp;hdl-&gt;ldev;</pre><hr><pre>commit 766460852cfaeca4042e5f3aeb9616b3689147bc
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Mon Mar 25 15:29:22 2019 -0500
+
+    x86/platform/uv: Fix missing checks of kcalloc() return values
+    
+    Handle potential errors returned from kcalloc().
+    
+     [ bp: rewrite commit message. ]
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Signed-off-by: Borislav Petkov &lt;bp@suse.de&gt;
+    Cc: Andrew Banman &lt;abanman@hpe.com&gt;
+    Cc: Andy Shevchenko &lt;andy@infradead.org&gt;
+    Cc: Colin Ian King &lt;colin.king@canonical.com&gt;
+    Cc: Darren Hart &lt;dvhart@infradead.org&gt;
+    Cc: "Gustavo A. R. Silva" &lt;gustavo@embeddedor.com&gt;
+    Cc: "H. Peter Anvin" &lt;hpa@zytor.com&gt;
+    Cc: Ingo Molnar &lt;mingo@redhat.com&gt;
+    Cc: Kees Cook &lt;keescook@chromium.org&gt;
+    Cc: Mike Travis &lt;mike.travis@hpe.com&gt;
+    Cc: Nicolai Stange &lt;nstange@suse.de&gt;
+    Cc: pakki001@umn.edu
+    Cc: platform-driver-x86@vger.kernel.org
+    Cc: Thomas Gleixner &lt;tglx@linutronix.de&gt;
+    Cc: Varsha Rao &lt;rvarsha016@gmail.com&gt;
+    Cc: x86-ml &lt;x86@kernel.org&gt;
+    Link: https://lkml.kernel.org/r/20190325202924.4624-1-kjlu@umn.edu
+
+diff --git a/arch/x86/platform/uv/tlb_uv.c b/arch/x86/platform/uv/tlb_uv.c
+index 2c53b0f19329..1297e185b8c8 100644
+--- a/arch/x86/platform/uv/tlb_uv.c
++++ b/arch/x86/platform/uv/tlb_uv.c
+@@ -2133,14 +2133,19 @@ static int __init summarize_uvhub_sockets(int nuvhubs,
+  */
+ static int __init init_per_cpu(int nuvhubs, int base_part_pnode)
+ {
+-	unsigned char *uvhub_mask;
+ 	struct uvhub_desc *uvhub_descs;
++	unsigned char *uvhub_mask = NULL;
+ 
+ 	if (is_uv3_hub() || is_uv2_hub() || is_uv1_hub())
+ 		timeout_us = calculate_destination_timeout();
+ 
+ 	uvhub_descs = kcalloc(nuvhubs, sizeof(struct uvhub_desc), GFP_KERNEL);
++	if (!uvhub_descs)
++		goto fail;
++
+ 	uvhub_mask = kzalloc((nuvhubs+7)/8, GFP_KERNEL);
++	if (!uvhub_mask)
++		goto fail;
+ 
+ 	if (get_cpu_topology(base_part_pnode, uvhub_descs, uvhub_mask))
+ 		goto fail;</pre><hr><pre>commit 41f00e6e9e55546390031996b773e7f3c1d95928
+Author: Aditya Pakki &lt;pakki001@umn.edu&gt;
+Date:   Wed Mar 20 10:27:11 2019 -0500
+
+    usb: usb251xb: fix to avoid potential NULL pointer dereference
+    
+    of_match_device in usb251xb_probe can fail and returns a NULL pointer.
+    The patch avoids a potential NULL pointer dereference in this scenario.
+    
+    Signed-off-by: Aditya Pakki &lt;pakki001@umn.edu&gt;
+    Reviewed-by: Richard Leitner &lt;richard.leitner@skidata.com&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/misc/usb251xb.c b/drivers/usb/misc/usb251xb.c
+index 2c8e2cad7e10..04684849d683 100644
+--- a/drivers/usb/misc/usb251xb.c
++++ b/drivers/usb/misc/usb251xb.c
+@@ -612,7 +612,7 @@ static int usb251xb_probe(struct usb251xb *hub)
+ 							   dev);
+ 	int err;
+ 
+-	if (np) {
++	if (np &amp;&amp; of_id) {
+ 		err = usb251xb_get_ofdata(hub,
+ 					  (struct usb251xb_data *)of_id-&gt;data);
+ 		if (err) {</pre><hr><pre>commit 3de3dbe7c13210171ba8411e36b409a2c29c7415
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Tue Mar 19 12:34:06 2019 -0500
+
+    usb: u132-hcd: fix potential NULL pointer dereference
+    
+    In case create_singlethread_workqueue fails, the fix notifies
+    callers the error to avoid potential NULL pointer dereferences.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/host/u132-hcd.c b/drivers/usb/host/u132-hcd.c
+index 934584f0a20a..e29165027e8b 100644
+--- a/drivers/usb/host/u132-hcd.c
++++ b/drivers/usb/host/u132-hcd.c
+@@ -3203,6 +3203,8 @@ static int __init u132_hcd_init(void)
+ 		return -ENODEV;
+ 	printk(KERN_INFO "driver %s\n", hcd_name);
+ 	workqueue = create_singlethread_workqueue("u132");
++	if (!workqueue)
++		return -ENOMEM;
+ 	retval = platform_driver_register(&amp;u132_platform_driver);
+ 	return retval;
+ }</pre><hr><pre>commit 1a137b47ce6bd4f4b14662d2f5ace913ea7ffbf8
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Sun Mar 24 22:08:28 2019 -0500
+
+    usb: sierra: fix a missing check of device_create_file
+    
+    device_create_file() could fail and return an error code. The fix
+    captures the error and returns the error code upstream in case it
+    indeed failed.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Acked-by: Alan Stern &lt;stern@rowland.harvard.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/usb/storage/sierra_ms.c b/drivers/usb/storage/sierra_ms.c
+index 6ac60abd2e15..e605cbc3d8bf 100644
+--- a/drivers/usb/storage/sierra_ms.c
++++ b/drivers/usb/storage/sierra_ms.c
+@@ -194,8 +194,6 @@ int sierra_ms_init(struct us_data *us)
+ 		kfree(swocInfo);
+ 	}
+ complete:
+-	result = device_create_file(&amp;us-&gt;pusb_intf-&gt;dev, &amp;dev_attr_truinst);
+-
+-	return 0;
++	return device_create_file(&amp;us-&gt;pusb_intf-&gt;dev, &amp;dev_attr_truinst);
+ }
+ </pre><hr><pre>commit fba1bdd2a9a93f3e2181ec1936a3c2f6b37e7ed6
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Thu Mar 14 01:30:59 2019 -0500
+
+    scsi: qla4xxx: fix a potential NULL pointer dereference
+    
+    In case iscsi_lookup_endpoint fails, the fix returns -EINVAL to avoid NULL
+    pointer dereference.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Acked-by: Manish Rangankar &lt;mrangankar@marvell.com&gt;
+    Reviewed-by: Mukesh Ojha &lt;mojha@codeaurora.org&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/qla4xxx/ql4_os.c b/drivers/scsi/qla4xxx/ql4_os.c
+index 16a18d5d856f..6e4f4931ae17 100644
+--- a/drivers/scsi/qla4xxx/ql4_os.c
++++ b/drivers/scsi/qla4xxx/ql4_os.c
+@@ -3203,6 +3203,8 @@ static int qla4xxx_conn_bind(struct iscsi_cls_session *cls_session,
+ 	if (iscsi_conn_bind(cls_session, cls_conn, is_leading))
+ 		return -EINVAL;
+ 	ep = iscsi_lookup_endpoint(transport_fd);
++	if (!ep)
++		return -EINVAL;
+ 	conn = cls_conn-&gt;dd_data;
+ 	qla_conn = conn-&gt;dd_data;
+ 	qla_conn-&gt;qla_ep = ep-&gt;dd_data;</pre><hr><pre>commit 78540a259b050480d20354efaf1055c233728b3b
+Author: Aditya Pakki &lt;pakki001@umn.edu&gt;
+Date:   Fri Mar 22 17:00:29 2019 -0500
+
+    ASoC: sirf-audio: Remove redundant of_match_node call
+    
+    Unlike other drivers probe method, of_match_node return value
+    is not used or checked. This patch removes the redundant code.
+    
+    Signed-off-by: Aditya Pakki &lt;pakki001@umn.edu&gt;
+    Reviewed-by: Steven Price &lt;steven.price@arm.com&gt;
+    Signed-off-by: Mark Brown &lt;broonie@kernel.org&gt;
+
+diff --git a/sound/soc/codecs/sirf-audio-codec.c b/sound/soc/codecs/sirf-audio-codec.c
+index e424499a8450..e0af21050078 100644
+--- a/sound/soc/codecs/sirf-audio-codec.c
++++ b/sound/soc/codecs/sirf-audio-codec.c
+@@ -461,9 +461,6 @@ static int sirf_audio_codec_driver_probe(struct platform_device *pdev)
+ 	struct sirf_audio_codec *sirf_audio_codec;
+ 	void __iomem *base;
+ 	struct resource *mem_res;
+-	const struct of_device_id *match;
+-
+-	match = of_match_node(sirf_audio_codec_of_match, pdev-&gt;dev.of_node);
+ 
+ 	sirf_audio_codec = devm_kzalloc(&amp;pdev-&gt;dev,
+ 		sizeof(struct sirf_audio_codec), GFP_KERNEL);</pre><hr><pre>commit 208c6e8cff1b96eca401adbd544ac00133df9e90
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Fri Mar 8 22:36:27 2019 -0600
+
+    drm: vkms: check status of alloc_ordered_workqueue
+    
+    alloc_ordered_workqueue may fail and return NULL.
+    The fix returns ENOMEM when it fails to avoid potential NULL
+    pointer dereference.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Signed-off-by: Daniel Vetter &lt;daniel.vetter@ffwll.ch&gt;
+    Link: https://patchwork.freedesktop.org/patch/msgid/20190309043628.6078-1-kjlu@umn.edu
+
+diff --git a/drivers/gpu/drm/vkms/vkms_crtc.c b/drivers/gpu/drm/vkms/vkms_crtc.c
+index 8a9aeb0a9ea8..bb66dbcd5e3f 100644
+--- a/drivers/gpu/drm/vkms/vkms_crtc.c
++++ b/drivers/gpu/drm/vkms/vkms_crtc.c
+@@ -219,6 +219,8 @@ int vkms_crtc_init(struct drm_device *dev, struct drm_crtc *crtc,
+ 	spin_lock_init(&amp;vkms_out-&gt;state_lock);
+ 
+ 	vkms_out-&gt;crc_workq = alloc_ordered_workqueue("vkms_crc_workq", 0);
++	if (!vkms_out-&gt;crc_workq)
++		return -ENOMEM;
+ 
+ 	return ret;
+ }</pre><hr><pre>commit 6cf4511e9729c00a7306cf94085f9cc3c52ee723
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Sun Mar 24 18:10:02 2019 -0500
+
+    gpio: aspeed: fix a potential NULL pointer dereference
+    
+    In case devm_kzalloc, the patch returns ENOMEM to avoid potential
+    NULL pointer dereference.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Reviewed-by: Andrew Jeffery &lt;andrew@aj.id.au&gt;
+    Signed-off-by: Bartosz Golaszewski &lt;bgolaszewski@baylibre.com&gt;
+
+diff --git a/drivers/gpio/gpio-aspeed.c b/drivers/gpio/gpio-aspeed.c
+index 854bce4fb9e7..217507002dbc 100644
+--- a/drivers/gpio/gpio-aspeed.c
++++ b/drivers/gpio/gpio-aspeed.c
+@@ -1224,6 +1224,8 @@ static int __init aspeed_gpio_probe(struct platform_device *pdev)
+ 
+ 	gpio-&gt;offset_timer =
+ 		devm_kzalloc(&amp;pdev-&gt;dev, gpio-&gt;chip.ngpio, GFP_KERNEL);
++	if (!gpio-&gt;offset_timer)
++		return -ENOMEM;
+ 
+ 	return aspeed_gpio_setup_irqs(gpio, pdev);
+ }</pre><hr><pre>commit 55c1fc0af29a6c1b92f217b7eb7581a882e0c07c
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Tue Mar 12 03:20:34 2019 -0500
+
+    libnvdimm/namespace: Fix a potential NULL pointer dereference
+    
+    In case kmemdup fails, the fix goes to blk_err to avoid NULL
+    pointer dereference.
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Signed-off-by: Dan Williams &lt;dan.j.williams@intel.com&gt;
+
+diff --git a/drivers/nvdimm/namespace_devs.c b/drivers/nvdimm/namespace_devs.c
+index 7849bf1812c4..f293556cbbf6 100644
+--- a/drivers/nvdimm/namespace_devs.c
++++ b/drivers/nvdimm/namespace_devs.c
+@@ -2249,9 +2249,12 @@ static struct device *create_namespace_blk(struct nd_region *nd_region,
+ 	if (!nsblk-&gt;uuid)
+ 		goto blk_err;
+ 	memcpy(name, nd_label-&gt;name, NSLABEL_NAME_LEN);
+-	if (name[0])
++	if (name[0]) {
+ 		nsblk-&gt;alt_name = kmemdup(name, NSLABEL_NAME_LEN,
+ 				GFP_KERNEL);
++		if (!nsblk-&gt;alt_name)
++			goto blk_err;
++	}
+ 	res = nsblk_add_resource(nd_region, ndd, nsblk,
+ 			__le64_to_cpu(nd_label-&gt;dpa));
+ 	if (!res)</pre>
+    <div class="pagination">
+        <a href='7_15.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><span>[16]</span><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><a href='7_28.html'>28</a><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_17.html'>Next&gt;&gt;</a>
+    <div>
+</body>

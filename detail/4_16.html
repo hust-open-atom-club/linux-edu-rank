@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_15.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><span>[16]</span><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_17.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit efc4bb4fdd09c11f5558446e584a494c6feb43c7
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Mar 2 11:04:06 2010 -0500
+
+    nfsd4: allow setting grace period time
+    
+    Allow explicit configuration of the grace period time as well as the
+    lease period time.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 4471046e19e0..6edfe23694e6 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -45,7 +45,7 @@
+ 
+ /* Globals */
+ time_t nfsd4_lease = 90;     /* default lease time */
+-static time_t nfsd4_grace = 90;
++time_t nfsd4_grace = 90;
+ static time_t boot_time;
+ static u32 current_ownerid = 1;
+ static u32 current_fileid = 1;
+diff --git a/fs/nfsd/nfsctl.c b/fs/nfsd/nfsctl.c
+index 9c73caccffff..7ab70ff212d8 100644
+--- a/fs/nfsd/nfsctl.c
++++ b/fs/nfsd/nfsctl.c
+@@ -45,6 +45,7 @@ enum {
+ 	 */
+ #ifdef CONFIG_NFSD_V4
+ 	NFSD_Leasetime,
++	NFSD_Gracetime,
+ 	NFSD_RecoveryDir,
+ #endif
+ };
+@@ -69,6 +70,7 @@ static ssize_t write_ports(struct file *file, char *buf, size_t size);
+ static ssize_t write_maxblksize(struct file *file, char *buf, size_t size);
+ #ifdef CONFIG_NFSD_V4
+ static ssize_t write_leasetime(struct file *file, char *buf, size_t size);
++static ssize_t write_gracetime(struct file *file, char *buf, size_t size);
+ static ssize_t write_recoverydir(struct file *file, char *buf, size_t size);
+ #endif
+ 
+@@ -90,6 +92,7 @@ static ssize_t (*write_op[])(struct file *, char *, size_t) = {
+ 	[NFSD_MaxBlkSize] = write_maxblksize,
+ #ifdef CONFIG_NFSD_V4
+ 	[NFSD_Leasetime] = write_leasetime,
++	[NFSD_Gracetime] = write_gracetime,
+ 	[NFSD_RecoveryDir] = write_recoverydir,
+ #endif
+ };
+@@ -1261,6 +1264,21 @@ static ssize_t write_leasetime(struct file *file, char *buf, size_t size)
+ 	return nfsd4_write_time(file, buf, size, &amp;nfsd4_lease);
+ }
+ 
++/**
++ * write_gracetime - Set or report current NFSv4 grace period time
++ *
++ * As above, but sets the time of the NFSv4 grace period.
++ *
++ * Note this should never be set to less than the *previous*
++ * lease-period time, but we don't try to enforce this.  (In the common
++ * case (a new boot), we don't know what the previous lease time was
++ * anyway.)
++ */
++static ssize_t write_gracetime(struct file *file, char *buf, size_t size)
++{
++	return nfsd4_write_time(file, buf, size, &amp;nfsd4_grace);
++}
++
+ extern char *nfs4_recoverydir(void);
+ 
+ static ssize_t __write_recoverydir(struct file *file, char *buf, size_t size)
+@@ -1352,6 +1370,7 @@ static int nfsd_fill_super(struct super_block * sb, void * data, int silent)
+ 		[NFSD_MaxBlkSize] = {"max_block_size", &amp;transaction_ops, S_IWUSR|S_IRUGO},
+ #ifdef CONFIG_NFSD_V4
+ 		[NFSD_Leasetime] = {"nfsv4leasetime", &amp;transaction_ops, S_IWUSR|S_IRUSR},
++		[NFSD_Gracetime] = {"nfsv4gracetime", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+ 		[NFSD_RecoveryDir] = {"nfsv4recoverydir", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+ #endif
+ 		/* last one */ {""}
+diff --git a/fs/nfsd/nfsd.h b/fs/nfsd/nfsd.h
+index b463093af255..72377761270e 100644
+--- a/fs/nfsd/nfsd.h
++++ b/fs/nfsd/nfsd.h
+@@ -228,6 +228,7 @@ extern struct timeval	nfssvc_boot;
+ #ifdef CONFIG_NFSD_V4
+ 
+ extern time_t nfsd4_lease;
++extern time_t nfsd4_grace;
+ 
+ /* before processing a COMPOUND operation, we have to check that there
+  * is enough space in the buffer for XDR encode to succeed.  otherwise,</pre><hr><pre>commit f013574014816c7a557b3c52233f3620463f0b9b
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Mar 1 19:32:36 2010 -0500
+
+    nfsd4: reshuffle lease-setting code to allow reuse
+    
+    We'll soon allow setting the grace period, so we'll want to share this
+    code.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfsctl.c b/fs/nfsd/nfsctl.c
+index 6738e9d8a83d..9c73caccffff 100644
+--- a/fs/nfsd/nfsctl.c
++++ b/fs/nfsd/nfsctl.c
+@@ -1203,26 +1203,36 @@ static ssize_t write_maxblksize(struct file *file, char *buf, size_t size)
+ }
+ 
+ #ifdef CONFIG_NFSD_V4
+-static ssize_t __write_leasetime(struct file *file, char *buf, size_t size)
++static ssize_t __nfsd4_write_time(struct file *file, char *buf, size_t size, time_t *time)
+ {
+ 	/* if size &gt; 10 seconds, call
+ 	 * nfs4_reset_lease() then write out the new lease (seconds) as reply
+ 	 */
+ 	char *mesg = buf;
+-	int rv, lease;
++	int rv, i;
+ 
+ 	if (size &gt; 0) {
+ 		if (nfsd_serv)
+ 			return -EBUSY;
+-		rv = get_int(&amp;mesg, &amp;lease);
++		rv = get_int(&amp;mesg, &amp;i);
+ 		if (rv)
+ 			return rv;
+-		if (lease &lt; 10 || lease &gt; 3600)
++		if (i &lt; 10 || i &gt; 3600)
+ 			return -EINVAL;
+-		nfsd4_lease = lease;
++		*time = i;
+ 	}
+ 
+-	return scnprintf(buf, SIMPLE_TRANSACTION_LIMIT, "%ld\n", nfsd4_lease);
++	return scnprintf(buf, SIMPLE_TRANSACTION_LIMIT, "%ld\n", *time);
++}
++
++static ssize_t nfsd4_write_time(struct file *file, char *buf, size_t size, time_t *time)
++{
++	ssize_t rv;
++
++	mutex_lock(&amp;nfsd_mutex);
++	rv = __nfsd4_write_time(file, buf, size, time);
++	mutex_unlock(&amp;nfsd_mutex);
++	return rv;
+ }
+ 
+ /**
+@@ -1248,12 +1258,7 @@ static ssize_t __write_leasetime(struct file *file, char *buf, size_t size)
+  */
+ static ssize_t write_leasetime(struct file *file, char *buf, size_t size)
+ {
+-	ssize_t rv;
+-
+-	mutex_lock(&amp;nfsd_mutex);
+-	rv = __write_leasetime(file, buf, size);
+-	mutex_unlock(&amp;nfsd_mutex);
+-	return rv;
++	return nfsd4_write_time(file, buf, size, &amp;nfsd4_lease);
+ }
+ 
+ extern char *nfs4_recoverydir(void);</pre><hr><pre>commit f958a1320ff7a1e0e861d3c90de6da12a88839dc
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Mar 1 19:43:02 2010 -0500
+
+    nfsd4: remove unnecessary lease-setting function
+    
+    This is another layer of indirection that doesn't really buy us
+    anything.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index eb8d124ec14d..4471046e19e0 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -4115,15 +4115,3 @@ nfs4_recoverydir(void)
+ {
+ 	return user_recovery_dirname;
+ }
+-
+-/*
+- * Called when leasetime is changed.
+- *
+- * nfsd4_lease is protected by nfsd_mutex since it's only really accessed
+- * when nfsd is starting
+- */
+-void
+-nfs4_reset_lease(time_t leasetime)
+-{
+-	nfsd4_lease = leasetime;
+-}
+diff --git a/fs/nfsd/nfsctl.c b/fs/nfsd/nfsctl.c
+index 8bff6741b1e6..6738e9d8a83d 100644
+--- a/fs/nfsd/nfsctl.c
++++ b/fs/nfsd/nfsctl.c
+@@ -1219,7 +1219,7 @@ static ssize_t __write_leasetime(struct file *file, char *buf, size_t size)
+ 			return rv;
+ 		if (lease &lt; 10 || lease &gt; 3600)
+ 			return -EINVAL;
+-		nfs4_reset_lease(lease);
++		nfsd4_lease = lease;
+ 	}
+ 
+ 	return scnprintf(buf, SIMPLE_TRANSACTION_LIMIT, "%ld\n", nfsd4_lease);</pre><hr><pre>commit e46b498c84163e86e2627c30bca298c968664f65
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Mar 1 19:21:21 2010 -0500
+
+    nfsd4: simplify lease/grace interaction
+    
+    The original code here assumed we'd allow the user to change the lease
+    any time, but only allow the change to take effect on restart.  Since
+    then we modified the code to allow setting the lease on when the server
+    is down.  Update the rest of the code to reflect that fact, clarify
+    variable names, and add document.
+    
+    Also, the code insisted that the grace period always be the longer of
+    the old and new lease periods, but that's overly conservative--as long
+    as it lasts at least the old lease period, old clients should still know
+    to recover in time.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index cc9164a34bec..eb8d124ec14d 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -45,7 +45,7 @@
+ 
+ /* Globals */
+ time_t nfsd4_lease = 90;     /* default lease time */
+-static time_t user_lease_time = 90;
++static time_t nfsd4_grace = 90;
+ static time_t boot_time;
+ static u32 current_ownerid = 1;
+ static u32 current_fileid = 1;
+@@ -2551,6 +2551,12 @@ nfsd4_end_grace(void)
+ 	dprintk("NFSD: end of grace period\n");
+ 	nfsd4_recdir_purge_old();
+ 	locks_end_grace(&amp;nfsd4_manager);
++	/*
++	 * Now that every NFSv4 client has had the chance to recover and
++	 * to see the (possibly new, possibly shorter) lease time, we
++	 * can safely set the next grace time to the current lease time:
++	 */
++	nfsd4_grace = nfsd4_lease;
+ }
+ 
+ static time_t
+@@ -3973,12 +3979,6 @@ nfsd4_load_reboot_recovery_data(void)
+ 		printk("NFSD: Failure reading reboot recovery data\n");
+ }
+ 
+-unsigned long
+-get_nfs4_grace_period(void)
+-{
+-	return max(user_lease_time, nfsd4_lease) * HZ;
+-}
+-
+ /*
+  * Since the lifetime of a delegation isn't limited to that of an open, a
+  * client may quite reasonably hang on to a delegation as long as it has
+@@ -4005,18 +4005,14 @@ set_max_delegations(void)
+ static int
+ __nfs4_state_start(void)
+ {
+-	unsigned long grace_time;
+-
+ 	boot_time = get_seconds();
+-	grace_time = get_nfs4_grace_period();
+-	nfsd4_lease = user_lease_time;
+ 	locks_start_grace(&amp;nfsd4_manager);
+ 	printk(KERN_INFO "NFSD: starting %ld-second grace period\n",
+-	       grace_time/HZ);
++	       nfsd4_grace);
+ 	laundry_wq = create_singlethread_workqueue("nfsd4");
+ 	if (laundry_wq == NULL)
+ 		return -ENOMEM;
+-	queue_delayed_work(laundry_wq, &amp;laundromat_work, grace_time);
++	queue_delayed_work(laundry_wq, &amp;laundromat_work, nfsd4_grace * HZ);
+ 	set_max_delegations();
+ 	return set_callback_cred();
+ }
+@@ -4123,17 +4119,11 @@ nfs4_recoverydir(void)
+ /*
+  * Called when leasetime is changed.
+  *
+- * The only way the protocol gives us to handle on-the-fly lease changes is to
+- * simulate a reboot.  Instead of doing that, we just wait till the next time
+- * we start to register any changes in lease time.  If the administrator
+- * really wants to change the lease time *now*, they can go ahead and bring
+- * nfsd down and then back up again after changing the lease time.
+- *
+- * user_lease_time is protected by nfsd_mutex since it's only really accessed
++ * nfsd4_lease is protected by nfsd_mutex since it's only really accessed
+  * when nfsd is starting
+  */
+ void
+ nfs4_reset_lease(time_t leasetime)
+ {
+-	user_lease_time = leasetime;
++	nfsd4_lease = leasetime;
+ }</pre><hr><pre>commit cf07d2ea43e5c22149435ee9002cb737eac20eca
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Feb 28 23:20:19 2010 -0500
+
+    nfsd4: simplify references to nfsd4 lease time
+    
+    Instead of accessing the lease time directly, some users call
+    nfs4_lease_time(), and some a macro, NFSD_LEASE_TIME, defined as
+    nfs4_lease_time().  Neither layer of indirection serves any purpose.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 4bc22c763de7..ed12ad40828b 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -455,7 +455,7 @@ static struct rpc_program cb_program = {
+ 
+ static int max_cb_time(void)
+ {
+-	return max(NFSD_LEASE_TIME/10, (time_t)1) * HZ;
++	return max(nfsd4_lease/10, (time_t)1) * HZ;
+ }
+ 
+ /* Reference counting, callback cleanup, etc., all look racy as heck.
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 3a20c09353ed..cc9164a34bec 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -44,7 +44,7 @@
+ #define NFSDDBG_FACILITY                NFSDDBG_PROC
+ 
+ /* Globals */
+-static time_t lease_time = 90;     /* default lease time */
++time_t nfsd4_lease = 90;     /* default lease time */
+ static time_t user_lease_time = 90;
+ static time_t boot_time;
+ static u32 current_ownerid = 1;
+@@ -2560,9 +2560,9 @@ nfs4_laundromat(void)
+ 	struct nfs4_stateowner *sop;
+ 	struct nfs4_delegation *dp;
+ 	struct list_head *pos, *next, reaplist;
+-	time_t cutoff = get_seconds() - NFSD_LEASE_TIME;
+-	time_t t, clientid_val = NFSD_LEASE_TIME;
+-	time_t u, test_val = NFSD_LEASE_TIME;
++	time_t cutoff = get_seconds() - nfsd4_lease;
++	time_t t, clientid_val = nfsd4_lease;
++	time_t u, test_val = nfsd4_lease;
+ 
+ 	nfs4_lock_state();
+ 
+@@ -2602,7 +2602,7 @@ nfs4_laundromat(void)
+ 		list_del_init(&amp;dp-&gt;dl_recall_lru);
+ 		unhash_delegation(dp);
+ 	}
+-	test_val = NFSD_LEASE_TIME;
++	test_val = nfsd4_lease;
+ 	list_for_each_safe(pos, next, &amp;close_lru) {
+ 		sop = list_entry(pos, struct nfs4_stateowner, so_close_lru);
+ 		if (time_after((unsigned long)sop-&gt;so_time, (unsigned long)cutoff)) {
+@@ -2672,7 +2672,7 @@ EXPIRED_STATEID(stateid_t *stateid)
+ {
+ 	if (time_before((unsigned long)boot_time,
+ 			((unsigned long)stateid-&gt;si_boot)) &amp;&amp;
+-	    time_before((unsigned long)(stateid-&gt;si_boot + lease_time), get_seconds())) {
++	    time_before((unsigned long)(stateid-&gt;si_boot + nfsd4_lease), get_seconds())) {
+ 		dprintk("NFSD: expired stateid " STATEID_FMT "!\n",
+ 			STATEID_VAL(stateid));
+ 		return 1;
+@@ -3976,7 +3976,7 @@ nfsd4_load_reboot_recovery_data(void)
+ unsigned long
+ get_nfs4_grace_period(void)
+ {
+-	return max(user_lease_time, lease_time) * HZ;
++	return max(user_lease_time, nfsd4_lease) * HZ;
+ }
+ 
+ /*
+@@ -4009,7 +4009,7 @@ __nfs4_state_start(void)
+ 
+ 	boot_time = get_seconds();
+ 	grace_time = get_nfs4_grace_period();
+-	lease_time = user_lease_time;
++	nfsd4_lease = user_lease_time;
+ 	locks_start_grace(&amp;nfsd4_manager);
+ 	printk(KERN_INFO "NFSD: starting %ld-second grace period\n",
+ 	       grace_time/HZ);
+@@ -4036,12 +4036,6 @@ nfs4_state_start(void)
+ 	return 0;
+ }
+ 
+-time_t
+-nfs4_lease_time(void)
+-{
+-	return lease_time;
+-}
+-
+ static void
+ __nfs4_state_shutdown(void)
+ {
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index c458fb11c957..f61bd736152b 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -1899,7 +1899,7 @@ nfsd4_encode_fattr(struct svc_fh *fhp, struct svc_export *exp,
+ 	if (bmval0 &amp; FATTR4_WORD0_LEASE_TIME) {
+ 		if ((buflen -= 4) &lt; 0)
+ 			goto out_resource;
+-		WRITE32(NFSD_LEASE_TIME);
++		WRITE32(nfsd4_lease);
+ 	}
+ 	if (bmval0 &amp; FATTR4_WORD0_RDATTR_ERROR) {
+ 		if ((buflen -= 4) &lt; 0)
+diff --git a/fs/nfsd/nfsctl.c b/fs/nfsd/nfsctl.c
+index 0f0e77f2012f..8bff6741b1e6 100644
+--- a/fs/nfsd/nfsctl.c
++++ b/fs/nfsd/nfsctl.c
+@@ -1203,8 +1203,6 @@ static ssize_t write_maxblksize(struct file *file, char *buf, size_t size)
+ }
+ 
+ #ifdef CONFIG_NFSD_V4
+-extern time_t nfs4_leasetime(void);
+-
+ static ssize_t __write_leasetime(struct file *file, char *buf, size_t size)
+ {
+ 	/* if size &gt; 10 seconds, call
+@@ -1224,8 +1222,7 @@ static ssize_t __write_leasetime(struct file *file, char *buf, size_t size)
+ 		nfs4_reset_lease(lease);
+ 	}
+ 
+-	return scnprintf(buf, SIMPLE_TRANSACTION_LIMIT, "%ld\n",
+-							nfs4_lease_time());
++	return scnprintf(buf, SIMPLE_TRANSACTION_LIMIT, "%ld\n", nfsd4_lease);
+ }
+ 
+ /**
+diff --git a/fs/nfsd/nfsd.h b/fs/nfsd/nfsd.h
+index e942a1aaac92..b463093af255 100644
+--- a/fs/nfsd/nfsd.h
++++ b/fs/nfsd/nfsd.h
+@@ -82,7 +82,6 @@ int nfs4_state_init(void);
+ void nfsd4_free_slabs(void);
+ int nfs4_state_start(void);
+ void nfs4_state_shutdown(void);
+-time_t nfs4_lease_time(void);
+ void nfs4_reset_lease(time_t leasetime);
+ int nfs4_reset_recoverydir(char *recdir);
+ #else
+@@ -90,7 +89,6 @@ static inline int nfs4_state_init(void) { return 0; }
+ static inline void nfsd4_free_slabs(void) { }
+ static inline int nfs4_state_start(void) { return 0; }
+ static inline void nfs4_state_shutdown(void) { }
+-static inline time_t nfs4_lease_time(void) { return 0; }
+ static inline void nfs4_reset_lease(time_t leasetime) { }
+ static inline int nfs4_reset_recoverydir(char *recdir) { return 0; }
+ #endif
+@@ -229,6 +227,8 @@ extern struct timeval	nfssvc_boot;
+ 
+ #ifdef CONFIG_NFSD_V4
+ 
++extern time_t nfsd4_lease;
++
+ /* before processing a COMPOUND operation, we have to check that there
+  * is enough space in the buffer for XDR encode to succeed.  otherwise,
+  * we might process an operation with side effects, and be unable to
+@@ -247,7 +247,6 @@ extern struct timeval	nfssvc_boot;
+ #define	COMPOUND_SLACK_SPACE		140    /* OP_GETFH */
+ #define COMPOUND_ERR_SLACK_SPACE	12     /* OP_SETATTR */
+ 
+-#define NFSD_LEASE_TIME                 (nfs4_lease_time())
+ #define NFSD_LAUNDROMAT_MINTIMEOUT      10   /* seconds */
+ 
+ /*</pre><hr><pre>commit 4ea41e2de5bba756858bb40f964e3490b6d1a25c
+Merge: 8d75da8afd06 398007f863a4
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Mar 4 12:03:16 2010 -0500
+
+    Merge branch 'for-linus' of git://oss.sgi.com/xfs/xfs into for-2.6.34-incoming
+    
+    Resolve merge conflict in fs/xfs/linux-2.6/xfs_export.c.
+
+diff --cc fs/xfs/linux-2.6/xfs_export.c
+index 8f4d70789e3f,87b8cbd23d4b..846b75aeb2ab
+--- a/fs/xfs/linux-2.6/xfs_export.c
++++ b/fs/xfs/linux-2.6/xfs_export.c
+@@@ -216,24 -215,6 +216,24 @@@ xfs_fs_get_parent
+  	return d_obtain_alias(VFS_I(cip));
+  }
+  
+ +STATIC int
+ +xfs_fs_nfs_commit_metadata(
+ +	struct inode		*inode)
+ +{
+ +	struct xfs_inode	*ip = XFS_I(inode);
+ +	struct xfs_mount	*mp = ip-&gt;i_mount;
+ +	int			error = 0;
+ +
+ +	xfs_ilock(ip, XFS_ILOCK_SHARED);
+ +	if (xfs_ipincount(ip)) {
+- 		error = _xfs_log_force(mp, ip-&gt;i_itemp-&gt;ili_last_lsn,
+- 				XFS_LOG_FORCE | XFS_LOG_SYNC, NULL);
+++		error = _xfs_log_force_lsn(mp, ip-&gt;i_itemp-&gt;ili_last_lsn,
+++				XFS_LOG_SYNC, NULL);
+ +	}
+ +	xfs_iunlock(ip, XFS_ILOCK_SHARED);
+ +
+ +	return error;
+ +}
+ +
+  const struct export_operations xfs_export_operations = {
+  	.encode_fh		= xfs_fs_encode_fh,
+  	.fh_to_dentry		= xfs_fs_fh_to_dentry,</pre><hr><pre>commit 8d75da8afd068fa58b35e69c7c8c46770d9e7a98
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Mar 3 16:13:29 2010 -0500
+
+    nfsd4: fix minor memory leak
+    
+    There's no need to allocate this cred more than once.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 8fa412ce8021..4bc22c763de7 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -525,6 +525,8 @@ static struct rpc_cred *callback_cred;
+ 
+ int set_callback_cred(void)
+ {
++	if (callback_cred)
++		return 0;
+ 	callback_cred = rpc_lookup_machine_cred();
+ 	if (!callback_cred)
+ 		return -ENOMEM;</pre><hr><pre>commit ccdb357ccb77cc4cbe4f7abee9efd19957f0753a
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Mar 2 15:49:21 2010 -0500
+
+    svcrpc: treat uid's as unsigned
+    
+    We should consistently treat uid's as unsigned--it's confusing when
+    the display of uid's in the cache contents isn't consistent with their
+    representation in upcalls.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/net/sunrpc/svcauth_unix.c b/net/sunrpc/svcauth_unix.c
+index 97f0e9e12024..afdcb0459a83 100644
+--- a/net/sunrpc/svcauth_unix.c
++++ b/net/sunrpc/svcauth_unix.c
+@@ -624,7 +624,7 @@ static int unix_gid_show(struct seq_file *m,
+ 	else
+ 		glen = 0;
+ 
+-	seq_printf(m, "%d %d:", ug-&gt;uid, glen);
++	seq_printf(m, "%u %d:", ug-&gt;uid, glen);
+ 	for (i = 0; i &lt; glen; i++)
+ 		seq_printf(m, " %d", GROUP_AT(ug-&gt;gi, i));
+ 	seq_printf(m, "\n");</pre><hr><pre>commit 1b644b6e6f6160ae35ce4b52c2ca89ed3e356e18
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Feb 28 16:33:31 2010 -0500
+
+    Revert "sunrpc: move the close processing after do recvfrom method"
+    
+    This reverts commit b0401d725334a94d57335790b8ac2404144748ee, which
+    moved svc_delete_xprt() outside of XPT_BUSY, and allowed it to be called
+    after svc_xpt_recived(), removing its last reference and destroying it
+    after it had already been queued for future processing.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/net/sunrpc/svc_xprt.c b/net/sunrpc/svc_xprt.c
+index 818c4c365b28..8f0f1fb3dc52 100644
+--- a/net/sunrpc/svc_xprt.c
++++ b/net/sunrpc/svc_xprt.c
+@@ -706,7 +706,10 @@ int svc_recv(struct svc_rqst *rqstp, long timeout)
+ 	spin_unlock_bh(&amp;pool-&gt;sp_lock);
+ 
+ 	len = 0;
+-	if (test_bit(XPT_LISTENER, &amp;xprt-&gt;xpt_flags)) {
++	if (test_bit(XPT_CLOSE, &amp;xprt-&gt;xpt_flags)) {
++		dprintk("svc_recv: found XPT_CLOSE\n");
++		svc_delete_xprt(xprt);
++	} else if (test_bit(XPT_LISTENER, &amp;xprt-&gt;xpt_flags)) {
+ 		struct svc_xprt *newxpt;
+ 		newxpt = xprt-&gt;xpt_ops-&gt;xpo_accept(xprt);
+ 		if (newxpt) {
+@@ -732,7 +735,7 @@ int svc_recv(struct svc_rqst *rqstp, long timeout)
+ 			svc_xprt_received(newxpt);
+ 		}
+ 		svc_xprt_received(xprt);
+-	} else if (!test_bit(XPT_CLOSE, &amp;xprt-&gt;xpt_flags)) {
++	} else {
+ 		dprintk("svc: server %p, pool %u, transport %p, inuse=%d\n",
+ 			rqstp, pool-&gt;sp_id, xprt,
+ 			atomic_read(&amp;xprt-&gt;xpt_ref.refcount));
+@@ -745,11 +748,6 @@ int svc_recv(struct svc_rqst *rqstp, long timeout)
+ 		dprintk("svc: got len=%d\n", len);
+ 	}
+ 
+-	if (test_bit(XPT_CLOSE, &amp;xprt-&gt;xpt_flags)) {
+-		dprintk("svc_recv: found XPT_CLOSE\n");
+-		svc_delete_xprt(xprt);
+-	}
+-
+ 	/* No data, incomplete (TCP) read, or accept() */
+ 	if (len == 0 || len == -EAGAIN) {
+ 		rqstp-&gt;rq_res.len = 0;</pre><hr><pre>commit f5822754ea006563e1bf0a1f43faaad49c0d8bb2
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Feb 28 16:32:51 2010 -0500
+
+    Revert "sunrpc: fix peername failed on closed listener"
+    
+    This reverts commit b292cf9ce70d221c3f04ff62db5ab13d9a249ca8.  The
+    commit that it attempted to patch up,
+    b0401d725334a94d57335790b8ac2404144748ee, was fundamentally wrong, and
+    will also be reverted.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/net/sunrpc/svc_xprt.c b/net/sunrpc/svc_xprt.c
+index 09838300dac4..818c4c365b28 100644
+--- a/net/sunrpc/svc_xprt.c
++++ b/net/sunrpc/svc_xprt.c
+@@ -706,8 +706,7 @@ int svc_recv(struct svc_rqst *rqstp, long timeout)
+ 	spin_unlock_bh(&amp;pool-&gt;sp_lock);
+ 
+ 	len = 0;
+-	if (test_bit(XPT_LISTENER, &amp;xprt-&gt;xpt_flags) &amp;&amp;
+-	    !test_bit(XPT_CLOSE, &amp;xprt-&gt;xpt_flags)) {
++	if (test_bit(XPT_LISTENER, &amp;xprt-&gt;xpt_flags)) {
+ 		struct svc_xprt *newxpt;
+ 		newxpt = xprt-&gt;xpt_ops-&gt;xpo_accept(xprt);
+ 		if (newxpt) {</pre>
+    <div class="pagination">
+        <a href='4_15.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><span>[16]</span><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_17.html'>Next&gt;&gt;</a>
+    <div>
+</body>

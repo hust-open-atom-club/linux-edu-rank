@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_2.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><span>[3]</span><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_4.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 98e1b60ecc441625c91013e88f14cbd1b3c1fa08
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Jun 14 04:56:12 2013 -0500
+
+    dlm: try other IPs when sctp init assoc fails
+    
+    Currently, if we cannot create a association to the first IP addr
+    that is added to DLM, the SCTP init assoc code will just retry
+    the same IP. This patch adds a simple failover schemes where we
+    will try one of the addresses that was passed into DLM.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: David Teigland &lt;teigland@redhat.com&gt;
+
+diff --git a/fs/dlm/lowcomms.c b/fs/dlm/lowcomms.c
+index 87e68dd01479..56015c9e8d00 100644
+--- a/fs/dlm/lowcomms.c
++++ b/fs/dlm/lowcomms.c
+@@ -126,6 +126,7 @@ struct connection {
+ 	struct connection *othercon;
+ 	struct work_struct rwork; /* Receive workqueue */
+ 	struct work_struct swork; /* Send workqueue */
++	bool try_new_addr;
+ };
+ #define sock2con(x) ((struct connection *)(x)-&gt;sk_user_data)
+ 
+@@ -144,6 +145,7 @@ struct dlm_node_addr {
+ 	struct list_head list;
+ 	int nodeid;
+ 	int addr_count;
++	int curr_addr_index;
+ 	struct sockaddr_storage *addr[DLM_MAX_ADDR_COUNT];
+ };
+ 
+@@ -310,7 +312,7 @@ static int addr_compare(struct sockaddr_storage *x, struct sockaddr_storage *y)
+ }
+ 
+ static int nodeid_to_addr(int nodeid, struct sockaddr_storage *sas_out,
+-			  struct sockaddr *sa_out)
++			  struct sockaddr *sa_out, bool try_new_addr)
+ {
+ 	struct sockaddr_storage sas;
+ 	struct dlm_node_addr *na;
+@@ -320,8 +322,16 @@ static int nodeid_to_addr(int nodeid, struct sockaddr_storage *sas_out,
+ 
+ 	spin_lock(&amp;dlm_node_addrs_spin);
+ 	na = find_node_addr(nodeid);
+-	if (na &amp;&amp; na-&gt;addr_count)
+-		memcpy(&amp;sas, na-&gt;addr[0], sizeof(struct sockaddr_storage));
++	if (na &amp;&amp; na-&gt;addr_count) {
++		if (try_new_addr) {
++			na-&gt;curr_addr_index++;
++			if (na-&gt;curr_addr_index == na-&gt;addr_count)
++				na-&gt;curr_addr_index = 0;
++		}
++
++		memcpy(&amp;sas, na-&gt;addr[na-&gt;curr_addr_index ],
++			sizeof(struct sockaddr_storage));
++	}
+ 	spin_unlock(&amp;dlm_node_addrs_spin);
+ 
+ 	if (!na)
+@@ -353,19 +363,22 @@ static int addr_to_nodeid(struct sockaddr_storage *addr, int *nodeid)
+ {
+ 	struct dlm_node_addr *na;
+ 	int rv = -EEXIST;
++	int addr_i;
+ 
+ 	spin_lock(&amp;dlm_node_addrs_spin);
+ 	list_for_each_entry(na, &amp;dlm_node_addrs, list) {
+ 		if (!na-&gt;addr_count)
+ 			continue;
+ 
+-		if (!addr_compare(na-&gt;addr[0], addr))
+-			continue;
+-
+-		*nodeid = na-&gt;nodeid;
+-		rv = 0;
+-		break;
++		for (addr_i = 0; addr_i &lt; na-&gt;addr_count; addr_i++) {
++			if (addr_compare(na-&gt;addr[addr_i], addr)) {
++				*nodeid = na-&gt;nodeid;
++				rv = 0;
++				goto unlock;
++			}
++		}
+ 	}
++unlock:
+ 	spin_unlock(&amp;dlm_node_addrs_spin);
+ 	return rv;
+ }
+@@ -561,6 +574,21 @@ static void sctp_send_shutdown(sctp_assoc_t associd)
+ 
+ static void sctp_init_failed_foreach(struct connection *con)
+ {
++
++	/*
++	 * Don't try to recover base con and handle race where the
++	 * other node's assoc init creates a assoc and we get that
++	 * notification, then we get a notification that our attempt
++	 * failed due. This happens when we are still trying the primary
++	 * address, but the other node has already tried secondary addrs
++	 * and found one that worked.
++	 */
++	if (!con-&gt;nodeid || con-&gt;sctp_assoc)
++		return;
++
++	log_print("Retrying SCTP association init for node %d\n", con-&gt;nodeid);
++
++	con-&gt;try_new_addr = true;
+ 	con-&gt;sctp_assoc = 0;
+ 	if (test_and_clear_bit(CF_INIT_PENDING, &amp;con-&gt;flags)) {
+ 		if (!test_and_set_bit(CF_WRITE_PENDING, &amp;con-&gt;flags))
+@@ -663,6 +691,7 @@ static void process_sctp_notification(struct connection *con,
+ 				 nodeid, (int)sn-&gt;sn_assoc_change.sac_assoc_id);
+ 
+ 			new_con-&gt;sctp_assoc = sn-&gt;sn_assoc_change.sac_assoc_id;
++			new_con-&gt;try_new_addr = false;
+ 			/* Send any pending writes */
+ 			clear_bit(CF_CONNECT_PENDING, &amp;new_con-&gt;flags);
+ 			clear_bit(CF_INIT_PENDING, &amp;new_con-&gt;flags);
+@@ -984,7 +1013,8 @@ static void sctp_init_assoc(struct connection *con)
+ 	if (con-&gt;retries++ &gt; MAX_CONNECT_RETRIES)
+ 		return;
+ 
+-	if (nodeid_to_addr(con-&gt;nodeid, NULL, (struct sockaddr *)&amp;rem_addr)) {
++	if (nodeid_to_addr(con-&gt;nodeid, NULL, (struct sockaddr *)&amp;rem_addr,
++			   con-&gt;try_new_addr)) {
+ 		log_print("no address for nodeid %d", con-&gt;nodeid);
+ 		return;
+ 	}
+@@ -1016,6 +1046,14 @@ static void sctp_init_assoc(struct connection *con)
+ 	iov[0].iov_base = page_address(e-&gt;page)+offset;
+ 	iov[0].iov_len = len;
+ 
++	if (rem_addr.ss_family == AF_INET) {
++		struct sockaddr_in *sin = (struct sockaddr_in *)&amp;rem_addr;
++		log_print("Trying to connect to %pI4", &amp;sin-&gt;sin_addr.s_addr);
++	} else {
++		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&amp;rem_addr;
++		log_print("Trying to connect to %pI6", &amp;sin6-&gt;sin6_addr);
++	}
++
+ 	cmsg = CMSG_FIRSTHDR(&amp;outmessage);
+ 	cmsg-&gt;cmsg_level = IPPROTO_SCTP;
+ 	cmsg-&gt;cmsg_type = SCTP_SNDRCV;
+@@ -1024,6 +1062,7 @@ static void sctp_init_assoc(struct connection *con)
+ 	memset(sinfo, 0x00, sizeof(struct sctp_sndrcvinfo));
+ 	sinfo-&gt;sinfo_ppid = cpu_to_le32(dlm_our_nodeid());
+ 	outmessage.msg_controllen = cmsg-&gt;cmsg_len;
++	sinfo-&gt;sinfo_flags |= SCTP_ADDR_OVER;
+ 
+ 	ret = kernel_sendmsg(base_con-&gt;sock, &amp;outmessage, iov, 1, len);
+ 	if (ret &lt; 0) {
+@@ -1076,7 +1115,7 @@ static void tcp_connect_to_sock(struct connection *con)
+ 		goto out_err;
+ 
+ 	memset(&amp;saddr, 0, sizeof(saddr));
+-	result = nodeid_to_addr(con-&gt;nodeid, &amp;saddr, NULL);
++	result = nodeid_to_addr(con-&gt;nodeid, &amp;saddr, NULL, false);
+ 	if (result &lt; 0) {
+ 		log_print("no address for nodeid %d", con-&gt;nodeid);
+ 		goto out_err;</pre><hr><pre>commit b390ca38d27bd3d2f409e64a6f13d6ff67eb4825
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Jun 14 04:56:11 2013 -0500
+
+    dlm: clear correct bit during sctp init failure handling
+    
+    We should be testing and cleaing the init pending bit because later
+    when sctp_init_assoc is recalled it will be checking that it is not set
+    and set the bit.
+    
+    We do not want to touch CF_CONNECT_PENDING here because we will queue
+    swork and process_send_sockets will then call the connect_action function.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: David Teigland &lt;teigland@redhat.com&gt;
+
+diff --git a/fs/dlm/lowcomms.c b/fs/dlm/lowcomms.c
+index 1536599fde8c..87e68dd01479 100644
+--- a/fs/dlm/lowcomms.c
++++ b/fs/dlm/lowcomms.c
+@@ -562,7 +562,7 @@ static void sctp_send_shutdown(sctp_assoc_t associd)
+ static void sctp_init_failed_foreach(struct connection *con)
+ {
+ 	con-&gt;sctp_assoc = 0;
+-	if (test_and_clear_bit(CF_CONNECT_PENDING, &amp;con-&gt;flags)) {
++	if (test_and_clear_bit(CF_INIT_PENDING, &amp;con-&gt;flags)) {
+ 		if (!test_and_set_bit(CF_WRITE_PENDING, &amp;con-&gt;flags))
+ 			queue_work(send_workqueue, &amp;con-&gt;swork);
+ 	}</pre><hr><pre>commit e1631d0c48ca5ba9878f5923ffe58ef6fd2d5fda
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Jun 14 04:56:10 2013 -0500
+
+    dlm: set sctp assoc id during setup
+    
+    sctp_assoc was not getting set so later lookups failed.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: David Teigland &lt;teigland@redhat.com&gt;
+
+diff --git a/fs/dlm/lowcomms.c b/fs/dlm/lowcomms.c
+index efbe7af42002..1536599fde8c 100644
+--- a/fs/dlm/lowcomms.c
++++ b/fs/dlm/lowcomms.c
+@@ -662,6 +662,7 @@ static void process_sctp_notification(struct connection *con,
+ 			log_print("connecting to %d sctp association %d",
+ 				 nodeid, (int)sn-&gt;sn_assoc_change.sac_assoc_id);
+ 
++			new_con-&gt;sctp_assoc = sn-&gt;sn_assoc_change.sac_assoc_id;
+ 			/* Send any pending writes */
+ 			clear_bit(CF_CONNECT_PENDING, &amp;new_con-&gt;flags);
+ 			clear_bit(CF_INIT_PENDING, &amp;new_con-&gt;flags);</pre><hr><pre>commit efad7e6b1a28be599836c8f15ec04f99a98fb04c
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Jun 14 04:56:09 2013 -0500
+
+    dlm: clear correct init bit during sctp setup
+    
+    We were clearing the base con's init pending flags, but the
+    con for the node was the one with the pending bit set.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: David Teigland &lt;teigland@redhat.com&gt;
+
+diff --git a/fs/dlm/lowcomms.c b/fs/dlm/lowcomms.c
+index d0ccd2fd79eb..efbe7af42002 100644
+--- a/fs/dlm/lowcomms.c
++++ b/fs/dlm/lowcomms.c
+@@ -664,7 +664,7 @@ static void process_sctp_notification(struct connection *con,
+ 
+ 			/* Send any pending writes */
+ 			clear_bit(CF_CONNECT_PENDING, &amp;new_con-&gt;flags);
+-			clear_bit(CF_INIT_PENDING, &amp;con-&gt;flags);
++			clear_bit(CF_INIT_PENDING, &amp;new_con-&gt;flags);
+ 			if (!test_and_set_bit(CF_WRITE_PENDING, &amp;new_con-&gt;flags)) {
+ 				queue_work(send_workqueue, &amp;new_con-&gt;swork);
+ 			}</pre><hr><pre>commit 8526cb114f771851d84425d85d8735a6e0816ba2
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Mon May 6 12:06:56 2013 -0500
+
+    [SCSI] iscsi class, qla4xxx: fix sess/conn refcounting when find fns are used
+    
+    This fixes a bug where the iscsi class/driver did not do a put_device
+    when a sess/conn device was found. This also simplifies the interface
+    by not having to pass in some arguments that were duplicated and did
+    not need to be exported.
+    
+    Reported-by: Zhao Hongjiang &lt;zhaohongjiang@huawei.com&gt;
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: Vikas Chaudhary &lt;vikas.chaudhary@qlogic.com&gt;
+    Signed-off-by: James Bottomley &lt;JBottomley@Parallels.com&gt;
+
+diff --git a/drivers/scsi/qla4xxx/ql4_os.c b/drivers/scsi/qla4xxx/ql4_os.c
+index d777332dbed8..4d231c12463e 100644
+--- a/drivers/scsi/qla4xxx/ql4_os.c
++++ b/drivers/scsi/qla4xxx/ql4_os.c
+@@ -5605,6 +5605,7 @@ static int qla4xxx_sysfs_ddb_add(struct Scsi_Host *shost, const char *buf,
+ 		ql4_printk(KERN_ERR, ha,
+ 			   "%s: A non-persistent entry %s found\n",
+ 			   __func__, dev-&gt;kobj.name);
++		put_device(dev);
+ 		goto exit_ddb_add;
+ 	}
+ 
+@@ -6112,8 +6113,7 @@ qla4xxx_sysfs_ddb_get_param(struct iscsi_bus_flash_session *fnode_sess,
+ 	int parent_type, parent_index = 0xffff;
+ 	int rc = 0;
+ 
+-	dev = iscsi_find_flashnode_conn(fnode_sess, NULL,
+-					iscsi_is_flashnode_conn_dev);
++	dev = iscsi_find_flashnode_conn(fnode_sess);
+ 	if (!dev)
+ 		return -EIO;
+ 
+@@ -6347,6 +6347,8 @@ qla4xxx_sysfs_ddb_get_param(struct iscsi_bus_flash_session *fnode_sess,
+ 		rc = -ENOSYS;
+ 		break;
+ 	}
++
++	put_device(dev);
+ 	return rc;
+ }
+ 
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 475265a51a51..133926b1bb78 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -1019,8 +1019,7 @@ static int flashnode_match_index(struct device *dev, void *data)
+ /**
+  * iscsi_get_flashnode_by_index -finds flashnode session entry by index
+  * @shost: pointer to host data
+- * @data: pointer to data containing value to use for comparison
+- * @fn: function pointer that does actual comparison
++ * @idx: index to match
+  *
+  * Finds the flashnode session object for the passed index
+  *
+@@ -1029,13 +1028,13 @@ static int flashnode_match_index(struct device *dev, void *data)
+  *  %NULL on failure
+  */
+ static struct iscsi_bus_flash_session *
+-iscsi_get_flashnode_by_index(struct Scsi_Host *shost, void *data,
+-			     int (*fn)(struct device *dev, void *data))
++iscsi_get_flashnode_by_index(struct Scsi_Host *shost, uint32_t idx)
+ {
+ 	struct iscsi_bus_flash_session *fnode_sess = NULL;
+ 	struct device *dev;
+ 
+-	dev = device_find_child(&amp;shost-&gt;shost_gendev, data, fn);
++	dev = device_find_child(&amp;shost-&gt;shost_gendev, &amp;idx,
++				flashnode_match_index);
+ 	if (dev)
+ 		fnode_sess = iscsi_dev_to_flash_session(dev);
+ 
+@@ -1059,18 +1058,13 @@ struct device *
+ iscsi_find_flashnode_sess(struct Scsi_Host *shost, void *data,
+ 			  int (*fn)(struct device *dev, void *data))
+ {
+-	struct device *dev;
+-
+-	dev = device_find_child(&amp;shost-&gt;shost_gendev, data, fn);
+-	return dev;
++	return device_find_child(&amp;shost-&gt;shost_gendev, data, fn);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_find_flashnode_sess);
+ 
+ /**
+  * iscsi_find_flashnode_conn - finds flashnode connection entry
+  * @fnode_sess: pointer to parent flashnode session entry
+- * @data: pointer to data containing value to use for comparison
+- * @fn: function pointer that does actual comparison
+  *
+  * Finds the flashnode connection object comparing the data passed using logic
+  * defined in passed function pointer
+@@ -1080,14 +1074,10 @@ EXPORT_SYMBOL_GPL(iscsi_find_flashnode_sess);
+  *  %NULL on failure
+  */
+ struct device *
+-iscsi_find_flashnode_conn(struct iscsi_bus_flash_session *fnode_sess,
+-			  void *data,
+-			  int (*fn)(struct device *dev, void *data))
++iscsi_find_flashnode_conn(struct iscsi_bus_flash_session *fnode_sess)
+ {
+-	struct device *dev;
+-
+-	dev = device_find_child(&amp;fnode_sess-&gt;dev, data, fn);
+-	return dev;
++	return device_find_child(&amp;fnode_sess-&gt;dev, NULL,
++				 iscsi_is_flashnode_conn_dev);
+ }
+ EXPORT_SYMBOL_GPL(iscsi_find_flashnode_conn);
+ 
+@@ -2808,7 +2798,7 @@ static int iscsi_set_flashnode_param(struct iscsi_transport *transport,
+ 	struct iscsi_bus_flash_session *fnode_sess;
+ 	struct iscsi_bus_flash_conn *fnode_conn;
+ 	struct device *dev;
+-	uint32_t *idx;
++	uint32_t idx;
+ 	int err = 0;
+ 
+ 	if (!transport-&gt;set_flashnode_param) {
+@@ -2824,25 +2814,27 @@ static int iscsi_set_flashnode_param(struct iscsi_transport *transport,
+ 		goto put_host;
+ 	}
+ 
+-	idx = &amp;ev-&gt;u.set_flashnode.flashnode_idx;
+-	fnode_sess = iscsi_get_flashnode_by_index(shost, idx,
+-						  flashnode_match_index);
++	idx = ev-&gt;u.set_flashnode.flashnode_idx;
++	fnode_sess = iscsi_get_flashnode_by_index(shost, idx);
+ 	if (!fnode_sess) {
+ 		pr_err("%s could not find flashnode %u for host no %u\n",
+-		       __func__, *idx, ev-&gt;u.set_flashnode.host_no);
++		       __func__, idx, ev-&gt;u.set_flashnode.host_no);
+ 		err = -ENODEV;
+ 		goto put_host;
+ 	}
+ 
+-	dev = iscsi_find_flashnode_conn(fnode_sess, NULL,
+-					iscsi_is_flashnode_conn_dev);
++	dev = iscsi_find_flashnode_conn(fnode_sess);
+ 	if (!dev) {
+ 		err = -ENODEV;
+-		goto put_host;
++		goto put_sess;
+ 	}
+ 
+ 	fnode_conn = iscsi_dev_to_flash_conn(dev);
+ 	err = transport-&gt;set_flashnode_param(fnode_sess, fnode_conn, data, len);
++	put_device(dev);
++
++put_sess:
++	put_device(&amp;fnode_sess-&gt;dev);
+ 
+ put_host:
+ 	scsi_host_put(shost);
+@@ -2891,7 +2883,7 @@ static int iscsi_del_flashnode(struct iscsi_transport *transport,
+ {
+ 	struct Scsi_Host *shost;
+ 	struct iscsi_bus_flash_session *fnode_sess;
+-	uint32_t *idx;
++	uint32_t idx;
+ 	int err = 0;
+ 
+ 	if (!transport-&gt;del_flashnode) {
+@@ -2907,17 +2899,17 @@ static int iscsi_del_flashnode(struct iscsi_transport *transport,
+ 		goto put_host;
+ 	}
+ 
+-	idx = &amp;ev-&gt;u.del_flashnode.flashnode_idx;
+-	fnode_sess = iscsi_get_flashnode_by_index(shost, idx,
+-						  flashnode_match_index);
++	idx = ev-&gt;u.del_flashnode.flashnode_idx;
++	fnode_sess = iscsi_get_flashnode_by_index(shost, idx);
+ 	if (!fnode_sess) {
+ 		pr_err("%s could not find flashnode %u for host no %u\n",
+-		       __func__, *idx, ev-&gt;u.del_flashnode.host_no);
++		       __func__, idx, ev-&gt;u.del_flashnode.host_no);
+ 		err = -ENODEV;
+ 		goto put_host;
+ 	}
+ 
+ 	err = transport-&gt;del_flashnode(fnode_sess);
++	put_device(&amp;fnode_sess-&gt;dev);
+ 
+ put_host:
+ 	scsi_host_put(shost);
+@@ -2933,7 +2925,7 @@ static int iscsi_login_flashnode(struct iscsi_transport *transport,
+ 	struct iscsi_bus_flash_session *fnode_sess;
+ 	struct iscsi_bus_flash_conn *fnode_conn;
+ 	struct device *dev;
+-	uint32_t *idx;
++	uint32_t idx;
+ 	int err = 0;
+ 
+ 	if (!transport-&gt;login_flashnode) {
+@@ -2949,25 +2941,27 @@ static int iscsi_login_flashnode(struct iscsi_transport *transport,
+ 		goto put_host;
+ 	}
+ 
+-	idx = &amp;ev-&gt;u.login_flashnode.flashnode_idx;
+-	fnode_sess = iscsi_get_flashnode_by_index(shost, idx,
+-						  flashnode_match_index);
++	idx = ev-&gt;u.login_flashnode.flashnode_idx;
++	fnode_sess = iscsi_get_flashnode_by_index(shost, idx);
+ 	if (!fnode_sess) {
+ 		pr_err("%s could not find flashnode %u for host no %u\n",
+-		       __func__, *idx, ev-&gt;u.login_flashnode.host_no);
++		       __func__, idx, ev-&gt;u.login_flashnode.host_no);
+ 		err = -ENODEV;
+ 		goto put_host;
+ 	}
+ 
+-	dev = iscsi_find_flashnode_conn(fnode_sess, NULL,
+-					iscsi_is_flashnode_conn_dev);
++	dev = iscsi_find_flashnode_conn(fnode_sess);
+ 	if (!dev) {
+ 		err = -ENODEV;
+-		goto put_host;
++		goto put_sess;
+ 	}
+ 
+ 	fnode_conn = iscsi_dev_to_flash_conn(dev);
+ 	err = transport-&gt;login_flashnode(fnode_sess, fnode_conn);
++	put_device(dev);
++
++put_sess:
++	put_device(&amp;fnode_sess-&gt;dev);
+ 
+ put_host:
+ 	scsi_host_put(shost);
+@@ -2983,7 +2977,7 @@ static int iscsi_logout_flashnode(struct iscsi_transport *transport,
+ 	struct iscsi_bus_flash_session *fnode_sess;
+ 	struct iscsi_bus_flash_conn *fnode_conn;
+ 	struct device *dev;
+-	uint32_t *idx;
++	uint32_t idx;
+ 	int err = 0;
+ 
+ 	if (!transport-&gt;logout_flashnode) {
+@@ -2999,26 +2993,28 @@ static int iscsi_logout_flashnode(struct iscsi_transport *transport,
+ 		goto put_host;
+ 	}
+ 
+-	idx = &amp;ev-&gt;u.logout_flashnode.flashnode_idx;
+-	fnode_sess = iscsi_get_flashnode_by_index(shost, idx,
+-						  flashnode_match_index);
++	idx = ev-&gt;u.logout_flashnode.flashnode_idx;
++	fnode_sess = iscsi_get_flashnode_by_index(shost, idx);
+ 	if (!fnode_sess) {
+ 		pr_err("%s could not find flashnode %u for host no %u\n",
+-		       __func__, *idx, ev-&gt;u.logout_flashnode.host_no);
++		       __func__, idx, ev-&gt;u.logout_flashnode.host_no);
+ 		err = -ENODEV;
+ 		goto put_host;
+ 	}
+ 
+-	dev = iscsi_find_flashnode_conn(fnode_sess, NULL,
+-					iscsi_is_flashnode_conn_dev);
++	dev = iscsi_find_flashnode_conn(fnode_sess);
+ 	if (!dev) {
+ 		err = -ENODEV;
+-		goto put_host;
++		goto put_sess;
+ 	}
+ 
+ 	fnode_conn = iscsi_dev_to_flash_conn(dev);
+ 
+ 	err = transport-&gt;logout_flashnode(fnode_sess, fnode_conn);
++	put_device(dev);
++
++put_sess:
++	put_device(&amp;fnode_sess-&gt;dev);
+ 
+ put_host:
+ 	scsi_host_put(shost);
+diff --git a/include/scsi/scsi_transport_iscsi.h b/include/scsi/scsi_transport_iscsi.h
+index 4a58cca2ecc1..d0f1602985e7 100644
+--- a/include/scsi/scsi_transport_iscsi.h
++++ b/include/scsi/scsi_transport_iscsi.h
+@@ -471,14 +471,10 @@ iscsi_destroy_flashnode_sess(struct iscsi_bus_flash_session *fnode_sess);
+ extern void iscsi_destroy_all_flashnode(struct Scsi_Host *shost);
+ extern int iscsi_flashnode_bus_match(struct device *dev,
+ 				     struct device_driver *drv);
+-extern int iscsi_is_flashnode_conn_dev(struct device *dev, void *data);
+-
+ extern struct device *
+ iscsi_find_flashnode_sess(struct Scsi_Host *shost, void *data,
+ 			  int (*fn)(struct device *dev, void *data));
+-
+ extern struct device *
+-iscsi_find_flashnode_conn(struct iscsi_bus_flash_session *fnode_sess,
+-			  void *data,
+-			  int (*fn)(struct device *dev, void *data));
++iscsi_find_flashnode_conn(struct iscsi_bus_flash_session *fnode_sess);
++
+ #endif</pre><hr><pre>commit 9e45dd73234af9a59613dc2989dcc2df2dab847f
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Apr 10 11:24:39 2013 -0500
+
+    [SCSI] iscsi_tcp: support PF_MEMALLOC/__GFP_MEMALLOC
+    
+    This patch has software iscsi use PF_MEMALLOC/__GFP_MEMALLOC
+    to be able to better support swap over iscsi disks similar to
+    what was added for nbd.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;JBottomley@Parallels.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 1b91ca0dc1e3..9e2588a6881c 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -370,17 +370,24 @@ static inline int iscsi_sw_tcp_xmit_qlen(struct iscsi_conn *conn)
+ static int iscsi_sw_tcp_pdu_xmit(struct iscsi_task *task)
+ {
+ 	struct iscsi_conn *conn = task-&gt;conn;
+-	int rc;
++	unsigned long pflags = current-&gt;flags;
++	int rc = 0;
++
++	current-&gt;flags |= PF_MEMALLOC;
+ 
+ 	while (iscsi_sw_tcp_xmit_qlen(conn)) {
+ 		rc = iscsi_sw_tcp_xmit(conn);
+-		if (rc == 0)
+-			return -EAGAIN;
++		if (rc == 0) {
++			rc = -EAGAIN;
++			break;
++		}
+ 		if (rc &lt; 0)
+-			return rc;
++			break;
++		rc = 0;
+ 	}
+ 
+-	return 0;
++	tsk_restore_flags(current, pflags, PF_MEMALLOC);
++	return rc;
+ }
+ 
+ /*
+@@ -665,6 +672,7 @@ iscsi_sw_tcp_conn_bind(struct iscsi_cls_session *cls_session,
+ 	sk-&gt;sk_reuse = SK_CAN_REUSE;
+ 	sk-&gt;sk_sndtimeo = 15 * HZ; /* FIXME: make it configurable */
+ 	sk-&gt;sk_allocation = GFP_ATOMIC;
++	sk_set_memalloc(sk);
+ 
+ 	iscsi_sw_tcp_conn_set_callbacks(conn);
+ 	tcp_sw_conn-&gt;sendpage = tcp_sw_conn-&gt;sock-&gt;ops-&gt;sendpage;</pre><hr><pre>commit 27db682bf07fdc105af38827dbbd67d6f0a4ae04
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Mar 5 22:40:24 2013 -0600
+
+    [SCSI] scsi_dh_alua: fix stpg sense handling
+    
+    For the stpg_endio path we are not evaluating the sense. The bug
+    is that
+    
+    1. The error value is set to -EIO when there is sense, so we hit the first
+    error check and always return SCSI_DH_IO.
+    
+    2. h-&gt;senselen is set to zero in submit_stpg. It is not later set to
+    req-&gt;sense_len like in the synchrounous exection paths, so we must
+    check the req-&gt;sense_len field.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;JBottomley@Parallels.com&gt;
+
+diff --git a/drivers/scsi/device_handler/scsi_dh_alua.c b/drivers/scsi/device_handler/scsi_dh_alua.c
+index 6f4d8e6f32f1..6648ffbb121a 100644
+--- a/drivers/scsi/device_handler/scsi_dh_alua.c
++++ b/drivers/scsi/device_handler/scsi_dh_alua.c
+@@ -232,13 +232,13 @@ static void stpg_endio(struct request *req, int error)
+ 	struct scsi_sense_hdr sense_hdr;
+ 	unsigned err = SCSI_DH_OK;
+ 
+-	if (error || host_byte(req-&gt;errors) != DID_OK ||
+-			msg_byte(req-&gt;errors) != COMMAND_COMPLETE) {
++	if (host_byte(req-&gt;errors) != DID_OK ||
++	    msg_byte(req-&gt;errors) != COMMAND_COMPLETE) {
+ 		err = SCSI_DH_IO;
+ 		goto done;
+ 	}
+ 
+-	if (h-&gt;senselen &gt; 0) {
++	if (req-&gt;sense_len &gt; 0) {
+ 		err = scsi_normalize_sense(h-&gt;sense, SCSI_SENSE_BUFFERSIZE,
+ 					   &amp;sense_hdr);
+ 		if (!err) {
+@@ -255,7 +255,9 @@ static void stpg_endio(struct request *req, int error)
+ 			    ALUA_DH_NAME, sense_hdr.sense_key,
+ 			    sense_hdr.asc, sense_hdr.ascq);
+ 		err = SCSI_DH_IO;
+-	}
++	} else if (error)
++		err = SCSI_DH_IO;
++
+ 	if (err == SCSI_DH_OK) {
+ 		h-&gt;state = TPGS_STATE_OPTIMIZED;
+ 		sdev_printk(KERN_INFO, h-&gt;sdev,</pre><hr><pre>commit 87eb5b21d92a92ac2da3163039d62df88c2b8422
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Mar 1 22:45:48 2013 +0000
+
+    dm: fix limits initialization when there are no data devices
+    
+    dm_calculate_queue_limits will first reset the provided limits to
+    defaults using blk_set_stacking_limits; whereby defeating the purpose of
+    retaining the original live table's limits -- as was intended via commit
+    3ae706561637331aa578e52bb89ecbba5edcb7a9 ("dm: retain table limits when
+    swapping to new table with no devices").
+    
+    Fix this improper limits initialization (in the no data devices case) by
+    avoiding the call to dm_calculate_queue_limits.
+    
+    [patch header revised by Mike Snitzer]
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Mike Snitzer &lt;snitzer@redhat.com&gt;
+    Cc: stable@vger.kernel.org # v3.6+
+    Signed-off-by: Alasdair G Kergon &lt;agk@redhat.com&gt;
+
+diff --git a/drivers/md/dm.c b/drivers/md/dm.c
+index 0890abd9dffa..1016c14c28a0 100644
+--- a/drivers/md/dm.c
++++ b/drivers/md/dm.c
+@@ -2446,7 +2446,7 @@ static void dm_queue_flush(struct mapped_device *md)
+  */
+ struct dm_table *dm_swap_table(struct mapped_device *md, struct dm_table *table)
+ {
+-	struct dm_table *live_map, *map = ERR_PTR(-EINVAL);
++	struct dm_table *live_map = NULL, *map = ERR_PTR(-EINVAL);
+ 	struct queue_limits limits;
+ 	int r;
+ 
+@@ -2469,10 +2469,12 @@ struct dm_table *dm_swap_table(struct mapped_device *md, struct dm_table *table)
+ 		dm_table_put(live_map);
+ 	}
+ 
+-	r = dm_calculate_queue_limits(table, &amp;limits);
+-	if (r) {
+-		map = ERR_PTR(r);
+-		goto out;
++	if (!live_map) {
++		r = dm_calculate_queue_limits(table, &amp;limits);
++		if (r) {
++			map = ERR_PTR(r);
++			goto out;
++		}
+ 	}
+ 
+ 	map = __bind(md, table, &amp;limits);</pre><hr><pre>commit dc30a436903ccf180b0313d3fc3f44278a1d44c8
+Author: Asim Kadav &lt;kadav@cs.wisc.edu&gt;
+Date:   Thu Jan 3 11:47:26 2013 -0600
+
+    sound: oss/pas2: Fix possible access out of array
+    
+    Added a fix for hardware dependence bug where a sound card failure
+    should not result in reading beyond array memory index.
+    
+    Signed-off-by: Asim Kadav &lt;kadav@cs.wisc.edu&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/oss/pas2_card.c b/sound/oss/pas2_card.c
+index dabf8a871dcc..7004e24d209f 100644
+--- a/sound/oss/pas2_card.c
++++ b/sound/oss/pas2_card.c
+@@ -333,6 +333,11 @@ static void __init attach_pas_card(struct address_info *hw_config)
+ 		{
+ 			char            temp[100];
+ 
++			if (pas_model &lt; 0 ||
++			    pas_model &gt;= ARRAY_SIZE(pas_model_names)) {
++				printk(KERN_ERR "pas2 unrecognized model.\n");
++				return;
++			}
+ 			sprintf(temp,
+ 			    "%s rev %d", pas_model_names[(int) pas_model],
+ 				    pas_read(0x2789));</pre><hr><pre>commit d075498c987623107f7bface4dad72fe9260a0d3
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Thu May 17 23:56:58 2012 -0500
+
+    [SCSI] remove old comment from block/unblock functions
+    
+    We do not hold the host lock when calling these functions,
+    so remove comment.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;JBottomley@Parallels.com&gt;
+
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index 36521a0ac54b..9f00c128e4d1 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -2411,7 +2411,6 @@ EXPORT_SYMBOL(scsi_target_resume);
+  *	(which must be a legal transition).  When the device is in this
+  *	state, all commands are deferred until the scsi lld reenables
+  *	the device with scsi_device_unblock or device_block_tmo fires.
+- *	This routine assumes the host_lock is held on entry.
+  */
+ int
+ scsi_internal_device_block(struct scsi_device *sdev)
+@@ -2455,8 +2454,7 @@ EXPORT_SYMBOL_GPL(scsi_internal_device_block);
+  * Notes:       
+  *	This routine transitions the device to the SDEV_RUNNING state
+  *	or to one of the offline states (which must be a legal transition)
+- *	allowing the midlayer to goose the queue for this device. This
+- *	routine assumes the host_lock is held upon entry.
++ *	allowing the midlayer to goose the queue for this device.
+  */
+ int
+ scsi_internal_device_unblock(struct scsi_device *sdev,</pre>
+    <div class="pagination">
+        <a href='5_2.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><span>[3]</span><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_4.html'>Next&gt;&gt;</a>
+    <div>
+</body>

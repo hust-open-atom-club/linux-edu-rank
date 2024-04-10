@@ -1,0 +1,1203 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of New South Wales</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of New South Wales</h1>
+    <div class="pagination">
+        <a href='8_11.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><span>[12]</span><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_13.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 289e99e8ed8f36e386bf7de49947311c17ae1482
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:24 2005 -0700
+
+    [PATCH] md: initialise sync_blocks in raid1 resync
+    
+    Otherwise it could have a random value and might BUG.  This fixes a BUG
+    during resync problem in raid1 introduced by the bitmap-based-intent-loggin
+    patches.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index 9d9acc3e51a7..c3b4772cfaea 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -1230,6 +1230,7 @@ static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, i
+ 	}
+ 
+ 	nr_sectors = 0;
++	sync_blocks = 0;
+ 	do {
+ 		struct page *page;
+ 		int len = PAGE_SIZE;</pre><hr><pre>commit ab7a30c7051ee32d0d72415fe0a16d60eba38a0d
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:23 2005 -0700
+
+    [PATCH] md: fix bug when raid1 attempts a partial reconstruct.
+    
+    The logic here is wrong.  if fullsync is 0, it WILL BUG.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index 0fd4c3bfc851..9d9acc3e51a7 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -1237,13 +1237,16 @@ static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, i
+ 			len = (max_sector - sector_nr) &lt;&lt; 9;
+ 		if (len == 0)
+ 			break;
+-		if (!conf-&gt;fullsync &amp;&amp; sync_blocks == 0)
+-			if (!bitmap_start_sync(mddev-&gt;bitmap,
+-					       sector_nr, &amp;sync_blocks))
+-				break;
+-		if (sync_blocks &lt; (PAGE_SIZE&gt;&gt;9))
+-			BUG();
+-		if (len &gt; (sync_blocks&lt;&lt;9)) len = sync_blocks&lt;&lt;9;
++		if (!conf-&gt;fullsync) {
++			if (sync_blocks == 0) {
++				if (!bitmap_start_sync(mddev-&gt;bitmap,
++						       sector_nr, &amp;sync_blocks))
++					break;
++				if (sync_blocks &lt; (PAGE_SIZE&gt;&gt;9))
++					BUG();
++				if (len &gt; (sync_blocks&lt;&lt;9)) len = sync_blocks&lt;&lt;9;
++			}
++		}
+ 
+ 		for (i=0 ; i &lt; conf-&gt;raid_disks; i++) {
+ 			bio = r1_bio-&gt;bios[i];</pre><hr><pre>commit 191ea9b2c7cc3ebbe0678834ab710d7d95ad3f9a
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:23 2005 -0700
+
+    [PATCH] md: raid1 support for bitmap intent logging
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index 3c5c916cb09e..0fd4c3bfc851 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -12,6 +12,15 @@
+  * Fixes to reconstruction by Jakob ?stergaard" &lt;jakob@ostenfeld.dk&gt;
+  * Various fixes by Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+  *
++ * Changes by Peter T. Breuer &lt;ptb@it.uc3m.es&gt; 31/1/2003 to support
++ * bitmapped intelligence in resync:
++ *
++ *      - bitmap marked during normal i/o
++ *      - bitmap used to skip nondirty blocks during sync
++ *
++ * Additions to bitmap code, (C) 2003-2004 Paul Clements, SteelEye Technology:
++ * - persistent bitmap code
++ *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+  * the Free Software Foundation; either version 2, or (at your option)
+@@ -22,7 +31,16 @@
+  * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+  */
+ 
++#include "dm-bio-list.h"
+ #include &lt;linux/raid/raid1.h&gt;
++#include &lt;linux/raid/bitmap.h&gt;
++
++#define DEBUG 0
++#if DEBUG
++#define PRINTK(x...) printk(x)
++#else
++#define PRINTK(x...)
++#endif
+ 
+ /*
+  * Number of guaranteed r1bios in case of extreme VM load:
+@@ -287,9 +305,11 @@ static int raid1_end_write_request(struct bio *bio, unsigned int bytes_done, int
+ 	/*
+ 	 * this branch is our 'one mirror IO has finished' event handler:
+ 	 */
+-	if (!uptodate)
++	if (!uptodate) {
+ 		md_error(r1_bio-&gt;mddev, conf-&gt;mirrors[mirror].rdev);
+-	else
++		/* an I/O failed, we can't clear the bitmap */
++		set_bit(R1BIO_Degraded, &amp;r1_bio-&gt;state);
++	} else
+ 		/*
+ 		 * Set R1BIO_Uptodate in our master bio, so that
+ 		 * we will return a good error code for to the higher
+@@ -309,6 +329,10 @@ static int raid1_end_write_request(struct bio *bio, unsigned int bytes_done, int
+ 	 * already.
+ 	 */
+ 	if (atomic_dec_and_test(&amp;r1_bio-&gt;remaining)) {
++		/* clear the bitmap if all writes complete successfully */
++		bitmap_endwrite(r1_bio-&gt;mddev-&gt;bitmap, r1_bio-&gt;sector,
++				r1_bio-&gt;sectors,
++				!test_bit(R1BIO_Degraded, &amp;r1_bio-&gt;state));
+ 		md_write_end(r1_bio-&gt;mddev);
+ 		raid_end_bio_io(r1_bio);
+ 	}
+@@ -458,7 +482,10 @@ static void unplug_slaves(mddev_t *mddev)
+ 
+ static void raid1_unplug(request_queue_t *q)
+ {
+-	unplug_slaves(q-&gt;queuedata);
++	mddev_t *mddev = q-&gt;queuedata;
++
++	unplug_slaves(mddev);
++	md_wakeup_thread(mddev-&gt;thread);
+ }
+ 
+ static int raid1_issue_flush(request_queue_t *q, struct gendisk *disk,
+@@ -501,16 +528,16 @@ static void device_barrier(conf_t *conf, sector_t sect)
+ {
+ 	spin_lock_irq(&amp;conf-&gt;resync_lock);
+ 	wait_event_lock_irq(conf-&gt;wait_idle, !waitqueue_active(&amp;conf-&gt;wait_resume),
+-			    conf-&gt;resync_lock, unplug_slaves(conf-&gt;mddev));
++			    conf-&gt;resync_lock, raid1_unplug(conf-&gt;mddev-&gt;queue));
+ 	
+ 	if (!conf-&gt;barrier++) {
+ 		wait_event_lock_irq(conf-&gt;wait_idle, !conf-&gt;nr_pending,
+-				    conf-&gt;resync_lock, unplug_slaves(conf-&gt;mddev));
++				    conf-&gt;resync_lock, raid1_unplug(conf-&gt;mddev-&gt;queue));
+ 		if (conf-&gt;nr_pending)
+ 			BUG();
+ 	}
+ 	wait_event_lock_irq(conf-&gt;wait_resume, conf-&gt;barrier &lt; RESYNC_DEPTH,
+-			    conf-&gt;resync_lock, unplug_slaves(conf-&gt;mddev));
++			    conf-&gt;resync_lock, raid1_unplug(conf-&gt;mddev-&gt;queue));
+ 	conf-&gt;next_resync = sect;
+ 	spin_unlock_irq(&amp;conf-&gt;resync_lock);
+ }
+@@ -522,8 +549,12 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	mirror_info_t *mirror;
+ 	r1bio_t *r1_bio;
+ 	struct bio *read_bio;
+-	int i, disks;
++	int i, targets = 0, disks;
+ 	mdk_rdev_t *rdev;
++	struct bitmap *bitmap = mddev-&gt;bitmap;
++	unsigned long flags;
++	struct bio_list bl;
++
+ 
+ 	/*
+ 	 * Register the new request and wait if the reconstruction
+@@ -554,7 +585,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 
+ 	r1_bio-&gt;master_bio = bio;
+ 	r1_bio-&gt;sectors = bio-&gt;bi_size &gt;&gt; 9;
+-
++	r1_bio-&gt;state = 0;
+ 	r1_bio-&gt;mddev = mddev;
+ 	r1_bio-&gt;sector = bio-&gt;bi_sector;
+ 
+@@ -597,6 +628,13 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	 * bios[x] to bio
+ 	 */
+ 	disks = conf-&gt;raid_disks;
++#if 0
++	{ static int first=1;
++	if (first) printk("First Write sector %llu disks %d\n",
++			  (unsigned long long)r1_bio-&gt;sector, disks);
++	first = 0;
++	}
++#endif
+ 	rcu_read_lock();
+ 	for (i = 0;  i &lt; disks; i++) {
+ 		if ((rdev=conf-&gt;mirrors[i].rdev) != NULL &amp;&amp;
+@@ -607,13 +645,21 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 				r1_bio-&gt;bios[i] = NULL;
+ 			} else
+ 				r1_bio-&gt;bios[i] = bio;
++			targets++;
+ 		} else
+ 			r1_bio-&gt;bios[i] = NULL;
+ 	}
+ 	rcu_read_unlock();
+ 
+-	atomic_set(&amp;r1_bio-&gt;remaining, 1);
++	if (targets &lt; conf-&gt;raid_disks) {
++		/* array is degraded, we will not clear the bitmap
++		 * on I/O completion (see raid1_end_write_request) */
++		set_bit(R1BIO_Degraded, &amp;r1_bio-&gt;state);
++	}
++
++	atomic_set(&amp;r1_bio-&gt;remaining, 0);
+ 
++	bio_list_init(&amp;bl);
+ 	for (i = 0; i &lt; disks; i++) {
+ 		struct bio *mbio;
+ 		if (!r1_bio-&gt;bios[i])
+@@ -629,14 +675,23 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 		mbio-&gt;bi_private = r1_bio;
+ 
+ 		atomic_inc(&amp;r1_bio-&gt;remaining);
+-		generic_make_request(mbio);
+-	}
+ 
+-	if (atomic_dec_and_test(&amp;r1_bio-&gt;remaining)) {
+-		md_write_end(mddev);
+-		raid_end_bio_io(r1_bio);
++		bio_list_add(&amp;bl, mbio);
+ 	}
+ 
++	bitmap_startwrite(bitmap, bio-&gt;bi_sector, r1_bio-&gt;sectors);
++	spin_lock_irqsave(&amp;conf-&gt;device_lock, flags);
++	bio_list_merge(&amp;conf-&gt;pending_bio_list, &amp;bl);
++	bio_list_init(&amp;bl);
++
++	blk_plug_device(mddev-&gt;queue);
++	spin_unlock_irqrestore(&amp;conf-&gt;device_lock, flags);
++
++#if 0
++	while ((bio = bio_list_pop(&amp;bl)) != NULL)
++		generic_make_request(bio);
++#endif
++
+ 	return 0;
+ }
+ 
+@@ -716,7 +771,7 @@ static void close_sync(conf_t *conf)
+ {
+ 	spin_lock_irq(&amp;conf-&gt;resync_lock);
+ 	wait_event_lock_irq(conf-&gt;wait_resume, !conf-&gt;barrier,
+-			    conf-&gt;resync_lock, 	unplug_slaves(conf-&gt;mddev));
++			    conf-&gt;resync_lock, 	raid1_unplug(conf-&gt;mddev-&gt;queue));
+ 	spin_unlock_irq(&amp;conf-&gt;resync_lock);
+ 
+ 	if (conf-&gt;barrier) BUG();
+@@ -830,10 +885,11 @@ static int end_sync_read(struct bio *bio, unsigned int bytes_done, int error)
+ 	 * or re-read if the read failed.
+ 	 * We don't do much here, just schedule handling by raid1d
+ 	 */
+-	if (!uptodate)
++	if (!uptodate) {
+ 		md_error(r1_bio-&gt;mddev,
+ 			 conf-&gt;mirrors[r1_bio-&gt;read_disk].rdev);
+-	else
++		set_bit(R1BIO_Degraded, &amp;r1_bio-&gt;state);
++	} else
+ 		set_bit(R1BIO_Uptodate, &amp;r1_bio-&gt;state);
+ 	rdev_dec_pending(conf-&gt;mirrors[r1_bio-&gt;read_disk].rdev, conf-&gt;mddev);
+ 	reschedule_retry(r1_bio);
+@@ -857,8 +913,10 @@ static int end_sync_write(struct bio *bio, unsigned int bytes_done, int error)
+ 			mirror = i;
+ 			break;
+ 		}
+-	if (!uptodate)
++	if (!uptodate) {
+ 		md_error(mddev, conf-&gt;mirrors[mirror].rdev);
++		set_bit(R1BIO_Degraded, &amp;r1_bio-&gt;state);
++	}
+ 	update_head_pos(mirror, r1_bio);
+ 
+ 	if (atomic_dec_and_test(&amp;r1_bio-&gt;remaining)) {
+@@ -878,6 +936,9 @@ static void sync_request_write(mddev_t *mddev, r1bio_t *r1_bio)
+ 
+ 	bio = r1_bio-&gt;bios[r1_bio-&gt;read_disk];
+ 
++/*
++	if (r1_bio-&gt;sector == 0) printk("First sync write startss\n");
++*/
+ 	/*
+ 	 * schedule writes
+ 	 */
+@@ -905,10 +966,12 @@ static void sync_request_write(mddev_t *mddev, r1bio_t *r1_bio)
+ 		atomic_inc(&amp;conf-&gt;mirrors[i].rdev-&gt;nr_pending);
+ 		atomic_inc(&amp;r1_bio-&gt;remaining);
+ 		md_sync_acct(conf-&gt;mirrors[i].rdev-&gt;bdev, wbio-&gt;bi_size &gt;&gt; 9);
++
+ 		generic_make_request(wbio);
+ 	}
+ 
+ 	if (atomic_dec_and_test(&amp;r1_bio-&gt;remaining)) {
++		/* if we're here, all write(s) have completed, so clean up */
+ 		md_done_sync(mddev, r1_bio-&gt;sectors, 1);
+ 		put_buf(r1_bio);
+ 	}
+@@ -937,6 +1000,26 @@ static void raid1d(mddev_t *mddev)
+ 	for (;;) {
+ 		char b[BDEVNAME_SIZE];
+ 		spin_lock_irqsave(&amp;conf-&gt;device_lock, flags);
++
++		if (conf-&gt;pending_bio_list.head) {
++			bio = bio_list_get(&amp;conf-&gt;pending_bio_list);
++			blk_remove_plug(mddev-&gt;queue);
++			spin_unlock_irqrestore(&amp;conf-&gt;device_lock, flags);
++			/* flush any pending bitmap writes to disk before proceeding w/ I/O */
++			if (bitmap_unplug(mddev-&gt;bitmap) != 0)
++				printk("%s: bitmap file write failed!\n", mdname(mddev));
++
++			while (bio) { /* submit pending writes */
++				struct bio *next = bio-&gt;bi_next;
++				bio-&gt;bi_next = NULL;
++				generic_make_request(bio);
++				bio = next;
++			}
++			unplug = 1;
++
++			continue;
++		}
++
+ 		if (list_empty(head))
+ 			break;
+ 		r1_bio = list_entry(head-&gt;prev, r1bio_t, retry_list);
+@@ -1020,17 +1103,43 @@ static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, i
+ 	int disk;
+ 	int i;
+ 	int write_targets = 0;
++	int sync_blocks;
+ 
+ 	if (!conf-&gt;r1buf_pool)
++	{
++/*
++		printk("sync start - bitmap %p\n", mddev-&gt;bitmap);
++*/
+ 		if (init_resync(conf))
+ 			return 0;
++	}
+ 
+ 	max_sector = mddev-&gt;size &lt;&lt; 1;
+ 	if (sector_nr &gt;= max_sector) {
++		/* If we aborted, we need to abort the
++		 * sync on the 'current' bitmap chunk (there will
++		 * only be one in raid1 resync.
++		 * We can find the current addess in mddev-&gt;curr_resync
++		 */
++		if (!conf-&gt;fullsync) {
++			if (mddev-&gt;curr_resync &lt; max_sector)
++				bitmap_end_sync(mddev-&gt;bitmap,
++						mddev-&gt;curr_resync,
++						&amp;sync_blocks, 1);
++			bitmap_close_sync(mddev-&gt;bitmap);
++		}
++		if (mddev-&gt;curr_resync &gt;= max_sector)
++			conf-&gt;fullsync = 0;
+ 		close_sync(conf);
+ 		return 0;
+ 	}
+ 
++	if (!conf-&gt;fullsync &amp;&amp;
++	    !bitmap_start_sync(mddev-&gt;bitmap, sector_nr, &amp;sync_blocks)) {
++		/* We can skip this block, and probably several more */
++		*skipped = 1;
++		return sync_blocks;
++	}
+ 	/*
+ 	 * If there is non-resync activity waiting for us then
+ 	 * put in a delay to throttle resync.
+@@ -1069,6 +1178,7 @@ static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, i
+ 
+ 	r1_bio-&gt;mddev = mddev;
+ 	r1_bio-&gt;sector = sector_nr;
++	r1_bio-&gt;state = 0;
+ 	set_bit(R1BIO_IsSync, &amp;r1_bio-&gt;state);
+ 	r1_bio-&gt;read_disk = disk;
+ 
+@@ -1103,6 +1213,11 @@ static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, i
+ 		bio-&gt;bi_bdev = conf-&gt;mirrors[i].rdev-&gt;bdev;
+ 		bio-&gt;bi_private = r1_bio;
+ 	}
++
++	if (write_targets + 1 &lt; conf-&gt;raid_disks)
++		/* array degraded, can't clear bitmap */
++		set_bit(R1BIO_Degraded, &amp;r1_bio-&gt;state);
++
+ 	if (write_targets == 0) {
+ 		/* There is nowhere to write, so all non-sync
+ 		 * drives must be failed - so we are finished
+@@ -1122,6 +1237,14 @@ static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, i
+ 			len = (max_sector - sector_nr) &lt;&lt; 9;
+ 		if (len == 0)
+ 			break;
++		if (!conf-&gt;fullsync &amp;&amp; sync_blocks == 0)
++			if (!bitmap_start_sync(mddev-&gt;bitmap,
++					       sector_nr, &amp;sync_blocks))
++				break;
++		if (sync_blocks &lt; (PAGE_SIZE&gt;&gt;9))
++			BUG();
++		if (len &gt; (sync_blocks&lt;&lt;9)) len = sync_blocks&lt;&lt;9;
++
+ 		for (i=0 ; i &lt; conf-&gt;raid_disks; i++) {
+ 			bio = r1_bio-&gt;bios[i];
+ 			if (bio-&gt;bi_end_io) {
+@@ -1144,6 +1267,7 @@ static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, i
+ 		}
+ 		nr_sectors += len&gt;&gt;9;
+ 		sector_nr += len&gt;&gt;9;
++		sync_blocks -= (len&gt;&gt;9);
+ 	} while (r1_bio-&gt;bios[disk]-&gt;bi_vcnt &lt; RESYNC_PAGES);
+  bio_full:
+ 	bio = r1_bio-&gt;bios[disk];
+@@ -1232,6 +1356,9 @@ static int run(mddev_t *mddev)
+ 	init_waitqueue_head(&amp;conf-&gt;wait_idle);
+ 	init_waitqueue_head(&amp;conf-&gt;wait_resume);
+ 
++	bio_list_init(&amp;conf-&gt;pending_bio_list);
++	bio_list_init(&amp;conf-&gt;flushing_bio_list);
++
+ 	if (!conf-&gt;working_disks) {
+ 		printk(KERN_ERR "raid1: no operational mirrors for %s\n",
+ 			mdname(mddev));
+@@ -1260,16 +1387,15 @@ static int run(mddev_t *mddev)
+ 	conf-&gt;last_used = j;
+ 
+ 
+-
+-	{
+-		mddev-&gt;thread = md_register_thread(raid1d, mddev, "%s_raid1");
+-		if (!mddev-&gt;thread) {
+-			printk(KERN_ERR 
+-				"raid1: couldn't allocate thread for %s\n", 
+-				mdname(mddev));
+-			goto out_free_conf;
+-		}
++	mddev-&gt;thread = md_register_thread(raid1d, mddev, "%s_raid1");
++	if (!mddev-&gt;thread) {
++		printk(KERN_ERR
++		       "raid1: couldn't allocate thread for %s\n",
++		       mdname(mddev));
++		goto out_free_conf;
+ 	}
++	if (mddev-&gt;bitmap) mddev-&gt;thread-&gt;timeout = mddev-&gt;bitmap-&gt;daemon_sleep * HZ;
++
+ 	printk(KERN_INFO 
+ 		"raid1: raid set %s active with %d out of %d mirrors\n",
+ 		mdname(mddev), mddev-&gt;raid_disks - mddev-&gt;degraded, 
+@@ -1394,7 +1520,7 @@ static int raid1_reshape(mddev_t *mddev, int raid_disks)
+ 	spin_lock_irq(&amp;conf-&gt;resync_lock);
+ 	conf-&gt;barrier++;
+ 	wait_event_lock_irq(conf-&gt;wait_idle, !conf-&gt;nr_pending,
+-			    conf-&gt;resync_lock, unplug_slaves(mddev));
++			    conf-&gt;resync_lock, raid1_unplug(mddev-&gt;queue));
+ 	spin_unlock_irq(&amp;conf-&gt;resync_lock);
+ 
+ 	/* ok, everything is stopped */
+diff --git a/include/linux/raid/raid1.h b/include/linux/raid/raid1.h
+index abbfdd9afe1e..9d93cf12e890 100644
+--- a/include/linux/raid/raid1.h
++++ b/include/linux/raid/raid1.h
+@@ -36,12 +36,21 @@ struct r1_private_data_s {
+ 	spinlock_t		device_lock;
+ 
+ 	struct list_head	retry_list;
++	/* queue pending writes and submit them on unplug */
++	struct bio_list		pending_bio_list;
++	/* queue of writes that have been unplugged */
++	struct bio_list		flushing_bio_list;
++
+ 	/* for use when syncing mirrors: */
+ 
+ 	spinlock_t		resync_lock;
+-	int nr_pending;
+-	int barrier;
++	int			nr_pending;
++	int			barrier;
+ 	sector_t		next_resync;
++	int			fullsync;  /* set to 1 if a full sync is needed,
++					    * (fresh device added).
++					    * Cleared when a sync completes.
++					    */
+ 
+ 	wait_queue_head_t	wait_idle;
+ 	wait_queue_head_t	wait_resume;
+@@ -85,14 +94,17 @@ struct r1bio_s {
+ 	int			read_disk;
+ 
+ 	struct list_head	retry_list;
++	struct bitmap_update	*bitmap_update;
+ 	/*
+ 	 * if the IO is in WRITE direction, then multiple bios are used.
+ 	 * We choose the number when they are allocated.
+ 	 */
+ 	struct bio		*bios[0];
++	/* DO NOT PUT ANY NEW FIELDS HERE - bios array is contiguously alloced*/
+ };
+ 
+ /* bits for r1bio.state */
+ #define	R1BIO_Uptodate	0
+ #define	R1BIO_IsSync	1
++#define	R1BIO_Degraded	2
+ #endif</pre><hr><pre>commit aa3163f81654fa057039258e32a6811147bf0c14
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:22 2005 -0700
+
+    [PATCH] md: don't skip bitmap pages due to lack of bit that we just cleared.
+    
+    When looking for pages that need cleaning we skip pages that don't have
+    BITMAP_PAGE_CLEAN set.  But if it is the 'current' page we will have cleared
+    that bit ourselves, so skipping it is wrong.  So: move the 'skip this page'
+    inside 'if page != lastpage'.
+    
+    Also fold call of file_page_offset into the one place where the value (bit) is
+    used.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index 86b6b037fa44..204564dc6a0d 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -897,7 +897,7 @@ static bitmap_counter_t *bitmap_get_counter(struct bitmap *bitmap,
+ 
+ int bitmap_daemon_work(struct bitmap *bitmap)
+ {
+-	unsigned long bit, j;
++	unsigned long j;
+ 	unsigned long flags;
+ 	struct page *page = NULL, *lastpage = NULL;
+ 	int err = 0;
+@@ -920,24 +920,23 @@ int bitmap_daemon_work(struct bitmap *bitmap)
+ 		}
+ 
+ 		page = filemap_get_page(bitmap, j);
+-		/* skip this page unless it's marked as needing cleaning */
+-		if (!((attr=get_page_attr(bitmap, page)) &amp; BITMAP_PAGE_CLEAN)) {
+-			if (attr &amp; BITMAP_PAGE_NEEDWRITE) {
+-				page_cache_get(page);
+-				clear_page_attr(bitmap, page, BITMAP_PAGE_NEEDWRITE);
+-			}
+-			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+-			if (attr &amp; BITMAP_PAGE_NEEDWRITE) {
+-				if (write_page(bitmap, page, 0))
+-					bitmap_file_kick(bitmap);
+-				page_cache_release(page);
+-			}
+-			continue;
+-		}
+-
+-		bit = file_page_offset(j);
+ 
+ 		if (page != lastpage) {
++			/* skip this page unless it's marked as needing cleaning */
++			if (!((attr=get_page_attr(bitmap, page)) &amp; BITMAP_PAGE_CLEAN)) {
++				if (attr &amp; BITMAP_PAGE_NEEDWRITE) {
++					page_cache_get(page);
++					clear_page_attr(bitmap, page, BITMAP_PAGE_NEEDWRITE);
++				}
++				spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
++				if (attr &amp; BITMAP_PAGE_NEEDWRITE) {
++					if (write_page(bitmap, page, 0))
++						bitmap_file_kick(bitmap);
++					page_cache_release(page);
++				}
++				continue;
++			}
++
+ 			/* grab the new page, sync and release the old */
+ 			page_cache_get(page);
+ 			if (lastpage != NULL) {
+@@ -979,7 +978,7 @@ int bitmap_daemon_work(struct bitmap *bitmap)
+ 						  -1);
+ 
+ 				/* clear the bit */
+-				clear_bit(bit, page_address(page));
++				clear_bit(file_page_offset(j), page_address(page));
+ 			}
+ 		}
+ 		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);</pre><hr><pre>commit 77ad4bc706fe6c52ab953f31c287a6af712d080c
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:21 2005 -0700
+
+    [PATCH] md: enable the bitmap write-back daemon and wait for it.
+    
+    Currently we don't wait for updates to the bitmap to be flushed to disk
+    properly.  The infrastructure all there, but it isn't being used....
+    
+    A separate kernel thread (bitmap_writeback_daemon) is needed to wait for each
+    page as we cannot get callbacks when a page write completes.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index 9462fdd517c0..86b6b037fa44 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -261,30 +261,33 @@ char *file_path(struct file *file, char *buf, int count)
+ /*
+  * write out a page
+  */
+-static int write_page(struct page *page, int wait)
++static int write_page(struct bitmap *bitmap, struct page *page, int wait)
+ {
+ 	int ret = -ENOMEM;
+ 
+ 	lock_page(page);
+ 
+-	if (page-&gt;mapping == NULL)
+-		goto unlock_out;
+-	else if (i_size_read(page-&gt;mapping-&gt;host) &lt; page-&gt;index &lt;&lt; PAGE_SHIFT) {
+-		ret = -ENOENT;
+-		goto unlock_out;
+-	}
+-
+ 	ret = page-&gt;mapping-&gt;a_ops-&gt;prepare_write(NULL, page, 0, PAGE_SIZE);
+ 	if (!ret)
+ 		ret = page-&gt;mapping-&gt;a_ops-&gt;commit_write(NULL, page, 0,
+ 			PAGE_SIZE);
+ 	if (ret) {
+-unlock_out:
+ 		unlock_page(page);
+ 		return ret;
+ 	}
+ 
+ 	set_page_dirty(page); /* force it to be written out */
++
++	if (!wait) {
++		/* add to list to be waited for by daemon */
++		struct page_list *item = mempool_alloc(bitmap-&gt;write_pool, GFP_NOIO);
++		item-&gt;page = page;
++		page_cache_get(page);
++		spin_lock(&amp;bitmap-&gt;write_lock);
++		list_add(&amp;item-&gt;list, &amp;bitmap-&gt;complete_pages);
++		spin_unlock(&amp;bitmap-&gt;write_lock);
++		md_wakeup_thread(bitmap-&gt;writeback_daemon);
++	}
+ 	return write_one_page(page, wait);
+ }
+ 
+@@ -343,14 +346,13 @@ int bitmap_update_sb(struct bitmap *bitmap)
+ 		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 		return 0;
+ 	}
+-	page_cache_get(bitmap-&gt;sb_page);
+ 	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 	sb = (bitmap_super_t *)kmap(bitmap-&gt;sb_page);
+ 	sb-&gt;events = cpu_to_le64(bitmap-&gt;mddev-&gt;events);
+ 	if (!bitmap-&gt;mddev-&gt;degraded)
+ 		sb-&gt;events_cleared = cpu_to_le64(bitmap-&gt;mddev-&gt;events);
+ 	kunmap(bitmap-&gt;sb_page);
+-	return write_page(bitmap-&gt;sb_page, 0);
++	return write_page(bitmap, bitmap-&gt;sb_page, 0);
+ }
+ 
+ /* print out the bitmap file superblock */
+@@ -556,10 +558,10 @@ static void bitmap_file_unmap(struct bitmap *bitmap)
+ static void bitmap_stop_daemons(struct bitmap *bitmap);
+ 
+ /* dequeue the next item in a page list -- don't call from irq context */
+-static struct page_list *dequeue_page(struct bitmap *bitmap,
+-					struct list_head *head)
++static struct page_list *dequeue_page(struct bitmap *bitmap)
+ {
+ 	struct page_list *item = NULL;
++	struct list_head *head = &amp;bitmap-&gt;complete_pages;
+ 
+ 	spin_lock(&amp;bitmap-&gt;write_lock);
+ 	if (list_empty(head))
+@@ -573,23 +575,15 @@ static struct page_list *dequeue_page(struct bitmap *bitmap,
+ 
+ static void drain_write_queues(struct bitmap *bitmap)
+ {
+-	struct list_head *queues[] = { 	&amp;bitmap-&gt;complete_pages, NULL };
+-	struct list_head *head;
+ 	struct page_list *item;
+-	int i;
+ 
+-	for (i = 0; queues[i]; i++) {
+-		head = queues[i];
+-		while ((item = dequeue_page(bitmap, head))) {
+-			page_cache_release(item-&gt;page);
+-			mempool_free(item, bitmap-&gt;write_pool);
+-		}
++	while ((item = dequeue_page(bitmap))) {
++		/* don't bother to wait */
++		page_cache_release(item-&gt;page);
++		mempool_free(item, bitmap-&gt;write_pool);
+ 	}
+ 
+-	spin_lock(&amp;bitmap-&gt;write_lock);
+-	bitmap-&gt;writes_pending = 0; /* make sure waiters continue */
+ 	wake_up(&amp;bitmap-&gt;write_wait);
+-	spin_unlock(&amp;bitmap-&gt;write_lock);
+ }
+ 
+ static void bitmap_file_put(struct bitmap *bitmap)
+@@ -734,13 +728,13 @@ int bitmap_unplug(struct bitmap *bitmap)
+ 		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 
+ 		if (attr &amp; (BITMAP_PAGE_DIRTY | BITMAP_PAGE_NEEDWRITE))
+-			if (write_page(page, 0))
++			if (write_page(bitmap, page, 0))
+ 				return 1;
+ 	}
+ 	if (wait) { /* if any writes were performed, we need to wait on them */
+ 		spin_lock_irq(&amp;bitmap-&gt;write_lock);
+ 		wait_event_lock_irq(bitmap-&gt;write_wait,
+-			bitmap-&gt;writes_pending == 0, bitmap-&gt;write_lock,
++			list_empty(&amp;bitmap-&gt;complete_pages), bitmap-&gt;write_lock,
+ 			wake_up_process(bitmap-&gt;writeback_daemon-&gt;tsk));
+ 		spin_unlock_irq(&amp;bitmap-&gt;write_lock);
+ 	}
+@@ -841,7 +835,7 @@ static int bitmap_init_from_disk(struct bitmap *bitmap, int in_sync)
+ 				 */
+ 				memset(page_address(page) + offset, 0xff,
+ 					PAGE_SIZE - offset);
+-				ret = write_page(page, 1);
++				ret = write_page(bitmap, page, 1);
+ 				if (ret) {
+ 					kunmap(page);
+ 					/* release, page not in filemap yet */
+@@ -934,7 +928,7 @@ int bitmap_daemon_work(struct bitmap *bitmap)
+ 			}
+ 			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 			if (attr &amp; BITMAP_PAGE_NEEDWRITE) {
+-				if (write_page(page, 0))
++				if (write_page(bitmap, page, 0))
+ 					bitmap_file_kick(bitmap);
+ 				page_cache_release(page);
+ 			}
+@@ -950,7 +944,7 @@ int bitmap_daemon_work(struct bitmap *bitmap)
+ 				if (get_page_attr(bitmap, lastpage) &amp; BITMAP_PAGE_NEEDWRITE) {
+ 					clear_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 					spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+-					err = write_page(lastpage, 0);
++					err = write_page(bitmap, lastpage, 0);
+ 				} else {
+ 					set_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 					spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+@@ -998,7 +992,7 @@ int bitmap_daemon_work(struct bitmap *bitmap)
+ 		if (get_page_attr(bitmap, lastpage) &amp;BITMAP_PAGE_NEEDWRITE) {
+ 			clear_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+-			err = write_page(lastpage, 0);
++			err = write_page(bitmap, lastpage, 0);
+ 		} else {
+ 			set_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+@@ -1034,46 +1028,40 @@ static void bitmap_writeback_daemon(mddev_t *mddev)
+ 	struct page_list *item;
+ 	int err = 0;
+ 
+-	while (1) {
+-		PRINTK("%s: bitmap writeback daemon waiting...\n", bmname(bitmap));
+-		down_interruptible(&amp;bitmap-&gt;write_done);
+-		if (signal_pending(current)) {
+-			printk(KERN_INFO
+-			    "%s: bitmap writeback daemon got signal, exiting...\n",
+-			    bmname(bitmap));
+-			break;
+-		}
++	if (signal_pending(current)) {
++		printk(KERN_INFO
++		       "%s: bitmap writeback daemon got signal, exiting...\n",
++		       bmname(bitmap));
++		err = -EINTR;
++		goto out;
++	}
+ 
+-		PRINTK("%s: bitmap writeback daemon woke up...\n", bmname(bitmap));
+-		/* wait on bitmap page writebacks */
+-		while ((item = dequeue_page(bitmap, &amp;bitmap-&gt;complete_pages))) {
+-			page = item-&gt;page;
+-			mempool_free(item, bitmap-&gt;write_pool);
+-			PRINTK("wait on page writeback: %p %lu\n", page, bitmap-&gt;writes_pending);
+-			wait_on_page_writeback(page);
+-			PRINTK("finished page writeback: %p %lu\n", page, bitmap-&gt;writes_pending);
+-			spin_lock(&amp;bitmap-&gt;write_lock);
+-			if (!--bitmap-&gt;writes_pending)
+-				wake_up(&amp;bitmap-&gt;write_wait);
+-			spin_unlock(&amp;bitmap-&gt;write_lock);
+-			err = PageError(page);
+-			page_cache_release(page);
+-			if (err) {
+-				printk(KERN_WARNING "%s: bitmap file writeback "
+-					"failed (page %lu): %d\n",
+-					bmname(bitmap), page-&gt;index, err);
+-				bitmap_file_kick(bitmap);
+-				goto out;
+-			}
++	PRINTK("%s: bitmap writeback daemon woke up...\n", bmname(bitmap));
++	/* wait on bitmap page writebacks */
++	while ((item = dequeue_page(bitmap))) {
++		page = item-&gt;page;
++		mempool_free(item, bitmap-&gt;write_pool);
++		PRINTK("wait on page writeback: %p\n", page);
++		wait_on_page_writeback(page);
++		PRINTK("finished page writeback: %p\n", page);
++
++		err = PageError(page);
++		page_cache_release(page);
++		if (err) {
++			printk(KERN_WARNING "%s: bitmap file writeback "
++			       "failed (page %lu): %d\n",
++			       bmname(bitmap), page-&gt;index, err);
++			bitmap_file_kick(bitmap);
++			goto out;
+ 		}
+ 	}
+-out:
++ out:
++	wake_up(&amp;bitmap-&gt;write_wait);
+ 	if (err) {
+ 		printk(KERN_INFO "%s: bitmap writeback daemon exiting (%d)\n",
+-			bmname(bitmap), err);
++		       bmname(bitmap), err);
+ 		daemon_exit(bitmap, &amp;bitmap-&gt;writeback_daemon);
+ 	}
+-	return;
+ }
+ 
+ static int bitmap_start_daemon(struct bitmap *bitmap, mdk_thread_t **ptr,
+@@ -1375,7 +1363,7 @@ int bitmap_setallbits(struct bitmap *bitmap)
+ 		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 		memset(kmap(page), 0xff, PAGE_SIZE);
+ 		kunmap(page);
+-		if (write_page(page, 0))
++		if (write_page(bitmap, page, 0))
+ 			return 1;
+ 	}
+ 
+@@ -1443,7 +1431,6 @@ int bitmap_create(mddev_t *mddev)
+ 	mddev-&gt;bitmap = bitmap;
+ 
+ 	spin_lock_init(&amp;bitmap-&gt;write_lock);
+-	init_MUTEX_LOCKED(&amp;bitmap-&gt;write_done);
+ 	INIT_LIST_HEAD(&amp;bitmap-&gt;complete_pages);
+ 	init_waitqueue_head(&amp;bitmap-&gt;write_wait);
+ 	bitmap-&gt;write_pool = mempool_create(WRITE_POOL_SIZE, write_pool_alloc,
+diff --git a/include/linux/raid/bitmap.h b/include/linux/raid/bitmap.h
+index f785cf26cbad..cfe60cfc8f3d 100644
+--- a/include/linux/raid/bitmap.h
++++ b/include/linux/raid/bitmap.h
+@@ -233,21 +233,12 @@ struct bitmap {
+ 	unsigned long daemon_sleep; /* how many seconds between updates? */
+ 
+ 	/*
+-	 * bitmap write daemon - this daemon performs writes to the bitmap file
+-	 * this thread is only needed because of a limitation in ext3 (jbd)
+-	 * that does not allow a task to have two journal transactions ongoing
+-	 * simultaneously (even if the transactions are for two different
+-	 * filesystems) -- in the case of bitmap, that would be the filesystem
+-	 * that the bitmap file resides on and the filesystem that is mounted
+-	 * on the md device -- see current-&gt;journal_info in jbd/transaction.c
++	 * bitmap_writeback_daemon waits for file-pages that have been written,
++	 * as there is no way to get a call-back when a page write completes.
+ 	 */
+ 	mdk_thread_t *writeback_daemon;
+ 	spinlock_t write_lock;
+-	struct semaphore write_ready;
+-	struct semaphore write_done;
+-	unsigned long writes_pending;
+ 	wait_queue_head_t write_wait;
+-	struct list_head write_pages;
+ 	struct list_head complete_pages;
+ 	mempool_t *write_pool;
+ };</pre><hr><pre>commit bfb39fba4e8cdda091f9ebee29fbb8331c4bb605
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:20 2005 -0700
+
+    [PATCH] md: check return value of write_page, rather than ignore it
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index f197db2ef92d..9462fdd517c0 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -350,8 +350,7 @@ int bitmap_update_sb(struct bitmap *bitmap)
+ 	if (!bitmap-&gt;mddev-&gt;degraded)
+ 		sb-&gt;events_cleared = cpu_to_le64(bitmap-&gt;mddev-&gt;events);
+ 	kunmap(bitmap-&gt;sb_page);
+-	write_page(bitmap-&gt;sb_page, 0);
+-	return 0;
++	return write_page(bitmap-&gt;sb_page, 0);
+ }
+ 
+ /* print out the bitmap file superblock */
+@@ -735,7 +734,8 @@ int bitmap_unplug(struct bitmap *bitmap)
+ 		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 
+ 		if (attr &amp; (BITMAP_PAGE_DIRTY | BITMAP_PAGE_NEEDWRITE))
+-			write_page(page, 0);
++			if (write_page(page, 0))
++				return 1;
+ 	}
+ 	if (wait) { /* if any writes were performed, we need to wait on them */
+ 		spin_lock_irq(&amp;bitmap-&gt;write_lock);
+@@ -950,7 +950,7 @@ int bitmap_daemon_work(struct bitmap *bitmap)
+ 				if (get_page_attr(bitmap, lastpage) &amp; BITMAP_PAGE_NEEDWRITE) {
+ 					clear_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 					spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+-					write_page(lastpage, 0);
++					err = write_page(lastpage, 0);
+ 				} else {
+ 					set_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 					spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+@@ -998,7 +998,7 @@ int bitmap_daemon_work(struct bitmap *bitmap)
+ 		if (get_page_attr(bitmap, lastpage) &amp;BITMAP_PAGE_NEEDWRITE) {
+ 			clear_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+-			write_page(lastpage, 0);
++			err = write_page(lastpage, 0);
+ 		} else {
+ 			set_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+@@ -1375,7 +1375,8 @@ int bitmap_setallbits(struct bitmap *bitmap)
+ 		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 		memset(kmap(page), 0xff, PAGE_SIZE);
+ 		kunmap(page);
+-		write_page(page, 0);
++		if (write_page(page, 0))
++			return 1;
+ 	}
+ 
+ 	return 0;</pre><hr><pre>commit a2cff26ad18a8794722fb0d3c019d93e14fce3f1
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:20 2005 -0700
+
+    [PATCH] md: improve debug-printing of bitmap superblock.
+    
+    - report sync_size properly  - need /2 to convert sectors to KB
+    - move everything over 2 spaces to allow proper spelling of
+      "events cleared".
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index dd84e15fcaea..f197db2ef92d 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -363,22 +363,22 @@ void bitmap_print_sb(struct bitmap *bitmap)
+ 		return;
+ 	sb = (bitmap_super_t *)kmap(bitmap-&gt;sb_page);
+ 	printk(KERN_DEBUG "%s: bitmap file superblock:\n", bmname(bitmap));
+-	printk(KERN_DEBUG "       magic: %08x\n", le32_to_cpu(sb-&gt;magic));
+-	printk(KERN_DEBUG "     version: %d\n", le32_to_cpu(sb-&gt;version));
+-	printk(KERN_DEBUG "        uuid: %08x.%08x.%08x.%08x\n",
++	printk(KERN_DEBUG "         magic: %08x\n", le32_to_cpu(sb-&gt;magic));
++	printk(KERN_DEBUG "       version: %d\n", le32_to_cpu(sb-&gt;version));
++	printk(KERN_DEBUG "          uuid: %08x.%08x.%08x.%08x\n",
+ 					*(__u32 *)(sb-&gt;uuid+0),
+ 					*(__u32 *)(sb-&gt;uuid+4),
+ 					*(__u32 *)(sb-&gt;uuid+8),
+ 					*(__u32 *)(sb-&gt;uuid+12));
+-	printk(KERN_DEBUG "      events: %llu\n",
++	printk(KERN_DEBUG "        events: %llu\n",
+ 			(unsigned long long) le64_to_cpu(sb-&gt;events));
+-	printk(KERN_DEBUG "events_clred: %llu\n",
++	printk(KERN_DEBUG "events cleared: %llu\n",
+ 			(unsigned long long) le64_to_cpu(sb-&gt;events_cleared));
+-	printk(KERN_DEBUG "       state: %08x\n", le32_to_cpu(sb-&gt;state));
+-	printk(KERN_DEBUG "   chunksize: %d B\n", le32_to_cpu(sb-&gt;chunksize));
+-	printk(KERN_DEBUG "daemon sleep: %ds\n", le32_to_cpu(sb-&gt;daemon_sleep));
+-	printk(KERN_DEBUG "   sync size: %llu KB\n",
+-			(unsigned long long)le64_to_cpu(sb-&gt;sync_size));
++	printk(KERN_DEBUG "         state: %08x\n", le32_to_cpu(sb-&gt;state));
++	printk(KERN_DEBUG "     chunksize: %d B\n", le32_to_cpu(sb-&gt;chunksize));
++	printk(KERN_DEBUG "  daemon sleep: %ds\n", le32_to_cpu(sb-&gt;daemon_sleep));
++	printk(KERN_DEBUG "     sync size: %llu KB\n",
++			(unsigned long long)le64_to_cpu(sb-&gt;sync_size)/2);
+ 	kunmap(bitmap-&gt;sb_page);
+ }
+ </pre><hr><pre>commit cdbb4cc2e5c30895709163d8544057db21ee23e0
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:18 2005 -0700
+
+    [PATCH] md: make sure md bitmap is cleared on a clean start.
+    
+    As the array-wide clean bit (in the superblock) is set more agressively than
+    the bits in the bitmap are cleared, it is possible to have an array which is
+    clean despite there being bits set in the bitmap.
+    
+    These bits will currently never get cleared, as they can only be cleared by a
+    resync pass, which never happens.
+    
+    No, when reading bits from disk, be aware of whether the whole array is known
+    to be in sync, and act accordingly.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index 62fac2b38000..275a2aa79b79 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -747,7 +747,7 @@ int bitmap_unplug(struct bitmap *bitmap)
+ }
+ 
+ static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset,
+-	unsigned long sectors, int set);
++	unsigned long sectors, int in_sync);
+ /* * bitmap_init_from_disk -- called at bitmap_create time to initialize
+  * the in-memory bitmap from the on-disk bitmap -- also, sets up the
+  * memory mapping of the bitmap file
+@@ -756,7 +756,7 @@ static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset,
+  *   previously kicked from the array, we mark all the bits as
+  *   1's in order to cause a full resync.
+  */
+-static int bitmap_init_from_disk(struct bitmap *bitmap)
++static int bitmap_init_from_disk(struct bitmap *bitmap, int in_sync)
+ {
+ 	unsigned long i, chunks, index, oldindex, bit;
+ 	struct page *page = NULL, *oldpage = NULL;
+@@ -782,7 +782,7 @@ static int bitmap_init_from_disk(struct bitmap *bitmap)
+ 
+ 	bytes = (chunks + 7) / 8;
+ 
+-	num_pages = (bytes + sizeof(bitmap_super_t) + PAGE_SIZE - 1) / PAGE_SIZE + 1;
++	num_pages = (bytes + sizeof(bitmap_super_t) + PAGE_SIZE - 1) / PAGE_SIZE;
+ 
+ 	if (i_size_read(file-&gt;f_mapping-&gt;host) &lt; bytes + sizeof(bitmap_super_t)) {
+ 		printk(KERN_INFO "%s: bitmap file too short %lu &lt; %lu\n",
+@@ -854,14 +854,9 @@ static int bitmap_init_from_disk(struct bitmap *bitmap)
+ 		if (test_bit(bit, page_address(page))) {
+ 			/* if the disk bit is set, set the memory bit */
+ 			bitmap_set_memory_bits(bitmap,
+-					i &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap), 1, 1);
++					i &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap), 1, in_sync);
+ 			bit_cnt++;
+ 		}
+-#if 0
+-		else
+-			bitmap_set_memory_bits(bitmap,
+-				       i &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap), 1, 0);
+-#endif
+ 	}
+ 
+  	/* everything went OK */
+@@ -1331,10 +1326,10 @@ void bitmap_close_sync(struct bitmap *bitmap)
+ }
+ 
+ static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset,
+-				   unsigned long sectors, int set)
++				   unsigned long sectors, int in_sync)
+ {
+ 	/* For each chunk covered by any of these sectors, set the
+-	 * resync needed bit, and the counter to 1.  They should all
++	 * counter to 1 and set resync_needed unless in_sync.  They should all
+ 	 * be 0 at this point
+ 	 */
+ 	while (sectors) {
+@@ -1346,10 +1341,12 @@ static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset,
+ 			spin_unlock_irq(&amp;bitmap-&gt;lock);
+ 			return;
+ 		}
+-		if (set &amp;&amp; !NEEDED(*bmc)) {
+-			BUG_ON(*bmc);
+-			*bmc = NEEDED_MASK | 1;
++		if (! *bmc) {
++			struct page *page;
++			*bmc = 1 | (in_sync? 0 : NEEDED_MASK);
+ 			bitmap_count_page(bitmap, offset, 1);
++			page = filemap_get_page(bitmap, offset &gt;&gt; CHUNK_BLOCK_SHIFT(bitmap));
++			set_page_attr(bitmap, page, BITMAP_PAGE_CLEAN);
+ 		}
+ 		spin_unlock_irq(&amp;bitmap-&gt;lock);
+ 		if (sectors &gt; secs)
+@@ -1489,7 +1486,7 @@ int bitmap_create(mddev_t *mddev)
+ 
+ 	/* now that we have some pages available, initialize the in-memory
+ 	 * bitmap from the on-disk bitmap */
+-	err = bitmap_init_from_disk(bitmap);
++	err = bitmap_init_from_disk(bitmap, mddev-&gt;recovery_cp == MaxSector);
+ 	if (err)
+ 		return err;
+ </pre><hr><pre>commit bc7f77de2cd81718dd789a2cfe68a7cf1b48f016
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:17 2005 -0700
+
+    [PATCH] md: minor code rearrangement in bitmap_init_from_disk
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index c43fd031aafe..62fac2b38000 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -781,7 +781,9 @@ static int bitmap_init_from_disk(struct bitmap *bitmap)
+ 			"recovery\n", bmname(bitmap));
+ 
+ 	bytes = (chunks + 7) / 8;
+-	num_pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
++
++	num_pages = (bytes + sizeof(bitmap_super_t) + PAGE_SIZE - 1) / PAGE_SIZE + 1;
++
+ 	if (i_size_read(file-&gt;f_mapping-&gt;host) &lt; bytes + sizeof(bitmap_super_t)) {
+ 		printk(KERN_INFO "%s: bitmap file too short %lu &lt; %lu\n",
+ 			bmname(bitmap),
+@@ -789,18 +791,16 @@ static int bitmap_init_from_disk(struct bitmap *bitmap)
+ 			bytes + sizeof(bitmap_super_t));
+ 		goto out;
+ 	}
+-	num_pages++;
++
++	ret = -ENOMEM;
++
+ 	bitmap-&gt;filemap = kmalloc(sizeof(struct page *) * num_pages, GFP_KERNEL);
+-	if (!bitmap-&gt;filemap) {
+-		ret = -ENOMEM;
++	if (!bitmap-&gt;filemap)
+ 		goto out;
+-	}
+ 
+ 	bitmap-&gt;filemap_attr = kmalloc(sizeof(long) * num_pages, GFP_KERNEL);
+-	if (!bitmap-&gt;filemap_attr) {
+-		ret = -ENOMEM;
++	if (!bitmap-&gt;filemap_attr)
+ 		goto out;
+-	}
+ 
+ 	memset(bitmap-&gt;filemap_attr, 0, sizeof(long) * num_pages);
+ </pre><hr><pre>commit d80a138c013f81c1b9383c83983934e34e380a2d
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:17 2005 -0700
+
+    [PATCH] md: print correct pid for newly created bitmap-writeback-daemon.
+    
+    The debugging message printed the wrong pid, which didn't help remove bugs....
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index b43bdb2c7e64..c43fd031aafe 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -1112,7 +1112,7 @@ static int bitmap_start_daemon(struct bitmap *bitmap, mdk_thread_t **ptr,
+ 	md_wakeup_thread(daemon); /* start it running */
+ 
+ 	PRINTK("%s: %s daemon (pid %d) started...\n",
+-		bmname(bitmap), name, bitmap-&gt;daemon-&gt;tsk-&gt;pid);
++		bmname(bitmap), name, daemon-&gt;tsk-&gt;pid);
+ out_unlock:
+ 	spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 	return 0;</pre>
+    <div class="pagination">
+        <a href='8_11.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><span>[12]</span><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_13.html'>Next&gt;&gt;</a>
+    <div>
+</body>

@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Rutgers University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Rutgers University</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='38_2.html'>2</a><a href='38_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 05924717ac704a868053652b20036aa3a2273e26
+Author: Harishankar Vishwanathan &lt;harishankar.vishwanathan@rutgers.edu&gt;
+Date:   Sun May 30 22:01:57 2021 -0400
+
+    bpf, tnums: Provably sound, faster, and more precise algorithm for tnum_mul
+    
+    This patch introduces a new algorithm for multiplication of tristate
+    numbers (tnums) that is provably sound. It is faster and more precise when
+    compared to the existing method.
+    
+    Like the existing method, this new algorithm follows the long
+    multiplication algorithm. The idea is to generate partial products by
+    multiplying each bit in the multiplier (tnum a) with the multiplicand
+    (tnum b), and adding the partial products after appropriately bit-shifting
+    them. The new algorithm, however, uses just a single loop over the bits of
+    the multiplier (tnum a) and accumulates only the uncertain components of
+    the multiplicand (tnum b) into a mask-only tnum. The following paper
+    explains the algorithm in more detail: https://arxiv.org/abs/2105.05398.
+    
+    A natural way to construct the tnum product is by performing a tnum
+    addition on all the partial products. This algorithm presents another
+    method of doing this: decompose each partial product into two tnums,
+    consisting of the values and the masks separately. The mask-sum is
+    accumulated within the loop in acc_m. The value-sum tnum is generated
+    using a.value * b.value. The tnum constructed by tnum addition of the
+    value-sum and the mask-sum contains all possible summations of concrete
+    values drawn from the partial product tnums pairwise. We prove this result
+    in the paper.
+    
+    Our evaluations show that the new algorithm is overall more precise
+    (producing tnums with less uncertain components) than the existing method.
+    As an illustrative example, consider the input tnums A and B. The numbers
+    in the parenthesis correspond to (value;mask).
+    
+      A                = 000000x1 (1;2)
+      B                = 0010011x (38;1)
+      A * B (existing) = xxxxxxxx (0;255)
+      A * B (new)      = 0x1xxxxx (32;95)
+    
+    Importantly, we present a proof of soundness of the new algorithm in the
+    aforementioned paper. Additionally, we show that this new algorithm is
+    empirically faster than the existing method.
+    
+    Co-developed-by: Matan Shachnai &lt;m.shachnai@rutgers.edu&gt;
+    Co-developed-by: Srinivas Narayana &lt;srinivas.narayana@rutgers.edu&gt;
+    Co-developed-by: Santosh Nagarakatte &lt;santosh.nagarakatte@rutgers.edu&gt;
+    Signed-off-by: Matan Shachnai &lt;m.shachnai@rutgers.edu&gt;
+    Signed-off-by: Srinivas Narayana &lt;srinivas.narayana@rutgers.edu&gt;
+    Signed-off-by: Santosh Nagarakatte &lt;santosh.nagarakatte@rutgers.edu&gt;
+    Signed-off-by: Harishankar Vishwanathan &lt;harishankar.vishwanathan@rutgers.edu&gt;
+    Signed-off-by: Daniel Borkmann &lt;daniel@iogearbox.net&gt;
+    Reviewed-by: Edward Cree &lt;ecree.xilinx@gmail.com&gt;
+    Link: https://arxiv.org/abs/2105.05398
+    Link: https://lore.kernel.org/bpf/20210531020157.7386-1-harishankar.vishwanathan@rutgers.edu
+
+diff --git a/kernel/bpf/tnum.c b/kernel/bpf/tnum.c
+index ceac5281bd31..3d7127f439a1 100644
+--- a/kernel/bpf/tnum.c
++++ b/kernel/bpf/tnum.c
+@@ -111,28 +111,31 @@ struct tnum tnum_xor(struct tnum a, struct tnum b)
+ 	return TNUM(v &amp; ~mu, mu);
+ }
+ 
+-/* half-multiply add: acc += (unknown * mask * value).
+- * An intermediate step in the multiply algorithm.
++/* Generate partial products by multiplying each bit in the multiplier (tnum a)
++ * with the multiplicand (tnum b), and add the partial products after
++ * appropriately bit-shifting them. Instead of directly performing tnum addition
++ * on the generated partial products, equivalenty, decompose each partial
++ * product into two tnums, consisting of the value-sum (acc_v) and the
++ * mask-sum (acc_m) and then perform tnum addition on them. The following paper
++ * explains the algorithm in more detail: https://arxiv.org/abs/2105.05398.
+  */
+-static struct tnum hma(struct tnum acc, u64 value, u64 mask)
+-{
+-	while (mask) {
+-		if (mask &amp; 1)
+-			acc = tnum_add(acc, TNUM(0, value));
+-		mask &gt;&gt;= 1;
+-		value &lt;&lt;= 1;
+-	}
+-	return acc;
+-}
+-
+ struct tnum tnum_mul(struct tnum a, struct tnum b)
+ {
+-	struct tnum acc;
+-	u64 pi;
+-
+-	pi = a.value * b.value;
+-	acc = hma(TNUM(pi, 0), a.mask, b.mask | b.value);
+-	return hma(acc, b.mask, a.value);
++	u64 acc_v = a.value * b.value;
++	struct tnum acc_m = TNUM(0, 0);
++
++	while (a.value || a.mask) {
++		/* LSB of tnum a is a certain 1 */
++		if (a.value &amp; 1)
++			acc_m = tnum_add(acc_m, TNUM(0, b.mask));
++		/* LSB of tnum a is uncertain */
++		else if (a.mask &amp; 1)
++			acc_m = tnum_add(acc_m, TNUM(0, b.value | b.mask));
++		/* Note: no case for LSB is certain 0 */
++		a = tnum_rshift(a, 1);
++		b = tnum_lshift(b, 1);
++	}
++	return tnum_add(TNUM(acc_v, 0), acc_m);
+ }
+ 
+ /* Note that if a and b disagree - i.e. one has a 'known 1' where the other has</pre><hr><pre>commit 0c0eb4caf03bb6d3d92c70560e0530c8fdf62284
+Author: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+Date:   Mon Jan 8 10:50:50 2018 -0500
+
+    dmaengine: avoid map_cnt overflow with CONFIG_DMA_ENGINE_RAID
+    
+    When CONFIG_DMA_ENGINE_RAID is enabled, unmap pool size can reach to
+    256. But in struct dmaengine_unmap_data, map_cnt is only u8, wrapping
+    to 0, if the unmap pool is maximally used. This triggers BUG() when
+    struct dmaengine_unmap_data is freed. Use u16 to fix the problem.
+    
+    Signed-off-by: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+    Signed-off-by: Vinod Koul &lt;vinod.koul@intel.com&gt;
+
+diff --git a/include/linux/dmaengine.h b/include/linux/dmaengine.h
+index f838764993eb..861be5cab1df 100644
+--- a/include/linux/dmaengine.h
++++ b/include/linux/dmaengine.h
+@@ -470,7 +470,11 @@ typedef void (*dma_async_tx_callback_result)(void *dma_async_param,
+ 				const struct dmaengine_result *result);
+ 
+ struct dmaengine_unmap_data {
++#if IS_ENABLED(CONFIG_DMA_ENGINE_RAID)
++	u16 map_cnt;
++#else
+ 	u8 map_cnt;
++#endif
+ 	u8 to_cnt;
+ 	u8 from_cnt;
+ 	u8 bidi_cnt;</pre><hr><pre>commit 40a899ed16486455f964e46d1af31fd4fded21c1
+Author: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+Date:   Wed Nov 29 16:11:12 2017 -0800
+
+    mm: migrate: fix an incorrect call of prep_transhuge_page()
+    
+    In https://lkml.org/lkml/2017/11/20/411, Andrea reported that during
+    memory hotplug/hot remove prep_transhuge_page() is called incorrectly on
+    non-THP pages for migration, when THP is on but THP migration is not
+    enabled.  This leads to a bad state of target pages for migration.
+    
+    By inspecting the code, if called on a non-THP, prep_transhuge_page()
+    will
+    
+     1) change the value of the mapping of (page + 2), since it is used for
+        THP deferred list;
+    
+     2) change the lru value of (page + 1), since it is used for THP's dtor.
+    
+    Both can lead to data corruption of these two pages.
+    
+    Andrea said:
+     "Pragmatically and from the point of view of the memory_hotplug subsys,
+      the effect is a kernel crash when pages are being migrated during a
+      memory hot remove offline and migration target pages are found in a
+      bad state"
+    
+    This patch fixes it by only calling prep_transhuge_page() when we are
+    certain that the target page is THP.
+    
+    Link: http://lkml.kernel.org/r/20171121021855.50525-1-zi.yan@sent.com
+    Fixes: 8135d8926c08 ("mm: memory_hotplug: memory hotremove supports thp migration")
+    Signed-off-by: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+    Reported-by: Andrea Reale &lt;ar@linux.vnet.ibm.com&gt;
+    Cc: Naoya Horiguchi &lt;n-horiguchi@ah.jp.nec.com&gt;
+    Cc: Michal Hocko &lt;mhocko@kernel.org&gt;
+    Cc: "Jérôme Glisse" &lt;jglisse@redhat.com&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;    [4.14]
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/include/linux/migrate.h b/include/linux/migrate.h
+index 895ec0c4942e..a2246cf670ba 100644
+--- a/include/linux/migrate.h
++++ b/include/linux/migrate.h
+@@ -54,7 +54,7 @@ static inline struct page *new_page_nodemask(struct page *page,
+ 	new_page = __alloc_pages_nodemask(gfp_mask, order,
+ 				preferred_nid, nodemask);
+ 
+-	if (new_page &amp;&amp; PageTransHuge(page))
++	if (new_page &amp;&amp; PageTransHuge(new_page))
+ 		prep_transhuge_page(new_page);
+ 
+ 	return new_page;</pre><hr><pre>commit dd8a67f9a37c74b61e5e050924ceec9ffb4f8c3c
+Author: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+Date:   Thu Nov 2 15:59:47 2017 -0700
+
+    mm/huge_memory.c: deposit page table when copying a PMD migration entry
+    
+    We need to deposit pre-allocated PTE page table when a PMD migration
+    entry is copied in copy_huge_pmd().  Otherwise, we will leak the
+    pre-allocated page and cause a NULL pointer dereference later in
+    zap_huge_pmd().
+    
+    The missing counters during PMD migration entry copy process are added
+    as well.
+    
+    The bug report is here: https://lkml.org/lkml/2017/10/29/214
+    
+    Link: http://lkml.kernel.org/r/20171030144636.4836-1-zi.yan@sent.com
+    Fixes: 84c3fc4e9c563 ("mm: thp: check pmd migration entry in common path")
+    Signed-off-by: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+    Reported-by: Fengguang Wu &lt;fengguang.wu@intel.com&gt;
+    Acked-by: Kirill A. Shutemov &lt;kirill.shutemov@linux.intel.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 269b5df58543..1981ed697dab 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -941,6 +941,9 @@ int copy_huge_pmd(struct mm_struct *dst_mm, struct mm_struct *src_mm,
+ 				pmd = pmd_swp_mksoft_dirty(pmd);
+ 			set_pmd_at(src_mm, addr, src_pmd, pmd);
+ 		}
++		add_mm_counter(dst_mm, MM_ANONPAGES, HPAGE_PMD_NR);
++		atomic_long_inc(&amp;dst_mm-&gt;nr_ptes);
++		pgtable_trans_huge_deposit(dst_mm, dst_pmd, pgtable);
+ 		set_pmd_at(dst_mm, addr, dst_pmd, pmd);
+ 		ret = 0;
+ 		goto out_unlock;</pre><hr><pre>commit af0db981f35ea99b00a0b249bf0bedef8cf972e8
+Author: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+Date:   Fri Oct 13 15:57:47 2017 -0700
+
+    mm: remove unnecessary WARN_ONCE in page_vma_mapped_walk().
+    
+    A non present pmd entry can appear after pmd_lock is taken in
+    page_vma_mapped_walk(), even if THP migration is not enabled.  The
+    WARN_ONCE is unnecessary.
+    
+    Link: http://lkml.kernel.org/r/20171003142606.12324-1-zi.yan@sent.com
+    Fixes: 616b8371539a ("mm: thp: enable thp migration in generic path")
+    Signed-off-by: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+    Reported-by: Abdul Haleem &lt;abdhalee@linux.vnet.ibm.com&gt;
+    Tested-by: Abdul Haleem &lt;abdhalee@linux.vnet.ibm.com&gt;
+    Acked-by: Kirill A. Shutemov &lt;kirill.shutemov@linux.intel.com&gt;
+    Cc: Anshuman Khandual &lt;khandual@linux.vnet.ibm.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/mm/page_vma_mapped.c b/mm/page_vma_mapped.c
+index 6a03946469a9..eb462e7db0a9 100644
+--- a/mm/page_vma_mapped.c
++++ b/mm/page_vma_mapped.c
+@@ -167,8 +167,7 @@ bool page_vma_mapped_walk(struct page_vma_mapped_walk *pvmw)
+ 						return not_found(pvmw);
+ 					return true;
+ 				}
+-			} else
+-				WARN_ONCE(1, "Non present huge pmd without pmd migration enabled!");
++			}
+ 			return not_found(pvmw);
+ 		} else {
+ 			/* THP pmd was split under us: handle on pte level */</pre><hr><pre>commit 84c3fc4e9c563d8fb91cfdf5948da48fe1af34d3
+Author: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+Date:   Fri Sep 8 16:11:01 2017 -0700
+
+    mm: thp: check pmd migration entry in common path
+    
+    When THP migration is being used, memory management code needs to handle
+    pmd migration entries properly.  This patch uses !pmd_present() or
+    is_swap_pmd() (depending on whether pmd_none() needs separate code or
+    not) to check pmd migration entries at the places where a pmd entry is
+    present.
+    
+    Since pmd-related code uses split_huge_page(), split_huge_pmd(),
+    pmd_trans_huge(), pmd_trans_unstable(), or
+    pmd_none_or_trans_huge_or_clear_bad(), this patch:
+    
+    1. adds pmd migration entry split code in split_huge_pmd(),
+    
+    2. takes care of pmd migration entries whenever pmd_trans_huge() is present,
+    
+    3. makes pmd_none_or_trans_huge_or_clear_bad() pmd migration entry aware.
+    
+    Since split_huge_page() uses split_huge_pmd() and pmd_trans_unstable()
+    is equivalent to pmd_none_or_trans_huge_or_clear_bad(), we do not change
+    them.
+    
+    Until this commit, a pmd entry should be:
+    1. pointing to a pte page,
+    2. is_swap_pmd(),
+    3. pmd_trans_huge(),
+    4. pmd_devmap(), or
+    5. pmd_none().
+    
+    Signed-off-by: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+    Cc: Kirill A. Shutemov &lt;kirill.shutemov@linux.intel.com&gt;
+    Cc: "H. Peter Anvin" &lt;hpa@zytor.com&gt;
+    Cc: Anshuman Khandual &lt;khandual@linux.vnet.ibm.com&gt;
+    Cc: Dave Hansen &lt;dave.hansen@intel.com&gt;
+    Cc: David Nellans &lt;dnellans@nvidia.com&gt;
+    Cc: Ingo Molnar &lt;mingo@elte.hu&gt;
+    Cc: Mel Gorman &lt;mgorman@techsingularity.net&gt;
+    Cc: Minchan Kim &lt;minchan@kernel.org&gt;
+    Cc: Naoya Horiguchi &lt;n-horiguchi@ah.jp.nec.com&gt;
+    Cc: Thomas Gleixner &lt;tglx@linutronix.de&gt;
+    Cc: Vlastimil Babka &lt;vbabka@suse.cz&gt;
+    Cc: Andrea Arcangeli &lt;aarcange@redhat.com&gt;
+    Cc: Michal Hocko &lt;mhocko@kernel.org&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index a290966f91ec..8eec35af32e4 100644
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -608,7 +608,8 @@ static int smaps_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+ 
+ 	ptl = pmd_trans_huge_lock(pmd, vma);
+ 	if (ptl) {
+-		smaps_pmd_entry(pmd, addr, walk);
++		if (pmd_present(*pmd))
++			smaps_pmd_entry(pmd, addr, walk);
+ 		spin_unlock(ptl);
+ 		return 0;
+ 	}
+@@ -1012,6 +1013,9 @@ static int clear_refs_pte_range(pmd_t *pmd, unsigned long addr,
+ 			goto out;
+ 		}
+ 
++		if (!pmd_present(*pmd))
++			goto out;
++
+ 		page = pmd_page(*pmd);
+ 
+ 		/* Clear accessed and referenced bits. */
+@@ -1293,27 +1297,33 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
+ 	if (ptl) {
+ 		u64 flags = 0, frame = 0;
+ 		pmd_t pmd = *pmdp;
++		struct page *page = NULL;
+ 
+ 		if ((vma-&gt;vm_flags &amp; VM_SOFTDIRTY) || pmd_soft_dirty(pmd))
+ 			flags |= PM_SOFT_DIRTY;
+ 
+-		/*
+-		 * Currently pmd for thp is always present because thp
+-		 * can not be swapped-out, migrated, or HWPOISONed
+-		 * (split in such cases instead.)
+-		 * This if-check is just to prepare for future implementation.
+-		 */
+ 		if (pmd_present(pmd)) {
+-			struct page *page = pmd_page(pmd);
+-
+-			if (page_mapcount(page) == 1)
+-				flags |= PM_MMAP_EXCLUSIVE;
++			page = pmd_page(pmd);
+ 
+ 			flags |= PM_PRESENT;
+ 			if (pm-&gt;show_pfn)
+ 				frame = pmd_pfn(pmd) +
+ 					((addr &amp; ~PMD_MASK) &gt;&gt; PAGE_SHIFT);
+ 		}
++#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
++		else if (is_swap_pmd(pmd)) {
++			swp_entry_t entry = pmd_to_swp_entry(pmd);
++
++			frame = swp_type(entry) |
++				(swp_offset(entry) &lt;&lt; MAX_SWAPFILES_SHIFT);
++			flags |= PM_SWAP;
++			VM_BUG_ON(!is_pmd_migration_entry(pmd));
++			page = migration_entry_to_page(entry);
++		}
++#endif
++
++		if (page &amp;&amp; page_mapcount(page) == 1)
++			flags |= PM_MMAP_EXCLUSIVE;
+ 
+ 		for (; addr != end; addr += PAGE_SIZE) {
+ 			pagemap_entry_t pme = make_pme(frame, flags);
+diff --git a/include/asm-generic/pgtable.h b/include/asm-generic/pgtable.h
+index 4d7bb98f4134..4f93a6d10a47 100644
+--- a/include/asm-generic/pgtable.h
++++ b/include/asm-generic/pgtable.h
+@@ -846,7 +846,23 @@ static inline int pmd_none_or_trans_huge_or_clear_bad(pmd_t *pmd)
+ #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+ 	barrier();
+ #endif
+-	if (pmd_none(pmdval) || pmd_trans_huge(pmdval))
++	/*
++	 * !pmd_present() checks for pmd migration entries
++	 *
++	 * The complete check uses is_pmd_migration_entry() in linux/swapops.h
++	 * But using that requires moving current function and pmd_trans_unstable()
++	 * to linux/swapops.h to resovle dependency, which is too much code move.
++	 *
++	 * !pmd_present() is equivalent to is_pmd_migration_entry() currently,
++	 * because !pmd_present() pages can only be under migration not swapped
++	 * out.
++	 *
++	 * pmd_none() is preseved for future condition checks on pmd migration
++	 * entries and not confusing with this function name, although it is
++	 * redundant with !pmd_present().
++	 */
++	if (pmd_none(pmdval) || pmd_trans_huge(pmdval) ||
++		(IS_ENABLED(CONFIG_ARCH_ENABLE_THP_MIGRATION) &amp;&amp; !pmd_present(pmdval)))
+ 		return 1;
+ 	if (unlikely(pmd_bad(pmdval))) {
+ 		pmd_clear_bad(pmd);
+diff --git a/include/linux/huge_mm.h b/include/linux/huge_mm.h
+index d8f35a0865dc..14bc21c2ee7f 100644
+--- a/include/linux/huge_mm.h
++++ b/include/linux/huge_mm.h
+@@ -147,7 +147,7 @@ void __split_huge_pmd(struct vm_area_struct *vma, pmd_t *pmd,
+ #define split_huge_pmd(__vma, __pmd, __address)				\
+ 	do {								\
+ 		pmd_t *____pmd = (__pmd);				\
+-		if (pmd_trans_huge(*____pmd)				\
++		if (is_swap_pmd(*____pmd) || pmd_trans_huge(*____pmd)	\
+ 					|| pmd_devmap(*____pmd))	\
+ 			__split_huge_pmd(__vma, __pmd, __address,	\
+ 						false, NULL);		\
+@@ -178,12 +178,18 @@ extern spinlock_t *__pmd_trans_huge_lock(pmd_t *pmd,
+ 		struct vm_area_struct *vma);
+ extern spinlock_t *__pud_trans_huge_lock(pud_t *pud,
+ 		struct vm_area_struct *vma);
++
++static inline int is_swap_pmd(pmd_t pmd)
++{
++	return !pmd_none(pmd) &amp;&amp; !pmd_present(pmd);
++}
++
+ /* mmap_sem must be held on entry */
+ static inline spinlock_t *pmd_trans_huge_lock(pmd_t *pmd,
+ 		struct vm_area_struct *vma)
+ {
+ 	VM_BUG_ON_VMA(!rwsem_is_locked(&amp;vma-&gt;vm_mm-&gt;mmap_sem), vma);
+-	if (pmd_trans_huge(*pmd) || pmd_devmap(*pmd))
++	if (is_swap_pmd(*pmd) || pmd_trans_huge(*pmd) || pmd_devmap(*pmd))
+ 		return __pmd_trans_huge_lock(pmd, vma);
+ 	else
+ 		return NULL;
+@@ -299,6 +305,10 @@ static inline void vma_adjust_trans_huge(struct vm_area_struct *vma,
+ 					 long adjust_next)
+ {
+ }
++static inline int is_swap_pmd(pmd_t pmd)
++{
++	return 0;
++}
+ static inline spinlock_t *pmd_trans_huge_lock(pmd_t *pmd,
+ 		struct vm_area_struct *vma)
+ {
+diff --git a/mm/gup.c b/mm/gup.c
+index 33d651deeae2..76fd199aaae2 100644
+--- a/mm/gup.c
++++ b/mm/gup.c
+@@ -234,6 +234,16 @@ static struct page *follow_pmd_mask(struct vm_area_struct *vma,
+ 			return page;
+ 		return no_page_table(vma, flags);
+ 	}
++retry:
++	if (!pmd_present(*pmd)) {
++		if (likely(!(flags &amp; FOLL_MIGRATION)))
++			return no_page_table(vma, flags);
++		VM_BUG_ON(thp_migration_supported() &amp;&amp;
++				  !is_pmd_migration_entry(*pmd));
++		if (is_pmd_migration_entry(*pmd))
++			pmd_migration_entry_wait(mm, pmd);
++		goto retry;
++	}
+ 	if (pmd_devmap(*pmd)) {
+ 		ptl = pmd_lock(mm, pmd);
+ 		page = follow_devmap_pmd(vma, address, pmd, flags);
+@@ -247,7 +257,15 @@ static struct page *follow_pmd_mask(struct vm_area_struct *vma,
+ 	if ((flags &amp; FOLL_NUMA) &amp;&amp; pmd_protnone(*pmd))
+ 		return no_page_table(vma, flags);
+ 
++retry_locked:
+ 	ptl = pmd_lock(mm, pmd);
++	if (unlikely(!pmd_present(*pmd))) {
++		spin_unlock(ptl);
++		if (likely(!(flags &amp; FOLL_MIGRATION)))
++			return no_page_table(vma, flags);
++		pmd_migration_entry_wait(mm, pmd);
++		goto retry_locked;
++	}
+ 	if (unlikely(!pmd_trans_huge(*pmd))) {
+ 		spin_unlock(ptl);
+ 		return follow_page_pte(vma, address, pmd, flags);
+@@ -424,7 +442,7 @@ static int get_gate_page(struct mm_struct *mm, unsigned long address,
+ 	pud = pud_offset(p4d, address);
+ 	BUG_ON(pud_none(*pud));
+ 	pmd = pmd_offset(pud, address);
+-	if (pmd_none(*pmd))
++	if (!pmd_present(*pmd))
+ 		return -EFAULT;
+ 	VM_BUG_ON(pmd_trans_huge(*pmd));
+ 	pte = pte_offset_map(pmd, address);
+@@ -1534,7 +1552,7 @@ static int gup_pmd_range(pud_t pud, unsigned long addr, unsigned long end,
+ 		pmd_t pmd = READ_ONCE(*pmdp);
+ 
+ 		next = pmd_addr_end(addr, end);
+-		if (pmd_none(pmd))
++		if (!pmd_present(pmd))
+ 			return 0;
+ 
+ 		if (unlikely(pmd_trans_huge(pmd) || pmd_huge(pmd))) {
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 937f007794dd..b82585eabe85 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -928,6 +928,23 @@ int copy_huge_pmd(struct mm_struct *dst_mm, struct mm_struct *src_mm,
+ 
+ 	ret = -EAGAIN;
+ 	pmd = *src_pmd;
++
++#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
++	if (unlikely(is_swap_pmd(pmd))) {
++		swp_entry_t entry = pmd_to_swp_entry(pmd);
++
++		VM_BUG_ON(!is_pmd_migration_entry(pmd));
++		if (is_write_migration_entry(entry)) {
++			make_migration_entry_read(&amp;entry);
++			pmd = swp_entry_to_pmd(entry);
++			set_pmd_at(src_mm, addr, src_pmd, pmd);
++		}
++		set_pmd_at(dst_mm, addr, dst_pmd, pmd);
++		ret = 0;
++		goto out_unlock;
++	}
++#endif
++
+ 	if (unlikely(!pmd_trans_huge(pmd))) {
+ 		pte_free(dst_mm, pgtable);
+ 		goto out_unlock;
+@@ -1599,6 +1616,12 @@ bool madvise_free_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 	if (is_huge_zero_pmd(orig_pmd))
+ 		goto out;
+ 
++	if (unlikely(!pmd_present(orig_pmd))) {
++		VM_BUG_ON(thp_migration_supported() &amp;&amp;
++				  !is_pmd_migration_entry(orig_pmd));
++		goto out;
++	}
++
+ 	page = pmd_page(orig_pmd);
+ 	/*
+ 	 * If other processes are mapping this page, we couldn't discard
+@@ -1810,6 +1833,25 @@ int change_huge_pmd(struct vm_area_struct *vma, pmd_t *pmd,
+ 	preserve_write = prot_numa &amp;&amp; pmd_write(*pmd);
+ 	ret = 1;
+ 
++#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
++	if (is_swap_pmd(*pmd)) {
++		swp_entry_t entry = pmd_to_swp_entry(*pmd);
++
++		VM_BUG_ON(!is_pmd_migration_entry(*pmd));
++		if (is_write_migration_entry(entry)) {
++			pmd_t newpmd;
++			/*
++			 * A protection check is difficult so
++			 * just be safe and disable write
++			 */
++			make_migration_entry_read(&amp;entry);
++			newpmd = swp_entry_to_pmd(entry);
++			set_pmd_at(mm, addr, pmd, newpmd);
++		}
++		goto unlock;
++	}
++#endif
++
+ 	/*
+ 	 * Avoid trapping faults against the zero page. The read-only
+ 	 * data is likely to be read-cached on the local CPU and
+@@ -1875,7 +1917,8 @@ spinlock_t *__pmd_trans_huge_lock(pmd_t *pmd, struct vm_area_struct *vma)
+ {
+ 	spinlock_t *ptl;
+ 	ptl = pmd_lock(vma-&gt;vm_mm, pmd);
+-	if (likely(pmd_trans_huge(*pmd) || pmd_devmap(*pmd)))
++	if (likely(is_swap_pmd(*pmd) || pmd_trans_huge(*pmd) ||
++			pmd_devmap(*pmd)))
+ 		return ptl;
+ 	spin_unlock(ptl);
+ 	return NULL;
+@@ -1993,14 +2036,15 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
+ 	struct page *page;
+ 	pgtable_t pgtable;
+ 	pmd_t _pmd;
+-	bool young, write, dirty, soft_dirty;
++	bool young, write, dirty, soft_dirty, pmd_migration = false;
+ 	unsigned long addr;
+ 	int i;
+ 
+ 	VM_BUG_ON(haddr &amp; ~HPAGE_PMD_MASK);
+ 	VM_BUG_ON_VMA(vma-&gt;vm_start &gt; haddr, vma);
+ 	VM_BUG_ON_VMA(vma-&gt;vm_end &lt; haddr + HPAGE_PMD_SIZE, vma);
+-	VM_BUG_ON(!pmd_trans_huge(*pmd) &amp;&amp; !pmd_devmap(*pmd));
++	VM_BUG_ON(!is_pmd_migration_entry(*pmd) &amp;&amp; !pmd_trans_huge(*pmd)
++				&amp;&amp; !pmd_devmap(*pmd));
+ 
+ 	count_vm_event(THP_SPLIT_PMD);
+ 
+@@ -2025,7 +2069,16 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
+ 		return __split_huge_zero_page_pmd(vma, haddr, pmd);
+ 	}
+ 
+-	page = pmd_page(*pmd);
++#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
++	pmd_migration = is_pmd_migration_entry(*pmd);
++	if (pmd_migration) {
++		swp_entry_t entry;
++
++		entry = pmd_to_swp_entry(*pmd);
++		page = pfn_to_page(swp_offset(entry));
++	} else
++#endif
++		page = pmd_page(*pmd);
+ 	VM_BUG_ON_PAGE(!page_count(page), page);
+ 	page_ref_add(page, HPAGE_PMD_NR - 1);
+ 	write = pmd_write(*pmd);
+@@ -2044,7 +2097,7 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
+ 		 * transferred to avoid any possibility of altering
+ 		 * permissions across VMAs.
+ 		 */
+-		if (freeze) {
++		if (freeze || pmd_migration) {
+ 			swp_entry_t swp_entry;
+ 			swp_entry = make_migration_entry(page + i, write);
+ 			entry = swp_entry_to_pte(swp_entry);
+@@ -2143,7 +2196,7 @@ void __split_huge_pmd(struct vm_area_struct *vma, pmd_t *pmd,
+ 		page = pmd_page(*pmd);
+ 		if (PageMlocked(page))
+ 			clear_page_mlock(page);
+-	} else if (!pmd_devmap(*pmd))
++	} else if (!(pmd_devmap(*pmd) || is_pmd_migration_entry(*pmd)))
+ 		goto out;
+ 	__split_huge_pmd_locked(vma, pmd, haddr, freeze);
+ out:
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 6532b219b222..f1f3f5b41155 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -4664,6 +4664,11 @@ static enum mc_target_type get_mctgt_type_thp(struct vm_area_struct *vma,
+ 	struct page *page = NULL;
+ 	enum mc_target_type ret = MC_TARGET_NONE;
+ 
++	if (unlikely(is_swap_pmd(pmd))) {
++		VM_BUG_ON(thp_migration_supported() &amp;&amp;
++				  !is_pmd_migration_entry(pmd));
++		return ret;
++	}
+ 	page = pmd_page(pmd);
+ 	VM_BUG_ON_PAGE(!page || !PageHead(page), page);
+ 	if (!(mc.flags &amp; MOVE_ANON))
+diff --git a/mm/memory.c b/mm/memory.c
+index 13ee83b43878..886033b95fd2 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -1065,7 +1065,8 @@ static inline int copy_pmd_range(struct mm_struct *dst_mm, struct mm_struct *src
+ 	src_pmd = pmd_offset(src_pud, addr);
+ 	do {
+ 		next = pmd_addr_end(addr, end);
+-		if (pmd_trans_huge(*src_pmd) || pmd_devmap(*src_pmd)) {
++		if (is_swap_pmd(*src_pmd) || pmd_trans_huge(*src_pmd)
++			|| pmd_devmap(*src_pmd)) {
+ 			int err;
+ 			VM_BUG_ON_VMA(next-addr != HPAGE_PMD_SIZE, vma);
+ 			err = copy_huge_pmd(dst_mm, src_mm,
+@@ -1326,7 +1327,7 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
+ 	pmd = pmd_offset(pud, addr);
+ 	do {
+ 		next = pmd_addr_end(addr, end);
+-		if (pmd_trans_huge(*pmd) || pmd_devmap(*pmd)) {
++		if (is_swap_pmd(*pmd) || pmd_trans_huge(*pmd) || pmd_devmap(*pmd)) {
+ 			if (next - addr != HPAGE_PMD_SIZE) {
+ 				VM_BUG_ON_VMA(vma_is_anonymous(vma) &amp;&amp;
+ 				    !rwsem_is_locked(&amp;tlb-&gt;mm-&gt;mmap_sem), vma);
+@@ -3911,6 +3912,13 @@ static int __handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
+ 		pmd_t orig_pmd = *vmf.pmd;
+ 
+ 		barrier();
++		if (unlikely(is_swap_pmd(orig_pmd))) {
++			VM_BUG_ON(thp_migration_supported() &amp;&amp;
++					  !is_pmd_migration_entry(orig_pmd));
++			if (is_pmd_migration_entry(orig_pmd))
++				pmd_migration_entry_wait(mm, vmf.pmd);
++			return 0;
++		}
+ 		if (pmd_trans_huge(orig_pmd) || pmd_devmap(orig_pmd)) {
+ 			if (pmd_protnone(orig_pmd) &amp;&amp; vma_is_accessible(vma))
+ 				return do_huge_pmd_numa_page(&amp;vmf, orig_pmd);
+diff --git a/mm/mprotect.c b/mm/mprotect.c
+index bd0f409922cb..a1bfe9545770 100644
+--- a/mm/mprotect.c
++++ b/mm/mprotect.c
+@@ -149,7 +149,7 @@ static inline unsigned long change_pmd_range(struct vm_area_struct *vma,
+ 		unsigned long this_pages;
+ 
+ 		next = pmd_addr_end(addr, end);
+-		if (!pmd_trans_huge(*pmd) &amp;&amp; !pmd_devmap(*pmd)
++		if (!is_swap_pmd(*pmd) &amp;&amp; !pmd_trans_huge(*pmd) &amp;&amp; !pmd_devmap(*pmd)
+ 				&amp;&amp; pmd_none_or_clear_bad(pmd))
+ 			continue;
+ 
+@@ -159,7 +159,7 @@ static inline unsigned long change_pmd_range(struct vm_area_struct *vma,
+ 			mmu_notifier_invalidate_range_start(mm, mni_start, end);
+ 		}
+ 
+-		if (pmd_trans_huge(*pmd) || pmd_devmap(*pmd)) {
++		if (is_swap_pmd(*pmd) || pmd_trans_huge(*pmd) || pmd_devmap(*pmd)) {
+ 			if (next - addr != HPAGE_PMD_SIZE) {
+ 				__split_huge_pmd(vma, pmd, addr, false, NULL);
+ 			} else {
+diff --git a/mm/mremap.c b/mm/mremap.c
+index 7395564daa6c..cfec004c4ff9 100644
+--- a/mm/mremap.c
++++ b/mm/mremap.c
+@@ -223,7 +223,7 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
+ 		new_pmd = alloc_new_pmd(vma-&gt;vm_mm, vma, new_addr);
+ 		if (!new_pmd)
+ 			break;
+-		if (pmd_trans_huge(*old_pmd)) {
++		if (is_swap_pmd(*old_pmd) || pmd_trans_huge(*old_pmd)) {
+ 			if (extent == HPAGE_PMD_SIZE) {
+ 				bool moved;
+ 				/* See comment in move_ptes() */</pre><hr><pre>commit 616b8371539a6c487404c3b8fb04078016dab4ba
+Author: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+Date:   Fri Sep 8 16:10:57 2017 -0700
+
+    mm: thp: enable thp migration in generic path
+    
+    Add thp migration's core code, including conversions between a PMD entry
+    and a swap entry, setting PMD migration entry, removing PMD migration
+    entry, and waiting on PMD migration entries.
+    
+    This patch makes it possible to support thp migration.  If you fail to
+    allocate a destination page as a thp, you just split the source thp as
+    we do now, and then enter the normal page migration.  If you succeed to
+    allocate destination thp, you enter thp migration.  Subsequent patches
+    actually enable thp migration for each caller of page migration by
+    allowing its get_new_page() callback to allocate thps.
+    
+    [zi.yan@cs.rutgers.edu: fix gcc-4.9.0 -Wmissing-braces warning]
+      Link: http://lkml.kernel.org/r/A0ABA698-7486-46C3-B209-E95A9048B22C@cs.rutgers.edu
+    [akpm@linux-foundation.org: fix x86_64 allnoconfig warning]
+    Signed-off-by: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+    Acked-by: Kirill A. Shutemov &lt;kirill.shutemov@linux.intel.com&gt;
+    Cc: "H. Peter Anvin" &lt;hpa@zytor.com&gt;
+    Cc: Anshuman Khandual &lt;khandual@linux.vnet.ibm.com&gt;
+    Cc: Dave Hansen &lt;dave.hansen@intel.com&gt;
+    Cc: David Nellans &lt;dnellans@nvidia.com&gt;
+    Cc: Ingo Molnar &lt;mingo@elte.hu&gt;
+    Cc: Mel Gorman &lt;mgorman@techsingularity.net&gt;
+    Cc: Minchan Kim &lt;minchan@kernel.org&gt;
+    Cc: Naoya Horiguchi &lt;n-horiguchi@ah.jp.nec.com&gt;
+    Cc: Thomas Gleixner &lt;tglx@linutronix.de&gt;
+    Cc: Vlastimil Babka &lt;vbabka@suse.cz&gt;
+    Cc: Andrea Arcangeli &lt;aarcange@redhat.com&gt;
+    Cc: Michal Hocko &lt;mhocko@kernel.org&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/arch/x86/include/asm/pgtable_64.h b/arch/x86/include/asm/pgtable_64.h
+index 46bf71c77a25..972a4698c530 100644
+--- a/arch/x86/include/asm/pgtable_64.h
++++ b/arch/x86/include/asm/pgtable_64.h
+@@ -210,7 +210,9 @@ static inline int pgd_large(pgd_t pgd) { return 0; }
+ 					 ((type) &lt;&lt; (SWP_TYPE_FIRST_BIT)) \
+ 					 | ((offset) &lt;&lt; SWP_OFFSET_FIRST_BIT) })
+ #define __pte_to_swp_entry(pte)		((swp_entry_t) { pte_val((pte)) })
++#define __pmd_to_swp_entry(pmd)		((swp_entry_t) { pmd_val((pmd)) })
+ #define __swp_entry_to_pte(x)		((pte_t) { .pte = (x).val })
++#define __swp_entry_to_pmd(x)		((pmd_t) { .pmd = (x).val })
+ 
+ extern int kern_addr_valid(unsigned long addr);
+ extern void cleanup_highmap(void);
+diff --git a/include/linux/swapops.h b/include/linux/swapops.h
+index c5ff7b217ee6..82089fd88c29 100644
+--- a/include/linux/swapops.h
++++ b/include/linux/swapops.h
+@@ -103,7 +103,8 @@ static inline void *swp_to_radix_entry(swp_entry_t entry)
+ #ifdef CONFIG_MIGRATION
+ static inline swp_entry_t make_migration_entry(struct page *page, int write)
+ {
+-	BUG_ON(!PageLocked(page));
++	BUG_ON(!PageLocked(compound_head(page)));
++
+ 	return swp_entry(write ? SWP_MIGRATION_WRITE : SWP_MIGRATION_READ,
+ 			page_to_pfn(page));
+ }
+@@ -126,7 +127,7 @@ static inline struct page *migration_entry_to_page(swp_entry_t entry)
+ 	 * Any use of migration entries may only occur while the
+ 	 * corresponding page is locked
+ 	 */
+-	BUG_ON(!PageLocked(p));
++	BUG_ON(!PageLocked(compound_head(p)));
+ 	return p;
+ }
+ 
+@@ -148,7 +149,11 @@ static inline int is_migration_entry(swp_entry_t swp)
+ {
+ 	return 0;
+ }
+-#define migration_entry_to_page(swp) NULL
++static inline struct page *migration_entry_to_page(swp_entry_t entry)
++{
++	return NULL;
++}
++
+ static inline void make_migration_entry_read(swp_entry_t *entryp) { }
+ static inline void __migration_entry_wait(struct mm_struct *mm, pte_t *ptep,
+ 					spinlock_t *ptl) { }
+@@ -163,6 +168,68 @@ static inline int is_write_migration_entry(swp_entry_t entry)
+ 
+ #endif
+ 
++struct page_vma_mapped_walk;
++
++#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
++extern void set_pmd_migration_entry(struct page_vma_mapped_walk *pvmw,
++		struct page *page);
++
++extern void remove_migration_pmd(struct page_vma_mapped_walk *pvmw,
++		struct page *new);
++
++extern void pmd_migration_entry_wait(struct mm_struct *mm, pmd_t *pmd);
++
++static inline swp_entry_t pmd_to_swp_entry(pmd_t pmd)
++{
++	swp_entry_t arch_entry;
++
++	arch_entry = __pmd_to_swp_entry(pmd);
++	return swp_entry(__swp_type(arch_entry), __swp_offset(arch_entry));
++}
++
++static inline pmd_t swp_entry_to_pmd(swp_entry_t entry)
++{
++	swp_entry_t arch_entry;
++
++	arch_entry = __swp_entry(swp_type(entry), swp_offset(entry));
++	return __swp_entry_to_pmd(arch_entry);
++}
++
++static inline int is_pmd_migration_entry(pmd_t pmd)
++{
++	return !pmd_present(pmd) &amp;&amp; is_migration_entry(pmd_to_swp_entry(pmd));
++}
++#else
++static inline void set_pmd_migration_entry(struct page_vma_mapped_walk *pvmw,
++		struct page *page)
++{
++	BUILD_BUG();
++}
++
++static inline void remove_migration_pmd(struct page_vma_mapped_walk *pvmw,
++		struct page *new)
++{
++	BUILD_BUG();
++}
++
++static inline void pmd_migration_entry_wait(struct mm_struct *m, pmd_t *p) { }
++
++static inline swp_entry_t pmd_to_swp_entry(pmd_t pmd)
++{
++	return swp_entry(0, 0);
++}
++
++static inline pmd_t swp_entry_to_pmd(swp_entry_t entry)
++{
++	return __pmd(0);
++}
++
++static inline int is_pmd_migration_entry(pmd_t pmd)
++{
++	return 0;
++}
++#endif
++
+ #ifdef CONFIG_MEMORY_FAILURE
+ 
+ extern atomic_long_t num_poisoned_pages __read_mostly;
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 8a97833ef0f1..937f007794dd 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -1684,10 +1684,24 @@ int zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 		spin_unlock(ptl);
+ 		tlb_remove_page_size(tlb, pmd_page(orig_pmd), HPAGE_PMD_SIZE);
+ 	} else {
+-		struct page *page = pmd_page(orig_pmd);
+-		page_remove_rmap(page, true);
+-		VM_BUG_ON_PAGE(page_mapcount(page) &lt; 0, page);
+-		VM_BUG_ON_PAGE(!PageHead(page), page);
++		struct page *page = NULL;
++		int flush_needed = 1;
++
++		if (pmd_present(orig_pmd)) {
++			page = pmd_page(orig_pmd);
++			page_remove_rmap(page, true);
++			VM_BUG_ON_PAGE(page_mapcount(page) &lt; 0, page);
++			VM_BUG_ON_PAGE(!PageHead(page), page);
++		} else if (thp_migration_supported()) {
++			swp_entry_t entry;
++
++			VM_BUG_ON(!is_pmd_migration_entry(orig_pmd));
++			entry = pmd_to_swp_entry(orig_pmd);
++			page = pfn_to_page(swp_offset(entry));
++			flush_needed = 0;
++		} else
++			WARN_ONCE(1, "Non present huge pmd without pmd migration enabled!");
++
+ 		if (PageAnon(page)) {
+ 			zap_deposited_table(tlb-&gt;mm, pmd);
+ 			add_mm_counter(tlb-&gt;mm, MM_ANONPAGES, -HPAGE_PMD_NR);
+@@ -1696,8 +1710,10 @@ int zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 				zap_deposited_table(tlb-&gt;mm, pmd);
+ 			add_mm_counter(tlb-&gt;mm, MM_FILEPAGES, -HPAGE_PMD_NR);
+ 		}
++
+ 		spin_unlock(ptl);
+-		tlb_remove_page_size(tlb, page, HPAGE_PMD_SIZE);
++		if (flush_needed)
++			tlb_remove_page_size(tlb, page, HPAGE_PMD_SIZE);
+ 	}
+ 	return 1;
+ }
+@@ -2745,3 +2761,61 @@ static int __init split_huge_pages_debugfs(void)
+ }
+ late_initcall(split_huge_pages_debugfs);
+ #endif
++
++#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
++void set_pmd_migration_entry(struct page_vma_mapped_walk *pvmw,
++		struct page *page)
++{
++	struct vm_area_struct *vma = pvmw-&gt;vma;
++	struct mm_struct *mm = vma-&gt;vm_mm;
++	unsigned long address = pvmw-&gt;address;
++	pmd_t pmdval;
++	swp_entry_t entry;
++
++	if (!(pvmw-&gt;pmd &amp;&amp; !pvmw-&gt;pte))
++		return;
++
++	mmu_notifier_invalidate_range_start(mm, address,
++			address + HPAGE_PMD_SIZE);
++
++	flush_cache_range(vma, address, address + HPAGE_PMD_SIZE);
++	pmdval = *pvmw-&gt;pmd;
++	pmdp_invalidate(vma, address, pvmw-&gt;pmd);
++	if (pmd_dirty(pmdval))
++		set_page_dirty(page);
++	entry = make_migration_entry(page, pmd_write(pmdval));
++	pmdval = swp_entry_to_pmd(entry);
++	set_pmd_at(mm, address, pvmw-&gt;pmd, pmdval);
++	page_remove_rmap(page, true);
++	put_page(page);
++
++	mmu_notifier_invalidate_range_end(mm, address,
++			address + HPAGE_PMD_SIZE);
++}
++
++void remove_migration_pmd(struct page_vma_mapped_walk *pvmw, struct page *new)
++{
++	struct vm_area_struct *vma = pvmw-&gt;vma;
++	struct mm_struct *mm = vma-&gt;vm_mm;
++	unsigned long address = pvmw-&gt;address;
++	unsigned long mmun_start = address &amp; HPAGE_PMD_MASK;
++	pmd_t pmde;
++	swp_entry_t entry;
++
++	if (!(pvmw-&gt;pmd &amp;&amp; !pvmw-&gt;pte))
++		return;
++
++	entry = pmd_to_swp_entry(*pvmw-&gt;pmd);
++	get_page(new);
++	pmde = pmd_mkold(mk_huge_pmd(new, vma-&gt;vm_page_prot));
++	if (is_write_migration_entry(entry))
++		pmde = maybe_pmd_mkwrite(pmde, vma);
++
++	flush_cache_range(vma, mmun_start, mmun_start + HPAGE_PMD_SIZE);
++	page_add_anon_rmap(new, vma, mmun_start, true);
++	set_pmd_at(mm, mmun_start, pvmw-&gt;pmd, pmde);
++	if (vma-&gt;vm_flags &amp; VM_LOCKED)
++		mlock_vma_page(new);
++	update_mmu_cache_pmd(vma, address, pvmw-&gt;pmd);
++}
++#endif
+diff --git a/mm/migrate.c b/mm/migrate.c
+index e84eeb4e4356..bf5366a2176b 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -216,6 +216,15 @@ static bool remove_migration_pte(struct page *page, struct vm_area_struct *vma,
+ 			new = page - pvmw.page-&gt;index +
+ 				linear_page_index(vma, pvmw.address);
+ 
++#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
++		/* PMD-mapped THP migration entry */
++		if (!pvmw.pte) {
++			VM_BUG_ON_PAGE(PageHuge(page) || !PageTransCompound(page), page);
++			remove_migration_pmd(&amp;pvmw, new);
++			continue;
++		}
++#endif
++
+ 		get_page(new);
+ 		pte = pte_mkold(mk_pte(new, READ_ONCE(vma-&gt;vm_page_prot)));
+ 		if (pte_swp_soft_dirty(*pvmw.pte))
+@@ -330,6 +339,27 @@ void migration_entry_wait_huge(struct vm_area_struct *vma,
+ 	__migration_entry_wait(mm, pte, ptl);
+ }
+ 
++#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
++void pmd_migration_entry_wait(struct mm_struct *mm, pmd_t *pmd)
++{
++	spinlock_t *ptl;
++	struct page *page;
++
++	ptl = pmd_lock(mm, pmd);
++	if (!is_pmd_migration_entry(*pmd))
++		goto unlock;
++	page = migration_entry_to_page(pmd_to_swp_entry(*pmd));
++	if (!get_page_unless_zero(page))
++		goto unlock;
++	spin_unlock(ptl);
++	wait_on_page_locked(page);
++	put_page(page);
++	return;
++unlock:
++	spin_unlock(ptl);
++}
++#endif
++
+ #ifdef CONFIG_BLOCK
+ /* Returns true if all buffers are successfully locked */
+ static bool buffer_migrate_lock_buffers(struct buffer_head *head,
+@@ -1088,7 +1118,7 @@ static ICE_noinline int unmap_and_move(new_page_t get_new_page,
+ 		goto out;
+ 	}
+ 
+-	if (unlikely(PageTransHuge(page))) {
++	if (unlikely(PageTransHuge(page) &amp;&amp; !PageTransHuge(newpage))) {
+ 		lock_page(page);
+ 		rc = split_huge_page(page);
+ 		unlock_page(page);
+diff --git a/mm/page_vma_mapped.c b/mm/page_vma_mapped.c
+index 8ec6ba230bb9..3bd3008db4cb 100644
+--- a/mm/page_vma_mapped.c
++++ b/mm/page_vma_mapped.c
+@@ -138,16 +138,28 @@ bool page_vma_mapped_walk(struct page_vma_mapped_walk *pvmw)
+ 	if (!pud_present(*pud))
+ 		return false;
+ 	pvmw-&gt;pmd = pmd_offset(pud, pvmw-&gt;address);
+-	if (pmd_trans_huge(*pvmw-&gt;pmd)) {
++	if (pmd_trans_huge(*pvmw-&gt;pmd) || is_pmd_migration_entry(*pvmw-&gt;pmd)) {
+ 		pvmw-&gt;ptl = pmd_lock(mm, pvmw-&gt;pmd);
+-		if (!pmd_present(*pvmw-&gt;pmd))
+-			return not_found(pvmw);
+ 		if (likely(pmd_trans_huge(*pvmw-&gt;pmd))) {
+ 			if (pvmw-&gt;flags &amp; PVMW_MIGRATION)
+ 				return not_found(pvmw);
+ 			if (pmd_page(*pvmw-&gt;pmd) != page)
+ 				return not_found(pvmw);
+ 			return true;
++		} else if (!pmd_present(*pvmw-&gt;pmd)) {
++			if (thp_migration_supported()) {
++				if (!(pvmw-&gt;flags &amp; PVMW_MIGRATION))
++					return not_found(pvmw);
++				if (is_migration_entry(pmd_to_swp_entry(*pvmw-&gt;pmd))) {
++					swp_entry_t entry = pmd_to_swp_entry(*pvmw-&gt;pmd);
++
++					if (migration_entry_to_page(entry) != page)
++						return not_found(pvmw);
++					return true;
++				}
++			} else
++				WARN_ONCE(1, "Non present huge pmd without pmd migration enabled!");
++			return not_found(pvmw);
+ 		} else {
+ 			/* THP pmd was split under us: handle on pte level */
+ 			spin_unlock(pvmw-&gt;ptl);
+diff --git a/mm/pgtable-generic.c b/mm/pgtable-generic.c
+index c99d9512a45b..1175f6a24fdb 100644
+--- a/mm/pgtable-generic.c
++++ b/mm/pgtable-generic.c
+@@ -124,7 +124,8 @@ pmd_t pmdp_huge_clear_flush(struct vm_area_struct *vma, unsigned long address,
+ {
+ 	pmd_t pmd;
+ 	VM_BUG_ON(address &amp; ~HPAGE_PMD_MASK);
+-	VM_BUG_ON(!pmd_trans_huge(*pmdp) &amp;&amp; !pmd_devmap(*pmdp));
++	VM_BUG_ON((pmd_present(*pmdp) &amp;&amp; !pmd_trans_huge(*pmdp) &amp;&amp;
++			   !pmd_devmap(*pmdp)) || !pmd_present(*pmdp));
+ 	pmd = pmdp_huge_get_and_clear(vma-&gt;vm_mm, address, pmdp);
+ 	flush_pmd_tlb_range(vma, address, address + HPAGE_PMD_SIZE);
+ 	return pmd;
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 5b26af8a7a29..7dc9c02f7106 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -1360,6 +1360,19 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
+ 	mmu_notifier_invalidate_range_start(vma-&gt;vm_mm, start, end);
+ 
+ 	while (page_vma_mapped_walk(&amp;pvmw)) {
++#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
++		/* PMD-mapped THP migration entry */
++		if (!pvmw.pte &amp;&amp; (flags &amp; TTU_MIGRATION)) {
++			VM_BUG_ON_PAGE(PageHuge(page) || !PageTransCompound(page), page);
++
++			if (!PageAnon(page))
++				continue;
++
++			set_pmd_migration_entry(&amp;pvmw, page);
++			continue;
++		}
++#endif
++
+ 		/*
+ 		 * If the page is mlock()d, we cannot swap it out.
+ 		 * If it's recently referenced (perhaps page_referenced</pre><hr><pre>commit 9157259d16a8ee8116a98d32f29b797689327e8d
+Author: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+Date:   Thu Aug 3 09:17:21 2017 -0400
+
+    mm: add pmd_t initializer __pmd() to work around a GCC bug.
+    
+    THP migration is added but only supports x86_64 at the moment. For all
+    other architectures, swp_entry_to_pmd() only returns a zero pmd_t.
+    
+    Due to a GCC zero initializer bug #53119, the standard (pmd_t){0}
+    initializer is not accepted by all GCC versions. __pmd() is a feasible
+    workaround. In addition, sparc32's pmd_t is an array instead of a single
+    value, so we need (pmd_t){ {0}, } instead of (pmd_t){0}. Thus,
+    a different __pmd() definition is needed in sparc32.
+    
+    Signed-off-by: Zi Yan &lt;zi.yan@cs.rutgers.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/arch/sparc/include/asm/page_32.h b/arch/sparc/include/asm/page_32.h
+index 0efd0583a8c9..6249214148c2 100644
+--- a/arch/sparc/include/asm/page_32.h
++++ b/arch/sparc/include/asm/page_32.h
+@@ -68,6 +68,7 @@ typedef struct { unsigned long iopgprot; } iopgprot_t;
+ #define iopgprot_val(x)	((x).iopgprot)
+ 
+ #define __pte(x)	((pte_t) { (x) } )
++#define __pmd(x)	((pmd_t) { { (x) }, })
+ #define __iopte(x)	((iopte_t) { (x) } )
+ #define __pgd(x)	((pgd_t) { (x) } )
+ #define __ctxd(x)	((ctxd_t) { (x) } )
+@@ -95,6 +96,7 @@ typedef unsigned long iopgprot_t;
+ #define iopgprot_val(x)	(x)
+ 
+ #define __pte(x)	(x)
++#define __pmd(x)	((pmd_t) { { (x) }, })
+ #define __iopte(x)	(x)
+ #define __pgd(x)	(x)
+ #define __ctxd(x)	(x)</pre><hr><pre>commit e71c9fac316221a4594f3bd58c2d30ada0cabaf6
+Author: Luis R. Rodriguez &lt;mcgrof@winlab.rutgers.edu&gt;
+Date:   Sun Feb 3 21:53:51 2008 -0500
+
+    ath5k/phy.c: fix negative array index
+    
+    Author: Adrian Bunk &lt;bunk@kernel.org&gt;
+    
+    This patch fixes a negative array index spotted by the Coverity checker.
+    
+    Changes-licensed-under: ISC
+    
+    Acked-by: Nick Kossifidis &lt;mickflemm@gmail.com&gt;
+    Signed-off-by: Adrian Bunk &lt;bunk@kernel.org&gt;
+    Signed-off-by: Luis R. Rodriguez &lt;mcgrof@winlab.rutgers.edu&gt;
+    Signed-off-by: John W. Linville &lt;linville@tuxdriver.com&gt;
+
+diff --git a/drivers/net/wireless/ath5k/phy.c b/drivers/net/wireless/ath5k/phy.c
+index 248c0f545f24..405195ffb24d 100644
+--- a/drivers/net/wireless/ath5k/phy.c
++++ b/drivers/net/wireless/ath5k/phy.c
+@@ -1178,6 +1178,9 @@ static int ath5k_hw_rf5112_rfregs(struct ath5k_hw *ah,
+ 			(channel-&gt;center_freq &gt;= 5260 ? 1 :
+ 			    (channel-&gt;center_freq &gt; 4000 ? 0 : -1)));
+ 
++		if (obdb == -1)
++			return -EINVAL;
++
+ 		if (!ath5k_hw_rfregs_op(rf, ah-&gt;ah_offset[6],
+ 				ee-&gt;ee_ob[ee_mode][obdb], 3, 279, 0, true))
+ 			return -EINVAL;</pre><hr><pre>commit 6844e63a9458d15b4437aa467c99128d994b0f6c
+Author: Luis R. Rodriguez &lt;mcgrof@winlab.rutgers.edu&gt;
+Date:   Sun Feb 3 21:53:20 2008 -0500
+
+    ath5k: Use software encryption for now
+    
+    Hardware encryption doesn't work yet so lets use software
+    encryption for now.
+    
+    Changes-licensed-under: 3-Clause-BSD
+    
+    Signed-off-by: Luis R. Rodriguez &lt;mcgrof@winlab.rutgers.edu&gt;
+    Signed-off-by: John W. Linville &lt;linville@tuxdriver.com&gt;
+
+diff --git a/drivers/net/wireless/ath5k/base.c b/drivers/net/wireless/ath5k/base.c
+index 5ca441d7a6c1..0b743f7b3a14 100644
+--- a/drivers/net/wireless/ath5k/base.c
++++ b/drivers/net/wireless/ath5k/base.c
+@@ -2928,7 +2928,9 @@ ath5k_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
+ 
+ 	switch(key-&gt;alg) {
+ 	case ALG_WEP:
+-		break;
++	/* XXX: fix hardware encryption, its not working. For now
++	 * allow software encryption */
++		/* break; */
+ 	case ALG_TKIP:
+ 	case ALG_CCMP:
+ 		return -EOPNOTSUPP;</pre>
+    <div class="pagination">
+        <span>[1]</span><a href='38_2.html'>2</a><a href='38_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

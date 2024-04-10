@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by California Institute of Technology</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by California Institute of Technology</h1>
+    <div class="pagination">
+        <a href='16_5.html'>&lt;&lt;Prev</a><a href='16.html'>1</a><a href='16_2.html'>2</a><a href='16_3.html'>3</a><a href='16_4.html'>4</a><a href='16_5.html'>5</a><span>[6]</span><a href='16_7.html'>7</a><a href='16_7.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 272ca655090978bdaa2630fc44fb2c03da5576fd
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Wed Jan 6 13:33:59 2010 +0000
+
+    fsldma: reduce kernel text size
+    
+    Some of the functions are written in a way where they use multiple reads
+    and writes where a single read/write pair could suffice. This shrinks the
+    kernel text size measurably, while making the functions easier to
+    understand.
+    
+    add/remove: 0/0 grow/shrink: 1/4 up/down: 4/-196 (-192)
+    function                                     old     new   delta
+    fsl_chan_set_request_count                   120     124      +4
+    dma_halt                                     300     272     -28
+    fsl_chan_set_src_loop_size                   208     156     -52
+    fsl_chan_set_dest_loop_size                  208     156     -52
+    fsl_chan_xfer_ld_queue                       500     436     -64
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Dan Williams &lt;dan.j.williams@intel.com&gt;
+
+diff --git a/drivers/dma/fsldma.c b/drivers/dma/fsldma.c
+index 296f9e747fac..0bad741765c6 100644
+--- a/drivers/dma/fsldma.c
++++ b/drivers/dma/fsldma.c
+@@ -143,43 +143,45 @@ static int dma_is_idle(struct fsl_dma_chan *fsl_chan)
+ 
+ static void dma_start(struct fsl_dma_chan *fsl_chan)
+ {
+-	u32 mr_set = 0;
+-
+-	if (fsl_chan-&gt;feature &amp; FSL_DMA_CHAN_PAUSE_EXT) {
+-		DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;bcr, 0, 32);
+-		mr_set |= FSL_DMA_MR_EMP_EN;
+-	} else if ((fsl_chan-&gt;feature &amp; FSL_DMA_IP_MASK) == FSL_DMA_IP_85XX) {
+-		DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
+-			DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32)
+-				&amp; ~FSL_DMA_MR_EMP_EN, 32);
++	u32 mode;
++
++	mode = DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32);
++
++	if ((fsl_chan-&gt;feature &amp; FSL_DMA_IP_MASK) == FSL_DMA_IP_85XX) {
++		if (fsl_chan-&gt;feature &amp; FSL_DMA_CHAN_PAUSE_EXT) {
++			DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;bcr, 0, 32);
++			mode |= FSL_DMA_MR_EMP_EN;
++		} else {
++			mode &amp;= ~FSL_DMA_MR_EMP_EN;
++		}
+ 	}
+ 
+ 	if (fsl_chan-&gt;feature &amp; FSL_DMA_CHAN_START_EXT)
+-		mr_set |= FSL_DMA_MR_EMS_EN;
++		mode |= FSL_DMA_MR_EMS_EN;
+ 	else
+-		mr_set |= FSL_DMA_MR_CS;
++		mode |= FSL_DMA_MR_CS;
+ 
+-	DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
+-			DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32)
+-			| mr_set, 32);
++	DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, mode, 32);
+ }
+ 
+ static void dma_halt(struct fsl_dma_chan *fsl_chan)
+ {
++	u32 mode;
+ 	int i;
+ 
+-	DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
+-		DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32) | FSL_DMA_MR_CA,
+-		32);
+-	DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
+-		DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32) &amp; ~(FSL_DMA_MR_CS
+-		| FSL_DMA_MR_EMS_EN | FSL_DMA_MR_CA), 32);
++	mode = DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32);
++	mode |= FSL_DMA_MR_CA;
++	DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, mode, 32);
++
++	mode &amp;= ~(FSL_DMA_MR_CS | FSL_DMA_MR_EMS_EN | FSL_DMA_MR_CA);
++	DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, mode, 32);
+ 
+ 	for (i = 0; i &lt; 100; i++) {
+ 		if (dma_is_idle(fsl_chan))
+ 			break;
+ 		udelay(10);
+ 	}
++
+ 	if (i &gt;= 100 &amp;&amp; !dma_is_idle(fsl_chan))
+ 		dev_err(fsl_chan-&gt;dev, "DMA halt timeout!\n");
+ }
+@@ -231,22 +233,23 @@ static void append_ld_queue(struct fsl_dma_chan *fsl_chan,
+  */
+ static void fsl_chan_set_src_loop_size(struct fsl_dma_chan *fsl_chan, int size)
+ {
++	u32 mode;
++
++	mode = DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32);
++
+ 	switch (size) {
+ 	case 0:
+-		DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
+-			DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32) &amp;
+-			(~FSL_DMA_MR_SAHE), 32);
++		mode &amp;= ~FSL_DMA_MR_SAHE;
+ 		break;
+ 	case 1:
+ 	case 2:
+ 	case 4:
+ 	case 8:
+-		DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
+-			DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32) |
+-			FSL_DMA_MR_SAHE | (__ilog2(size) &lt;&lt; 14),
+-			32);
++		mode |= FSL_DMA_MR_SAHE | (__ilog2(size) &lt;&lt; 14);
+ 		break;
+ 	}
++
++	DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, mode, 32);
+ }
+ 
+ /**
+@@ -262,22 +265,23 @@ static void fsl_chan_set_src_loop_size(struct fsl_dma_chan *fsl_chan, int size)
+  */
+ static void fsl_chan_set_dest_loop_size(struct fsl_dma_chan *fsl_chan, int size)
+ {
++	u32 mode;
++
++	mode = DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32);
++
+ 	switch (size) {
+ 	case 0:
+-		DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
+-			DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32) &amp;
+-			(~FSL_DMA_MR_DAHE), 32);
++		mode &amp;= ~FSL_DMA_MR_DAHE;
+ 		break;
+ 	case 1:
+ 	case 2:
+ 	case 4:
+ 	case 8:
+-		DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
+-			DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32) |
+-			FSL_DMA_MR_DAHE | (__ilog2(size) &lt;&lt; 16),
+-			32);
++		mode |= FSL_DMA_MR_DAHE | (__ilog2(size) &lt;&lt; 16);
+ 		break;
+ 	}
++
++	DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, mode, 32);
+ }
+ 
+ /**
+@@ -294,11 +298,14 @@ static void fsl_chan_set_dest_loop_size(struct fsl_dma_chan *fsl_chan, int size)
+  */
+ static void fsl_chan_set_request_count(struct fsl_dma_chan *fsl_chan, int size)
+ {
++	u32 mode;
++
+ 	BUG_ON(size &gt; 1024);
+-	DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
+-		DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32)
+-			| ((__ilog2(size) &lt;&lt; 24) &amp; 0x0f000000),
+-		32);
++
++	mode = DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32);
++	mode |= (__ilog2(size) &lt;&lt; 24) &amp; 0x0f000000;
++
++	DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, mode, 32);
+ }
+ 
+ /**</pre><hr><pre>commit 0616fb003d4f799c4be62275242fc7ff9a968f84
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Mon Oct 26 16:50:10 2009 -0700
+
+    edac: i5400 fix missing CONFIG_PCI define
+    
+    When building without CONFIG_PCI the edac_pci_idx variable is unused,
+    causing a build-time warning.  Wrap the variable in #ifdef CONFIG_PCI,
+    just like the rest of the PCI support.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Doug Thompson &lt;dougthompson@xmission.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/drivers/edac/mpc85xx_edac.c b/drivers/edac/mpc85xx_edac.c
+index 157f6504f25e..cf27402af97b 100644
+--- a/drivers/edac/mpc85xx_edac.c
++++ b/drivers/edac/mpc85xx_edac.c
+@@ -26,7 +26,9 @@
+ #include "mpc85xx_edac.h"
+ 
+ static int edac_dev_idx;
++#ifdef CONFIG_PCI
+ static int edac_pci_idx;
++#endif
+ static int edac_mc_idx;
+ 
+ static u32 orig_ddr_err_disable;</pre><hr><pre>commit b4846251727a38a7f248e41308c060995371dd05
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Wed Sep 23 15:57:25 2009 -0700
+
+    edac: mpc85xx add mpc83xx support
+    
+    Add support for the Freescale MPC83xx memory controller to the existing
+    driver for the Freescale MPC85xx memory controller.  The only difference
+    between the two processors are in the CS_BNDS register parsing code, which
+    has been changed so it will work on both processors.
+    
+    The L2 cache controller does not exist on the MPC83xx, but the OF
+    subsystem will not use the driver if the device is not present in the OF
+    device tree.
+    
+    I had to change the nr_pages calculation to make the math work out.  I
+    checked it on my board and did the math by hand for a 64GB 85xx using 64K
+    pages.  In both cases, nr_pages * PAGE_SIZE comes out to the correct
+    value.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Doug Thompson &lt;dougthompson@xmission.com&gt;
+    Cc: Kumar Gala &lt;galak@gate.crashing.org&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/drivers/edac/Kconfig b/drivers/edac/Kconfig
+index a3ca18e2d7cf..b82ad57c1082 100644
+--- a/drivers/edac/Kconfig
++++ b/drivers/edac/Kconfig
+@@ -176,11 +176,11 @@ config EDAC_I5100
+ 	  San Clemente MCH.
+ 
+ config EDAC_MPC85XX
+-	tristate "Freescale MPC85xx"
+-	depends on EDAC_MM_EDAC &amp;&amp; FSL_SOC &amp;&amp; MPC85xx
++	tristate "Freescale MPC83xx / MPC85xx"
++	depends on EDAC_MM_EDAC &amp;&amp; FSL_SOC &amp;&amp; (PPC_83xx || MPC85xx)
+ 	help
+ 	  Support for error detection and correction on the Freescale
+-	  MPC8560, MPC8540, MPC8548
++	  MPC8349, MPC8560, MPC8540, MPC8548
+ 
+ config EDAC_MV64X60
+ 	tristate "Marvell MV64x60"
+diff --git a/drivers/edac/mpc85xx_edac.c b/drivers/edac/mpc85xx_edac.c
+index 1dd405e0e550..157f6504f25e 100644
+--- a/drivers/edac/mpc85xx_edac.c
++++ b/drivers/edac/mpc85xx_edac.c
+@@ -41,7 +41,9 @@ static u32 orig_pci_err_en;
+ #endif
+ 
+ static u32 orig_l2_err_disable;
++#ifdef CONFIG_MPC85xx
+ static u32 orig_hid1[2];
++#endif
+ 
+ /************************ MC SYSFS parts ***********************************/
+ 
+@@ -789,19 +791,20 @@ static void __devinit mpc85xx_init_csrows(struct mem_ctl_info *mci)
+ 		csrow = &amp;mci-&gt;csrows[index];
+ 		cs_bnds = in_be32(pdata-&gt;mc_vbase + MPC85XX_MC_CS_BNDS_0 +
+ 				  (index * MPC85XX_MC_CS_BNDS_OFS));
+-		start = (cs_bnds &amp; 0xfff0000) &lt;&lt; 4;
+-		end = ((cs_bnds &amp; 0xfff) &lt;&lt; 20);
+-		if (start)
+-			start |= 0xfffff;
+-		if (end)
+-			end |= 0xfffff;
++
++		start = (cs_bnds &amp; 0xffff0000) &gt;&gt; 16;
++		end   = (cs_bnds &amp; 0x0000ffff);
+ 
+ 		if (start == end)
+ 			continue;	/* not populated */
+ 
++		start &lt;&lt;= (24 - PAGE_SHIFT);
++		end   &lt;&lt;= (24 - PAGE_SHIFT);
++		end    |= (1 &lt;&lt; (24 - PAGE_SHIFT)) - 1;
++
+ 		csrow-&gt;first_page = start &gt;&gt; PAGE_SHIFT;
+ 		csrow-&gt;last_page = end &gt;&gt; PAGE_SHIFT;
+-		csrow-&gt;nr_pages = csrow-&gt;last_page + 1 - csrow-&gt;first_page;
++		csrow-&gt;nr_pages = end + 1 - start;
+ 		csrow-&gt;grain = 8;
+ 		csrow-&gt;mtype = mtype;
+ 		csrow-&gt;dtype = DEV_UNKNOWN;
+@@ -985,6 +988,7 @@ static struct of_device_id mpc85xx_mc_err_of_match[] = {
+ 	{ .compatible = "fsl,mpc8560-memory-controller", },
+ 	{ .compatible = "fsl,mpc8568-memory-controller", },
+ 	{ .compatible = "fsl,mpc8572-memory-controller", },
++	{ .compatible = "fsl,mpc8349-memory-controller", },
+ 	{ .compatible = "fsl,p2020-memory-controller", },
+ 	{},
+ };
+@@ -1001,13 +1005,13 @@ static struct of_platform_driver mpc85xx_mc_err_driver = {
+ 		   },
+ };
+ 
+-
++#ifdef CONFIG_MPC85xx
+ static void __init mpc85xx_mc_clear_rfxe(void *data)
+ {
+ 	orig_hid1[smp_processor_id()] = mfspr(SPRN_HID1);
+ 	mtspr(SPRN_HID1, (orig_hid1[smp_processor_id()] &amp; ~0x20000));
+ }
+-
++#endif
+ 
+ static int __init mpc85xx_mc_init(void)
+ {
+@@ -1040,26 +1044,32 @@ static int __init mpc85xx_mc_init(void)
+ 		printk(KERN_WARNING EDAC_MOD_STR "PCI fails to register\n");
+ #endif
+ 
++#ifdef CONFIG_MPC85xx
+ 	/*
+ 	 * need to clear HID1[RFXE] to disable machine check int
+ 	 * so we can catch it
+ 	 */
+ 	if (edac_op_state == EDAC_OPSTATE_INT)
+ 		on_each_cpu(mpc85xx_mc_clear_rfxe, NULL, 0);
++#endif
+ 
+ 	return 0;
+ }
+ 
+ module_init(mpc85xx_mc_init);
+ 
++#ifdef CONFIG_MPC85xx
+ static void __exit mpc85xx_mc_restore_hid1(void *data)
+ {
+ 	mtspr(SPRN_HID1, orig_hid1[smp_processor_id()]);
+ }
++#endif
+ 
+ static void __exit mpc85xx_mc_exit(void)
+ {
++#ifdef CONFIG_MPC85xx
+ 	on_each_cpu(mpc85xx_mc_restore_hid1, NULL, 0);
++#endif
+ #ifdef CONFIG_PCI
+ 	of_unregister_platform_driver(&amp;mpc85xx_pci_err_driver);
+ #endif</pre><hr><pre>commit 58f055e5314856a3badfa61fe144347903488989
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Wed Sep 23 22:59:44 2009 +0200
+
+    hwmon: (ltc4245) Clear faults at startup
+    
+    When power is applied to the ltc4245 chip it sometimes reports spurious
+    faults, which are exposed as alarms in the hwmon output. Clear the fault
+    register when the driver is installed to clear the alarms.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Jean Delvare &lt;khali@linux-fr.org&gt;
+
+diff --git a/drivers/hwmon/ltc4245.c b/drivers/hwmon/ltc4245.c
+index 034b2c515848..e38964333612 100644
+--- a/drivers/hwmon/ltc4245.c
++++ b/drivers/hwmon/ltc4245.c
+@@ -382,7 +382,8 @@ static int ltc4245_probe(struct i2c_client *client,
+ 	mutex_init(&amp;data-&gt;update_lock);
+ 
+ 	/* Initialize the LTC4245 chip */
+-	/* TODO */
++	i2c_smbus_write_byte_data(client, LTC4245_FAULT1, 0x00);
++	i2c_smbus_write_byte_data(client, LTC4245_FAULT2, 0x00);
+ 
+ 	/* Register sysfs hooks */
+ 	ret = sysfs_create_group(&amp;client-&gt;dev.kobj, &amp;ltc4245_group);</pre><hr><pre>commit b6b9d69602aec2c869dd2ca730aab2cc58473c2d
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Wed Sep 23 22:59:43 2009 +0200
+
+    hwmon: (ltc4215) Clear faults at startup
+    
+    When power is applied to the ltc4215 chip it sometimes reports spurious
+    faults. The faults are not yet exposed via sysfs, however it may be useful
+    for userspace to read the fault register directly with the i2cget command.
+    Clear the fault register when the driver is installed so userspace doesn't
+    have to worry about spurious fault indications.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Jean Delvare &lt;khali@linux-fr.org&gt;
+
+diff --git a/drivers/hwmon/ltc4215.c b/drivers/hwmon/ltc4215.c
+index 9386e2a39211..6c9a04136e0a 100644
+--- a/drivers/hwmon/ltc4215.c
++++ b/drivers/hwmon/ltc4215.c
+@@ -259,7 +259,7 @@ static int ltc4215_probe(struct i2c_client *client,
+ 	mutex_init(&amp;data-&gt;update_lock);
+ 
+ 	/* Initialize the LTC4215 chip */
+-	/* TODO */
++	i2c_smbus_write_byte_data(client, LTC4215_FAULT, 0x00);
+ 
+ 	/* Register sysfs hooks */
+ 	ret = sysfs_create_group(&amp;client-&gt;dev.kobj, &amp;ltc4215_group);</pre><hr><pre>commit 49dc9efed05ad3e49000097ce1ec31cd3bbc909b
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Wed Sep 23 22:59:41 2009 +0200
+
+    hwmon: (adm1031) Add sysfs files for temperature offsets
+    
+    The ADM1030/ADM1031 chips have temperature offset registers, for both the
+    local and remote temperature sensors. Following the example set forth in
+    the LM90/ADM1032 driver, expose the offset registers to userspace.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Jean Delvare &lt;khali@linux-fr.org&gt;
+
+diff --git a/drivers/hwmon/adm1031.c b/drivers/hwmon/adm1031.c
+index 789441830cd8..56905955352c 100644
+--- a/drivers/hwmon/adm1031.c
++++ b/drivers/hwmon/adm1031.c
+@@ -37,6 +37,7 @@
+ #define ADM1031_REG_PWM			(0x22)
+ #define ADM1031_REG_FAN_MIN(nr)		(0x10 + (nr))
+ 
++#define ADM1031_REG_TEMP_OFFSET(nr)	(0x0d + (nr))
+ #define ADM1031_REG_TEMP_MAX(nr)	(0x14 + 4 * (nr))
+ #define ADM1031_REG_TEMP_MIN(nr)	(0x15 + 4 * (nr))
+ #define ADM1031_REG_TEMP_CRIT(nr)	(0x16 + 4 * (nr))
+@@ -93,6 +94,7 @@ struct adm1031_data {
+ 	u8 auto_temp_min[3];
+ 	u8 auto_temp_off[3];
+ 	u8 auto_temp_max[3];
++	s8 temp_offset[3];
+ 	s8 temp_min[3];
+ 	s8 temp_max[3];
+ 	s8 temp_crit[3];
+@@ -145,6 +147,10 @@ adm1031_write_value(struct i2c_client *client, u8 reg, unsigned int value)
+ 
+ #define TEMP_FROM_REG_EXT(val, ext)	(TEMP_FROM_REG(val) + (ext) * 125)
+ 
++#define TEMP_OFFSET_TO_REG(val)		(TEMP_TO_REG(val) &amp; 0x8f)
++#define TEMP_OFFSET_FROM_REG(val)	TEMP_FROM_REG((val) &lt; 0 ? \
++						      (val) | 0x70 : (val))
++
+ #define FAN_FROM_REG(reg, div)		((reg) ? (11250 * 60) / ((reg) * (div)) : 0)
+ 
+ static int FAN_TO_REG(int reg, int div)
+@@ -585,6 +591,14 @@ static ssize_t show_temp(struct device *dev,
+ 	    (((data-&gt;ext_temp[nr] &gt;&gt; ((nr - 1) * 3)) &amp; 7));
+ 	return sprintf(buf, "%d\n", TEMP_FROM_REG_EXT(data-&gt;temp[nr], ext));
+ }
++static ssize_t show_temp_offset(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	int nr = to_sensor_dev_attr(attr)-&gt;index;
++	struct adm1031_data *data = adm1031_update_device(dev);
++	return sprintf(buf, "%d\n",
++		       TEMP_OFFSET_FROM_REG(data-&gt;temp_offset[nr]));
++}
+ static ssize_t show_temp_min(struct device *dev,
+ 			     struct device_attribute *attr, char *buf)
+ {
+@@ -606,6 +620,24 @@ static ssize_t show_temp_crit(struct device *dev,
+ 	struct adm1031_data *data = adm1031_update_device(dev);
+ 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data-&gt;temp_crit[nr]));
+ }
++static ssize_t set_temp_offset(struct device *dev,
++			       struct device_attribute *attr, const char *buf,
++			       size_t count)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct adm1031_data *data = i2c_get_clientdata(client);
++	int nr = to_sensor_dev_attr(attr)-&gt;index;
++	int val;
++
++	val = simple_strtol(buf, NULL, 10);
++	val = SENSORS_LIMIT(val, -15000, 15000);
++	mutex_lock(&amp;data-&gt;update_lock);
++	data-&gt;temp_offset[nr] = TEMP_OFFSET_TO_REG(val);
++	adm1031_write_value(client, ADM1031_REG_TEMP_OFFSET(nr),
++			    data-&gt;temp_offset[nr]);
++	mutex_unlock(&amp;data-&gt;update_lock);
++	return count;
++}
+ static ssize_t set_temp_min(struct device *dev, struct device_attribute *attr,
+ 			    const char *buf, size_t count)
+ {
+@@ -661,6 +693,8 @@ static ssize_t set_temp_crit(struct device *dev, struct device_attribute *attr,
+ #define temp_reg(offset)						\
+ static SENSOR_DEVICE_ATTR(temp##offset##_input, S_IRUGO,		\
+ 		show_temp, NULL, offset - 1);				\
++static SENSOR_DEVICE_ATTR(temp##offset##_offset, S_IRUGO | S_IWUSR,	\
++		show_temp_offset, set_temp_offset, offset - 1);		\
+ static SENSOR_DEVICE_ATTR(temp##offset##_min, S_IRUGO | S_IWUSR,	\
+ 		show_temp_min, set_temp_min, offset - 1);		\
+ static SENSOR_DEVICE_ATTR(temp##offset##_max, S_IRUGO | S_IWUSR,	\
+@@ -714,6 +748,7 @@ static struct attribute *adm1031_attributes[] = {
+ 	&amp;sensor_dev_attr_pwm1.dev_attr.attr,
+ 	&amp;sensor_dev_attr_auto_fan1_channel.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp1_input.dev_attr.attr,
++	&amp;sensor_dev_attr_temp1_offset.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp1_min.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp1_min_alarm.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp1_max.dev_attr.attr,
+@@ -721,6 +756,7 @@ static struct attribute *adm1031_attributes[] = {
+ 	&amp;sensor_dev_attr_temp1_crit.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp1_crit_alarm.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp2_input.dev_attr.attr,
++	&amp;sensor_dev_attr_temp2_offset.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp2_min.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp2_min_alarm.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp2_max.dev_attr.attr,
+@@ -757,6 +793,7 @@ static struct attribute *adm1031_attributes_opt[] = {
+ 	&amp;sensor_dev_attr_pwm2.dev_attr.attr,
+ 	&amp;sensor_dev_attr_auto_fan2_channel.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp3_input.dev_attr.attr,
++	&amp;sensor_dev_attr_temp3_offset.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp3_min.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp3_min_alarm.dev_attr.attr,
+ 	&amp;sensor_dev_attr_temp3_max.dev_attr.attr,
+@@ -937,6 +974,9 @@ static struct adm1031_data *adm1031_update_device(struct device *dev)
+ 			}
+ 			data-&gt;temp[chan] = newh;
+ 
++			data-&gt;temp_offset[chan] =
++			    adm1031_read_value(client,
++					       ADM1031_REG_TEMP_OFFSET(chan));
+ 			data-&gt;temp_min[chan] =
+ 			    adm1031_read_value(client,
+ 					       ADM1031_REG_TEMP_MIN(chan));</pre><hr><pre>commit bbea0b6e0d214ef1511b9c6ccf3af26b38f0af7d
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Tue Sep 8 17:53:04 2009 -0700
+
+    fsldma: Add DMA_SLAVE support
+    
+    Use the DMA_SLAVE capability of the DMAEngine API to copy/from a
+    scatterlist into an arbitrary list of hardware address/length pairs.
+    
+    This allows a single DMA transaction to copy data from several different
+    devices into a scatterlist at the same time.
+    
+    This also adds support to enable some controller-specific features such as
+    external start and external pause for a DMA transaction.
+    
+    [dan.j.williams@intel.com: rebased on tx_list movement]
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Acked-by: Li Yang &lt;leoli@freescale.com&gt;
+    Acked-by: Kumar Gala &lt;galak@kernel.crashing.org&gt;
+    Signed-off-by: Dan Williams &lt;dan.j.williams@intel.com&gt;
+
+diff --git a/arch/powerpc/include/asm/fsldma.h b/arch/powerpc/include/asm/fsldma.h
+new file mode 100644
+index 000000000000..a67aeed17d40
+--- /dev/null
++++ b/arch/powerpc/include/asm/fsldma.h
+@@ -0,0 +1,136 @@
++/*
++ * Freescale MPC83XX / MPC85XX DMA Controller
++ *
++ * Copyright (c) 2009 Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++
++#ifndef __ARCH_POWERPC_ASM_FSLDMA_H__
++#define __ARCH_POWERPC_ASM_FSLDMA_H__
++
++#include &lt;linux/dmaengine.h&gt;
++
++/*
++ * Definitions for the Freescale DMA controller's DMA_SLAVE implemention
++ *
++ * The Freescale DMA_SLAVE implementation was designed to handle many-to-many
++ * transfers. An example usage would be an accelerated copy between two
++ * scatterlists. Another example use would be an accelerated copy from
++ * multiple non-contiguous device buffers into a single scatterlist.
++ *
++ * A DMA_SLAVE transaction is defined by a struct fsl_dma_slave. This
++ * structure contains a list of hardware addresses that should be copied
++ * to/from the scatterlist passed into device_prep_slave_sg(). The structure
++ * also has some fields to enable hardware-specific features.
++ */
++
++/**
++ * struct fsl_dma_hw_addr
++ * @entry: linked list entry
++ * @address: the hardware address
++ * @length: length to transfer
++ *
++ * Holds a single physical hardware address / length pair for use
++ * with the DMAEngine DMA_SLAVE API.
++ */
++struct fsl_dma_hw_addr {
++	struct list_head entry;
++
++	dma_addr_t address;
++	size_t length;
++};
++
++/**
++ * struct fsl_dma_slave
++ * @addresses: a linked list of struct fsl_dma_hw_addr structures
++ * @request_count: value for DMA request count
++ * @src_loop_size: setup and enable constant source-address DMA transfers
++ * @dst_loop_size: setup and enable constant destination address DMA transfers
++ * @external_start: enable externally started DMA transfers
++ * @external_pause: enable externally paused DMA transfers
++ *
++ * Holds a list of address / length pairs for use with the DMAEngine
++ * DMA_SLAVE API implementation for the Freescale DMA controller.
++ */
++struct fsl_dma_slave {
++
++	/* List of hardware address/length pairs */
++	struct list_head addresses;
++
++	/* Support for extra controller features */
++	unsigned int request_count;
++	unsigned int src_loop_size;
++	unsigned int dst_loop_size;
++	bool external_start;
++	bool external_pause;
++};
++
++/**
++ * fsl_dma_slave_append - add an address/length pair to a struct fsl_dma_slave
++ * @slave: the &amp;struct fsl_dma_slave to add to
++ * @address: the hardware address to add
++ * @length: the length of bytes to transfer from @address
++ *
++ * Add a hardware address/length pair to a struct fsl_dma_slave. Returns 0 on
++ * success, -ERRNO otherwise.
++ */
++static inline int fsl_dma_slave_append(struct fsl_dma_slave *slave,
++				       dma_addr_t address, size_t length)
++{
++	struct fsl_dma_hw_addr *addr;
++
++	addr = kzalloc(sizeof(*addr), GFP_ATOMIC);
++	if (!addr)
++		return -ENOMEM;
++
++	INIT_LIST_HEAD(&amp;addr-&gt;entry);
++	addr-&gt;address = address;
++	addr-&gt;length = length;
++
++	list_add_tail(&amp;addr-&gt;entry, &amp;slave-&gt;addresses);
++	return 0;
++}
++
++/**
++ * fsl_dma_slave_free - free a struct fsl_dma_slave
++ * @slave: the struct fsl_dma_slave to free
++ *
++ * Free a struct fsl_dma_slave and all associated address/length pairs
++ */
++static inline void fsl_dma_slave_free(struct fsl_dma_slave *slave)
++{
++	struct fsl_dma_hw_addr *addr, *tmp;
++
++	if (slave) {
++		list_for_each_entry_safe(addr, tmp, &amp;slave-&gt;addresses, entry) {
++			list_del(&amp;addr-&gt;entry);
++			kfree(addr);
++		}
++
++		kfree(slave);
++	}
++}
++
++/**
++ * fsl_dma_slave_alloc - allocate a struct fsl_dma_slave
++ * @gfp: the flags to pass to kmalloc when allocating this structure
++ *
++ * Allocate a struct fsl_dma_slave for use by the DMA_SLAVE API. Returns a new
++ * struct fsl_dma_slave on success, or NULL on failure.
++ */
++static inline struct fsl_dma_slave *fsl_dma_slave_alloc(gfp_t gfp)
++{
++	struct fsl_dma_slave *slave;
++
++	slave = kzalloc(sizeof(*slave), gfp);
++	if (!slave)
++		return NULL;
++
++	INIT_LIST_HEAD(&amp;slave-&gt;addresses);
++	return slave;
++}
++
++#endif /* __ARCH_POWERPC_ASM_FSLDMA_H__ */
+diff --git a/drivers/dma/fsldma.c b/drivers/dma/fsldma.c
+index 7a0cb6064f83..296f9e747fac 100644
+--- a/drivers/dma/fsldma.c
++++ b/drivers/dma/fsldma.c
+@@ -34,6 +34,7 @@
+ #include &lt;linux/dmapool.h&gt;
+ #include &lt;linux/of_platform.h&gt;
+ 
++#include &lt;asm/fsldma.h&gt;
+ #include "fsldma.h"
+ 
+ static void dma_init(struct fsl_dma_chan *fsl_chan)
+@@ -551,6 +552,229 @@ static struct dma_async_tx_descriptor *fsl_dma_prep_memcpy(
+ 	return NULL;
+ }
+ 
++/**
++ * fsl_dma_prep_slave_sg - prepare descriptors for a DMA_SLAVE transaction
++ * @chan: DMA channel
++ * @sgl: scatterlist to transfer to/from
++ * @sg_len: number of entries in @scatterlist
++ * @direction: DMA direction
++ * @flags: DMAEngine flags
++ *
++ * Prepare a set of descriptors for a DMA_SLAVE transaction. Following the
++ * DMA_SLAVE API, this gets the device-specific information from the
++ * chan-&gt;private variable.
++ */
++static struct dma_async_tx_descriptor *fsl_dma_prep_slave_sg(
++	struct dma_chan *chan, struct scatterlist *sgl, unsigned int sg_len,
++	enum dma_data_direction direction, unsigned long flags)
++{
++	struct fsl_dma_chan *fsl_chan;
++	struct fsl_desc_sw *first = NULL, *prev = NULL, *new = NULL;
++	struct fsl_dma_slave *slave;
++	struct list_head *tx_list;
++	size_t copy;
++
++	int i;
++	struct scatterlist *sg;
++	size_t sg_used;
++	size_t hw_used;
++	struct fsl_dma_hw_addr *hw;
++	dma_addr_t dma_dst, dma_src;
++
++	if (!chan)
++		return NULL;
++
++	if (!chan-&gt;private)
++		return NULL;
++
++	fsl_chan = to_fsl_chan(chan);
++	slave = chan-&gt;private;
++
++	if (list_empty(&amp;slave-&gt;addresses))
++		return NULL;
++
++	hw = list_first_entry(&amp;slave-&gt;addresses, struct fsl_dma_hw_addr, entry);
++	hw_used = 0;
++
++	/*
++	 * Build the hardware transaction to copy from the scatterlist to
++	 * the hardware, or from the hardware to the scatterlist
++	 *
++	 * If you are copying from the hardware to the scatterlist and it
++	 * takes two hardware entries to fill an entire page, then both
++	 * hardware entries will be coalesced into the same page
++	 *
++	 * If you are copying from the scatterlist to the hardware and a
++	 * single page can fill two hardware entries, then the data will
++	 * be read out of the page into the first hardware entry, and so on
++	 */
++	for_each_sg(sgl, sg, sg_len, i) {
++		sg_used = 0;
++
++		/* Loop until the entire scatterlist entry is used */
++		while (sg_used &lt; sg_dma_len(sg)) {
++
++			/*
++			 * If we've used up the current hardware address/length
++			 * pair, we need to load a new one
++			 *
++			 * This is done in a while loop so that descriptors with
++			 * length == 0 will be skipped
++			 */
++			while (hw_used &gt;= hw-&gt;length) {
++
++				/*
++				 * If the current hardware entry is the last
++				 * entry in the list, we're finished
++				 */
++				if (list_is_last(&amp;hw-&gt;entry, &amp;slave-&gt;addresses))
++					goto finished;
++
++				/* Get the next hardware address/length pair */
++				hw = list_entry(hw-&gt;entry.next,
++						struct fsl_dma_hw_addr, entry);
++				hw_used = 0;
++			}
++
++			/* Allocate the link descriptor from DMA pool */
++			new = fsl_dma_alloc_descriptor(fsl_chan);
++			if (!new) {
++				dev_err(fsl_chan-&gt;dev, "No free memory for "
++						       "link descriptor\n");
++				goto fail;
++			}
++#ifdef FSL_DMA_LD_DEBUG
++			dev_dbg(fsl_chan-&gt;dev, "new link desc alloc %p\n", new);
++#endif
++
++			/*
++			 * Calculate the maximum number of bytes to transfer,
++			 * making sure it is less than the DMA controller limit
++			 */
++			copy = min_t(size_t, sg_dma_len(sg) - sg_used,
++					     hw-&gt;length - hw_used);
++			copy = min_t(size_t, copy, FSL_DMA_BCR_MAX_CNT);
++
++			/*
++			 * DMA_FROM_DEVICE
++			 * from the hardware to the scatterlist
++			 *
++			 * DMA_TO_DEVICE
++			 * from the scatterlist to the hardware
++			 */
++			if (direction == DMA_FROM_DEVICE) {
++				dma_src = hw-&gt;address + hw_used;
++				dma_dst = sg_dma_address(sg) + sg_used;
++			} else {
++				dma_src = sg_dma_address(sg) + sg_used;
++				dma_dst = hw-&gt;address + hw_used;
++			}
++
++			/* Fill in the descriptor */
++			set_desc_cnt(fsl_chan, &amp;new-&gt;hw, copy);
++			set_desc_src(fsl_chan, &amp;new-&gt;hw, dma_src);
++			set_desc_dest(fsl_chan, &amp;new-&gt;hw, dma_dst);
++
++			/*
++			 * If this is not the first descriptor, chain the
++			 * current descriptor after the previous descriptor
++			 */
++			if (!first) {
++				first = new;
++			} else {
++				set_desc_next(fsl_chan, &amp;prev-&gt;hw,
++					      new-&gt;async_tx.phys);
++			}
++
++			new-&gt;async_tx.cookie = 0;
++			async_tx_ack(&amp;new-&gt;async_tx);
++
++			prev = new;
++			sg_used += copy;
++			hw_used += copy;
++
++			/* Insert the link descriptor into the LD ring */
++			list_add_tail(&amp;new-&gt;node, &amp;first-&gt;tx_list);
++		}
++	}
++
++finished:
++
++	/* All of the hardware address/length pairs had length == 0 */
++	if (!first || !new)
++		return NULL;
++
++	new-&gt;async_tx.flags = flags;
++	new-&gt;async_tx.cookie = -EBUSY;
++
++	/* Set End-of-link to the last link descriptor of new list */
++	set_ld_eol(fsl_chan, new);
++
++	/* Enable extra controller features */
++	if (fsl_chan-&gt;set_src_loop_size)
++		fsl_chan-&gt;set_src_loop_size(fsl_chan, slave-&gt;src_loop_size);
++
++	if (fsl_chan-&gt;set_dest_loop_size)
++		fsl_chan-&gt;set_dest_loop_size(fsl_chan, slave-&gt;dst_loop_size);
++
++	if (fsl_chan-&gt;toggle_ext_start)
++		fsl_chan-&gt;toggle_ext_start(fsl_chan, slave-&gt;external_start);
++
++	if (fsl_chan-&gt;toggle_ext_pause)
++		fsl_chan-&gt;toggle_ext_pause(fsl_chan, slave-&gt;external_pause);
++
++	if (fsl_chan-&gt;set_request_count)
++		fsl_chan-&gt;set_request_count(fsl_chan, slave-&gt;request_count);
++
++	return &amp;first-&gt;async_tx;
++
++fail:
++	/* If first was not set, then we failed to allocate the very first
++	 * descriptor, and we're done */
++	if (!first)
++		return NULL;
++
++	/*
++	 * First is set, so all of the descriptors we allocated have been added
++	 * to first-&gt;tx_list, INCLUDING "first" itself. Therefore we
++	 * must traverse the list backwards freeing each descriptor in turn
++	 *
++	 * We're re-using variables for the loop, oh well
++	 */
++	tx_list = &amp;first-&gt;tx_list;
++	list_for_each_entry_safe_reverse(new, prev, tx_list, node) {
++		list_del_init(&amp;new-&gt;node);
++		dma_pool_free(fsl_chan-&gt;desc_pool, new, new-&gt;async_tx.phys);
++	}
++
++	return NULL;
++}
++
++static void fsl_dma_device_terminate_all(struct dma_chan *chan)
++{
++	struct fsl_dma_chan *fsl_chan;
++	struct fsl_desc_sw *desc, *tmp;
++	unsigned long flags;
++
++	if (!chan)
++		return;
++
++	fsl_chan = to_fsl_chan(chan);
++
++	/* Halt the DMA engine */
++	dma_halt(fsl_chan);
++
++	spin_lock_irqsave(&amp;fsl_chan-&gt;desc_lock, flags);
++
++	/* Remove and free all of the descriptors in the LD queue */
++	list_for_each_entry_safe(desc, tmp, &amp;fsl_chan-&gt;ld_queue, node) {
++		list_del(&amp;desc-&gt;node);
++		dma_pool_free(fsl_chan-&gt;desc_pool, desc, desc-&gt;async_tx.phys);
++	}
++
++	spin_unlock_irqrestore(&amp;fsl_chan-&gt;desc_lock, flags);
++}
++
+ /**
+  * fsl_dma_update_completed_cookie - Update the completed cookie.
+  * @fsl_chan : Freescale DMA channel
+@@ -977,12 +1201,15 @@ static int __devinit of_fsl_dma_probe(struct of_device *dev,
+ 
+ 	dma_cap_set(DMA_MEMCPY, fdev-&gt;common.cap_mask);
+ 	dma_cap_set(DMA_INTERRUPT, fdev-&gt;common.cap_mask);
++	dma_cap_set(DMA_SLAVE, fdev-&gt;common.cap_mask);
+ 	fdev-&gt;common.device_alloc_chan_resources = fsl_dma_alloc_chan_resources;
+ 	fdev-&gt;common.device_free_chan_resources = fsl_dma_free_chan_resources;
+ 	fdev-&gt;common.device_prep_dma_interrupt = fsl_dma_prep_interrupt;
+ 	fdev-&gt;common.device_prep_dma_memcpy = fsl_dma_prep_memcpy;
+ 	fdev-&gt;common.device_is_tx_complete = fsl_dma_is_complete;
+ 	fdev-&gt;common.device_issue_pending = fsl_dma_memcpy_issue_pending;
++	fdev-&gt;common.device_prep_slave_sg = fsl_dma_prep_slave_sg;
++	fdev-&gt;common.device_terminate_all = fsl_dma_device_terminate_all;
+ 	fdev-&gt;common.dev = &amp;dev-&gt;dev;
+ 
+ 	fdev-&gt;irq = irq_of_parse_and_map(dev-&gt;node, 0);</pre><hr><pre>commit e6c7ecb64e08ef346cb7062b4a5421f00bc602bd
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Tue Sep 8 17:53:04 2009 -0700
+
+    fsldma: split apart external pause and request count features
+    
+    When using the Freescale DMA controller in external control mode, both the
+    request count and external pause bits need to be setup correctly. This was
+    being done with the same function.
+    
+    The 83xx controller lacks the external pause feature, but has a similar
+    feature called external start. This feature requires that the request count
+    bits be setup correctly.
+    
+    Split the function into two parts, to make it possible to use the external
+    start feature on the 83xx controller.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Dan Williams &lt;dan.j.williams@intel.com&gt;
+
+diff --git a/drivers/dma/fsldma.c b/drivers/dma/fsldma.c
+index 73dd74823195..7a0cb6064f83 100644
+--- a/drivers/dma/fsldma.c
++++ b/drivers/dma/fsldma.c
+@@ -280,28 +280,40 @@ static void fsl_chan_set_dest_loop_size(struct fsl_dma_chan *fsl_chan, int size)
+ }
+ 
+ /**
+- * fsl_chan_toggle_ext_pause - Toggle channel external pause status
++ * fsl_chan_set_request_count - Set DMA Request Count for external control
+  * @fsl_chan : Freescale DMA channel
+- * @size     : Pause control size, 0 for disable external pause control.
+- *             The maximum is 1024.
++ * @size     : Number of bytes to transfer in a single request
++ *
++ * The Freescale DMA channel can be controlled by the external signal DREQ#.
++ * The DMA request count is how many bytes are allowed to transfer before
++ * pausing the channel, after which a new assertion of DREQ# resumes channel
++ * operation.
+  *
+- * The Freescale DMA channel can be controlled by the external
+- * signal DREQ#. The pause control size is how many bytes are allowed
+- * to transfer before pausing the channel, after which a new assertion
+- * of DREQ# resumes channel operation.
++ * A size of 0 disables external pause control. The maximum size is 1024.
+  */
+-static void fsl_chan_toggle_ext_pause(struct fsl_dma_chan *fsl_chan, int size)
++static void fsl_chan_set_request_count(struct fsl_dma_chan *fsl_chan, int size)
+ {
+-	if (size &gt; 1024)
+-		return;
++	BUG_ON(size &gt; 1024);
++	DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
++		DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32)
++			| ((__ilog2(size) &lt;&lt; 24) &amp; 0x0f000000),
++		32);
++}
+ 
+-	if (size) {
+-		DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
+-			DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32)
+-				| ((__ilog2(size) &lt;&lt; 24) &amp; 0x0f000000),
+-			32);
++/**
++ * fsl_chan_toggle_ext_pause - Toggle channel external pause status
++ * @fsl_chan : Freescale DMA channel
++ * @enable   : 0 is disabled, 1 is enabled.
++ *
++ * The Freescale DMA channel can be controlled by the external signal DREQ#.
++ * The DMA Request Count feature should be used in addition to this feature
++ * to set the number of bytes to transfer before pausing the channel.
++ */
++static void fsl_chan_toggle_ext_pause(struct fsl_dma_chan *fsl_chan, int enable)
++{
++	if (enable)
+ 		fsl_chan-&gt;feature |= FSL_DMA_CHAN_PAUSE_EXT;
+-	} else
++	else
+ 		fsl_chan-&gt;feature &amp;= ~FSL_DMA_CHAN_PAUSE_EXT;
+ }
+ 
+@@ -885,6 +897,7 @@ static int __devinit fsl_dma_chan_probe(struct fsl_dma_device *fdev,
+ 		new_fsl_chan-&gt;toggle_ext_start = fsl_chan_toggle_ext_start;
+ 		new_fsl_chan-&gt;set_src_loop_size = fsl_chan_set_src_loop_size;
+ 		new_fsl_chan-&gt;set_dest_loop_size = fsl_chan_set_dest_loop_size;
++		new_fsl_chan-&gt;set_request_count = fsl_chan_set_request_count;
+ 	}
+ 
+ 	spin_lock_init(&amp;new_fsl_chan-&gt;desc_lock);
+diff --git a/drivers/dma/fsldma.h b/drivers/dma/fsldma.h
+index 4493afed53f0..0df14cbb8ca3 100644
+--- a/drivers/dma/fsldma.h
++++ b/drivers/dma/fsldma.h
+@@ -144,10 +144,11 @@ struct fsl_dma_chan {
+ 	struct tasklet_struct tasklet;
+ 	u32 feature;
+ 
+-	void (*toggle_ext_pause)(struct fsl_dma_chan *fsl_chan, int size);
++	void (*toggle_ext_pause)(struct fsl_dma_chan *fsl_chan, int enable);
+ 	void (*toggle_ext_start)(struct fsl_dma_chan *fsl_chan, int enable);
+ 	void (*set_src_loop_size)(struct fsl_dma_chan *fsl_chan, int size);
+ 	void (*set_dest_loop_size)(struct fsl_dma_chan *fsl_chan, int size);
++	void (*set_request_count)(struct fsl_dma_chan *fsl_chan, int size);
+ };
+ 
+ #define to_fsl_chan(chan) container_of(chan, struct fsl_dma_chan, common)</pre><hr><pre>commit 43a1a3ed6bf5a1b9ae197b4f5f20033baf19db61
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Thu May 28 09:26:40 2009 +0000
+
+    fsldma: do not clear bandwidth control bits on the 83xx controller
+    
+    The 83xx controller does not support the external pause feature. The bit
+    in the mode register that controls external pause on the 85xx controller
+    happens to be part of the bandwidth control settings for the 83xx
+    controller.
+    
+    This patch fixes the driver so that it only clears the external pause bit
+    if the hardware is the 85xx controller. When driving the 83xx controller,
+    the bit is left untouched. This follows the existing convention that mode
+    registers settings are not touched unless necessary.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Dan Williams &lt;dan.j.williams@intel.com&gt;
+
+diff --git a/drivers/dma/fsldma.c b/drivers/dma/fsldma.c
+index 10bcf0cb0efc..6e60c77a145c 100644
+--- a/drivers/dma/fsldma.c
++++ b/drivers/dma/fsldma.c
+@@ -147,10 +147,11 @@ static void dma_start(struct fsl_dma_chan *fsl_chan)
+ 	if (fsl_chan-&gt;feature &amp; FSL_DMA_CHAN_PAUSE_EXT) {
+ 		DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;bcr, 0, 32);
+ 		mr_set |= FSL_DMA_MR_EMP_EN;
+-	} else
++	} else if ((fsl_chan-&gt;feature &amp; FSL_DMA_IP_MASK) == FSL_DMA_IP_85XX) {
+ 		DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr,
+ 			DMA_IN(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, 32)
+ 				&amp; ~FSL_DMA_MR_EMP_EN, 32);
++	}
+ 
+ 	if (fsl_chan-&gt;feature &amp; FSL_DMA_CHAN_START_EXT)
+ 		mr_set |= FSL_DMA_MR_EMS_EN;</pre><hr><pre>commit be30b226f2ae618cd719e40267d9923db1db9001
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Thu May 28 09:20:42 2009 +0000
+
+    fsldma: enable external start for the 83xx controller
+    
+    The 83xx controller has external start capability, but lacks external pause
+    capability. Hook up the external start function pointer for the 83xx
+    controller.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Dan Williams &lt;dan.j.williams@intel.com&gt;
+
+diff --git a/drivers/dma/fsldma.c b/drivers/dma/fsldma.c
+index a1cb25e277b5..10bcf0cb0efc 100644
+--- a/drivers/dma/fsldma.c
++++ b/drivers/dma/fsldma.c
+@@ -877,9 +877,9 @@ static int __devinit fsl_dma_chan_probe(struct fsl_dma_device *fdev,
+ 
+ 	switch (new_fsl_chan-&gt;feature &amp; FSL_DMA_IP_MASK) {
+ 	case FSL_DMA_IP_85XX:
+-		new_fsl_chan-&gt;toggle_ext_start = fsl_chan_toggle_ext_start;
+ 		new_fsl_chan-&gt;toggle_ext_pause = fsl_chan_toggle_ext_pause;
+ 	case FSL_DMA_IP_83XX:
++		new_fsl_chan-&gt;toggle_ext_start = fsl_chan_toggle_ext_start;
+ 		new_fsl_chan-&gt;set_src_loop_size = fsl_chan_set_src_loop_size;
+ 		new_fsl_chan-&gt;set_dest_loop_size = fsl_chan_set_dest_loop_size;
+ 	}</pre>
+    <div class="pagination">
+        <a href='16_5.html'>&lt;&lt;Prev</a><a href='16.html'>1</a><a href='16_2.html'>2</a><a href='16_3.html'>3</a><a href='16_4.html'>4</a><a href='16_5.html'>5</a><span>[6]</span><a href='16_7.html'>7</a><a href='16_7.html'>Next&gt;&gt;</a>
+    <div>
+</body>

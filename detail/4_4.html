@@ -1,0 +1,1278 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_3.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><span>[4]</span><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_5.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 6aab7fee7a24395db1b556a5e5cf30aa2627c2be
+Author: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+Date:   Wed Jan 27 14:28:28 2016 -0700
+
+    staging: comedi: ni_mio_common: adds finite regeneration to AO output
+    
+    This patch implements for analog output the reinterpretation of stop_arg
+    when stop_src == TRIG_NONE to allow the user to specify the length of the
+    buffer that should be repeated.  The intent is to allow a user to have a
+    specific buffer repeated as-is indefinitely.  The contents of the DMA
+    buffer can be left static or changed by the user via mmap access to the DMA
+    buffer.  If the contents are changed by the user, additional munging is not
+    performed by the driver and only a single call to
+    comedi_mark_buffer_written should be done.
+    
+    Signed-off-by: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+    Reviewed-by: Ian Abbott &lt;abbotti@mev.co.uk&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/comedi/drivers/ni_mio_common.c b/drivers/staging/comedi/drivers/ni_mio_common.c
+index 8f0fe3a26c73..1a22c79c2817 100644
+--- a/drivers/staging/comedi/drivers/ni_mio_common.c
++++ b/drivers/staging/comedi/drivers/ni_mio_common.c
+@@ -1500,7 +1500,8 @@ static void handle_b_interrupt(struct comedi_device *dev,
+ 		s-&gt;async-&gt;events |= COMEDI_CB_OVERFLOW;
+ 	}
+ 
+-	if (b_status &amp; NISTC_AO_STATUS1_BC_TC)
++	if (s-&gt;async-&gt;cmd.stop_src != TRIG_NONE &amp;&amp;
++	    b_status &amp; NISTC_AO_STATUS1_BC_TC)
+ 		s-&gt;async-&gt;events |= COMEDI_CB_EOA;
+ 
+ #ifndef PCIDMA
+@@ -2073,6 +2074,37 @@ static unsigned ni_timer_to_ns(const struct comedi_device *dev, int timer)
+ 	return devpriv-&gt;clock_ns * (timer + 1);
+ }
+ 
++static void ni_cmd_set_mite_transfer(struct mite_dma_descriptor_ring *ring,
++				     struct comedi_subdevice *sdev,
++				     const struct comedi_cmd *cmd,
++				     unsigned int max_count) {
++#ifdef PCIDMA
++	unsigned int nbytes = max_count;
++
++	if (cmd-&gt;stop_arg &gt; 0 &amp;&amp; cmd-&gt;stop_arg &lt; max_count)
++		nbytes = cmd-&gt;stop_arg;
++	nbytes *= comedi_bytes_per_scan(sdev);
++
++	if (nbytes &gt; sdev-&gt;async-&gt;prealloc_bufsz) {
++		if (cmd-&gt;stop_arg &gt; 0)
++			dev_err(sdev-&gt;device-&gt;class_dev,
++				"ni_cmd_set_mite_transfer: tried exact data transfer limits greater than buffer size\n");
++
++		/*
++		 * we can only transfer up to the size of the buffer.  In this
++		 * case, the user is expected to continue to write into the
++		 * comedi buffer (already implemented as a ring buffer).
++		 */
++		nbytes = sdev-&gt;async-&gt;prealloc_bufsz;
++	}
++
++	mite_init_ring_descriptors(ring, sdev, nbytes);
++#else
++	dev_err(sdev-&gt;device-&gt;class_dev,
++		"ni_cmd_set_mite_transfer: exact data transfer limits not implemented yet without DMA\n");
++#endif
++}
++
+ static unsigned ni_min_ai_scan_period_ns(struct comedi_device *dev,
+ 					 unsigned num_channels)
+ {
+@@ -3062,12 +3094,16 @@ static void ni_ao_cmd_set_counters(struct comedi_device *dev,
+ 	devpriv-&gt;ao_mode2 &amp;= ~NISTC_AO_MODE2_UC_INIT_LOAD_SRC;
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode2, NISTC_AO_MODE2_REG);
+ 
++	/*
++	 * if a user specifies '0', this automatically assumes the entire 24bit
++	 * address space is available for the (multiple iterations of single
++	 * buffer) MISB.  Otherwise, stop_arg specifies the MISB length that
++	 * will be used, regardless of whether we are in continuous mode or not.
++	 * In continuous mode, the output will just iterate indefinitely over
++	 * the MISB.
++	 */
+ 	{
+-		/*
+-		 * Current behavior is to configure the maximum update count
+-		 * possible when continuous output mode is requested.
+-		 */
+-		unsigned int stop_arg = cmd-&gt;stop_src == TRIG_COUNT ?
++		unsigned int stop_arg = cmd-&gt;stop_arg &gt; 0 ?
+ 			(cmd-&gt;stop_arg &amp; 0xffffff) : 0xffffff;
+ 
+ 		if (devpriv-&gt;is_m_series) {
+@@ -3311,6 +3347,7 @@ static int ni_ao_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
+ 	ni_ao_cmd_set_channels(dev, s);
+ 	ni_ao_cmd_set_stop_conditions(dev, cmd);
+ 	ni_ao_cmd_set_fifo_mode(dev);
++	ni_cmd_set_mite_transfer(devpriv-&gt;ao_mite_ring, s, cmd, 0x00ffffff);
+ 	ni_ao_cmd_set_interrupts(dev, s);
+ 
+ 	/*
+@@ -3381,11 +3418,7 @@ static int ni_ao_cmdtest(struct comedi_device *dev, struct comedi_subdevice *s,
+ 	err |= comedi_check_trigger_arg_is(&amp;cmd-&gt;convert_arg, 0);
+ 	err |= comedi_check_trigger_arg_is(&amp;cmd-&gt;scan_end_arg,
+ 					   cmd-&gt;chanlist_len);
+-
+-	if (cmd-&gt;stop_src == TRIG_COUNT)
+-		err |= comedi_check_trigger_arg_max(&amp;cmd-&gt;stop_arg, 0x00ffffff);
+-	else	/* TRIG_NONE */
+-		err |= comedi_check_trigger_arg_is(&amp;cmd-&gt;stop_arg, 0);
++	err |= comedi_check_trigger_arg_max(&amp;cmd-&gt;stop_arg, 0x00ffffff);
+ 
+ 	if (err)
+ 		return 3;
+@@ -5240,7 +5273,6 @@ static irqreturn_t ni_E_interrupt(int irq, void *d)
+ 	unsigned long flags;
+ #ifdef PCIDMA
+ 	struct ni_private *devpriv = dev-&gt;private;
+-	struct mite_struct *mite = devpriv-&gt;mite;
+ #endif
+ 
+ 	if (!dev-&gt;attached)
+@@ -5252,8 +5284,7 @@ static irqreturn_t ni_E_interrupt(int irq, void *d)
+ 	a_status = ni_stc_readw(dev, NISTC_AI_STATUS1_REG);
+ 	b_status = ni_stc_readw(dev, NISTC_AO_STATUS1_REG);
+ #ifdef PCIDMA
+-	if (mite) {
+-		struct ni_private *devpriv = dev-&gt;private;
++	if (devpriv-&gt;mite) {
+ 		unsigned long flags_too;
+ 
+ 		spin_lock_irqsave(&amp;devpriv-&gt;mite_channel_lock, flags_too);
+@@ -5269,7 +5300,7 @@ static irqreturn_t ni_E_interrupt(int irq, void *d)
+ 			ao_mite_status = mite_get_status(devpriv-&gt;ao_mite_chan);
+ 			if (ao_mite_status &amp; CHSR_LINKC)
+ 				writel(CHOR_CLRLC,
+-				       mite-&gt;mite_io_addr +
++				       devpriv-&gt;mite-&gt;mite_io_addr +
+ 				       MITE_CHOR(devpriv-&gt;
+ 						 ao_mite_chan-&gt;channel));
+ 		}</pre><hr><pre>commit 080e6795cba316663a5eb4f49500937eca4f32cd
+Author: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+Date:   Wed Jan 27 14:28:27 2016 -0700
+
+    staging: comedi: ni_mio_common: Cleans up/clarifies ni_ao_cmd
+    
+    This patch implements ni_ao_cmd much more closely organized like NI MHDDK
+    examples and DAQ-STC pseudo-code.  Adds comments with some more specific
+    references to the DAQ-STC.
+    
+    For stop_src==TRIG_NONE (continuous output mode of entire buffer), the
+    count for the UC counter was corrected to represent the maximum count
+    possible (0xffffff).  Prior behavior for stop_src=TRIG_NONE did not
+    actually follow the DAQ-STC.  Furthermore, stop_src==TRIG_NONE now
+    correctly uses code specialized for either m-series or e-series devices.
+    
+    It should be noted that stop_src==TRIG_NONE does _not_ with this patch
+    (or with prior behavior in ni_mio_common) actually implement true
+    continuous output.  Rather, the output is simply configured to operate as a
+    single buffer output, but where the buffer is as large as is possible with
+    NI-STC hardware.
+    
+    Signed-off-by: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+    Reviewed-by: Ian Abbott &lt;abbotti@mev.co.uk&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/comedi/drivers/ni_mio_common.c b/drivers/staging/comedi/drivers/ni_mio_common.c
+index 9df20d922d32..8f0fe3a26c73 100644
+--- a/drivers/staging/comedi/drivers/ni_mio_common.c
++++ b/drivers/staging/comedi/drivers/ni_mio_common.c
+@@ -2912,42 +2912,68 @@ static int ni_ao_inttrig(struct comedi_device *dev,
+ 	return 0;
+ }
+ 
+-static int ni_ao_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
++/*
++ * begin ni_ao_cmd.
++ * Organized similar to NI-STC and MHDDK examples.
++ * ni_ao_cmd is broken out into configuration sub-routines for clarity.
++ */
++
++static void ni_ao_cmd_personalize(struct comedi_device *dev,
++				  const struct comedi_cmd *cmd)
+ {
+ 	const struct ni_board_struct *board = dev-&gt;board_ptr;
+-	struct ni_private *devpriv = dev-&gt;private;
+-	const struct comedi_cmd *cmd = &amp;s-&gt;async-&gt;cmd;
+-	int bits;
+-	int i;
+-	unsigned trigvar;
+-	unsigned val;
+-
+-	if (dev-&gt;irq == 0) {
+-		dev_err(dev-&gt;class_dev, "cannot run command without an irq\n");
+-		return -EIO;
+-	}
++	unsigned bits;
+ 
+ 	ni_stc_writew(dev, NISTC_RESET_AO_CFG_START, NISTC_RESET_REG);
+ 
+-	ni_stc_writew(dev, NISTC_AO_CMD1_DISARM, NISTC_AO_CMD1_REG);
++	bits =
++	  /* fast CPU interface--only eseries */
++	  /* ((slow CPU interface) ? 0 : AO_Fast_CPU) | */
++	  NISTC_AO_PERSONAL_BC_SRC_SEL  |
++	  0 /* (use_original_pulse ? 0 : NISTC_AO_PERSONAL_UPDATE_TIMEBASE) */ |
++	  /*
++	   * FIXME:  start setting following bit when appropriate.  Need to
++	   * determine whether board is E4 or E1.
++	   * FROM MHHDK:
++	   * if board is E4 or E1
++	   *   Set bit "NISTC_AO_PERSONAL_UPDATE_PW" to 0
++	   * else
++	   *   set it to 1
++	   */
++	  NISTC_AO_PERSONAL_UPDATE_PW   |
++	  /* FIXME:  when should we set following bit to zero? */
++	  NISTC_AO_PERSONAL_TMRDACWR_PW |
++	  (board-&gt;ao_fifo_depth ?
++	    NISTC_AO_PERSONAL_FIFO_ENA : NISTC_AO_PERSONAL_DMA_PIO_CTRL)
++	  ;
++#if 0
++	/*
++	 * FIXME:
++	 * add something like ".has_individual_dacs = 0" to ni_board_struct
++	 * since, as F Hess pointed out, not all in m series have singles.  not
++	 * sure if e-series all have duals...
++	 */
+ 
+-	if (devpriv-&gt;is_6xxx) {
+-		ni_ao_win_outw(dev, NI611X_AO_MISC_CLEAR_WG,
+-			       NI611X_AO_MISC_REG);
++	/*
++	 * F Hess: windows driver does not set NISTC_AO_PERSONAL_NUM_DAC bit for
++	 * 6281, verified with bus analyzer.
++	 */
++	if (devpriv-&gt;is_m_series)
++		bits |= NISTC_AO_PERSONAL_NUM_DAC;
++#endif
++	ni_stc_writew(dev, bits, NISTC_AO_PERSONAL_REG);
+ 
+-		bits = 0;
+-		for (i = 0; i &lt; cmd-&gt;chanlist_len; i++) {
+-			int chan;
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_END, NISTC_RESET_REG);
++}
+ 
+-			chan = CR_CHAN(cmd-&gt;chanlist[i]);
+-			bits |= 1 &lt;&lt; chan;
+-			ni_ao_win_outw(dev, chan, NI611X_AO_WAVEFORM_GEN_REG);
+-		}
+-		ni_ao_win_outw(dev, bits, NI611X_AO_TIMED_REG);
+-	}
++static void ni_ao_cmd_set_trigger(struct comedi_device *dev,
++				  const struct comedi_cmd *cmd)
++{
++	struct ni_private *devpriv = dev-&gt;private;
+ 
+-	ni_ao_config_chanlist(dev, s, cmd-&gt;chanlist, cmd-&gt;chanlist_len, 1);
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_START, NISTC_RESET_REG);
+ 
++	/* sync */
+ 	if (cmd-&gt;stop_src == TRIG_NONE) {
+ 		devpriv-&gt;ao_mode1 |= NISTC_AO_MODE1_CONTINUOUS;
+ 		devpriv-&gt;ao_mode1 &amp;= ~NISTC_AO_MODE1_TRIGGER_ONCE;
+@@ -2957,179 +2983,346 @@ static int ni_ao_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
+ 	}
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode1, NISTC_AO_MODE1_REG);
+ 
+-	val = devpriv-&gt;ao_trigger_select;
+-	switch (cmd-&gt;start_src) {
+-	case TRIG_INT:
+-	case TRIG_NOW:
+-		val &amp;= ~(NISTC_AO_TRIG_START1_POLARITY |
+-			 NISTC_AO_TRIG_START1_SEL_MASK);
+-		val |= NISTC_AO_TRIG_START1_EDGE |
+-		       NISTC_AO_TRIG_START1_SYNC;
+-		break;
+-	case TRIG_EXT:
+-		val = NISTC_AO_TRIG_START1_SEL(CR_CHAN(cmd-&gt;start_arg) + 1);
+-		if (cmd-&gt;start_arg &amp; CR_INVERT) {
+-			/* 0=active high, 1=active low. see daq-stc 3-24 (p186) */
+-			val |= NISTC_AO_TRIG_START1_POLARITY;
+-		}
+-		if (cmd-&gt;start_arg &amp; CR_EDGE) {
+-			/* 0=edge detection disabled, 1=enabled */
+-			val |= NISTC_AO_TRIG_START1_EDGE;
++	{
++		unsigned int trigsel = devpriv-&gt;ao_trigger_select;
++
++		switch (cmd-&gt;start_src) {
++		case TRIG_INT:
++		case TRIG_NOW:
++			trigsel &amp;= ~(NISTC_AO_TRIG_START1_POLARITY |
++				     NISTC_AO_TRIG_START1_SEL_MASK);
++			trigsel |= NISTC_AO_TRIG_START1_EDGE |
++				   NISTC_AO_TRIG_START1_SYNC;
++			break;
++		case TRIG_EXT:
++			trigsel = NISTC_AO_TRIG_START1_SEL(
++					CR_CHAN(cmd-&gt;start_arg) + 1);
++			if (cmd-&gt;start_arg &amp; CR_INVERT)
++				/*
++				 * 0=active high, 1=active low.
++				 * see daq-stc 3-24 (p186)
++				 */
++				trigsel |= NISTC_AO_TRIG_START1_POLARITY;
++			if (cmd-&gt;start_arg &amp; CR_EDGE)
++				/* 0=edge detection disabled, 1=enabled */
++				trigsel |= NISTC_AO_TRIG_START1_EDGE;
++			break;
++		default:
++			BUG();
++			break;
+ 		}
++
++		devpriv-&gt;ao_trigger_select = trigsel;
+ 		ni_stc_writew(dev, devpriv-&gt;ao_trigger_select,
+ 			      NISTC_AO_TRIG_SEL_REG);
+-		break;
+-	default:
+-		BUG();
+-		break;
+ 	}
+-	devpriv-&gt;ao_trigger_select = val;
+-	ni_stc_writew(dev, devpriv-&gt;ao_trigger_select, NISTC_AO_TRIG_SEL_REG);
++	/* AO_Delayed_START1 = 0, we do not support delayed start...yet */
+ 
++	/* sync */
++	/* select DA_START1 as PFI6/AO_START1 when configured as an output */
+ 	devpriv-&gt;ao_mode3 &amp;= ~NISTC_AO_MODE3_TRIG_LEN;
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode3, NISTC_AO_MODE3_REG);
+ 
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_END, NISTC_RESET_REG);
++}
++
++static void ni_ao_cmd_set_counters(struct comedi_device *dev,
++				   const struct comedi_cmd *cmd)
++{
++	struct ni_private *devpriv = dev-&gt;private;
++	/* Not supporting 'waveform staging' or 'local buffer with pauses' */
++
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_START, NISTC_RESET_REG);
++	/*
++	 * This relies on ao_mode1/(Trigger_Once | Continuous) being set in
++	 * set_trigger above.  It is unclear whether we really need to re-write
++	 * this register with these values.  The mhddk examples for e-series
++	 * show writing this in both places, but the examples for m-series show
++	 * a single write in the set_counters function (here).
++	 */
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode1, NISTC_AO_MODE1_REG);
++
++	/* sync (upload number of buffer iterations -1) */
++	/* indicate that we want to use BC_Load_A_Register as the source */
+ 	devpriv-&gt;ao_mode2 &amp;= ~NISTC_AO_MODE2_BC_INIT_LOAD_SRC;
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode2, NISTC_AO_MODE2_REG);
+-	if (cmd-&gt;stop_src == TRIG_NONE)
+-		ni_stc_writel(dev, 0xffffff, NISTC_AO_BC_LOADA_REG);
+-	else
+-		ni_stc_writel(dev, 0, NISTC_AO_BC_LOADA_REG);
++
++	/*
++	 * if the BC_TC interrupt is still issued in spite of UC, BC, UI
++	 * ignoring BC_TC, then we will need to find a way to ignore that
++	 * interrupt in continuous mode.
++	 */
++	ni_stc_writel(dev, 0, NISTC_AO_BC_LOADA_REG); /* iter once */
++
++	/* sync (issue command to load number of buffer iterations -1) */
+ 	ni_stc_writew(dev, NISTC_AO_CMD1_BC_LOAD, NISTC_AO_CMD1_REG);
++
++	/* sync (upload number of updates in buffer) */
++	/* indicate that we want to use UC_Load_A_Register as the source */
+ 	devpriv-&gt;ao_mode2 &amp;= ~NISTC_AO_MODE2_UC_INIT_LOAD_SRC;
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode2, NISTC_AO_MODE2_REG);
+-	switch (cmd-&gt;stop_src) {
+-	case TRIG_COUNT:
++
++	{
++		/*
++		 * Current behavior is to configure the maximum update count
++		 * possible when continuous output mode is requested.
++		 */
++		unsigned int stop_arg = cmd-&gt;stop_src == TRIG_COUNT ?
++			(cmd-&gt;stop_arg &amp; 0xffffff) : 0xffffff;
++
+ 		if (devpriv-&gt;is_m_series) {
+-			/*  this is how the NI example code does it for m-series boards, verified correct with 6259 */
+-			ni_stc_writel(dev, cmd-&gt;stop_arg - 1,
+-				      NISTC_AO_UC_LOADA_REG);
++			/*
++			 * this is how the NI example code does it for m-series
++			 * boards, verified correct with 6259
++			 */
++			ni_stc_writel(dev, stop_arg - 1, NISTC_AO_UC_LOADA_REG);
++
++			/* sync (issue cmd to load number of updates in MISB) */
+ 			ni_stc_writew(dev, NISTC_AO_CMD1_UC_LOAD,
+ 				      NISTC_AO_CMD1_REG);
+ 		} else {
+-			ni_stc_writel(dev, cmd-&gt;stop_arg,
+-				      NISTC_AO_UC_LOADA_REG);
++			ni_stc_writel(dev, stop_arg, NISTC_AO_UC_LOADA_REG);
++
++			/* sync (issue cmd to load number of updates in MISB) */
+ 			ni_stc_writew(dev, NISTC_AO_CMD1_UC_LOAD,
+ 				      NISTC_AO_CMD1_REG);
+-			ni_stc_writel(dev, cmd-&gt;stop_arg - 1,
+-				      NISTC_AO_UC_LOADA_REG);
++
++			/*
++			 * sync (upload number of updates-1 in MISB)
++			 * --eseries only?
++			 */
++			ni_stc_writel(dev, stop_arg - 1, NISTC_AO_UC_LOADA_REG);
+ 		}
+-		break;
+-	case TRIG_NONE:
+-		ni_stc_writel(dev, 0xffffff, NISTC_AO_UC_LOADA_REG);
+-		ni_stc_writew(dev, NISTC_AO_CMD1_UC_LOAD, NISTC_AO_CMD1_REG);
+-		ni_stc_writel(dev, 0xffffff, NISTC_AO_UC_LOADA_REG);
+-		break;
+-	default:
+-		ni_stc_writel(dev, 0, NISTC_AO_UC_LOADA_REG);
+-		ni_stc_writew(dev, NISTC_AO_CMD1_UC_LOAD, NISTC_AO_CMD1_REG);
+-		ni_stc_writel(dev, cmd-&gt;stop_arg, NISTC_AO_UC_LOADA_REG);
+ 	}
+ 
+-	devpriv-&gt;ao_mode1 &amp;= ~(NISTC_AO_MODE1_UPDATE_SRC_MASK |
+-			       NISTC_AO_MODE1_UI_SRC_MASK |
+-			       NISTC_AO_MODE1_UPDATE_SRC_POLARITY |
+-			       NISTC_AO_MODE1_UI_SRC_POLARITY);
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_END, NISTC_RESET_REG);
++}
++
++static void ni_ao_cmd_set_update(struct comedi_device *dev,
++				 const struct comedi_cmd *cmd)
++{
++	struct ni_private *devpriv = dev-&gt;private;
++
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_START, NISTC_RESET_REG);
++
++	/*
++	 * zero out these bit fields to be set below. Does an ao-reset do this
++	 * automatically?
++	 */
++	devpriv-&gt;ao_mode1 &amp;= ~(
++	  NISTC_AO_MODE1_UI_SRC_MASK         |
++	  NISTC_AO_MODE1_UI_SRC_POLARITY     |
++	  NISTC_AO_MODE1_UPDATE_SRC_MASK     |
++	  NISTC_AO_MODE1_UPDATE_SRC_POLARITY
++	);
++
+ 	switch (cmd-&gt;scan_begin_src) {
+ 	case TRIG_TIMER:
+-		devpriv-&gt;ao_cmd2 &amp;= ~NISTC_AO_CMD2_BC_GATE_ENA;
+-		trigvar =
+-		    ni_ns_to_timer(dev, cmd-&gt;scan_begin_arg,
+-				   CMDF_ROUND_NEAREST);
+-		ni_stc_writel(dev, 1, NISTC_AO_UI_LOADA_REG);
+-		ni_stc_writew(dev, NISTC_AO_CMD1_UI_LOAD, NISTC_AO_CMD1_REG);
+-		ni_stc_writel(dev, trigvar, NISTC_AO_UI_LOADA_REG);
++		devpriv-&gt;ao_cmd2  &amp;= ~NISTC_AO_CMD2_BC_GATE_ENA;
++
++		/*
++		 * NOTE: there are several other ways of configuring internal
++		 * updates, but we'll only support one for now:  using
++		 * AO_IN_TIMEBASE, w/o waveform staging, w/o a delay between
++		 * START1 and first update, and also w/o local buffer mode w/
++		 * pauses.
++		 */
++
++		/*
++		 * This is already done above:
++		 * devpriv-&gt;ao_mode1 &amp;= ~(
++		 *   // set UPDATE_Source to UI_TC:
++		 *   NISTC_AO_MODE1_UPDATE_SRC_MASK |
++		 *   // set UPDATE_Source_Polarity to rising (required?)
++		 *   NISTC_AO_MODE1_UPDATE_SRC_POLARITY |
++		 *   // set UI_Source to AO_IN_TIMEBASE1:
++		 *   NISTC_AO_MODE1_UI_SRC_MASK     |
++		 *   // set UI_Source_Polarity to rising (required?)
++		 *   NISTC_AO_MODE1_UI_SRC_POLARITY
++		 * );
++		 */
++
++		/*
++		 * TODO:  use ao_ui_clock_source to allow all possible signals
++		 * to be routed to UI_Source_Select.  See tSTC.h for
++		 * eseries/ni67xx and tMSeries.h for mseries.
++		 */
++
++		{
++			unsigned trigvar = ni_ns_to_timer(dev,
++							  cmd-&gt;scan_begin_arg,
++							  CMDF_ROUND_NEAREST);
++
++			/*
++			 * Wait N TB3 ticks after the start trigger before
++			 * clocking(N must be &gt;=2).
++			 */
++			/* following line: 2-1 per STC */
++			ni_stc_writel(dev, 1,           NISTC_AO_UI_LOADA_REG);
++			ni_stc_writew(dev, NISTC_AO_CMD1_UI_LOAD,
++				      NISTC_AO_CMD1_REG);
++			/* following line: N-1 per STC */
++			ni_stc_writel(dev, trigvar - 1, NISTC_AO_UI_LOADA_REG);
++		}
+ 		break;
+ 	case TRIG_EXT:
+-		devpriv-&gt;ao_mode1 |=
+-		    NISTC_AO_MODE1_UPDATE_SRC(cmd-&gt;scan_begin_arg);
++		/* FIXME:  assert scan_begin_arg != 0, ret failure otherwise */
++		devpriv-&gt;ao_cmd2  |= NISTC_AO_CMD2_BC_GATE_ENA;
++		devpriv-&gt;ao_mode1 |= NISTC_AO_MODE1_UPDATE_SRC(
++					CR_CHAN(cmd-&gt;scan_begin_arg));
+ 		if (cmd-&gt;scan_begin_arg &amp; CR_INVERT)
+ 			devpriv-&gt;ao_mode1 |= NISTC_AO_MODE1_UPDATE_SRC_POLARITY;
+-		devpriv-&gt;ao_cmd2 |= NISTC_AO_CMD2_BC_GATE_ENA;
+ 		break;
+ 	default:
+ 		BUG();
+ 		break;
+ 	}
++
+ 	ni_stc_writew(dev, devpriv-&gt;ao_cmd2, NISTC_AO_CMD2_REG);
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode1, NISTC_AO_MODE1_REG);
+ 	devpriv-&gt;ao_mode2 &amp;= ~(NISTC_AO_MODE2_UI_RELOAD_MODE(3) |
+ 			       NISTC_AO_MODE2_UI_INIT_LOAD_SRC);
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode2, NISTC_AO_MODE2_REG);
+ 
++	/* Configure DAQ-STC for Timed update mode */
++	devpriv-&gt;ao_cmd1 |= NISTC_AO_CMD1_DAC1_UPDATE_MODE |
++			    NISTC_AO_CMD1_DAC0_UPDATE_MODE;
++	/* We are not using UPDATE2--&gt;don't have to set DACx_Source_Select */
++	ni_stc_writew(dev, devpriv-&gt;ao_cmd1, NISTC_AO_CMD1_REG);
++
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_END, NISTC_RESET_REG);
++}
++
++static void ni_ao_cmd_set_channels(struct comedi_device *dev,
++				   struct comedi_subdevice *s)
++{
++	struct ni_private *devpriv = dev-&gt;private;
++	const struct comedi_cmd *cmd = &amp;s-&gt;async-&gt;cmd;
++	unsigned bits = 0;
++
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_START, NISTC_RESET_REG);
++
++	if (devpriv-&gt;is_6xxx) {
++		unsigned int i;
++
++		bits = 0;
++		for (i = 0; i &lt; cmd-&gt;chanlist_len; ++i) {
++			int chan = CR_CHAN(cmd-&gt;chanlist[i]);
++
++			bits |= 1 &lt;&lt; chan;
++			ni_ao_win_outw(dev, chan, NI611X_AO_WAVEFORM_GEN_REG);
++		}
++		ni_ao_win_outw(dev, bits, NI611X_AO_TIMED_REG);
++	}
++
++	ni_ao_config_chanlist(dev, s, cmd-&gt;chanlist, cmd-&gt;chanlist_len, 1);
++
+ 	if (cmd-&gt;scan_end_arg &gt; 1) {
+ 		devpriv-&gt;ao_mode1 |= NISTC_AO_MODE1_MULTI_CHAN;
+-		ni_stc_writew(dev,
+-			      NISTC_AO_OUT_CTRL_CHANS(cmd-&gt;scan_end_arg - 1) |
+-			      NISTC_AO_OUT_CTRL_UPDATE_SEL_HIGHZ,
+-			      NISTC_AO_OUT_CTRL_REG);
+-	} else {
+-		unsigned bits;
++		bits = NISTC_AO_OUT_CTRL_CHANS(cmd-&gt;scan_end_arg - 1)
++				 | NISTC_AO_OUT_CTRL_UPDATE_SEL_HIGHZ;
+ 
++	} else {
+ 		devpriv-&gt;ao_mode1 &amp;= ~NISTC_AO_MODE1_MULTI_CHAN;
+ 		bits = NISTC_AO_OUT_CTRL_UPDATE_SEL_HIGHZ;
+-		if (devpriv-&gt;is_m_series || devpriv-&gt;is_6xxx) {
++		if (devpriv-&gt;is_m_series | devpriv-&gt;is_6xxx)
+ 			bits |= NISTC_AO_OUT_CTRL_CHANS(0);
+-		} else {
+-			bits |=
+-			    NISTC_AO_OUT_CTRL_CHANS(CR_CHAN(cmd-&gt;chanlist[0]));
+-		}
+-		ni_stc_writew(dev, bits, NISTC_AO_OUT_CTRL_REG);
++		else
++			bits |= NISTC_AO_OUT_CTRL_CHANS(
++					CR_CHAN(cmd-&gt;chanlist[0]));
+ 	}
++
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode1, NISTC_AO_MODE1_REG);
++	ni_stc_writew(dev, bits,              NISTC_AO_OUT_CTRL_REG);
+ 
+-	/* Configure DAQ-STC for Timed update mode */
+-	devpriv-&gt;ao_cmd1 |= NISTC_AO_CMD1_DAC1_UPDATE_MODE |
+-			    NISTC_AO_CMD1_DAC0_UPDATE_MODE;
+-	/* We are not using UPDATE2--&gt;don't have to set DACx_Source_Select */
+-	ni_stc_writew(dev, devpriv-&gt;ao_cmd1, NISTC_AO_CMD1_REG);
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_END, NISTC_RESET_REG);
++}
++
++static void ni_ao_cmd_set_stop_conditions(struct comedi_device *dev,
++					  const struct comedi_cmd *cmd)
++{
++	struct ni_private *devpriv = dev-&gt;private;
++
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_START, NISTC_RESET_REG);
+ 
+ 	devpriv-&gt;ao_mode3 |= NISTC_AO_MODE3_STOP_ON_OVERRUN_ERR;
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode3, NISTC_AO_MODE3_REG);
+ 
++	/*
++	 * Since we are not supporting waveform staging, we ignore these errors:
++	 * NISTC_AO_MODE3_STOP_ON_BC_TC_ERR,
++	 * NISTC_AO_MODE3_STOP_ON_BC_TC_TRIG_ERR
++	 */
++
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_END, NISTC_RESET_REG);
++}
++
++static void ni_ao_cmd_set_fifo_mode(struct comedi_device *dev)
++{
++	struct ni_private *devpriv = dev-&gt;private;
++
++	ni_stc_writew(dev, NISTC_RESET_AO_CFG_START, NISTC_RESET_REG);
++
+ 	devpriv-&gt;ao_mode2 &amp;= ~NISTC_AO_MODE2_FIFO_MODE_MASK;
+ #ifdef PCIDMA
+ 	devpriv-&gt;ao_mode2 |= NISTC_AO_MODE2_FIFO_MODE_HF_F;
+ #else
+ 	devpriv-&gt;ao_mode2 |= NISTC_AO_MODE2_FIFO_MODE_HF;
+ #endif
++	/* NOTE:  this is where use_onboard_memory=True would be implemented */
+ 	devpriv-&gt;ao_mode2 &amp;= ~NISTC_AO_MODE2_FIFO_REXMIT_ENA;
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode2, NISTC_AO_MODE2_REG);
+ 
+-	bits = NISTC_AO_PERSONAL_BC_SRC_SEL |
+-	       NISTC_AO_PERSONAL_UPDATE_PW |
+-	       NISTC_AO_PERSONAL_TMRDACWR_PW;
+-	if (board-&gt;ao_fifo_depth)
+-		bits |= NISTC_AO_PERSONAL_FIFO_ENA;
+-	else
+-		bits |= NISTC_AO_PERSONAL_DMA_PIO_CTRL;
+-#if 0
+-	/*
+-	 * F Hess: windows driver does not set NISTC_AO_PERSONAL_NUM_DAC bit
+-	 * for 6281, verified with bus analyzer.
+-	 */
+-	if (devpriv-&gt;is_m_series)
+-		bits |= NISTC_AO_PERSONAL_NUM_DAC;
+-#endif
+-	ni_stc_writew(dev, bits, NISTC_AO_PERSONAL_REG);
+-	/*  enable sending of ao dma requests */
++	/* enable sending of ao fifo requests (dma request) */
+ 	ni_stc_writew(dev, NISTC_AO_START_AOFREQ_ENA, NISTC_AO_START_SEL_REG);
+ 
+ 	ni_stc_writew(dev, NISTC_RESET_AO_CFG_END, NISTC_RESET_REG);
+ 
+-	if (cmd-&gt;stop_src == TRIG_COUNT) {
+-		ni_stc_writew(dev, NISTC_INTB_ACK_AO_BC_TC,
+-			      NISTC_INTB_ACK_REG);
++	/* we are not supporting boards with virtual fifos */
++}
++
++static void ni_ao_cmd_set_interrupts(struct comedi_device *dev,
++				     struct comedi_subdevice *s)
++{
++	if (s-&gt;async-&gt;cmd.stop_src == TRIG_COUNT)
+ 		ni_set_bits(dev, NISTC_INTB_ENA_REG,
+ 			    NISTC_INTB_ENA_AO_BC_TC, 1);
+-	}
+ 
+ 	s-&gt;async-&gt;inttrig = ni_ao_inttrig;
++}
+ 
++static int ni_ao_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
++{
++	struct ni_private *devpriv = dev-&gt;private;
++	const struct comedi_cmd *cmd = &amp;s-&gt;async-&gt;cmd;
++
++	if (dev-&gt;irq == 0) {
++		dev_err(dev-&gt;class_dev, "cannot run command without an irq");
++		return -EIO;
++	}
++
++	/* ni_ao_reset should have already been done */
++	ni_ao_cmd_personalize(dev, cmd);
++	/* clearing fifo and preload happens elsewhere */
++
++	ni_ao_cmd_set_trigger(dev, cmd);
++	ni_ao_cmd_set_counters(dev, cmd);
++	ni_ao_cmd_set_update(dev, cmd);
++	ni_ao_cmd_set_channels(dev, s);
++	ni_ao_cmd_set_stop_conditions(dev, cmd);
++	ni_ao_cmd_set_fifo_mode(dev);
++	ni_ao_cmd_set_interrupts(dev, s);
++
++	/*
++	 * arm(ing) and star(ting) happen in ni_ao_inttrig, which _must_ be
++	 * called for ao commands since 1) TRIG_NOW is not supported and 2) DMA
++	 * must be setup and initially written to before arm/start happen.
++	 */
+ 	return 0;
+ }
+ 
++/* end ni_ao_cmd */
++
+ static int ni_ao_cmdtest(struct comedi_device *dev, struct comedi_subdevice *s,
+ 			 struct comedi_cmd *cmd)
+ {</pre><hr><pre>commit d2a6c32a2209ac79cb52b56e46ec37fdc1df6ce1
+Author: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+Date:   Wed Jan 27 14:28:26 2016 -0700
+
+    staging: comedi: ni_mio_common: make more bits in ao_cmd1 reg be stateful
+    
+    Bits NISTC_AO_CMD1_DAC0_UPDATE_MODE and NISTC_AO_CMD1_DAC1_UPDATE_MODE are
+    now saved in the local copy of the AO_CMD1 register.  This is more
+    appropriate than prior methods of setting these bits specifically _both_
+    in the ni_ao_cmd configuration function _and_ the ni_ao_inttrig trigger
+    function.  With this patch, the bits are only specifically called out now
+    in the ni_ao_cmd configuration function.  In the ni_ao_inttrig trigger
+    function, only the UI_ARM, UC_ARM, BC_ARM bits of the ao_cmd1 register are
+    specifically called out.  Each of these bits is a strobe bit, while the
+    DAC[0-1]_UPDATE_MODE bits are simple write bits.
+    
+    Signed-off-by: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+    Reviewed-by: Ian Abbott &lt;abbotti@mev.co.uk&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/comedi/drivers/ni_mio_common.c b/drivers/staging/comedi/drivers/ni_mio_common.c
+index 7d2091d8b72b..9df20d922d32 100644
+--- a/drivers/staging/comedi/drivers/ni_mio_common.c
++++ b/drivers/staging/comedi/drivers/ni_mio_common.c
+@@ -2903,8 +2903,6 @@ static int ni_ao_inttrig(struct comedi_device *dev,
+ 	ni_stc_writew(dev, NISTC_AO_CMD1_UI_ARM |
+ 			   NISTC_AO_CMD1_UC_ARM |
+ 			   NISTC_AO_CMD1_BC_ARM |
+-			   NISTC_AO_CMD1_DAC1_UPDATE_MODE |
+-			   NISTC_AO_CMD1_DAC0_UPDATE_MODE |
+ 			   devpriv-&gt;ao_cmd1,
+ 		      NISTC_AO_CMD1_REG);
+ 
+@@ -3081,9 +3079,11 @@ static int ni_ao_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
+ 	}
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode1, NISTC_AO_MODE1_REG);
+ 
+-	ni_stc_writew(dev, NISTC_AO_CMD1_DAC1_UPDATE_MODE |
+-			   NISTC_AO_CMD1_DAC0_UPDATE_MODE,
+-		      NISTC_AO_CMD1_REG);
++	/* Configure DAQ-STC for Timed update mode */
++	devpriv-&gt;ao_cmd1 |= NISTC_AO_CMD1_DAC1_UPDATE_MODE |
++			    NISTC_AO_CMD1_DAC0_UPDATE_MODE;
++	/* We are not using UPDATE2--&gt;don't have to set DACx_Source_Select */
++	ni_stc_writew(dev, devpriv-&gt;ao_cmd1, NISTC_AO_CMD1_REG);
+ 
+ 	devpriv-&gt;ao_mode3 |= NISTC_AO_MODE3_STOP_ON_OVERRUN_ERR;
+ 	ni_stc_writew(dev, devpriv-&gt;ao_mode3, NISTC_AO_MODE3_REG);</pre><hr><pre>commit 5c93736c208d89c7832624b8f3a2ce616473ab65
+Author: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+Date:   Wed Jan 27 14:28:25 2016 -0700
+
+    staging: comedi: ni_mio_common: Cleans up/clarifies ni_ao_reset
+    
+    This patch implements ni_ao_reset much more closely organized like NI MHDDK
+    examples and DAQ-STC pseudo-code.  Adds comments with some more specific
+    references to the DAQ-STC.
+    
+    Signed-off-by: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+    Reviewed-by: Ian Abbott &lt;abbotti@mev.co.uk&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/comedi/drivers/ni_mio_common.c b/drivers/staging/comedi/drivers/ni_mio_common.c
+index 1978d65636fd..7d2091d8b72b 100644
+--- a/drivers/staging/comedi/drivers/ni_mio_common.c
++++ b/drivers/staging/comedi/drivers/ni_mio_common.c
+@@ -3215,48 +3215,70 @@ static int ni_ao_cmdtest(struct comedi_device *dev, struct comedi_subdevice *s,
+ 
+ static int ni_ao_reset(struct comedi_device *dev, struct comedi_subdevice *s)
+ {
++	/* See 3.6.1.2 "Resetting", of DAQ-STC Technical Reference Manual */
++
++	/*
++	 * In the following, the "--sync" comments are meant to denote
++	 * asynchronous boundaries for setting the registers as described in the
++	 * DAQ-STC mostly in the order also described in the DAQ-STC.
++	 */
++
+ 	struct ni_private *devpriv = dev-&gt;private;
+ 
+ 	ni_release_ao_mite_channel(dev);
+ 
++	/* --sync (reset AO) */
++	if (devpriv-&gt;is_m_series)
++		/* following example in mhddk for m-series */
++		ni_stc_writew(dev, NISTC_RESET_AO, NISTC_RESET_REG);
++
++	/*--sync (start config) */
+ 	ni_stc_writew(dev, NISTC_RESET_AO_CFG_START, NISTC_RESET_REG);
++
++	/*--sync (Disarm) */
+ 	ni_stc_writew(dev, NISTC_AO_CMD1_DISARM, NISTC_AO_CMD1_REG);
+-	ni_set_bits(dev, NISTC_INTB_ENA_REG, ~0, 0);
+-	ni_stc_writew(dev, NISTC_AO_PERSONAL_BC_SRC_SEL, NISTC_AO_PERSONAL_REG);
+-	ni_stc_writew(dev, NISTC_INTB_ACK_AO_ALL, NISTC_INTB_ACK_REG);
+-	ni_stc_writew(dev, NISTC_AO_PERSONAL_BC_SRC_SEL |
+-			   NISTC_AO_PERSONAL_UPDATE_PW |
+-			   NISTC_AO_PERSONAL_TMRDACWR_PW,
+-		      NISTC_AO_PERSONAL_REG);
+-	ni_stc_writew(dev, 0, NISTC_AO_OUT_CTRL_REG);
+-	ni_stc_writew(dev, 0, NISTC_AO_START_SEL_REG);
+-	devpriv-&gt;ao_cmd1 = 0;
+-	ni_stc_writew(dev, devpriv-&gt;ao_cmd1, NISTC_AO_CMD1_REG);
+-	devpriv-&gt;ao_cmd2 = 0;
+-	ni_stc_writew(dev, devpriv-&gt;ao_cmd2, NISTC_AO_CMD2_REG);
++
++	/*
++	 * --sync
++	 * (clear bunch of registers--mseries mhddk examples do not include
++	 * this)
++	 */
++	devpriv-&gt;ao_cmd1  = 0;
++	devpriv-&gt;ao_cmd2  = 0;
+ 	devpriv-&gt;ao_mode1 = 0;
+-	ni_stc_writew(dev, devpriv-&gt;ao_mode1, NISTC_AO_MODE1_REG);
+ 	devpriv-&gt;ao_mode2 = 0;
+-	ni_stc_writew(dev, devpriv-&gt;ao_mode2, NISTC_AO_MODE2_REG);
+ 	if (devpriv-&gt;is_m_series)
+ 		devpriv-&gt;ao_mode3 = NISTC_AO_MODE3_LAST_GATE_DISABLE;
+ 	else
+ 		devpriv-&gt;ao_mode3 = 0;
+-	ni_stc_writew(dev, devpriv-&gt;ao_mode3, NISTC_AO_MODE3_REG);
+ 	devpriv-&gt;ao_trigger_select = 0;
+-	ni_stc_writew(dev, devpriv-&gt;ao_trigger_select,
+-		      NISTC_AO_TRIG_SEL_REG);
+-	if (devpriv-&gt;is_6xxx) {
+-		unsigned immediate_bits = 0;
+-		unsigned i;
+ 
+-		for (i = 0; i &lt; s-&gt;n_chan; ++i)
+-			immediate_bits |= 1 &lt;&lt; i;
+-		ni_ao_win_outw(dev, immediate_bits, NI671X_AO_IMMEDIATE_REG);
++	ni_stc_writew(dev, 0, NISTC_AO_PERSONAL_REG);
++	ni_stc_writew(dev, 0, NISTC_AO_CMD1_REG);
++	ni_stc_writew(dev, 0, NISTC_AO_CMD2_REG);
++	ni_stc_writew(dev, 0, NISTC_AO_MODE1_REG);
++	ni_stc_writew(dev, 0, NISTC_AO_MODE2_REG);
++	ni_stc_writew(dev, 0, NISTC_AO_OUT_CTRL_REG);
++	ni_stc_writew(dev, devpriv-&gt;ao_mode3, NISTC_AO_MODE3_REG);
++	ni_stc_writew(dev, 0, NISTC_AO_START_SEL_REG);
++	ni_stc_writew(dev, 0, NISTC_AO_TRIG_SEL_REG);
++
++	/*--sync (disable interrupts) */
++	ni_set_bits(dev, NISTC_INTB_ENA_REG, ~0, 0);
++
++	/*--sync (ack) */
++	ni_stc_writew(dev, NISTC_AO_PERSONAL_BC_SRC_SEL, NISTC_AO_PERSONAL_REG);
++	ni_stc_writew(dev, NISTC_INTB_ACK_AO_ALL, NISTC_INTB_ACK_REG);
++
++	/*--not in DAQ-STC.  which doc? */
++	if (devpriv-&gt;is_6xxx) {
++		ni_ao_win_outw(dev, (1u &lt;&lt; s-&gt;n_chan) - 1u,
++			       NI671X_AO_IMMEDIATE_REG);
+ 		ni_ao_win_outw(dev, NI611X_AO_MISC_CLEAR_WG,
+ 			       NI611X_AO_MISC_REG);
+ 	}
+ 	ni_stc_writew(dev, NISTC_RESET_AO_CFG_END, NISTC_RESET_REG);
++	/*--end */
+ 
+ 	return 0;
+ }</pre><hr><pre>commit 5b293beb2ef0c45cd3c0e00ce67930b5d3471c13
+Author: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+Date:   Wed Jan 27 14:28:24 2016 -0700
+
+    staging: comedi: mite: enable continuous regeneration of finite samples
+    
+    This change enables the mite DMA controller to only transfer the amount of
+    data needed by a command.  By default, the old behavior of transferring the
+    entire comedi DMA data buffer is still in effect.  These changes allow a
+    command to only transmit a limited portion of that data buffer as needed.
+    
+    This patch begins to reinterprets stop_arg when stop_src == TRIG_NONE to
+    allow the user to specify the length of the buffer that should be repeated.
+    The intent is to allow a user to have a specific buffer repeated as-is
+    indefinitely.  The contents of the DMA buffer can be left static or changed
+    by the user via mmap access to the DMA buffer.  If the contents are changed
+    by the user, additional munging is not performed by the driver and only a
+    single call to comedi_mark_buffer_written should be done.
+    
+    Signed-off-by: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+    Reviewed-by: Ian Abbott &lt;abbotti@mev.co.uk&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/comedi/drivers/mite.c b/drivers/staging/comedi/drivers/mite.c
+index fa7ae2c04556..8f24702c3380 100644
+--- a/drivers/staging/comedi/drivers/mite.c
++++ b/drivers/staging/comedi/drivers/mite.c
+@@ -297,7 +297,6 @@ int mite_buf_change(struct mite_dma_descriptor_ring *ring,
+ {
+ 	struct comedi_async *async = s-&gt;async;
+ 	unsigned int n_links;
+-	int i;
+ 
+ 	if (ring-&gt;descriptors) {
+ 		dma_free_coherent(ring-&gt;hw_dev,
+@@ -326,17 +325,58 @@ int mite_buf_change(struct mite_dma_descriptor_ring *ring,
+ 	}
+ 	ring-&gt;n_links = n_links;
+ 
+-	for (i = 0; i &lt; n_links; i++) {
++	return mite_init_ring_descriptors(ring, s, n_links &lt;&lt; PAGE_SHIFT);
++}
++EXPORT_SYMBOL_GPL(mite_buf_change);
++
++/*
++ * initializes the ring buffer descriptors to provide correct DMA transfer links
++ * to the exact amount of memory required.  When the ring buffer is allocated in
++ * mite_buf_change, the default is to initialize the ring to refer to the entire
++ * DMA data buffer.  A command may call this function later to re-initialize and
++ * shorten the amount of memory that will be transferred.
++ */
++int mite_init_ring_descriptors(struct mite_dma_descriptor_ring *ring,
++			       struct comedi_subdevice *s,
++			       unsigned int nbytes)
++{
++	struct comedi_async *async = s-&gt;async;
++	unsigned int n_full_links = nbytes &gt;&gt; PAGE_SHIFT;
++	unsigned int remainder = nbytes % PAGE_SIZE;
++	int i;
++
++	dev_dbg(s-&gt;device-&gt;class_dev,
++		"mite: init ring buffer to %u bytes\n", nbytes);
++
++	if ((n_full_links + (remainder &gt; 0 ? 1 : 0)) &gt; ring-&gt;n_links) {
++		dev_err(s-&gt;device-&gt;class_dev,
++			"mite: ring buffer too small for requested init\n");
++		return -ENOMEM;
++	}
++
++	/* We set the descriptors for all full links. */
++	for (i = 0; i &lt; n_full_links; ++i) {
+ 		ring-&gt;descriptors[i].count = cpu_to_le32(PAGE_SIZE);
+ 		ring-&gt;descriptors[i].addr =
+ 		    cpu_to_le32(async-&gt;buf_map-&gt;page_list[i].dma_addr);
+ 		ring-&gt;descriptors[i].next =
+-		    cpu_to_le32(ring-&gt;descriptors_dma_addr + (i +
+-							      1) *
+-				sizeof(struct mite_dma_descriptor));
++		    cpu_to_le32(ring-&gt;descriptors_dma_addr +
++				(i + 1) * sizeof(struct mite_dma_descriptor));
+ 	}
+-	ring-&gt;descriptors[n_links - 1].next =
+-	    cpu_to_le32(ring-&gt;descriptors_dma_addr);
++
++	/* the last link is either a remainder or was a full link. */
++	if (remainder &gt; 0) {
++		/* set the lesser count for the remainder link */
++		ring-&gt;descriptors[i].count = cpu_to_le32(remainder);
++		ring-&gt;descriptors[i].addr =
++		    cpu_to_le32(async-&gt;buf_map-&gt;page_list[i].dma_addr);
++		/* increment i so that assignment below refs last link */
++		++i;
++	}
++
++	/* Assign the last link-&gt;next to point back to the head of the list. */
++	ring-&gt;descriptors[i - 1].next = cpu_to_le32(ring-&gt;descriptors_dma_addr);
++
+ 	/*
+ 	 * barrier is meant to insure that all the writes to the dma descriptors
+ 	 * have completed before the dma controller is commanded to read them
+@@ -344,7 +384,7 @@ int mite_buf_change(struct mite_dma_descriptor_ring *ring,
+ 	smp_wmb();
+ 	return 0;
+ }
+-EXPORT_SYMBOL_GPL(mite_buf_change);
++EXPORT_SYMBOL_GPL(mite_init_ring_descriptors);
+ 
+ void mite_prep_dma(struct mite_channel *mite_chan,
+ 		   unsigned int num_device_bits, unsigned int num_memory_bits)
+@@ -552,6 +592,7 @@ int mite_sync_output_dma(struct mite_channel *mite_chan,
+ 	unsigned int old_alloc_count = async-&gt;buf_read_alloc_count;
+ 	u32 nbytes_ub, nbytes_lb;
+ 	int count;
++	bool finite_regen = (cmd-&gt;stop_src == TRIG_NONE &amp;&amp; stop_count != 0);
+ 
+ 	/* read alloc as much as we can */
+ 	comedi_buf_read_alloc(s, async-&gt;prealloc_bufsz);
+@@ -561,11 +602,24 @@ int mite_sync_output_dma(struct mite_channel *mite_chan,
+ 	nbytes_ub = mite_bytes_read_from_memory_ub(mite_chan);
+ 	if (cmd-&gt;stop_src == TRIG_COUNT &amp;&amp; (int)(nbytes_ub - stop_count) &gt; 0)
+ 		nbytes_ub = stop_count;
+-	if ((int)(nbytes_ub - old_alloc_count) &gt; 0) {
++
++	if ((!finite_regen || stop_count &gt; old_alloc_count) &amp;&amp;
++	    ((int)(nbytes_ub - old_alloc_count) &gt; 0)) {
+ 		dev_warn(s-&gt;device-&gt;class_dev, "mite: DMA underrun\n");
+ 		async-&gt;events |= COMEDI_CB_OVERFLOW;
+ 		return -1;
+ 	}
++
++	if (finite_regen) {
++		/*
++		 * This is a special case where we continuously output a finite
++		 * buffer.  In this case, we do not free any of the memory,
++		 * hence we expect that old_alloc_count will reach a maximum of
++		 * stop_count bytes.
++		 */
++		return 0;
++	}
++
+ 	count = nbytes_lb - async-&gt;buf_read_count;
+ 	if (count &lt;= 0)
+ 		return 0;
+diff --git a/drivers/staging/comedi/drivers/mite.h b/drivers/staging/comedi/drivers/mite.h
+index c32d4e4ddccc..87534b07ec81 100644
+--- a/drivers/staging/comedi/drivers/mite.h
++++ b/drivers/staging/comedi/drivers/mite.h
+@@ -110,6 +110,9 @@ void mite_prep_dma(struct mite_channel *mite_chan,
+ 		   unsigned int num_device_bits, unsigned int num_memory_bits);
+ int mite_buf_change(struct mite_dma_descriptor_ring *ring,
+ 		    struct comedi_subdevice *s);
++int mite_init_ring_descriptors(struct mite_dma_descriptor_ring *ring,
++			       struct comedi_subdevice *s,
++			       unsigned int nbytes);
+ 
+ enum mite_registers {
+ 	/*</pre><hr><pre>commit f08a28e65cbdf80b4b4da7e423c45ee7c3ef35ac
+Author: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+Date:   Tue Jan 12 11:05:10 2016 -0700
+
+    staging: comedi: ni_mio_common: use CR_CHAN more consistently
+    
+    Generally, the CR_CHAN macro is/should be used to access the relevant bits
+    for channel identification in cmd-&gt;*_arg when the corresponding
+    cmd-&gt;*_src==TRIG_EXT, including cmd-&gt;convert_arg in this case.
+    
+    This patch does not fix a bug per se, as NISTC_AI_MODE1_CONVERT_SRC() already
+    masks the value sufficiently, but using CR_CHAN() here makes the code clearer as
+    it avoids passing some irrelevant bits to NISTC_AI_MODE1_CONVERT_SRC() in the
+    first place.
+    
+    Signed-off-by: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+    Reviewed-by: Ian Abbott &lt;abbotti@mev.co.uk&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/comedi/drivers/ni_mio_common.c b/drivers/staging/comedi/drivers/ni_mio_common.c
+index 5e8130a7d670..1978d65636fd 100644
+--- a/drivers/staging/comedi/drivers/ni_mio_common.c
++++ b/drivers/staging/comedi/drivers/ni_mio_common.c
+@@ -2428,7 +2428,8 @@ static int ni_ai_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
+ 		ni_stc_writew(dev, mode2, NISTC_AI_MODE2_REG);
+ 		break;
+ 	case TRIG_EXT:
+-		mode1 |= NISTC_AI_MODE1_CONVERT_SRC(1 + cmd-&gt;convert_arg);
++		mode1 |= NISTC_AI_MODE1_CONVERT_SRC(1 +
++						    CR_CHAN(cmd-&gt;convert_arg));
+ 		if ((cmd-&gt;convert_arg &amp; CR_INVERT) == 0)
+ 			mode1 |= NISTC_AI_MODE1_CONVERT_POLARITY;
+ 		ni_stc_writew(dev, mode1, NISTC_AI_MODE1_REG);</pre><hr><pre>commit 1fd24a4702d2af0ea4d5845126cf57d4d1796216
+Author: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+Date:   Tue Jan 12 10:33:18 2016 -0700
+
+    staging: comedi: ni_tiocmd: change mistaken use of start_src for start_arg
+    
+    This fixes a bug in function ni_tio_input_inttrig().  The trigger number
+    should be compared to cmd-&gt;start_arg, not cmd-&gt;start_src.
+    
+    Fixes: 6a760394d7eb ("staging: comedi: ni_tiocmd: clarify the cmd-&gt;start_arg validation and use")
+    Cc: &lt;stable@vger.kernel.org&gt; # 3.17+
+    Signed-off-by: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+    Reviewed-by: Ian Abbott &lt;abbotti@mev.co.uk&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/comedi/drivers/ni_tiocmd.c b/drivers/staging/comedi/drivers/ni_tiocmd.c
+index 437f723bb34d..823e47910004 100644
+--- a/drivers/staging/comedi/drivers/ni_tiocmd.c
++++ b/drivers/staging/comedi/drivers/ni_tiocmd.c
+@@ -92,7 +92,7 @@ static int ni_tio_input_inttrig(struct comedi_device *dev,
+ 	unsigned long flags;
+ 	int ret = 0;
+ 
+-	if (trig_num != cmd-&gt;start_src)
++	if (trig_num != cmd-&gt;start_arg)
+ 		return -EINVAL;
+ 
+ 	spin_lock_irqsave(&amp;counter-&gt;lock, flags);</pre><hr><pre>commit d4631301225a44d36b98ce39a2e3d6e00f59d8fb
+Author: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+Date:   Mon Jan 11 23:29:33 2016 -0700
+
+    staging: comedi: ni_pcimio: Adds PXI-6251 to supported boards
+    
+    Signed-off-by: Spencer E. Olson &lt;olsonse@umich.edu&gt;
+    Reviewed-by: Ian Abbott &lt;abbotti@mev.co.uk&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/comedi/drivers/ni_pcimio.c b/drivers/staging/comedi/drivers/ni_pcimio.c
+index 30a5a75d1fe7..231e37d6b7c6 100644
+--- a/drivers/staging/comedi/drivers/ni_pcimio.c
++++ b/drivers/staging/comedi/drivers/ni_pcimio.c
+@@ -26,7 +26,8 @@ Devices: [National Instruments] PCI-MIO-16XE-50 (ni_pcimio),
+   PXI-6040E, PCI-6030E, PCI-6031E, PCI-6032E, PCI-6033E, PCI-6071E, PCI-6023E,
+   PCI-6024E, PCI-6025E, PXI-6025E, PCI-6034E, PCI-6035E, PCI-6052E,
+   PCI-6110, PCI-6111, PCI-6220, PCI-6221, PCI-6224, PXI-6224,
+-  PCI-6225, PXI-6225, PCI-6229, PCI-6250, PCI-6251, PCIe-6251, PXIe-6251,
++  PCI-6225, PXI-6225, PCI-6229, PCI-6250,
++  PCI-6251, PXI-6251, PCIe-6251, PXIe-6251,
+   PCI-6254, PCI-6259, PCIe-6259,
+   PCI-6280, PCI-6281, PXI-6281, PCI-6284, PCI-6289,
+   PCI-6711, PXI-6711, PCI-6713, PXI-6713,
+@@ -193,6 +194,7 @@ enum ni_pcimio_boardid {
+ 	BOARD_PCI6229,
+ 	BOARD_PCI6250,
+ 	BOARD_PCI6251,
++	BOARD_PXI6251,
+ 	BOARD_PCIE6251,
+ 	BOARD_PXIE6251,
+ 	BOARD_PCI6254,
+@@ -811,6 +813,21 @@ static const struct ni_board_struct ni_boards[] = {
+ 		.ao_speed	= 350,
+ 		.caldac		= { caldac_none },
+ 	},
++	[BOARD_PXI6251] = {
++		.name		= "pxi-6251",
++		.n_adchan	= 16,
++		.ai_maxdata	= 0xffff,
++		.ai_fifo_depth	= 4095,
++		.gainlkup	= ai_gain_628x,
++		.ai_speed	= 800,
++		.n_aochan	= 2,
++		.ao_maxdata	= 0xffff,
++		.ao_fifo_depth	= 8191,
++		.ao_range_table	= &amp;range_ni_M_625x_ao,
++		.reg_type	= ni_reg_625x,
++		.ao_speed	= 350,
++		.caldac		= { caldac_none },
++	},
+ 	[BOARD_PCIE6251] = {
+ 		.name		= "pcie-6251",
+ 		.n_adchan	= 16,
+@@ -1290,6 +1307,7 @@ static const struct pci_device_id ni_pcimio_pci_table[] = {
+ 	{ PCI_VDEVICE(NI, 0x71bc), BOARD_PCI6221_37PIN },
+ 	{ PCI_VDEVICE(NI, 0x717d), BOARD_PCIE6251 },
+ 	{ PCI_VDEVICE(NI, 0x72e8), BOARD_PXIE6251 },
++	{ PCI_VDEVICE(NI, 0x70ad), BOARD_PXI6251 },
+ 	{ 0 }
+ };
+ MODULE_DEVICE_TABLE(pci, ni_pcimio_pci_table);</pre><hr><pre>commit a41cbe86df3afbc82311a1640e20858c0cd7e065
+Author: Olga Kornievskaia &lt;aglo@umich.edu&gt;
+Date:   Mon Sep 14 19:54:36 2015 -0400
+
+    Failing to send a CLOSE if file is opened WRONLY and server reboots on a 4.x mount
+    
+    A test case is as the description says:
+    open(foobar, O_WRONLY);
+    sleep()  --&gt; reboot the server
+    close(foobar)
+    
+    The bug is because in nfs4state.c in nfs4_reclaim_open_state() a few
+    line before going to restart, there is
+    clear_bit(NFS4CLNT_RECLAIM_NOGRACE, &amp;state-&gt;flags).
+    
+    NFS4CLNT_RECLAIM_NOGRACE is a flag for the client states not open
+    owner states. Value of NFS4CLNT_RECLAIM_NOGRACE is 4 which is the
+    value of NFS_O_WRONLY_STATE in nfs4_state-&gt;flags. So clearing it wipes
+    out state and when we go to close it, “call_close” doesn’t get set as
+    state flag is not set and CLOSE doesn’t go on the wire.
+    
+    Signed-off-by: Olga Kornievskaia &lt;aglo@umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;trond.myklebust@primarydata.com&gt;
+
+diff --git a/fs/nfs/nfs4state.c b/fs/nfs/nfs4state.c
+index da73bc443238..5db324635e92 100644
+--- a/fs/nfs/nfs4state.c
++++ b/fs/nfs/nfs4state.c
+@@ -1481,7 +1481,7 @@ static int nfs4_reclaim_open_state(struct nfs4_state_owner *sp, const struct nfs
+ 					spin_unlock(&amp;state-&gt;state_lock);
+ 				}
+ 				nfs4_put_open_state(state);
+-				clear_bit(NFS4CLNT_RECLAIM_NOGRACE,
++				clear_bit(NFS_STATE_RECLAIM_NOGRACE,
+ 					&amp;state-&gt;flags);
+ 				spin_lock(&amp;sp-&gt;so_lock);
+ 				goto restart;</pre><hr><pre>commit 5df4eb054fe056ecb15875e812fdadbc47568d7d
+Author: John DeSilva &lt;desilvjo@umich.edu&gt;
+Date:   Fri Sep 5 11:13:17 2014 -0400
+
+    HID: Add Holtek USB ID 04d9:a0c2 ETEKCITY Scroll
+    
+    The report descriptor for the HOLTEK USB ID 04d9:a0c2 (ETEKCITY Scroll
+    T-140 Gaming Mouse) is set to a very large amount of consumer usages
+    (2^16), exceeding HID_MAX_USAGES. Added id, bindings and comments for
+    the mouse, added to hid_have_special_driver, and reduced the usage and
+    logical maximums to 0x2fff, consistent with the other mice in the
+    category. Tested on the hardware.
+    
+    Signed-off-by: John C. DeSilva &lt;desilvjo@umich.edu&gt;
+    Signed-off-by: Jiri Kosina &lt;jkosina@suse.cz&gt;
+
+diff --git a/drivers/hid/hid-core.c b/drivers/hid/hid-core.c
+index c527f5ec4cfc..eb50818de41f 100644
+--- a/drivers/hid/hid-core.c
++++ b/drivers/hid/hid-core.c
+@@ -1793,6 +1793,7 @@ static const struct hid_device_id hid_have_special_driver[] = {
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_HOLTEK_ALT, USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A070) },
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_HOLTEK_ALT, USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A072) },
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_HOLTEK_ALT, USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A081) },
++	{ HID_USB_DEVICE(USB_VENDOR_ID_HOLTEK_ALT, USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A0C2) },
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_HUION, USB_DEVICE_ID_HUION_TABLET) },
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_JESS2, USB_DEVICE_ID_JESS2_COLOR_RUMBLE_PAD) },
+ 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_ION, USB_DEVICE_ID_ICADE) },
+diff --git a/drivers/hid/hid-holtek-mouse.c b/drivers/hid/hid-holtek-mouse.c
+index d60fbd0adc0c..78b3a0c76775 100644
+--- a/drivers/hid/hid-holtek-mouse.c
++++ b/drivers/hid/hid-holtek-mouse.c
+@@ -29,6 +29,7 @@
+  *   and Zalman ZM-GM1
+  * - USB ID 04d9:a081, sold as SHARKOON DarkGlider Gaming mouse
+  * - USB ID 04d9:a072, sold as LEETGION Hellion Gaming Mouse
++ * - USB ID 04d9:a0c2, sold as ETEKCITY Scroll T-140 Gaming Mouse
+  */
+ 
+ static __u8 *holtek_mouse_report_fixup(struct hid_device *hdev, __u8 *rdesc,
+@@ -42,6 +43,7 @@ static __u8 *holtek_mouse_report_fixup(struct hid_device *hdev, __u8 *rdesc,
+ 		switch (hdev-&gt;product) {
+ 		case USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A067:
+ 		case USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A072:
++		case USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A0C2:
+ 			if (*rsize &gt;= 122 &amp;&amp; rdesc[115] == 0xff &amp;&amp; rdesc[116] == 0x7f
+ 					&amp;&amp; rdesc[120] == 0xff &amp;&amp; rdesc[121] == 0x7f) {
+ 				hid_info(hdev, "Fixing up report descriptor\n");
+@@ -74,6 +76,8 @@ static const struct hid_device_id holtek_mouse_devices[] = {
+ 			USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A072) },
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_HOLTEK_ALT,
+ 			USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A081) },
++	{ HID_USB_DEVICE(USB_VENDOR_ID_HOLTEK_ALT,
++			USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A0C2) },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(hid, holtek_mouse_devices);
+diff --git a/drivers/hid/hid-ids.h b/drivers/hid/hid-ids.h
+index 3943ffe1a333..29e9b4872ebd 100644
+--- a/drivers/hid/hid-ids.h
++++ b/drivers/hid/hid-ids.h
+@@ -479,6 +479,7 @@
+ #define USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A070	0xa070
+ #define USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A072	0xa072
+ #define USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A081	0xa081
++#define USB_DEVICE_ID_HOLTEK_ALT_MOUSE_A0C2	0xa0c2
+ #define USB_DEVICE_ID_HOLTEK_ALT_KEYBOARD_A096	0xa096
+ 
+ #define USB_VENDOR_ID_IMATION		0x0718</pre>
+    <div class="pagination">
+        <a href='4_3.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><span>[4]</span><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_5.html'>Next&gt;&gt;</a>
+    <div>
+</body>

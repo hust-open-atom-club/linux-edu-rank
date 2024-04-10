@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_23.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><span>[24]</span><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_25.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 05f4f678b0511a24795a017b5332455077be3b1c
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri Mar 13 16:02:59 2009 -0400
+
+    nfsd4: don't do lookup within readdir in recovery code
+    
+    The main nfsd code was recently modified to no longer do lookups from
+    withing the readdir callback, to avoid locking problems on certain
+    filesystems.
+    
+    This (rather hacky, and overdue for replacement) NFSv4 recovery code has
+    the same problem.  Fix it to build up a list of names (instead of
+    dentries) and do the lookups afterwards.
+    
+    Reported symptoms were a deadlock in the xfs code (called from
+    nfsd4_recdir_load), with /var/lib/nfs on xfs.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Reported-by: David Warren &lt;warren@atmos.washington.edu&gt;
+
+diff --git a/fs/nfsd/nfs4recover.c b/fs/nfsd/nfs4recover.c
+index 74f7b67567fd..b11cf8d34280 100644
+--- a/fs/nfsd/nfs4recover.c
++++ b/fs/nfsd/nfs4recover.c
+@@ -182,36 +182,26 @@ nfsd4_create_clid_dir(struct nfs4_client *clp)
+ 
+ typedef int (recdir_func)(struct dentry *, struct dentry *);
+ 
+-struct dentry_list {
+-	struct dentry *dentry;
++struct name_list {
++	char name[HEXDIR_LEN];
+ 	struct list_head list;
+ };
+ 
+-struct dentry_list_arg {
+-	struct list_head dentries;
+-	struct dentry *parent;
+-};
+-
+ static int
+-nfsd4_build_dentrylist(void *arg, const char *name, int namlen,
++nfsd4_build_namelist(void *arg, const char *name, int namlen,
+ 		loff_t offset, u64 ino, unsigned int d_type)
+ {
+-	struct dentry_list_arg *dla = arg;
+-	struct list_head *dentries = &amp;dla-&gt;dentries;
+-	struct dentry *parent = dla-&gt;parent;
+-	struct dentry *dentry;
+-	struct dentry_list *child;
++	struct list_head *names = arg;
++	struct name_list *entry;
+ 
+-	if (name &amp;&amp; isdotent(name, namlen))
++	if (namlen != HEXDIR_LEN - 1)
+ 		return 0;
+-	dentry = lookup_one_len(name, parent, namlen);
+-	if (IS_ERR(dentry))
+-		return PTR_ERR(dentry);
+-	child = kmalloc(sizeof(*child), GFP_KERNEL);
+-	if (child == NULL)
++	entry = kmalloc(sizeof(struct name_list), GFP_KERNEL);
++	if (entry == NULL)
+ 		return -ENOMEM;
+-	child-&gt;dentry = dentry;
+-	list_add(&amp;child-&gt;list, dentries);
++	memcpy(entry-&gt;name, name, HEXDIR_LEN - 1);
++	entry-&gt;name[HEXDIR_LEN - 1] = '\0';
++	list_add(&amp;entry-&gt;list, names);
+ 	return 0;
+ }
+ 
+@@ -220,11 +210,9 @@ nfsd4_list_rec_dir(struct dentry *dir, recdir_func *f)
+ {
+ 	const struct cred *original_cred;
+ 	struct file *filp;
+-	struct dentry_list_arg dla = {
+-		.parent = dir,
+-	};
+-	struct list_head *dentries = &amp;dla.dentries;
+-	struct dentry_list *child;
++	LIST_HEAD(names);
++	struct name_list *entry;
++	struct dentry *dentry;
+ 	int status;
+ 
+ 	if (!rec_dir_init)
+@@ -233,31 +221,34 @@ nfsd4_list_rec_dir(struct dentry *dir, recdir_func *f)
+ 	status = nfs4_save_creds(&amp;original_cred);
+ 	if (status &lt; 0)
+ 		return status;
+-	INIT_LIST_HEAD(dentries);
+ 
+ 	filp = dentry_open(dget(dir), mntget(rec_dir.mnt), O_RDONLY,
+ 			   current_cred());
+ 	status = PTR_ERR(filp);
+ 	if (IS_ERR(filp))
+ 		goto out;
+-	INIT_LIST_HEAD(dentries);
+-	status = vfs_readdir(filp, nfsd4_build_dentrylist, &amp;dla);
++	status = vfs_readdir(filp, nfsd4_build_namelist, &amp;names);
+ 	fput(filp);
+-	while (!list_empty(dentries)) {
+-		child = list_entry(dentries-&gt;next, struct dentry_list, list);
+-		status = f(dir, child-&gt;dentry);
++	while (!list_empty(&amp;names)) {
++		entry = list_entry(names.next, struct name_list, list);
++
++		dentry = lookup_one_len(entry-&gt;name, dir, HEXDIR_LEN-1);
++		if (IS_ERR(dentry)) {
++			status = PTR_ERR(dentry);
++			goto out;
++		}
++		status = f(dir, dentry);
++		dput(dentry);
+ 		if (status)
+ 			goto out;
+-		list_del(&amp;child-&gt;list);
+-		dput(child-&gt;dentry);
+-		kfree(child);
++		list_del(&amp;entry-&gt;list);
++		kfree(entry);
+ 	}
+ out:
+-	while (!list_empty(dentries)) {
+-		child = list_entry(dentries-&gt;next, struct dentry_list, list);
+-		list_del(&amp;child-&gt;list);
+-		dput(child-&gt;dentry);
+-		kfree(child);
++	while (!list_empty(&amp;names)) {
++		entry = list_entry(names.next, struct name_list, list);
++		list_del(&amp;entry-&gt;list);
++		kfree(entry);
+ 	}
+ 	nfs4_reset_creds(original_cred);
+ 	return status;</pre><hr><pre>commit a1c8c4d1ff54c6c86930ee3c4c73c69eeb9ede61
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Mar 9 12:17:29 2009 -0400
+
+    nfsd4: support putpubfh operation
+    
+    Currently putpubfh returns NFSERR_OPNOTSUPP, which isn't actually
+    allowed for v4.  The right error is probably NFSERR_NOTSUPP.
+    
+    But let's just implement it; though rarely seen, it can be used by
+    Solaris (with a special mount option), is mandated by the rfc, and is
+    trivial for us to support.
+    
+    Thanks to Yang Hongyang for pointing out the original problem, and to
+    Mike Eisler, Tom Talpey, Trond Myklebust, and Dave Noveck for further
+    argument....
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4proc.c b/fs/nfsd/nfs4proc.c
+index 283d77a47120..36d74cda87a8 100644
+--- a/fs/nfsd/nfs4proc.c
++++ b/fs/nfsd/nfs4proc.c
+@@ -1045,7 +1045,7 @@ static struct nfsd4_operation nfsd4_ops[OP_RELEASE_LOCKOWNER+1] = {
+ 		.op_name = "OP_PUTFH",
+ 	},
+ 	[OP_PUTPUBFH] = {
+-		/* unsupported, just for future reference: */
++		.op_func = (nfsd4op_func)nfsd4_putrootfh,
+ 		.op_flags = ALLOWED_WITHOUT_FH | ALLOWED_ON_ABSENT_FS,
+ 		.op_name = "OP_PUTPUBFH",
+ 	},
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index aaf5f234df25..76a0b2a8d69b 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -1031,7 +1031,7 @@ static nfsd4_dec nfsd4_dec_ops[] = {
+ 	[OP_OPEN_CONFIRM]	= (nfsd4_dec)nfsd4_decode_open_confirm,
+ 	[OP_OPEN_DOWNGRADE]	= (nfsd4_dec)nfsd4_decode_open_downgrade,
+ 	[OP_PUTFH]		= (nfsd4_dec)nfsd4_decode_putfh,
+-	[OP_PUTPUBFH]		= (nfsd4_dec)nfsd4_decode_notsupp,
++	[OP_PUTPUBFH]		= (nfsd4_dec)nfsd4_decode_noop,
+ 	[OP_PUTROOTFH]		= (nfsd4_dec)nfsd4_decode_noop,
+ 	[OP_READ]		= (nfsd4_dec)nfsd4_decode_read,
+ 	[OP_READDIR]		= (nfsd4_dec)nfsd4_decode_readdir,</pre><hr><pre>commit a601caeda21c0e94c153dbd146ec0899cc5f324f
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Feb 22 16:43:45 2009 -0800
+
+    nfsd4: move rpc_client setup to a separate function
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 8d55f5047503..290289bd44f7 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -361,9 +361,8 @@ static struct rpc_program cb_program = {
+ /* Reference counting, callback cleanup, etc., all look racy as heck.
+  * And why is cb_set an atomic? */
+ 
+-static int do_probe_callback(void *data)
++static struct rpc_clnt *setup_callback_client(struct nfs4_client *clp)
+ {
+-	struct nfs4_client *clp = data;
+ 	struct sockaddr_in	addr;
+ 	struct nfs4_callback    *cb = &amp;clp-&gt;cl_callback;
+ 	struct rpc_timeout	timeparms = {
+@@ -384,15 +383,10 @@ static int do_probe_callback(void *data)
+ 		.flags		= (RPC_CLNT_CREATE_NOPING | RPC_CLNT_CREATE_QUIET),
+ 		.client_name    = clp-&gt;cl_principal,
+ 	};
+-	struct rpc_message msg = {
+-		.rpc_proc       = &amp;nfs4_cb_procedures[NFSPROC4_CLNT_CB_NULL],
+-		.rpc_argp       = clp,
+-	};
+ 	struct rpc_clnt *client;
+-	int status = -EINVAL;
+ 
+ 	if (!clp-&gt;cl_principal &amp;&amp; (clp-&gt;cl_flavor &gt;= RPC_AUTH_GSS_KRB5))
+-		goto out_err;
++		return ERR_PTR(-EINVAL);
+ 
+ 	/* Initialize address */
+ 	memset(&amp;addr, 0, sizeof(addr));
+@@ -402,6 +396,25 @@ static int do_probe_callback(void *data)
+ 
+ 	/* Create RPC client */
+ 	client = rpc_create(&amp;args);
++	if (IS_ERR(client))
++		dprintk("NFSD: couldn't create callback client: %ld\n",
++			PTR_ERR(client));
++	return client;
++
++}
++
++static int do_probe_callback(void *data)
++{
++	struct nfs4_client *clp = data;
++	struct nfs4_callback    *cb = &amp;clp-&gt;cl_callback;
++	struct rpc_message msg = {
++		.rpc_proc       = &amp;nfs4_cb_procedures[NFSPROC4_CLNT_CB_NULL],
++		.rpc_argp       = clp,
++	};
++	struct rpc_clnt *client;
++	int status;
++
++	client = setup_callback_client(clp);
+ 	if (IS_ERR(client)) {
+ 		status = PTR_ERR(client);
+ 		dprintk("NFSD: couldn't create callback client: %d\n",</pre><hr><pre>commit 418cd20aa19b54554cab383e2fd0d1cb8c4732ee
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Feb 22 15:52:13 2009 -0800
+
+    nfsd4: fix do_probe_callback errors
+    
+    The errors returned aren't used.  Just return 0 and make them available
+    to a dprintk().  Also, consistently use -ERRNO errors instead of nfs
+    errors.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Reviewed-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 5dcd38e5f138..8d55f5047503 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -389,12 +389,10 @@ static int do_probe_callback(void *data)
+ 		.rpc_argp       = clp,
+ 	};
+ 	struct rpc_clnt *client;
+-	int status;
++	int status = -EINVAL;
+ 
+-	if (!clp-&gt;cl_principal &amp;&amp; (clp-&gt;cl_flavor &gt;= RPC_AUTH_GSS_KRB5)) {
+-		status = nfserr_cb_path_down;
++	if (!clp-&gt;cl_principal &amp;&amp; (clp-&gt;cl_flavor &gt;= RPC_AUTH_GSS_KRB5))
+ 		goto out_err;
+-	}
+ 
+ 	/* Initialize address */
+ 	memset(&amp;addr, 0, sizeof(addr));
+@@ -405,8 +403,9 @@ static int do_probe_callback(void *data)
+ 	/* Create RPC client */
+ 	client = rpc_create(&amp;args);
+ 	if (IS_ERR(client)) {
+-		dprintk("NFSD: couldn't create callback client\n");
+ 		status = PTR_ERR(client);
++		dprintk("NFSD: couldn't create callback client: %d\n",
++								status);
+ 		goto out_err;
+ 	}
+ 
+@@ -422,10 +421,10 @@ static int do_probe_callback(void *data)
+ out_release_client:
+ 	rpc_shutdown_client(client);
+ out_err:
+-	dprintk("NFSD: warning: no callback path to client %.*s\n",
+-		(int)clp-&gt;cl_name.len, clp-&gt;cl_name.data);
++	dprintk("NFSD: warning: no callback path to client %.*s: error %d\n",
++		(int)clp-&gt;cl_name.len, clp-&gt;cl_name.data, status);
+ 	put_nfs4_client(clp);
+-	return status;
++	return 0;
+ }
+ 
+ /*</pre><hr><pre>commit 8b671b80707e4fc76adfe4387df07b3be1007c1e
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Feb 22 14:51:34 2009 -0800
+
+    nfsd4: remove use of mutex for file_hashtable
+    
+    As part of reducing the scope of the client_mutex, and in order to
+    remove the need for mutexes from the callback code (so that callbacks
+    can be done as asynchronous rpc calls), move manipulations of the
+    file_hashtable under the recall_lock.
+    
+    Update the relevant comments while we're here.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Alexandros Batsakis &lt;batsakis@netapp.com&gt;
+    Reviewed-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 3fd7136321ca..5dcd38e5f138 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -491,8 +491,6 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ 	 * or deleg_return.
+ 	 */
+ 	put_nfs4_client(clp);
+-	nfs4_lock_state();
+ 	nfs4_put_delegation(dp);
+-	nfs4_unlock_state();
+ 	return;
+ }
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 89e575e7daea..54651aa45790 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -78,14 +78,18 @@ static struct nfs4_delegation * find_delegation_stateid(struct inode *ino, state
+ static char user_recovery_dirname[PATH_MAX] = "/var/lib/nfs/v4recovery";
+ static void nfs4_set_recdir(char *recdir);
+ 
+-/* Locking:
+- *
+- * client_mutex:
+- * 	protects clientid_hashtbl[], clientstr_hashtbl[],
+- * 	unconfstr_hashtbl[], uncofid_hashtbl[].
+- */
++/* Locking: */
++
++/* Currently used for almost all code touching nfsv4 state: */
+ static DEFINE_MUTEX(client_mutex);
+ 
++/*
++ * Currently used for the del_recall_lru and file hash table.  In an
++ * effort to decrease the scope of the client_mutex, this spinlock may
++ * eventually cover more:
++ */
++static DEFINE_SPINLOCK(recall_lock);
++
+ static struct kmem_cache *stateowner_slab = NULL;
+ static struct kmem_cache *file_slab = NULL;
+ static struct kmem_cache *stateid_slab = NULL;
+@@ -116,33 +120,23 @@ opaque_hashval(const void *ptr, int nbytes)
+ 	return x;
+ }
+ 
+-/*
+- * Delegation state
+- */
+-
+-/* recall_lock protects the del_recall_lru */
+-static DEFINE_SPINLOCK(recall_lock);
+ static struct list_head del_recall_lru;
+ 
+-static void
+-free_nfs4_file(struct kref *kref)
+-{
+-	struct nfs4_file *fp = container_of(kref, struct nfs4_file, fi_ref);
+-	list_del(&amp;fp-&gt;fi_hash);
+-	iput(fp-&gt;fi_inode);
+-	kmem_cache_free(file_slab, fp);
+-}
+-
+ static inline void
+ put_nfs4_file(struct nfs4_file *fi)
+ {
+-	kref_put(&amp;fi-&gt;fi_ref, free_nfs4_file);
++	if (atomic_dec_and_lock(&amp;fi-&gt;fi_ref, &amp;recall_lock)) {
++		list_del(&amp;fi-&gt;fi_hash);
++		spin_unlock(&amp;recall_lock);
++		iput(fi-&gt;fi_inode);
++		kmem_cache_free(file_slab, fi);
++	}
+ }
+ 
+ static inline void
+ get_nfs4_file(struct nfs4_file *fi)
+ {
+-	kref_get(&amp;fi-&gt;fi_ref);
++	atomic_inc(&amp;fi-&gt;fi_ref);
+ }
+ 
+ static int num_delegations;
+@@ -1000,11 +994,13 @@ alloc_init_file(struct inode *ino)
+ 
+ 	fp = kmem_cache_alloc(file_slab, GFP_KERNEL);
+ 	if (fp) {
+-		kref_init(&amp;fp-&gt;fi_ref);
++		atomic_set(&amp;fp-&gt;fi_ref, 1);
+ 		INIT_LIST_HEAD(&amp;fp-&gt;fi_hash);
+ 		INIT_LIST_HEAD(&amp;fp-&gt;fi_stateids);
+ 		INIT_LIST_HEAD(&amp;fp-&gt;fi_delegations);
++		spin_lock(&amp;recall_lock);
+ 		list_add(&amp;fp-&gt;fi_hash, &amp;file_hashtbl[hashval]);
++		spin_unlock(&amp;recall_lock);
+ 		fp-&gt;fi_inode = igrab(ino);
+ 		fp-&gt;fi_id = current_fileid++;
+ 		fp-&gt;fi_had_conflict = false;
+@@ -1177,12 +1173,15 @@ find_file(struct inode *ino)
+ 	unsigned int hashval = file_hashval(ino);
+ 	struct nfs4_file *fp;
+ 
++	spin_lock(&amp;recall_lock);
+ 	list_for_each_entry(fp, &amp;file_hashtbl[hashval], fi_hash) {
+ 		if (fp-&gt;fi_inode == ino) {
+ 			get_nfs4_file(fp);
++			spin_unlock(&amp;recall_lock);
+ 			return fp;
+ 		}
+ 	}
++	spin_unlock(&amp;recall_lock);
+ 	return NULL;
+ }
+ 
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index 503b6bb53a56..a6e4a00fa392 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -214,7 +214,7 @@ struct nfs4_stateowner {
+ *      share_acces, share_deny on the file.
+ */
+ struct nfs4_file {
+-	struct kref		fi_ref;
++	atomic_t		fi_ref;
+ 	struct list_head        fi_hash;    /* hash by "struct inode *" */
+ 	struct list_head        fi_stateids;
+ 	struct list_head	fi_delegations;</pre><hr><pre>commit d7fdcfe0aaaf6dffca6fa857bab374182fe7ca8b
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sat Feb 21 15:39:54 2009 -0800
+
+    nfsd4: put_nfs4_client does not require state lock
+    
+    Since free_client() is guaranteed to only be called once, and to only
+    touch the client structure itself (not any common data structures), it
+    has no need for the state lock.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Alexandros Batsakis &lt;batsakis@netapp.com&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 3ddc9fb2e358..3fd7136321ca 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -490,8 +490,8 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
+ 	 * Success or failure, now we're either waiting for lease expiration
+ 	 * or deleg_return.
+ 	 */
+-	nfs4_lock_state();
+ 	put_nfs4_client(clp);
++	nfs4_lock_state();
+ 	nfs4_put_delegation(dp);
+ 	nfs4_unlock_state();
+ 	return;</pre><hr><pre>commit 18f82731b7784ba81ee9b1ed6a8179b577fa898b
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sat Feb 21 15:23:01 2009 -0800
+
+    nfsd4: rename io_during_grace_disallowed
+    
+    Use a slightly clearer, more concise name.  Also removed unused
+    argument.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 5957f7766bdc..89e575e7daea 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -2019,7 +2019,7 @@ check_special_stateids(svc_fh *current_fh, stateid_t *stateid, int flags)
+  * that are not able to provide mandatory locking.
+  */
+ static inline int
+-io_during_grace_disallowed(struct inode *inode, int flags)
++grace_disallows_io(struct inode *inode)
+ {
+ 	return locks_in_grace() &amp;&amp; mandatory_lock(inode);
+ }
+@@ -2063,7 +2063,7 @@ nfs4_preprocess_stateid_op(struct svc_fh *current_fh, stateid_t *stateid, int fl
+ 	if (filpp)
+ 		*filpp = NULL;
+ 
+-	if (io_during_grace_disallowed(ino, flags))
++	if (grace_disallows_io(ino))
+ 		return nfserr_grace;
+ 
+ 	if (ZERO_STATEID(stateid) || ONE_STATEID(stateid))</pre><hr><pre>commit 6150ef0dc7f734366d297e2eb5697ae458a1ea19
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sat Feb 21 13:36:16 2009 -0800
+
+    nfsd4: remove unused CHECK_FH flag
+    
+    All users now pass this, so it's meaningless.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4proc.c b/fs/nfsd/nfs4proc.c
+index af66073ed423..77f584f69dfe 100644
+--- a/fs/nfsd/nfs4proc.c
++++ b/fs/nfsd/nfs4proc.c
+@@ -519,7 +519,7 @@ nfsd4_read(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	/* check stateid */
+ 	if ((status = nfs4_preprocess_stateid_op(&amp;cstate-&gt;current_fh,
+ 				&amp;read-&gt;rd_stateid,
+-				CHECK_FH | RD_STATE, &amp;read-&gt;rd_filp))) {
++				RD_STATE, &amp;read-&gt;rd_filp))) {
+ 		dprintk("NFSD: nfsd4_read: couldn't process stateid!\n");
+ 		goto out;
+ 	}
+@@ -651,7 +651,7 @@ nfsd4_setattr(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	if (setattr-&gt;sa_iattr.ia_valid &amp; ATTR_SIZE) {
+ 		nfs4_lock_state();
+ 		status = nfs4_preprocess_stateid_op(&amp;cstate-&gt;current_fh,
+-			&amp;setattr-&gt;sa_stateid, CHECK_FH | WR_STATE, NULL);
++			&amp;setattr-&gt;sa_stateid, WR_STATE, NULL);
+ 		nfs4_unlock_state();
+ 		if (status) {
+ 			dprintk("NFSD: nfsd4_setattr: couldn't process stateid!\n");
+@@ -690,7 +690,7 @@ nfsd4_write(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 
+ 	nfs4_lock_state();
+ 	status = nfs4_preprocess_stateid_op(&amp;cstate-&gt;current_fh, stateid,
+-					CHECK_FH | WR_STATE, &amp;filp);
++					WR_STATE, &amp;filp);
+ 	if (filp)
+ 		get_file(filp);
+ 	nfs4_unlock_state();
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 6ae28e606afc..5957f7766bdc 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -2091,7 +2091,7 @@ nfs4_preprocess_stateid_op(struct svc_fh *current_fh, stateid_t *stateid, int fl
+ 		stp = find_stateid(stateid, flags);
+ 		if (!stp)
+ 			goto out;
+-		if ((flags &amp; CHECK_FH) &amp;&amp; nfs4_check_fh(current_fh, stp))
++		if (nfs4_check_fh(current_fh, stp))
+ 			goto out;
+ 		if (!stp-&gt;st_stateowner-&gt;so_confirmed)
+ 			goto out;
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index c9311a1e2e1a..503b6bb53a56 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -256,7 +256,6 @@ struct nfs4_stateid {
+ };
+ 
+ /* flags for preprocess_seqid_op() */
+-#define CHECK_FH                0x00000001
+ #define CONFIRM                 0x00000002
+ #define OPEN_STATE              0x00000004
+ #define LOCK_STATE              0x00000008</pre><hr><pre>commit 7e0f7cf582abd6c85232331dfe726a4e4b0fd98e
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sat Feb 21 13:32:28 2009 -0800
+
+    nfsd4: fail when delegreturn gets a non-delegation stateid
+    
+    Previous cleanup reveals an obvious (though harmless) bug: when
+    delegreturn gets a stateid that isn't for a delegation, it should return
+    an error rather than doing nothing.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 3570a0d1133f..6ae28e606afc 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -2418,10 +2418,9 @@ nfsd4_delegreturn(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	status = nfserr_stale_stateid;
+ 	if (STALE_STATEID(stateid))
+ 		goto out;
+-	status = nfs_ok;
++	status = nfserr_bad_stateid;
+ 	if (!is_delegation_stateid(stateid))
+ 		goto out;
+-	status = nfserr_bad_stateid;
+ 	dp = find_delegation_stateid(inode, stateid);
+ 	if (!dp)
+ 		goto out;</pre><hr><pre>commit 203a8c8e66278a5936a230edaac29017e50c88fb
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sat Feb 21 13:29:14 2009 -0800
+
+    nfsd4: separate delegreturn case from preprocess_stateid_op
+    
+    Delegreturn is enough a special case for preprocess_stateid_op to
+    warrant just open-coding it in delegreturn.
+    
+    There should be no change in behavior here; we're just reshuffling code.
+    
+    Thanks to Yang Hongyang for catching a critical typo.
+    
+    Reviewed-by: Yang Hongyang &lt;yanghy@cn.fujitsu.com&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index d5555850cb64..3570a0d1133f 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -2000,10 +2000,7 @@ __be32 nfs4_check_openmode(struct nfs4_stateid *stp, int flags)
+ static inline __be32
+ check_special_stateids(svc_fh *current_fh, stateid_t *stateid, int flags)
+ {
+-	/* Trying to call delegreturn with a special stateid? Yuch: */
+-	if (!(flags &amp; (RD_STATE | WR_STATE)))
+-		return nfserr_bad_stateid;
+-	else if (ONE_STATEID(stateid) &amp;&amp; (flags &amp; RD_STATE))
++	if (ONE_STATEID(stateid) &amp;&amp; (flags &amp; RD_STATE))
+ 		return nfs_ok;
+ 	else if (locks_in_grace()) {
+ 		/* Answer in remaining cases depends on existance of
+@@ -2024,8 +2021,7 @@ check_special_stateids(svc_fh *current_fh, stateid_t *stateid, int flags)
+ static inline int
+ io_during_grace_disallowed(struct inode *inode, int flags)
+ {
+-	return locks_in_grace() &amp;&amp; (flags &amp; (RD_STATE | WR_STATE))
+-		&amp;&amp; mandatory_lock(inode);
++	return locks_in_grace() &amp;&amp; mandatory_lock(inode);
+ }
+ 
+ static int check_stateid_generation(stateid_t *in, stateid_t *ref)
+@@ -2089,8 +2085,6 @@ nfs4_preprocess_stateid_op(struct svc_fh *current_fh, stateid_t *stateid, int fl
+ 		if (status)
+ 			goto out;
+ 		renew_client(dp-&gt;dl_client);
+-		if (flags &amp; DELEG_RET)
+-			unhash_delegation(dp);
+ 		if (filpp)
+ 			*filpp = dp-&gt;dl_vfs_file;
+ 	} else { /* open or lock stateid */
+@@ -2408,16 +2402,38 @@ __be32
+ nfsd4_delegreturn(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 		  struct nfsd4_delegreturn *dr)
+ {
++	struct nfs4_delegation *dp;
++	stateid_t *stateid = &amp;dr-&gt;dr_stateid;
++	struct inode *inode;
+ 	__be32 status;
+ 
+ 	if ((status = fh_verify(rqstp, &amp;cstate-&gt;current_fh, S_IFREG, 0)))
+-		goto out;
++		return status;
++	inode = cstate-&gt;current_fh.fh_dentry-&gt;d_inode;
+ 
+ 	nfs4_lock_state();
+-	status = nfs4_preprocess_stateid_op(&amp;cstate-&gt;current_fh,
+-					    &amp;dr-&gt;dr_stateid, DELEG_RET, NULL);
+-	nfs4_unlock_state();
++	status = nfserr_bad_stateid;
++	if (ZERO_STATEID(stateid) || ONE_STATEID(stateid))
++		goto out;
++	status = nfserr_stale_stateid;
++	if (STALE_STATEID(stateid))
++		goto out;
++	status = nfs_ok;
++	if (!is_delegation_stateid(stateid))
++		goto out;
++	status = nfserr_bad_stateid;
++	dp = find_delegation_stateid(inode, stateid);
++	if (!dp)
++		goto out;
++	status = check_stateid_generation(stateid, &amp;dp-&gt;dl_stateid);
++	if (status)
++		goto out;
++	renew_client(dp-&gt;dl_client);
++
++	unhash_delegation(dp);
+ out:
++	nfs4_unlock_state();
++
+ 	return status;
+ }
+ 
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index 1130d534bb63..c9311a1e2e1a 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -263,7 +263,6 @@ struct nfs4_stateid {
+ #define RD_STATE	        0x00000010
+ #define WR_STATE	        0x00000020
+ #define CLOSE_STATE             0x00000040
+-#define DELEG_RET               0x00000080
+ 
+ #define seqid_mutating_err(err)                       \
+ 	(((err) != nfserr_stale_clientid) &amp;&amp;    \</pre>
+    <div class="pagination">
+        <a href='4_23.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><span>[24]</span><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_25.html'>Next&gt;&gt;</a>
+    <div>
+</body>

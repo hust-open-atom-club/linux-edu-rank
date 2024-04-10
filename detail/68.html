@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Boston University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Boston University</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit e7e3728bd776d1d1450212ad266832f1003f833f
+Author: Qiaobin Fu &lt;qiaobinf@bu.edu&gt;
+Date:   Sun Jul 1 15:16:27 2018 -0400
+
+    net:sched: add action inheritdsfield to skbedit
+    
+    The new action inheritdsfield copies the field DS of
+    IPv4 and IPv6 packets into skb-&gt;priority. This enables
+    later classification of packets based on the DS field.
+    
+    v5:
+    *Update the drop counter for TC_ACT_SHOT
+    
+    v4:
+    *Not allow setting flags other than the expected ones.
+    
+    *Allow dumping the pure flags.
+    
+    v3:
+    *Use optional flags, so that it won't break old versions of tc.
+    
+    *Allow users to set both SKBEDIT_F_PRIORITY and SKBEDIT_F_INHERITDSFIELD flags.
+    
+    v2:
+    *Fix the style issue
+    
+    *Move the code from skbmod to skbedit
+    
+    Original idea by Jamal Hadi Salim &lt;jhs@mojatatu.com&gt;
+    
+    Signed-off-by: Qiaobin Fu &lt;qiaobinf@bu.edu&gt;
+    Reviewed-by: Michel Machado &lt;michel@digirati.com.br&gt;
+    Acked-by: Jamal Hadi Salim &lt;jhs@mojatatu.com&gt;
+    Reviewed-by: Marcelo Ricardo Leitner &lt;marcelo.leitner@gmail.com&gt;
+    Acked-by: Davide Caratti &lt;dcaratti@redhat.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/include/uapi/linux/tc_act/tc_skbedit.h b/include/uapi/linux/tc_act/tc_skbedit.h
+index fbcfe27a4e6c..6de6071ebed6 100644
+--- a/include/uapi/linux/tc_act/tc_skbedit.h
++++ b/include/uapi/linux/tc_act/tc_skbedit.h
+@@ -30,6 +30,7 @@
+ #define SKBEDIT_F_MARK			0x4
+ #define SKBEDIT_F_PTYPE			0x8
+ #define SKBEDIT_F_MASK			0x10
++#define SKBEDIT_F_INHERITDSFIELD	0x20
+ 
+ struct tc_skbedit {
+ 	tc_gen;
+@@ -45,6 +46,7 @@ enum {
+ 	TCA_SKBEDIT_PAD,
+ 	TCA_SKBEDIT_PTYPE,
+ 	TCA_SKBEDIT_MASK,
++	TCA_SKBEDIT_FLAGS,
+ 	__TCA_SKBEDIT_MAX
+ };
+ #define TCA_SKBEDIT_MAX (__TCA_SKBEDIT_MAX - 1)
+diff --git a/net/sched/act_skbedit.c b/net/sched/act_skbedit.c
+index 6138d1d71900..dfaf5d8028dd 100644
+--- a/net/sched/act_skbedit.c
++++ b/net/sched/act_skbedit.c
+@@ -23,6 +23,9 @@
+ #include &lt;linux/rtnetlink.h&gt;
+ #include &lt;net/netlink.h&gt;
+ #include &lt;net/pkt_sched.h&gt;
++#include &lt;net/ip.h&gt;
++#include &lt;net/ipv6.h&gt;
++#include &lt;net/dsfield.h&gt;
+ 
+ #include &lt;linux/tc_act/tc_skbedit.h&gt;
+ #include &lt;net/tc_act/tc_skbedit.h&gt;
+@@ -41,6 +44,25 @@ static int tcf_skbedit(struct sk_buff *skb, const struct tc_action *a,
+ 
+ 	if (d-&gt;flags &amp; SKBEDIT_F_PRIORITY)
+ 		skb-&gt;priority = d-&gt;priority;
++	if (d-&gt;flags &amp; SKBEDIT_F_INHERITDSFIELD) {
++		int wlen = skb_network_offset(skb);
++
++		switch (tc_skb_protocol(skb)) {
++		case htons(ETH_P_IP):
++			wlen += sizeof(struct iphdr);
++			if (!pskb_may_pull(skb, wlen))
++				goto err;
++			skb-&gt;priority = ipv4_get_dsfield(ip_hdr(skb)) &gt;&gt; 2;
++			break;
++
++		case htons(ETH_P_IPV6):
++			wlen += sizeof(struct ipv6hdr);
++			if (!pskb_may_pull(skb, wlen))
++				goto err;
++			skb-&gt;priority = ipv6_get_dsfield(ipv6_hdr(skb)) &gt;&gt; 2;
++			break;
++		}
++	}
+ 	if (d-&gt;flags &amp; SKBEDIT_F_QUEUE_MAPPING &amp;&amp;
+ 	    skb-&gt;dev-&gt;real_num_tx_queues &gt; d-&gt;queue_mapping)
+ 		skb_set_queue_mapping(skb, d-&gt;queue_mapping);
+@@ -53,6 +75,11 @@ static int tcf_skbedit(struct sk_buff *skb, const struct tc_action *a,
+ 
+ 	spin_unlock(&amp;d-&gt;tcf_lock);
+ 	return d-&gt;tcf_action;
++
++err:
++	d-&gt;tcf_qstats.drops++;
++	spin_unlock(&amp;d-&gt;tcf_lock);
++	return TC_ACT_SHOT;
+ }
+ 
+ static const struct nla_policy skbedit_policy[TCA_SKBEDIT_MAX + 1] = {
+@@ -62,6 +89,7 @@ static const struct nla_policy skbedit_policy[TCA_SKBEDIT_MAX + 1] = {
+ 	[TCA_SKBEDIT_MARK]		= { .len = sizeof(u32) },
+ 	[TCA_SKBEDIT_PTYPE]		= { .len = sizeof(u16) },
+ 	[TCA_SKBEDIT_MASK]		= { .len = sizeof(u32) },
++	[TCA_SKBEDIT_FLAGS]		= { .len = sizeof(u64) },
+ };
+ 
+ static int tcf_skbedit_init(struct net *net, struct nlattr *nla,
+@@ -114,6 +142,13 @@ static int tcf_skbedit_init(struct net *net, struct nlattr *nla,
+ 		mask = nla_data(tb[TCA_SKBEDIT_MASK]);
+ 	}
+ 
++	if (tb[TCA_SKBEDIT_FLAGS] != NULL) {
++		u64 *pure_flags = nla_data(tb[TCA_SKBEDIT_FLAGS]);
++
++		if (*pure_flags &amp; SKBEDIT_F_INHERITDSFIELD)
++			flags |= SKBEDIT_F_INHERITDSFIELD;
++	}
++
+ 	parm = nla_data(tb[TCA_SKBEDIT_PARMS]);
+ 
+ 	exists = tcf_idr_check(tn, parm-&gt;index, a, bind);
+@@ -178,6 +213,7 @@ static int tcf_skbedit_dump(struct sk_buff *skb, struct tc_action *a,
+ 		.action  = d-&gt;tcf_action,
+ 	};
+ 	struct tcf_t t;
++	u64 pure_flags = 0;
+ 
+ 	if (nla_put(skb, TCA_SKBEDIT_PARMS, sizeof(opt), &amp;opt))
+ 		goto nla_put_failure;
+@@ -196,6 +232,11 @@ static int tcf_skbedit_dump(struct sk_buff *skb, struct tc_action *a,
+ 	if ((d-&gt;flags &amp; SKBEDIT_F_MASK) &amp;&amp;
+ 	    nla_put_u32(skb, TCA_SKBEDIT_MASK, d-&gt;mask))
+ 		goto nla_put_failure;
++	if (d-&gt;flags &amp; SKBEDIT_F_INHERITDSFIELD)
++		pure_flags |= SKBEDIT_F_INHERITDSFIELD;
++	if (pure_flags != 0 &amp;&amp;
++	    nla_put(skb, TCA_SKBEDIT_FLAGS, sizeof(pure_flags), &amp;pure_flags))
++		goto nla_put_failure;
+ 
+ 	tcf_tm_dump(&amp;t, &amp;d-&gt;tcf_tm);
+ 	if (nla_put_64bit(skb, TCA_SKBEDIT_TM, sizeof(t), &amp;t, TCA_SKBEDIT_PAD))</pre><hr><pre>commit a2c49a9ac993fa2b4795890d5fa56f2fc002453e
+Author: William Blair &lt;wdblair@bu.edu&gt;
+Date:   Wed Jun 13 01:16:49 2012 -0400
+
+    Staging: keucr: scsiglue: fixed a do while coding style issue
+    
+    Added a do ... while (0) to a multi statement macro and reformatted a similar macro.
+    
+    Signed-off-by: William Blair &lt;wdblair@bu.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/keucr/scsiglue.c b/drivers/staging/keucr/scsiglue.c
+index e1f3931d41e0..083b20e6253e 100644
+--- a/drivers/staging/keucr/scsiglue.c
++++ b/drivers/staging/keucr/scsiglue.c
+@@ -230,7 +230,10 @@ void usb_stor_report_bus_reset(struct us_data *us)
+ /* we use this macro to help us write into the buffer */
+ #undef SPRINTF
+ #define SPRINTF(args...) \
+-	do { if (pos &lt; buffer+length) pos += sprintf(pos, ## args); } while (0)
++	do { \
++		if (pos &lt; buffer+length) \
++			pos += sprintf(pos, ## args); \
++	} while (0)
+ 
+ /*
+  * proc_info()
+@@ -279,8 +282,10 @@ static int proc_info(struct Scsi_Host *host, char *buffer, char **start,
+ 		pos += sprintf(pos, "       Quirks:");
+ 
+ #define US_FLAG(name, value) \
+-	if (us-&gt;fflags &amp; value)\
+-		pos += sprintf(pos, " " #name);
++	do { \
++		if (us-&gt;fflags &amp; value) \
++			pos += sprintf(pos, " " #name); \
++	} while (0);
+ US_DO_ALL_FLAGS
+ #undef US_FLAG
+ </pre><hr><pre>commit 383b7fc2dca769d98ca373306e105987e8f143b3
+Author: William Blair &lt;wdblair@bu.edu&gt;
+Date:   Sun Jun 10 15:10:33 2012 -0400
+
+    Staging: keucr: init: fixed a brace coding style issue
+    
+    Fixed a coding style issue.
+    
+    Signed-off-by: William Blair &lt;wdblair@bu.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/keucr/init.c b/drivers/staging/keucr/init.c
+index 071bdc238786..231611dc0f74 100644
+--- a/drivers/staging/keucr/init.c
++++ b/drivers/staging/keucr/init.c
+@@ -30,9 +30,8 @@ int ENE_InitMedia(struct us_data *us)
+ 	if (MiscReg03 &amp; 0x02) {
+ 		if (!us-&gt;SM_Status.Ready &amp;&amp; !us-&gt;MS_Status.Ready) {
+ 			result = ENE_SMInit(us);
+-			if (result != USB_STOR_XFER_GOOD) {
++			if (result != USB_STOR_XFER_GOOD)
+ 				return USB_STOR_TRANSPORT_ERROR;
+-			}
+ 		}
+ 
+ 	}</pre><hr><pre>commit f1735bb2a583b53ffdabe23ba8b22350e2d5e597
+Author: Erik S. Beiser &lt;erikb@bu.edu&gt;
+Date:   Sat Feb 28 22:29:20 2009 -0300
+
+    V4L/DVB (10826): cx88: Add IR support to pcHDTV HD3000 &amp; HD5500
+    
+    cx88: Add IR support to pcHDTV HD3000 &amp; HD5500
+    
+    Signed-off-by: Erik S. Beiser &lt;erikb@bu.edu&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@redhat.com&gt;
+
+diff --git a/drivers/media/video/cx88/cx88-input.c b/drivers/media/video/cx88/cx88-input.c
+index 8683d104de72..ad0842136d8d 100644
+--- a/drivers/media/video/cx88/cx88-input.c
++++ b/drivers/media/video/cx88/cx88-input.c
+@@ -226,6 +226,8 @@ int cx88_ir_init(struct cx88_core *core, struct pci_dev *pci)
+ 	case CX88_BOARD_HAUPPAUGE_HVR3000:
+ 	case CX88_BOARD_HAUPPAUGE_HVR4000:
+ 	case CX88_BOARD_HAUPPAUGE_HVR4000LITE:
++	case CX88_BOARD_PCHDTV_HD3000:
++	case CX88_BOARD_PCHDTV_HD5500:
+ 		ir_codes = ir_codes_hauppauge_new;
+ 		ir_type = IR_TYPE_RC5;
+ 		ir-&gt;sampling = 1;
+@@ -466,6 +468,8 @@ void cx88_ir_irq(struct cx88_core *core)
+ 	case CX88_BOARD_HAUPPAUGE_HVR3000:
+ 	case CX88_BOARD_HAUPPAUGE_HVR4000:
+ 	case CX88_BOARD_HAUPPAUGE_HVR4000LITE:
++	case CX88_BOARD_PCHDTV_HD3000:
++	case CX88_BOARD_PCHDTV_HD5500:
+ 		ircode = ir_decode_biphase(ir-&gt;samples, ir-&gt;scount, 5, 7);
+ 		ir_dprintk("biphase decoded: %x\n", ircode);
+ 		/*</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

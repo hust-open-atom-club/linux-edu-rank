@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Queensland</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Queensland</h1>
+    <div class="pagination">
+        <a href='18.html'>&lt;&lt;Prev</a><a href='18.html'>1</a><span>[2]</span><a href='18_3.html'>3</a><a href='18_4.html'>4</a><a href='18_5.html'>5</a><a href='18_6.html'>6</a><a href='18_7.html'>7</a><a href='18_3.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 3dfefc50ff45744ffb97ce0bf9c213a3fb6d5d3d
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Sun Dec 2 10:07:06 2007 -0300
+
+    V4L/DVB (6855): xc2028: select DTV78 firmware if tuning 7MHz VHF / 8MHz UHF
+    
+    It seems that the DTV78 firmware is intended for use in locations where
+    VHF channels have 7MHz bandwidth and UHF channels have 8MHz bandwidth.
+    If we switch to DTV78 firmware when we detect this condition, we can
+    avoid firmware reloads when switching between VHF and UHF transponders.
+    
+    Place the state for this in the control structure so that card drivers
+    can hint to us to use DTV78 firmware from the first tuning attempt.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/video/tuner-xc2028.c b/drivers/media/video/tuner-xc2028.c
+index 63a6fca1f8cf..0565edd224bc 100644
+--- a/drivers/media/video/tuner-xc2028.c
++++ b/drivers/media/video/tuner-xc2028.c
+@@ -998,20 +998,27 @@ static int xc2028_set_params(struct dvb_frontend *fe,
+ 		return -EINVAL;
+ 	}
+ 
+-	/* FIXME:
+-	  There are two Scodes that will never be selected:
+-		DTV78 ZARLINK456, DTV78 DIBCOM52
+-	  When it should opt for DTV78 instead of DTV7 or DTV8?
+-	*/
+ 	switch (bw) {
+ 	case BANDWIDTH_8_MHZ:
+-		type |= DTV8 | F8MHZ;
++		if (p-&gt;frequency &lt; 470000000)
++			priv-&gt;ctrl.vhfbw7 = 0;
++		else
++			priv-&gt;ctrl.uhfbw8 = 1;
++		type |= (priv-&gt;ctrl.vhfbw7 &amp;&amp; priv-&gt;ctrl.uhfbw8) ? DTV78 : DTV8;
++		type |= F8MHZ;
+ 		break;
+ 	case BANDWIDTH_7_MHZ:
+-		type |= DTV7 | F8MHZ;
++		if (p-&gt;frequency &lt; 470000000)
++			priv-&gt;ctrl.vhfbw7 = 1;
++		else
++			priv-&gt;ctrl.uhfbw8 = 0;
++		type |= (priv-&gt;ctrl.vhfbw7 &amp;&amp; priv-&gt;ctrl.uhfbw8) ? DTV78 : DTV7;
++		type |= F8MHZ;
+ 		break;
+ 	case BANDWIDTH_6_MHZ:
+-		type |= DTV6 ;
++		type |= DTV6;
++		priv-&gt;ctrl.vhfbw7 = 0;
++		priv-&gt;ctrl.uhfbw8 = 0;
+ 		break;
+ 	default:
+ 		tuner_err("error: bandwidth not supported.\n");
+diff --git a/drivers/media/video/tuner-xc2028.h b/drivers/media/video/tuner-xc2028.h
+index 1fe8b195960c..7462629b98fd 100644
+--- a/drivers/media/video/tuner-xc2028.h
++++ b/drivers/media/video/tuner-xc2028.h
+@@ -30,6 +30,8 @@ struct xc2028_ctrl {
+ 	unsigned int		mts   :1;
+ 	unsigned int		d2633 :1;
+ 	unsigned int		input1:1;
++	unsigned int		vhfbw7:1;
++	unsigned int		uhfbw8:1;
+ 	unsigned int		demod;
+ };
+ </pre><hr><pre>commit 897b842296f1285a6b58e9170f7017022e2e2603
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Sun Dec 2 09:39:18 2007 -0300
+
+    V4L/DVB (6854): xc2028: be more specific about when applying offset for 7MHz channels
+    
+    We have been inserting a mystery 500kHz offset for tuning 7MHz channels,
+    however some experimentation reveals it is only needed under certain
+    conditions with specific firmware combinations.  Document these and only
+    apply the offset when we know it is required.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/video/tuner-xc2028.c b/drivers/media/video/tuner-xc2028.c
+index a6b05dfd6703..63a6fca1f8cf 100644
+--- a/drivers/media/video/tuner-xc2028.c
++++ b/drivers/media/video/tuner-xc2028.c
+@@ -875,7 +875,16 @@ static int generic_set_freq(struct dvb_frontend *fe, u32 freq /* in HZ */,
+ 		rc = send_seq(priv, {0x00, 0x00});
+ 	} else {
+ 		offset = 2750000;
+-		if (priv-&gt;cur_fw.type &amp; DTV7)
++		/*
++		 * We must adjust the offset by 500kHz in two cases in order
++		 * to correctly center the IF output:
++		 * 1) When the ZARLINK456 or DIBCOM52 tables were explicitly
++		 *    selected and a 7MHz channel is tuned;
++		 * 2) When tuning a VHF channel with DTV78 firmware.
++		 */
++		if (((priv-&gt;cur_fw.type &amp; DTV7) &amp;&amp;
++		     (priv-&gt;cur_fw.scode_table &amp; (ZARLINK456 | DIBCOM52))) ||
++		    ((priv-&gt;cur_fw.type &amp; DTV78) &amp;&amp; freq &lt; 470000000))
+ 			offset -= 500000;
+ 	}
+ </pre><hr><pre>commit 9ca01e780f8966a7a94f88ef5c54f340e117abea
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Sun Dec 2 06:54:17 2007 -0300
+
+    V4L/DVB (6853): xc2028: check HAS_IF flag against table
+    
+    When searching for the right S-Code table to load, check the HAS_IF flag
+    against the firmware we are checking instead of against the the "type"
+    requested.  We already ignore the scode type requested if the caller passed
+    an int_freq; this makes the search by frequency consistent with that behaviour.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/video/tuner-xc2028.c b/drivers/media/video/tuner-xc2028.c
+index 81cc7f607d4e..a6b05dfd6703 100644
+--- a/drivers/media/video/tuner-xc2028.c
++++ b/drivers/media/video/tuner-xc2028.c
+@@ -592,7 +592,7 @@ static int load_scode(struct dvb_frontend *fe, unsigned int type,
+ 	} else {
+ 		for (pos = 0; pos &lt; priv-&gt;firm_size; pos++) {
+ 			if ((priv-&gt;firm[pos].int_freq == int_freq) &amp;&amp;
+-			    (type &amp; HAS_IF))
++			    (priv-&gt;firm[pos].type &amp; HAS_IF))
+ 				break;
+ 		}
+ 		if (pos == priv-&gt;firm_size)
+@@ -601,7 +601,7 @@ static int load_scode(struct dvb_frontend *fe, unsigned int type,
+ 
+ 	p = priv-&gt;firm[pos].ptr;
+ 
+-	if (type &amp; HAS_IF) {
++	if (priv-&gt;firm[pos].type &amp; HAS_IF) {
+ 		if (priv-&gt;firm[pos].size != 12 * 16 || scode &gt;= 16)
+ 			return -EINVAL;
+ 		p += 12 * scode;</pre><hr><pre>commit ad35ce9e3e03b1515c8581bababb0e64d05cf1ad
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Sun Dec 2 06:36:42 2007 -0300
+
+    V4L/DVB (6852): xc2028: s-code offset should not modify internal control structure
+    
+    Don't modify the control structure that was provided at attach when applying
+    an offset to the S-Code, otherwise it will be incorrect on subsequent tunes.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/video/tuner-xc2028.c b/drivers/media/video/tuner-xc2028.c
+index 416c717eb78e..81cc7f607d4e 100644
+--- a/drivers/media/video/tuner-xc2028.c
++++ b/drivers/media/video/tuner-xc2028.c
+@@ -956,6 +956,7 @@ static int xc2028_set_params(struct dvb_frontend *fe,
+ 	struct xc2028_data *priv = fe-&gt;tuner_priv;
+ 	unsigned int       type=0;
+ 	fe_bandwidth_t     bw = BANDWIDTH_8_MHZ;
++	u16                demod = 0;
+ 
+ 	tuner_dbg("%s called\n", __FUNCTION__);
+ 
+@@ -1009,10 +1010,10 @@ static int xc2028_set_params(struct dvb_frontend *fe,
+ 
+ 	/* All S-code tables need a 200kHz shift */
+ 	if (priv-&gt;ctrl.demod)
+-		priv-&gt;ctrl.demod += 200;
++		demod = priv-&gt;ctrl.demod + 200;
+ 
+ 	return generic_set_freq(fe, p-&gt;frequency,
+-				T_DIGITAL_TV, type, 0, priv-&gt;ctrl.demod);
++				T_DIGITAL_TV, type, 0, demod);
+ }
+ 
+ static int xc2028_sleep(struct dvb_frontend *fe)</pre><hr><pre>commit e026268870b5f05a3f74b37816d96ed3b19a9e33
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Sun Dec 2 06:30:50 2007 -0300
+
+    V4L/DVB (6851): xc2028: include int_freq in firmware version display
+    
+    Add "int_freq" to the debugging output when selecting firmware and the
+    HAS_IF flag when dumping firmware during load.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/video/tuner-xc2028.c b/drivers/media/video/tuner-xc2028.c
+index fd248a19c259..416c717eb78e 100644
+--- a/drivers/media/video/tuner-xc2028.c
++++ b/drivers/media/video/tuner-xc2028.c
+@@ -144,7 +144,8 @@ static unsigned int xc2028_get_reg(struct xc2028_data *priv, u16 reg, u16 *val)
+ 	return 0;
+ }
+ 
+-void dump_firm_type(unsigned int type)
++#define dump_firm_type(t) 	dump_firm_type_and_int_freq(t, 0)
++void dump_firm_type_and_int_freq(unsigned int type, u16 int_freq)
+ {
+ 	 if (type &amp; BASE)
+ 		printk("BASE ");
+@@ -206,6 +207,8 @@ void dump_firm_type(unsigned int type)
+ 		printk("INPUT2 ");
+ 	 if (type &amp; SCODE)
+ 		printk("SCODE ");
++	 if (type &amp; HAS_IF)
++		printk("HAS_IF_%d ", int_freq);
+ }
+ 
+ static  v4l2_std_id parse_audio_std_option(void)
+@@ -350,9 +353,9 @@ static int load_all_firmwares(struct dvb_frontend *fe)
+ 		}
+ 		tuner_dbg("Reading firmware type ");
+ 		if (debug) {
+-			dump_firm_type(type);
++			dump_firm_type_and_int_freq(type, int_freq);
+ 			printk("(%x), id %llx, size=%d.\n",
+-				   type, (unsigned long long)id, size);
++			       type, (unsigned long long)id, size);
+ 		}
+ 
+ 		memcpy(priv-&gt;firm[n].ptr, p, size);
+@@ -612,7 +615,8 @@ static int load_scode(struct dvb_frontend *fe, unsigned int type,
+ 	}
+ 
+ 	tuner_info("Loading SCODE for type=");
+-	dump_firm_type(priv-&gt;firm[pos].type);
++	dump_firm_type_and_int_freq(priv-&gt;firm[pos].type,
++				    priv-&gt;firm[pos].int_freq);
+ 	printk("(%x), id %016llx.\n", priv-&gt;firm[pos].type,
+ 	       (unsigned long long)*id);
+ 
+@@ -670,11 +674,15 @@ static int check_firmware(struct dvb_frontend *fe, unsigned int type,
+ 	tuner_dbg("checking firmware, user requested type=");
+ 	if (debug) {
+ 		dump_firm_type(new_fw.type);
+-		printk("(%x), id %016llx, scode_tbl ", new_fw.type,
++		printk("(%x), id %016llx, ", new_fw.type,
+ 		       (unsigned long long)new_fw.std_req);
+-		dump_firm_type(priv-&gt;ctrl.scode_table);
+-		printk("(%x), scode_nr %d\n", priv-&gt;ctrl.scode_table,
+-		       new_fw.scode_nr);
++		if (!int_freq) {
++			printk("scode_tbl ");
++			dump_firm_type(priv-&gt;ctrl.scode_table);
++			printk("(%x), ", priv-&gt;ctrl.scode_table);
++		} else
++			printk("int_freq %d, ", new_fw.int_freq);
++		printk("scode_nr %d\n", new_fw.scode_nr);
+ 	}
+ 
+ 	/* No need to reload base firmware if it matches */</pre><hr><pre>commit a1dcd9de648c8cf21abaeca7f77885665eed4117
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Tue Nov 20 08:17:54 2007 -0300
+
+    V4L/DVB (6656): zl10353: store frequencies in 0.1kHz to eliminate rounding errors
+    
+    Whilst reanalysing my formulas I realised it was no longer possible to get the
+    right values for a 36.1667MHz IF due to rounding problems.
+    
+    Storing frequencies in units of 0.1kHz makes it possible to calculate these
+    again correctly.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/dvb-usb/cxusb.c b/drivers/media/dvb/dvb-usb/cxusb.c
+index c44b9799efaa..deeb3871a2aa 100644
+--- a/drivers/media/dvb/dvb-usb/cxusb.c
++++ b/drivers/media/dvb/dvb-usb/cxusb.c
+@@ -435,7 +435,7 @@ static struct mt352_config cxusb_mt352_config = {
+ 
+ static struct zl10353_config cxusb_zl10353_xc3028_config = {
+ 	.demod_address = 0x0f,
+-	.if2 = 4560,
++	.if2 = 45600,
+ 	.no_tuner = 1,
+ 	.parallel_ts = 1,
+ };
+diff --git a/drivers/media/dvb/frontends/zl10353.c b/drivers/media/dvb/frontends/zl10353.c
+index 1736c6ac39cc..091fbcced006 100644
+--- a/drivers/media/dvb/frontends/zl10353.c
++++ b/drivers/media/dvb/frontends/zl10353.c
+@@ -123,9 +123,10 @@ static void zl10353_calc_nominal_rate(struct dvb_frontend *fe,
+ 				      enum fe_bandwidth bandwidth,
+ 				      u16 *nominal_rate)
+ {
+-	u32 adc_clock = 45056; /* 45.056 MHz */
+-	u8 bw;
+ 	struct zl10353_state *state = fe-&gt;demodulator_priv;
++	u32 adc_clock = 450560; /* 45.056 MHz */
++	u64 value;
++	u8 bw;
+ 
+ 	if (state-&gt;config.adc_clock)
+ 		adc_clock = state-&gt;config.adc_clock;
+@@ -143,7 +144,9 @@ static void zl10353_calc_nominal_rate(struct dvb_frontend *fe,
+ 		break;
+ 	}
+ 
+-	*nominal_rate = (bw * (1 &lt;&lt; 23) / 7 * 125 + adc_clock / 2) / adc_clock;
++	value = (bw * (u64)10 * (1 &lt;&lt; 23) / 7 * 125 + adc_clock / 2);
++	do_div(value, adc_clock);
++	*nominal_rate = value;
+ 
+ 	dprintk("%s: bw %d, adc_clock %d =&gt; 0x%x\n",
+ 		__FUNCTION__, bw, adc_clock, *nominal_rate);
+@@ -153,8 +156,8 @@ static void zl10353_calc_input_freq(struct dvb_frontend *fe,
+ 				    u16 *input_freq)
+ {
+ 	struct zl10353_state *state = fe-&gt;demodulator_priv;
+-	u32 adc_clock = 45056;	/* 45.056 MHz */
+-	int if2 = 36167;	/* 36.167 MHz */
++	u32 adc_clock = 450560;	/* 45.056  MHz */
++	int if2 = 361667;	/* 36.1667 MHz */
+ 	int ife;
+ 	u64 value;
+ 
+@@ -170,7 +173,7 @@ static void zl10353_calc_input_freq(struct dvb_frontend *fe,
+ 		if (ife &gt; adc_clock / 2)
+ 			ife = adc_clock - ife;
+ 	}
+-	value = 65536ULL * ife + adc_clock / 2;
++	value = (u64)65536 * ife + adc_clock / 2;
+ 	do_div(value, adc_clock);
+ 	*input_freq = -value;
+ 
+diff --git a/drivers/media/dvb/frontends/zl10353.h b/drivers/media/dvb/frontends/zl10353.h
+index 2660cec93f83..fc734c22b5fa 100644
+--- a/drivers/media/dvb/frontends/zl10353.h
++++ b/drivers/media/dvb/frontends/zl10353.h
+@@ -29,9 +29,9 @@ struct zl10353_config
+ 	/* demodulator's I2C address */
+ 	u8 demod_address;
+ 
+-	/* frequencies in kHz */
+-	int adc_clock;	/* default: 45056 */
+-	int if2;	/* default: 36167 */
++	/* frequencies in units of 0.1kHz */
++	int adc_clock;	/* default: 450560 (45.056  MHz) */
++	int if2;	/* default: 361667 (36.1667 MHz) */
+ 
+ 	/* set if no pll is connected to the secondary i2c bus */
+ 	int no_tuner;
+@@ -50,6 +50,6 @@ static inline struct dvb_frontend* zl10353_attach(const struct zl10353_config *c
+ 	printk(KERN_WARNING "%s: driver disabled by Kconfig\n", __FUNCTION__);
+ 	return NULL;
+ }
+-#endif // CONFIG_DVB_ZL10353
++#endif /* CONFIG_DVB_ZL10353 */
+ 
+ #endif /* ZL10353_H */</pre><hr><pre>commit 702a67624e4bc9c7056418b576af928940b7dbb9
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Tue Nov 20 03:34:11 2007 -0300
+
+    V4L/DVB (6655): Add support for MT352-based DViCO FusionHDTV DVB-T NANO devices
+    
+    There are at least three variants of the DViCO FusionHDTV DVB-T NANO that
+    share the same USB device ID.  The first (ZL10353 w/ firmware in ROM) is
+    already supported; the latter two both require firmware and have either
+    an MT352 or ZL10353 demodulator, and have a different IR receiver from the
+    first.
+    
+    This introduces a new identify_state that can tell the difference between a
+    "warm" device which is running the embedded firmware, and a "cold" device
+    that needs us to upload firmware to it before it will work.  We patch the
+    uploaded device ID (like we do for other bluebird devices) to make it easy
+    to identify the particular device variant when it reattaches.
+    
+    NB: These devices use a different firmware file from previous bluebird
+        devices.  You need a new firmware file to make this work.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/dvb-usb/cxusb.c b/drivers/media/dvb/dvb-usb/cxusb.c
+index f6fa2c22b0bf..c44b9799efaa 100644
+--- a/drivers/media/dvb/dvb-usb/cxusb.c
++++ b/drivers/media/dvb/dvb-usb/cxusb.c
+@@ -440,6 +440,13 @@ static struct zl10353_config cxusb_zl10353_xc3028_config = {
+ 	.parallel_ts = 1,
+ };
+ 
++static struct mt352_config cxusb_mt352_xc3028_config = {
++	.demod_address = 0x0f,
++	.if2 = 4560,
++	.no_tuner = 1,
++	.demod_init = cxusb_mt352_demod_init,
++};
++
+ /* Callbacks for DVB USB */
+ static int cxusb_fmd1216me_tuner_attach(struct dvb_usb_adapter *adap)
+ {
+@@ -639,30 +646,63 @@ static int cxusb_nano2_frontend_attach(struct dvb_usb_adapter *adap)
+ 				   &amp;adap-&gt;dev-&gt;i2c_adap)) != NULL)
+ 		return 0;
+ 
++	if ((adap-&gt;fe = dvb_attach(mt352_attach,
++				   &amp;cxusb_mt352_xc3028_config,
++				   &amp;adap-&gt;dev-&gt;i2c_adap)) != NULL)
++		return 0;
++
+ 	return -EIO;
+ }
+ 
++/*
++ * DViCO has shipped two devices with the same USB ID, but only one of them
++ * needs a firmware download.  Check the device class details to see if they
++ * have non-default values to decide whether the device is actually cold or
++ * not, and forget a match if it turns out we selected the wrong device.
++ */
++static int bluebird_fx2_identify_state(struct usb_device *udev,
++				       struct dvb_usb_device_properties *props,
++				       struct dvb_usb_device_description **desc,
++				       int *cold)
++{
++	int wascold = *cold;
++
++	*cold = udev-&gt;descriptor.bDeviceClass == 0xff &amp;&amp;
++		udev-&gt;descriptor.bDeviceSubClass == 0xff &amp;&amp;
++		udev-&gt;descriptor.bDeviceProtocol == 0xff;
++
++	if (*cold &amp;&amp; !wascold)
++		*desc = NULL;
++
++	return 0;
++}
++
+ /*
+  * DViCO bluebird firmware needs the "warm" product ID to be patched into the
+  * firmware file before download.
+  */
+ 
+-#define BLUEBIRD_01_ID_OFFSET 6638
++static const int dvico_firmware_id_offsets[] = { 6638, 3204 };
+ static int bluebird_patch_dvico_firmware_download(struct usb_device *udev,
+ 						  const struct firmware *fw)
+ {
+-	if (fw-&gt;size &lt; BLUEBIRD_01_ID_OFFSET + 4)
+-		return -EINVAL;
++	int pos;
++
++	for (pos = 0; pos &lt; ARRAY_SIZE(dvico_firmware_id_offsets); pos++) {
++		int idoff = dvico_firmware_id_offsets[pos];
+ 
+-	if (fw-&gt;data[BLUEBIRD_01_ID_OFFSET] == (USB_VID_DVICO &amp; 0xff) &amp;&amp;
+-	    fw-&gt;data[BLUEBIRD_01_ID_OFFSET + 1] == USB_VID_DVICO &gt;&gt; 8) {
++		if (fw-&gt;size &lt; idoff + 4)
++			continue;
+ 
+-		fw-&gt;data[BLUEBIRD_01_ID_OFFSET + 2] =
+-			le16_to_cpu(udev-&gt;descriptor.idProduct) + 1;
+-		fw-&gt;data[BLUEBIRD_01_ID_OFFSET + 3] =
+-			le16_to_cpu(udev-&gt;descriptor.idProduct) &gt;&gt; 8;
++		if (fw-&gt;data[idoff] == (USB_VID_DVICO &amp; 0xff) &amp;&amp;
++		    fw-&gt;data[idoff + 1] == USB_VID_DVICO &gt;&gt; 8) {
++			fw-&gt;data[idoff + 2] =
++				le16_to_cpu(udev-&gt;descriptor.idProduct) + 1;
++			fw-&gt;data[idoff + 3] =
++				le16_to_cpu(udev-&gt;descriptor.idProduct) &gt;&gt; 8;
+ 
+-		return usb_cypress_load_firmware(udev, fw, CYPRESS_FX2);
++			return usb_cypress_load_firmware(udev, fw, CYPRESS_FX2);
++		}
+ 	}
+ 
+ 	return -EINVAL;
+@@ -676,6 +716,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_lgz201_properties;
+ static struct dvb_usb_device_properties cxusb_bluebird_dtt7579_properties;
+ static struct dvb_usb_device_properties cxusb_bluebird_dualdig4_properties;
+ static struct dvb_usb_device_properties cxusb_bluebird_nano2_properties;
++static struct dvb_usb_device_properties cxusb_bluebird_nano2_needsfirmware_properties;
+ 
+ static int cxusb_probe(struct usb_interface *intf,
+ 		       const struct usb_device_id *id)
+@@ -686,7 +727,8 @@ static int cxusb_probe(struct usb_interface *intf,
+ 		dvb_usb_device_init(intf,&amp;cxusb_bluebird_lgz201_properties,THIS_MODULE,NULL) == 0 ||
+ 		dvb_usb_device_init(intf,&amp;cxusb_bluebird_dtt7579_properties,THIS_MODULE,NULL) == 0 ||
+ 		dvb_usb_device_init(intf,&amp;cxusb_bluebird_dualdig4_properties,THIS_MODULE,NULL) == 0 ||
+-		dvb_usb_device_init(intf,&amp;cxusb_bluebird_nano2_properties,THIS_MODULE,NULL) == 0) {
++		dvb_usb_device_init(intf,&amp;cxusb_bluebird_nano2_properties,THIS_MODULE,NULL) == 0 ||
++		dvb_usb_device_init(intf,&amp;cxusb_bluebird_nano2_needsfirmware_properties,THIS_MODULE,NULL) == 0) {
+ 		return 0;
+ 	}
+ 
+@@ -709,6 +751,7 @@ static struct usb_device_id cxusb_table [] = {
+ 	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_2_WARM) },
+ 	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_4) },
+ 	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DVB_T_NANO_2) },
++	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DVB_T_NANO_2_NFW_WARM) },
+ 	{}		/* Terminating entry */
+ };
+ MODULE_DEVICE_TABLE (usb, cxusb_table);
+@@ -1018,6 +1061,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_nano2_properties = {
+ 	.caps = DVB_USB_IS_AN_I2C_ADAPTER,
+ 
+ 	.usb_ctrl         = CYPRESS_FX2,
++	.identify_state   = bluebird_fx2_identify_state,
+ 
+ 	.size_of_priv     = sizeof(struct cxusb_state),
+ 
+@@ -1061,6 +1105,56 @@ static struct dvb_usb_device_properties cxusb_bluebird_nano2_properties = {
+ 	}
+ };
+ 
++static struct dvb_usb_device_properties cxusb_bluebird_nano2_needsfirmware_properties = {
++	.caps = DVB_USB_IS_AN_I2C_ADAPTER,
++
++	.usb_ctrl          = DEVICE_SPECIFIC,
++	.firmware          = "dvb-usb-bluebird-02.fw",
++	.download_firmware = bluebird_patch_dvico_firmware_download,
++	.identify_state    = bluebird_fx2_identify_state,
++
++	.size_of_priv      = sizeof(struct cxusb_state),
++
++	.num_adapters = 1,
++	.adapter = {
++		{
++			.streaming_ctrl   = cxusb_streaming_ctrl,
++			.frontend_attach  = cxusb_nano2_frontend_attach,
++			.tuner_attach     = cxusb_dvico_xc3028_tuner_attach,
++			/* parameter for the MPEG2-data transfer */
++			.stream = {
++				.type = USB_BULK,
++				.count = 5,
++				.endpoint = 0x02,
++				.u = {
++					.bulk = {
++						.buffersize = 8192,
++					}
++				}
++			},
++		},
++	},
++
++	.power_ctrl       = cxusb_nano2_power_ctrl,
++
++	.i2c_algo         = &amp;cxusb_i2c_algo,
++
++	.generic_bulk_ctrl_endpoint = 0x01,
++
++	.rc_interval      = 100,
++	.rc_key_map       = dvico_portable_rc_keys,
++	.rc_key_map_size  = ARRAY_SIZE(dvico_portable_rc_keys),
++	.rc_query         = cxusb_rc_query,
++
++	.num_device_descs = 1,
++	.devices = {
++		{   "DViCO FusionHDTV DVB-T NANO2 w/o firmware",
++			{ &amp;cxusb_table[14], NULL },
++			{ &amp;cxusb_table[15], NULL },
++		},
++	}
++};
++
+ static struct usb_driver cxusb_driver = {
+ 	.name		= "dvb_usb_cxusb",
+ 	.probe		= cxusb_probe,
+diff --git a/drivers/media/dvb/dvb-usb/dvb-usb-ids.h b/drivers/media/dvb/dvb-usb/dvb-usb-ids.h
+index 53496985ddfd..c94d993a6eff 100644
+--- a/drivers/media/dvb/dvb-usb/dvb-usb-ids.h
++++ b/drivers/media/dvb/dvb-usb/dvb-usb-ids.h
+@@ -149,6 +149,7 @@
+ #define USB_PID_DVICO_BLUEBIRD_DUAL_2_WARM		0xdb59
+ #define USB_PID_DVICO_BLUEBIRD_DUAL_4			0xdb78
+ #define USB_PID_DVICO_BLUEBIRD_DVB_T_NANO_2		0xdb70
++#define USB_PID_DVICO_BLUEBIRD_DVB_T_NANO_2_NFW_WARM	0xdb71
+ #define USB_PID_DIGITALNOW_BLUEBIRD_DUAL_1_COLD		0xdb54
+ #define USB_PID_DIGITALNOW_BLUEBIRD_DUAL_1_WARM		0xdb55
+ #define USB_PID_MEDION_MD95700				0x0932</pre><hr><pre>commit c6e62a3a398d62e8ae366ac1465911db0ac7fc0b
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Tue Nov 20 02:49:41 2007 -0300
+
+    V4L/DVB (6654): mt352: support oversampled IF input
+    
+    Rework the input frequency calculation so that it produces the right values
+    when the ADC oversamples the IF input.
+    
+    This means MT352 devices can now process a near-zero IF (according to the,
+    specs 4.57MHz is supported with the default crystal).
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/frontends/mt352.c b/drivers/media/dvb/frontends/mt352.c
+index 5dd9b731f6f2..7cd190b6f015 100644
+--- a/drivers/media/dvb/frontends/mt352.c
++++ b/drivers/media/dvb/frontends/mt352.c
+@@ -152,7 +152,13 @@ static void mt352_calc_input_freq(struct mt352_state* state,
+ 	if (state-&gt;config.if2)
+ 		if2 = state-&gt;config.if2;
+ 
+-	ife = (2*adc_clock - if2);
++	if (adc_clock &gt;= if2 * 2)
++		ife = if2;
++	else {
++		ife = adc_clock - (if2 % adc_clock);
++		if (ife &gt; adc_clock / 2)
++			ife = adc_clock - ife;
++	}
+ 	value = -16374 * ife / adc_clock;
+ 	dprintk("%s: if2 %d, ife %d, adc_clock %d =&gt; %d / 0x%x\n",
+ 		__FUNCTION__, if2, ife, adc_clock, value, value &amp; 0x3fff);</pre><hr><pre>commit 5ccaf905015c83a9b28e8496b4504b9b8dc25a80
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Tue Nov 20 01:53:31 2007 -0300
+
+    V4L/DVB (6653): Add support for the DViCO FusionHDTV NANO2 w/ZL10353 and firmware
+    
+    Add support for the DViCO FusionHDTV DVB-T NANO with zl10353 demodulator and
+    firmware in ROM on the device.
+    
+    Again, this is based on the great work of Mike Krufky with my modifications
+    to use the in-tree XC2028 driver.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/dvb-usb/cxusb.c b/drivers/media/dvb/dvb-usb/cxusb.c
+index ec8516ac8105..f6fa2c22b0bf 100644
+--- a/drivers/media/dvb/dvb-usb/cxusb.c
++++ b/drivers/media/dvb/dvb-usb/cxusb.c
+@@ -98,6 +98,11 @@ static void cxusb_bluebird_gpio_pulse(struct dvb_usb_device *d, u8 pin, int low)
+ 	cxusb_bluebird_gpio_rw(d, pin, low ? pin : 0);
+ }
+ 
++static void cxusb_nano2_led(struct dvb_usb_device *d, int onoff)
++{
++	cxusb_bluebird_gpio_rw(d, 0x40, onoff ? 0 : 0x40);
++}
++
+ /* I2C */
+ static int cxusb_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
+ 			  int num)
+@@ -200,6 +205,17 @@ static int cxusb_bluebird_power_ctrl(struct dvb_usb_device *d, int onoff)
+ 		return 0;
+ }
+ 
++static int cxusb_nano2_power_ctrl(struct dvb_usb_device *d, int onoff)
++{
++	int rc = 0;
++
++	rc = cxusb_power_ctrl(d, onoff);
++	if (!onoff)
++		cxusb_nano2_led(d, 0);
++
++	return rc;
++}
++
+ static int cxusb_streaming_ctrl(struct dvb_usb_adapter *adap, int onoff)
+ {
+ 	u8 buf[2] = { 0x03, 0x00 };
+@@ -606,6 +622,26 @@ static int cxusb_dualdig4_frontend_attach(struct dvb_usb_adapter *adap)
+ 	return 0;
+ }
+ 
++static int cxusb_nano2_frontend_attach(struct dvb_usb_adapter *adap)
++{
++	if (usb_set_interface(adap-&gt;dev-&gt;udev, 0, 1) &lt; 0)
++		err("set interface failed");
++
++	cxusb_ctrl_msg(adap-&gt;dev, CMD_DIGITAL, NULL, 0, NULL, 0);
++
++	/* reset the tuner and demodulator */
++	cxusb_bluebird_gpio_rw(adap-&gt;dev, 0x04, 0);
++	cxusb_bluebird_gpio_pulse(adap-&gt;dev, 0x01, 1);
++	cxusb_bluebird_gpio_pulse(adap-&gt;dev, 0x02, 1);
++
++	if ((adap-&gt;fe = dvb_attach(zl10353_attach,
++				   &amp;cxusb_zl10353_xc3028_config,
++				   &amp;adap-&gt;dev-&gt;i2c_adap)) != NULL)
++		return 0;
++
++	return -EIO;
++}
++
+ /*
+  * DViCO bluebird firmware needs the "warm" product ID to be patched into the
+  * firmware file before download.
+@@ -639,6 +675,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_dee1601_properties;
+ static struct dvb_usb_device_properties cxusb_bluebird_lgz201_properties;
+ static struct dvb_usb_device_properties cxusb_bluebird_dtt7579_properties;
+ static struct dvb_usb_device_properties cxusb_bluebird_dualdig4_properties;
++static struct dvb_usb_device_properties cxusb_bluebird_nano2_properties;
+ 
+ static int cxusb_probe(struct usb_interface *intf,
+ 		       const struct usb_device_id *id)
+@@ -648,7 +685,8 @@ static int cxusb_probe(struct usb_interface *intf,
+ 		dvb_usb_device_init(intf,&amp;cxusb_bluebird_dee1601_properties,THIS_MODULE,NULL) == 0 ||
+ 		dvb_usb_device_init(intf,&amp;cxusb_bluebird_lgz201_properties,THIS_MODULE,NULL) == 0 ||
+ 		dvb_usb_device_init(intf,&amp;cxusb_bluebird_dtt7579_properties,THIS_MODULE,NULL) == 0 ||
+-		dvb_usb_device_init(intf,&amp;cxusb_bluebird_dualdig4_properties,THIS_MODULE,NULL) == 0) {
++		dvb_usb_device_init(intf,&amp;cxusb_bluebird_dualdig4_properties,THIS_MODULE,NULL) == 0 ||
++		dvb_usb_device_init(intf,&amp;cxusb_bluebird_nano2_properties,THIS_MODULE,NULL) == 0) {
+ 		return 0;
+ 	}
+ 
+@@ -670,6 +708,7 @@ static struct usb_device_id cxusb_table [] = {
+ 	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_2_COLD) },
+ 	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_2_WARM) },
+ 	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_4) },
++	{ USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DVB_T_NANO_2) },
+ 	{}		/* Terminating entry */
+ };
+ MODULE_DEVICE_TABLE (usb, cxusb_table);
+@@ -975,6 +1014,53 @@ static struct dvb_usb_device_properties cxusb_bluebird_dualdig4_properties = {
+ 	}
+ };
+ 
++static struct dvb_usb_device_properties cxusb_bluebird_nano2_properties = {
++	.caps = DVB_USB_IS_AN_I2C_ADAPTER,
++
++	.usb_ctrl         = CYPRESS_FX2,
++
++	.size_of_priv     = sizeof(struct cxusb_state),
++
++	.num_adapters = 1,
++	.adapter = {
++		{
++			.streaming_ctrl   = cxusb_streaming_ctrl,
++			.frontend_attach  = cxusb_nano2_frontend_attach,
++			.tuner_attach     = cxusb_dvico_xc3028_tuner_attach,
++			/* parameter for the MPEG2-data transfer */
++			.stream = {
++				.type = USB_BULK,
++				.count = 5,
++				.endpoint = 0x02,
++				.u = {
++					.bulk = {
++						.buffersize = 8192,
++					}
++				}
++			},
++		},
++	},
++
++	.power_ctrl       = cxusb_nano2_power_ctrl,
++
++	.i2c_algo         = &amp;cxusb_i2c_algo,
++
++	.generic_bulk_ctrl_endpoint = 0x01,
++
++	.rc_interval      = 100,
++	.rc_key_map       = dvico_portable_rc_keys,
++	.rc_key_map_size  = ARRAY_SIZE(dvico_portable_rc_keys),
++	.rc_query         = cxusb_bluebird2_rc_query,
++
++	.num_device_descs = 1,
++	.devices = {
++		{   "DViCO FusionHDTV DVB-T NANO2",
++			{ NULL },
++			{ &amp;cxusb_table[14], NULL },
++		},
++	}
++};
++
+ static struct usb_driver cxusb_driver = {
+ 	.name		= "dvb_usb_cxusb",
+ 	.probe		= cxusb_probe,
+diff --git a/drivers/media/dvb/dvb-usb/dvb-usb-ids.h b/drivers/media/dvb/dvb-usb/dvb-usb-ids.h
+index 6f14c853ffea..53496985ddfd 100644
+--- a/drivers/media/dvb/dvb-usb/dvb-usb-ids.h
++++ b/drivers/media/dvb/dvb-usb/dvb-usb-ids.h
+@@ -148,6 +148,7 @@
+ #define USB_PID_DVICO_BLUEBIRD_DUAL_2_COLD		0xdb58
+ #define USB_PID_DVICO_BLUEBIRD_DUAL_2_WARM		0xdb59
+ #define USB_PID_DVICO_BLUEBIRD_DUAL_4			0xdb78
++#define USB_PID_DVICO_BLUEBIRD_DVB_T_NANO_2		0xdb70
+ #define USB_PID_DIGITALNOW_BLUEBIRD_DUAL_1_COLD		0xdb54
+ #define USB_PID_DIGITALNOW_BLUEBIRD_DUAL_1_WARM		0xdb55
+ #define USB_PID_MEDION_MD95700				0x0932</pre><hr><pre>commit 1ad0b796a3fa3d1c1a7d16be7c70b626da2940a9
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Mon Nov 19 23:43:13 2007 -0300
+
+    V4L/DVB (6652): xc2028: try non-8MHZ init1 firmware
+    
+    When loading init1 firmware, there may not be an 8MHz specific version.
+    Load the non-8MHz version if it exists.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/video/tuner-xc2028.c b/drivers/media/video/tuner-xc2028.c
+index 5b646fed340f..429e81be697e 100644
+--- a/drivers/media/video/tuner-xc2028.c
++++ b/drivers/media/video/tuner-xc2028.c
+@@ -706,6 +706,9 @@ static int check_firmware(struct dvb_frontend *fe, enum tuner_mode new_mode,
+ 	tuner_dbg("Load init1 firmware, if exists\n");
+ 
+ 	rc = load_firmware(fe, BASE | INIT1 | new_fw.type, &amp;std0);
++	if (rc == -ENOENT)
++		rc = load_firmware(fe, (BASE | INIT1 | new_fw.type) &amp; ~F8MHZ,
++				   &amp;std0);
+ 	if (rc &lt; 0 &amp;&amp; rc != -ENOENT) {
+ 		tuner_err("Error %d while loading init1 firmware\n",
+ 			  rc);</pre>
+    <div class="pagination">
+        <a href='18.html'>&lt;&lt;Prev</a><a href='18.html'>1</a><span>[2]</span><a href='18_3.html'>3</a><a href='18_4.html'>4</a><a href='18_5.html'>5</a><a href='18_6.html'>6</a><a href='18_7.html'>7</a><a href='18_3.html'>Next&gt;&gt;</a>
+    <div>
+</body>

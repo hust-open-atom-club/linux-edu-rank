@@ -1,0 +1,1579 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by California Institute of Technology</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by California Institute of Technology</h1>
+    <div class="pagination">
+        <a href='16_6.html'>&lt;&lt;Prev</a><a href='16.html'>1</a><a href='16_2.html'>2</a><a href='16_3.html'>3</a><a href='16_4.html'>4</a><a href='16_5.html'>5</a><a href='16_6.html'>6</a><span>[7]</span>
+    </div>
+    <hr>
+    <pre>commit a7aea373b4ca428f1be2c1fedd2f26c8e3f2864d
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Thu Apr 23 16:17:54 2009 -0700
+
+    fsldma: use PCI Read Multiple command
+    
+    By default, the Freescale 83xx DMA controller uses the PCI Read Line
+    command when reading data over the PCI bus. Setting the controller to use
+    the PCI Read Multiple command instead allows the controller to read much
+    larger bursts of data, which provides a drastic speed increase.
+    
+    The slowdown due to using PCI Read Line was only observed when a PCI-to-PCI
+    bridge was between the devices trying to communicate.
+    
+    A simple test driver showed an increase from 4MB/sec to 116MB/sec when
+    performing DMA over the PCI bus. Using DMA to transfer between blocks of
+    local SDRAM showed no change in performance with this patch. The dmatest
+    driver was also used to verify the correctness of the transfers, and showed
+    no errors.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Acked-by: Timur Tabi &lt;timur@freescale.com&gt;
+    Acked-by: Kumar Gala &lt;galak@kernel.crashing.org&gt;
+    Signed-off-by: Dan Williams &lt;dan.j.williams@intel.com&gt;
+
+diff --git a/drivers/dma/fsldma.c b/drivers/dma/fsldma.c
+index f18d1bde0439..a1cb25e277b5 100644
+--- a/drivers/dma/fsldma.c
++++ b/drivers/dma/fsldma.c
+@@ -12,6 +12,11 @@
+  *   also fit for MPC8560, MPC8555, MPC8548, MPC8641, and etc.
+  *   The support for MPC8349 DMA contorller is also added.
+  *
++ * This driver instructs the DMA controller to issue the PCI Read Multiple
++ * command for PCI read operations, instead of using the default PCI Read Line
++ * command. Please be aware that this setting may result in read pre-fetching
++ * on some platforms.
++ *
+  * This is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+  * the Free Software Foundation; either version 2 of the License, or
+@@ -49,9 +54,10 @@ static void dma_init(struct fsl_dma_chan *fsl_chan)
+ 	case FSL_DMA_IP_83XX:
+ 		/* Set the channel to below modes:
+ 		 * EOTIE - End-of-transfer interrupt enable
++		 * PRC_RM - PCI read multiple
+ 		 */
+-		DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, FSL_DMA_MR_EOTIE,
+-				32);
++		DMA_OUT(fsl_chan, &amp;fsl_chan-&gt;reg_base-&gt;mr, FSL_DMA_MR_EOTIE
++				| FSL_DMA_MR_PRC_RM, 32);
+ 		break;
+ 	}
+ 
+diff --git a/drivers/dma/fsldma.h b/drivers/dma/fsldma.h
+index 4f21a512d848..dc7f26865797 100644
+--- a/drivers/dma/fsldma.h
++++ b/drivers/dma/fsldma.h
+@@ -38,6 +38,7 @@
+ 
+ /* Special MR definition for MPC8349 */
+ #define FSL_DMA_MR_EOTIE	0x00000080
++#define FSL_DMA_MR_PRC_RM	0x00000800
+ 
+ #define FSL_DMA_SR_CH		0x00000020
+ #define FSL_DMA_SR_PE		0x00000010</pre><hr><pre>commit 2e077f8e8337e52eef3c39c24c31e103b11a0326
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Fri May 15 09:59:46 2009 -0700
+
+    fsldma: fix memory leak on error path in fsl_dma_prep_memcpy()
+    
+    When preparing a memcpy operation, if the kernel fails to allocate memory
+    for a link descriptor after the first link descriptor has already been
+    allocated, then some memory will never be released. Fix the problem by
+    walking the list of allocated descriptors backwards, and freeing the
+    allocated descriptors back into the DMA pool.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Li Yang &lt;leoli@freescale.com&gt;
+
+diff --git a/drivers/dma/fsldma.c b/drivers/dma/fsldma.c
+index ff9194d7ebb7..15783102bf17 100644
+--- a/drivers/dma/fsldma.c
++++ b/drivers/dma/fsldma.c
+@@ -462,8 +462,8 @@ static struct dma_async_tx_descriptor *fsl_dma_prep_memcpy(
+ {
+ 	struct fsl_dma_chan *fsl_chan;
+ 	struct fsl_desc_sw *first = NULL, *prev = NULL, *new;
++	struct list_head *list;
+ 	size_t copy;
+-	LIST_HEAD(link_chain);
+ 
+ 	if (!chan)
+ 		return NULL;
+@@ -480,7 +480,7 @@ static struct dma_async_tx_descriptor *fsl_dma_prep_memcpy(
+ 		if (!new) {
+ 			dev_err(fsl_chan-&gt;dev,
+ 					"No free memory for link descriptor\n");
+-			return NULL;
++			goto fail;
+ 		}
+ #ifdef FSL_DMA_LD_DEBUG
+ 		dev_dbg(fsl_chan-&gt;dev, "new link desc alloc %p\n", new);
+@@ -515,7 +515,19 @@ static struct dma_async_tx_descriptor *fsl_dma_prep_memcpy(
+ 	/* Set End-of-link to the last link descriptor of new list*/
+ 	set_ld_eol(fsl_chan, new);
+ 
+-	return first ? &amp;first-&gt;async_tx : NULL;
++	return &amp;first-&gt;async_tx;
++
++fail:
++	if (!first)
++		return NULL;
++
++	list = &amp;first-&gt;async_tx.tx_list;
++	list_for_each_entry_safe_reverse(new, prev, list, node) {
++		list_del(&amp;new-&gt;node);
++		dma_pool_free(fsl_chan-&gt;desc_pool, new, new-&gt;async_tx.phys);
++	}
++
++	return NULL;
+ }
+ 
+ /**</pre><hr><pre>commit 776c8943f2766f2819fafd88fdfbaf418ecd6e41
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Fri May 15 11:33:20 2009 -0700
+
+    fsldma: snooping is not enabled for last entry in descriptor chain
+    
+    On the 83xx controller, snooping is necessary for the DMA controller to
+    ensure cache coherence with the CPU when transferring to/from RAM.
+    
+    The last descriptor in a chain will always have the End-of-Chain interrupt
+    bit set, so we can set the snoop bit while adding the End-of-Chain
+    interrupt bit.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Li Yang &lt;leoli@freescale.com&gt;
+
+diff --git a/drivers/dma/fsldma.c b/drivers/dma/fsldma.c
+index 7313a1ae5f83..ff9194d7ebb7 100644
+--- a/drivers/dma/fsldma.c
++++ b/drivers/dma/fsldma.c
+@@ -179,9 +179,14 @@ static void dma_halt(struct fsl_dma_chan *fsl_chan)
+ static void set_ld_eol(struct fsl_dma_chan *fsl_chan,
+ 			struct fsl_desc_sw *desc)
+ {
++	u64 snoop_bits;
++
++	snoop_bits = ((fsl_chan-&gt;feature &amp; FSL_DMA_IP_MASK) == FSL_DMA_IP_83XX)
++		? FSL_DMA_SNEN : 0;
++
+ 	desc-&gt;hw.next_ln_addr = CPU_TO_DMA(fsl_chan,
+-		DMA_TO_CPU(fsl_chan, desc-&gt;hw.next_ln_addr, 64)	| FSL_DMA_EOL,
+-		64);
++		DMA_TO_CPU(fsl_chan, desc-&gt;hw.next_ln_addr, 64) | FSL_DMA_EOL
++			| snoop_bits, 64);
+ }
+ 
+ static void append_ld_queue(struct fsl_dma_chan *fsl_chan,</pre><hr><pre>commit bcfb7465c03a8c62c89da374677df56f6b894d44
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Fri May 15 14:27:16 2009 -0700
+
+    fsldma: fix infinite loop on multi-descriptor DMA chain completion
+    
+    When creating a DMA transaction with multiple descriptors, the async_tx
+    cookie is set to 0 for each descriptor in the chain, excluding the last
+    descriptor, whose cookie is set to -EBUSY.
+    
+    When fsl_dma_tx_submit() is run, it only assigns a cookie to the first
+    descriptor. All of the remaining descriptors keep their original value,
+    including the last descriptor, which is set to -EBUSY.
+    
+    After the DMA completes, the driver will update the last completed cookie
+    to be -EBUSY, which is an error code instead of a valid cookie. This causes
+    dma_async_is_complete() to always return DMA_IN_PROGRESS.
+    
+    This causes the fsldma driver to never cleanup the queue of link
+    descriptors, and the driver will re-run the DMA transaction on the hardware
+    each time it receives the End-of-Chain interrupt. This causes an infinite
+    loop.
+    
+    With this patch, fsl_dma_tx_submit() is changed to assign a cookie to every
+    descriptor in the chain. The rest of the code then works without problems.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Li Yang &lt;leoli@freescale.com&gt;
+
+diff --git a/drivers/dma/fsldma.c b/drivers/dma/fsldma.c
+index a4151c3bb78b..7313a1ae5f83 100644
+--- a/drivers/dma/fsldma.c
++++ b/drivers/dma/fsldma.c
+@@ -313,8 +313,8 @@ static void fsl_chan_toggle_ext_start(struct fsl_dma_chan *fsl_chan, int enable)
+ 
+ static dma_cookie_t fsl_dma_tx_submit(struct dma_async_tx_descriptor *tx)
+ {
+-	struct fsl_desc_sw *desc = tx_to_fsl_desc(tx);
+ 	struct fsl_dma_chan *fsl_chan = to_fsl_chan(tx-&gt;chan);
++	struct fsl_desc_sw *desc;
+ 	unsigned long flags;
+ 	dma_cookie_t cookie;
+ 
+@@ -322,14 +322,17 @@ static dma_cookie_t fsl_dma_tx_submit(struct dma_async_tx_descriptor *tx)
+ 	spin_lock_irqsave(&amp;fsl_chan-&gt;desc_lock, flags);
+ 
+ 	cookie = fsl_chan-&gt;common.cookie;
+-	cookie++;
+-	if (cookie &lt; 0)
+-		cookie = 1;
+-	desc-&gt;async_tx.cookie = cookie;
+-	fsl_chan-&gt;common.cookie = desc-&gt;async_tx.cookie;
+-
+-	append_ld_queue(fsl_chan, desc);
+-	list_splice_init(&amp;desc-&gt;async_tx.tx_list, fsl_chan-&gt;ld_queue.prev);
++	list_for_each_entry(desc, &amp;tx-&gt;tx_list, node) {
++		cookie++;
++		if (cookie &lt; 0)
++			cookie = 1;
++
++		desc-&gt;async_tx.cookie = cookie;
++	}
++
++	fsl_chan-&gt;common.cookie = cookie;
++	append_ld_queue(fsl_chan, tx_to_fsl_desc(tx));
++	list_splice_init(&amp;tx-&gt;tx_list, fsl_chan-&gt;ld_queue.prev);
+ 
+ 	spin_unlock_irqrestore(&amp;fsl_chan-&gt;desc_lock, flags);
+ </pre><hr><pre>commit 138ef0185177a6d221d24b6aa8f12d867fbbef90
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Tue May 19 15:42:13 2009 -0700
+
+    fsldma: fix "DMA halt timeout!" errors
+    
+    When using the DMA controller from multiple threads at the same time, it is
+    possible to get lots of "DMA halt timeout!" errors printed to the kernel
+    log.
+    
+    This occurs due to a race between fsl_dma_memcpy_issue_pending() and the
+    interrupt handler, fsl_dma_chan_do_interrupt(). Both call the
+    fsl_chan_xfer_ld_queue() function, which does not protect against
+    concurrent accesses to dma_halt() and dma_start().
+    
+    The existing spinlock is moved to cover the dma_halt() and dma_start()
+    functions. Testing shows that the "DMA halt timeout!" errors disappear.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Li Yang &lt;leoli@freescale.com&gt;
+
+diff --git a/drivers/dma/fsldma.c b/drivers/dma/fsldma.c
+index 391b1bd7098b..a4151c3bb78b 100644
+--- a/drivers/dma/fsldma.c
++++ b/drivers/dma/fsldma.c
+@@ -598,15 +598,16 @@ static void fsl_chan_xfer_ld_queue(struct fsl_dma_chan *fsl_chan)
+ 	dma_addr_t next_dest_addr;
+ 	unsigned long flags;
+ 
++	spin_lock_irqsave(&amp;fsl_chan-&gt;desc_lock, flags);
++
+ 	if (!dma_is_idle(fsl_chan))
+-		return;
++		goto out_unlock;
+ 
+ 	dma_halt(fsl_chan);
+ 
+ 	/* If there are some link descriptors
+ 	 * not transfered in queue. We need to start it.
+ 	 */
+-	spin_lock_irqsave(&amp;fsl_chan-&gt;desc_lock, flags);
+ 
+ 	/* Find the first un-transfer desciptor */
+ 	for (ld_node = fsl_chan-&gt;ld_queue.next;
+@@ -617,8 +618,6 @@ static void fsl_chan_xfer_ld_queue(struct fsl_dma_chan *fsl_chan)
+ 				fsl_chan-&gt;common.cookie) == DMA_SUCCESS);
+ 		ld_node = ld_node-&gt;next);
+ 
+-	spin_unlock_irqrestore(&amp;fsl_chan-&gt;desc_lock, flags);
+-
+ 	if (ld_node != &amp;fsl_chan-&gt;ld_queue) {
+ 		/* Get the ld start address from ld_queue */
+ 		next_dest_addr = to_fsl_desc(ld_node)-&gt;async_tx.phys;
+@@ -630,6 +629,9 @@ static void fsl_chan_xfer_ld_queue(struct fsl_dma_chan *fsl_chan)
+ 		set_cdar(fsl_chan, 0);
+ 		set_ndar(fsl_chan, 0);
+ 	}
++
++out_unlock:
++	spin_unlock_irqrestore(&amp;fsl_chan-&gt;desc_lock, flags);
+ }
+ 
+ /**</pre><hr><pre>commit 72f5de92e199f96cfcea125aefc76c138d8c553c
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Tue Mar 31 15:24:29 2009 -0700
+
+    hwmon: Add LTC4215 driver
+    
+    Add Linux support for the Linear Technology LTC4215 Hot Swap controller
+    I2C monitoring interface.
+    
+    I have tested the driver with my board, and it appears to work fine.  With
+    the power supplies disabled, it reads 11.93V input, 1.93V output, no
+    current and no power.  With the supplies enabled, it reads 11.93V input,
+    11.98V output, no current, no power.  I'm not drawing any current at the
+    moment, so this is reasonable.  The value in the sense register never
+    reads anything except 0, so I expect to get zero from the current and
+    power calculations.
+    
+    I didn't attempt to support changing any of the chip's settings or
+    enabling the FET.  I'm not sure even how to do that and still fit within
+    the hwmon framework.  :)
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Cc: Jean Delvare &lt;khali@linux-fr.org&gt;
+    Cc: "Mark M. Hoffman" &lt;mhoffman@lightlink.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/Documentation/hwmon/ltc4215 b/Documentation/hwmon/ltc4215
+new file mode 100644
+index 000000000000..2e6a21eb656c
+--- /dev/null
++++ b/Documentation/hwmon/ltc4215
+@@ -0,0 +1,50 @@
++Kernel driver ltc4215
++=====================
++
++Supported chips:
++  * Linear Technology LTC4215
++    Prefix: 'ltc4215'
++    Addresses scanned: 0x44
++    Datasheet:
++        http://www.linear.com/pc/downloadDocument.do?navId=H0,C1,C1003,C1006,C1163,P17572,D12697
++
++Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
++
++
++Description
++-----------
++
++The LTC4215 controller allows a board to be safely inserted and removed
++from a live backplane.
++
++
++Usage Notes
++-----------
++
++This driver does not probe for LTC4215 devices, due to the fact that some
++of the possible addresses are unfriendly to probing. You will need to use
++the "force" parameter to tell the driver where to find the device.
++
++Example: the following will load the driver for an LTC4215 at address 0x44
++on I2C bus #0:
++$ modprobe ltc4215 force=0,0x44
++
++
++Sysfs entries
++-------------
++
++The LTC4215 has built-in limits for overvoltage, undervoltage, and
++undercurrent warnings. This makes it very likely that the reference
++circuit will be used.
++
++in1_input		input voltage
++in2_input		output voltage
++
++in1_min_alarm		input undervoltage alarm
++in1_max_alarm		input overvoltage alarm
++
++curr1_input		current
++curr1_max_alarm		overcurrent alarm
++
++power1_input		power usage
++power1_alarm		power bad alarm
+diff --git a/drivers/hwmon/Kconfig b/drivers/hwmon/Kconfig
+index 8a91c9971558..bc6810c22dd7 100644
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -571,6 +571,17 @@ config SENSORS_LM93
+ 	  This driver can also be built as a module.  If so, the module
+ 	  will be called lm93.
+ 
++config SENSORS_LTC4215
++	tristate "Linear Technology LTC4215"
++	depends on I2C &amp;&amp; EXPERIMENTAL
++	default n
++	help
++	  If you say yes here you get support for Linear Technology LTC4215
++	  Hot Swap Controller I2C interface.
++
++	  This driver can also be built as a module. If so, the module will
++	  be called ltc4215.
++
+ config SENSORS_LTC4245
+ 	tristate "Linear Technology LTC4245"
+ 	depends on I2C &amp;&amp; EXPERIMENTAL
+diff --git a/drivers/hwmon/Makefile b/drivers/hwmon/Makefile
+index 81c88822a3eb..4da261d16abf 100644
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -65,6 +65,7 @@ obj-$(CONFIG_SENSORS_LM90)	+= lm90.o
+ obj-$(CONFIG_SENSORS_LM92)	+= lm92.o
+ obj-$(CONFIG_SENSORS_LM93)	+= lm93.o
+ obj-$(CONFIG_SENSORS_LM95241)	+= lm95241.o
++obj-$(CONFIG_SENSORS_LTC4215)	+= ltc4215.o
+ obj-$(CONFIG_SENSORS_LTC4245)	+= ltc4245.o
+ obj-$(CONFIG_SENSORS_MAX1111)	+= max1111.o
+ obj-$(CONFIG_SENSORS_MAX1619)	+= max1619.o
+diff --git a/drivers/hwmon/ltc4215.c b/drivers/hwmon/ltc4215.c
+new file mode 100644
+index 000000000000..9386e2a39211
+--- /dev/null
++++ b/drivers/hwmon/ltc4215.c
+@@ -0,0 +1,364 @@
++/*
++ * Driver for Linear Technology LTC4215 I2C Hot Swap Controller
++ *
++ * Copyright (C) 2009 Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 2 of the License.
++ *
++ * Datasheet:
++ * http://www.linear.com/pc/downloadDocument.do?navId=H0,C1,C1003,C1006,C1163,P17572,D12697
++ */
++
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/module.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/err.h&gt;
++#include &lt;linux/slab.h&gt;
++#include &lt;linux/i2c.h&gt;
++#include &lt;linux/hwmon.h&gt;
++#include &lt;linux/hwmon-sysfs.h&gt;
++
++static const unsigned short normal_i2c[] = { I2C_CLIENT_END };
++
++/* Insmod parameters */
++I2C_CLIENT_INSMOD_1(ltc4215);
++
++/* Here are names of the chip's registers (a.k.a. commands) */
++enum ltc4215_cmd {
++	LTC4215_CONTROL			= 0x00, /* rw */
++	LTC4215_ALERT			= 0x01, /* rw */
++	LTC4215_STATUS			= 0x02, /* ro */
++	LTC4215_FAULT			= 0x03, /* rw */
++	LTC4215_SENSE			= 0x04, /* rw */
++	LTC4215_SOURCE			= 0x05, /* rw */
++	LTC4215_ADIN			= 0x06, /* rw */
++};
++
++struct ltc4215_data {
++	struct device *hwmon_dev;
++
++	struct mutex update_lock;
++	bool valid;
++	unsigned long last_updated; /* in jiffies */
++
++	/* Registers */
++	u8 regs[7];
++};
++
++static struct ltc4215_data *ltc4215_update_device(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct ltc4215_data *data = i2c_get_clientdata(client);
++	s32 val;
++	int i;
++
++	mutex_lock(&amp;data-&gt;update_lock);
++
++	/* The chip's A/D updates 10 times per second */
++	if (time_after(jiffies, data-&gt;last_updated + HZ / 10) || !data-&gt;valid) {
++
++		dev_dbg(&amp;client-&gt;dev, "Starting ltc4215 update\n");
++
++		/* Read all registers */
++		for (i = 0; i &lt; ARRAY_SIZE(data-&gt;regs); i++) {
++			val = i2c_smbus_read_byte_data(client, i);
++			if (unlikely(val &lt; 0))
++				data-&gt;regs[i] = 0;
++			else
++				data-&gt;regs[i] = val;
++		}
++
++		data-&gt;last_updated = jiffies;
++		data-&gt;valid = 1;
++	}
++
++	mutex_unlock(&amp;data-&gt;update_lock);
++
++	return data;
++}
++
++/* Return the voltage from the given register in millivolts */
++static int ltc4215_get_voltage(struct device *dev, u8 reg)
++{
++	struct ltc4215_data *data = ltc4215_update_device(dev);
++	const u8 regval = data-&gt;regs[reg];
++	u32 voltage = 0;
++
++	switch (reg) {
++	case LTC4215_SENSE:
++		/* 151 uV per increment */
++		voltage = regval * 151 / 1000;
++		break;
++	case LTC4215_SOURCE:
++		/* 60.5 mV per increment */
++		voltage = regval * 605 / 10;
++		break;
++	case LTC4215_ADIN:
++		/* The ADIN input is divided by 12.5, and has 4.82 mV
++		 * per increment, so we have the additional multiply */
++		voltage = regval * 482 * 125 / 1000;
++		break;
++	default:
++		/* If we get here, the developer messed up */
++		WARN_ON_ONCE(1);
++		break;
++	}
++
++	return voltage;
++}
++
++/* Return the current from the sense resistor in mA */
++static unsigned int ltc4215_get_current(struct device *dev)
++{
++	struct ltc4215_data *data = ltc4215_update_device(dev);
++
++	/* The strange looking conversions that follow are fixed-point
++	 * math, since we cannot do floating point in the kernel.
++	 *
++	 * Step 1: convert sense register to microVolts
++	 * Step 2: convert voltage to milliAmperes
++	 *
++	 * If you play around with the V=IR equation, you come up with
++	 * the following: X uV / Y mOhm == Z mA
++	 *
++	 * With the resistors that are fractions of a milliOhm, we multiply
++	 * the voltage and resistance by 10, to shift the decimal point.
++	 * Now we can use the normal division operator again.
++	 */
++
++	/* Calculate voltage in microVolts (151 uV per increment) */
++	const unsigned int voltage = data-&gt;regs[LTC4215_SENSE] * 151;
++
++	/* Calculate current in milliAmperes (4 milliOhm sense resistor) */
++	const unsigned int curr = voltage / 4;
++
++	return curr;
++}
++
++static ssize_t ltc4215_show_voltage(struct device *dev,
++				    struct device_attribute *da,
++				    char *buf)
++{
++	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
++	const int voltage = ltc4215_get_voltage(dev, attr-&gt;index);
++
++	return snprintf(buf, PAGE_SIZE, "%d\n", voltage);
++}
++
++static ssize_t ltc4215_show_current(struct device *dev,
++				    struct device_attribute *da,
++				    char *buf)
++{
++	const unsigned int curr = ltc4215_get_current(dev);
++
++	return snprintf(buf, PAGE_SIZE, "%u\n", curr);
++}
++
++static ssize_t ltc4215_show_power(struct device *dev,
++				  struct device_attribute *da,
++				  char *buf)
++{
++	const unsigned int curr = ltc4215_get_current(dev);
++	const int output_voltage = ltc4215_get_voltage(dev, LTC4215_ADIN);
++
++	/* current in mA * voltage in mV == power in uW */
++	const unsigned int power = abs(output_voltage * curr);
++
++	return snprintf(buf, PAGE_SIZE, "%u\n", power);
++}
++
++static ssize_t ltc4215_show_alarm(struct device *dev,
++					  struct device_attribute *da,
++					  char *buf)
++{
++	struct sensor_device_attribute_2 *attr = to_sensor_dev_attr_2(da);
++	struct ltc4215_data *data = ltc4215_update_device(dev);
++	const u8 reg = data-&gt;regs[attr-&gt;index];
++	const u32 mask = attr-&gt;nr;
++
++	return snprintf(buf, PAGE_SIZE, "%u\n", (reg &amp; mask) ? 1 : 0);
++}
++
++/* These macros are used below in constructing device attribute objects
++ * for use with sysfs_create_group() to make a sysfs device file
++ * for each register.
++ */
++
++#define LTC4215_VOLTAGE(name, ltc4215_cmd_idx) \
++	static SENSOR_DEVICE_ATTR(name, S_IRUGO, \
++	ltc4215_show_voltage, NULL, ltc4215_cmd_idx)
++
++#define LTC4215_CURRENT(name) \
++	static SENSOR_DEVICE_ATTR(name, S_IRUGO, \
++	ltc4215_show_current, NULL, 0);
++
++#define LTC4215_POWER(name) \
++	static SENSOR_DEVICE_ATTR(name, S_IRUGO, \
++	ltc4215_show_power, NULL, 0);
++
++#define LTC4215_ALARM(name, mask, reg) \
++	static SENSOR_DEVICE_ATTR_2(name, S_IRUGO, \
++	ltc4215_show_alarm, NULL, (mask), reg)
++
++/* Construct a sensor_device_attribute structure for each register */
++
++/* Current */
++LTC4215_CURRENT(curr1_input);
++LTC4215_ALARM(curr1_max_alarm,	(1 &lt;&lt; 2),	LTC4215_STATUS);
++
++/* Power (virtual) */
++LTC4215_POWER(power1_input);
++LTC4215_ALARM(power1_alarm,	(1 &lt;&lt; 3),	LTC4215_STATUS);
++
++/* Input Voltage */
++LTC4215_VOLTAGE(in1_input,			LTC4215_ADIN);
++LTC4215_ALARM(in1_max_alarm,	(1 &lt;&lt; 0),	LTC4215_STATUS);
++LTC4215_ALARM(in1_min_alarm,	(1 &lt;&lt; 1),	LTC4215_STATUS);
++
++/* Output Voltage */
++LTC4215_VOLTAGE(in2_input,			LTC4215_SOURCE);
++
++/* Finally, construct an array of pointers to members of the above objects,
++ * as required for sysfs_create_group()
++ */
++static struct attribute *ltc4215_attributes[] = {
++	&amp;sensor_dev_attr_curr1_input.dev_attr.attr,
++	&amp;sensor_dev_attr_curr1_max_alarm.dev_attr.attr,
++
++	&amp;sensor_dev_attr_power1_input.dev_attr.attr,
++	&amp;sensor_dev_attr_power1_alarm.dev_attr.attr,
++
++	&amp;sensor_dev_attr_in1_input.dev_attr.attr,
++	&amp;sensor_dev_attr_in1_max_alarm.dev_attr.attr,
++	&amp;sensor_dev_attr_in1_min_alarm.dev_attr.attr,
++
++	&amp;sensor_dev_attr_in2_input.dev_attr.attr,
++
++	NULL,
++};
++
++static const struct attribute_group ltc4215_group = {
++	.attrs = ltc4215_attributes,
++};
++
++static int ltc4215_probe(struct i2c_client *client,
++			 const struct i2c_device_id *id)
++{
++	struct ltc4215_data *data;
++	int ret;
++
++	data = kzalloc(sizeof(*data), GFP_KERNEL);
++	if (!data) {
++		ret = -ENOMEM;
++		goto out_kzalloc;
++	}
++
++	i2c_set_clientdata(client, data);
++	mutex_init(&amp;data-&gt;update_lock);
++
++	/* Initialize the LTC4215 chip */
++	/* TODO */
++
++	/* Register sysfs hooks */
++	ret = sysfs_create_group(&amp;client-&gt;dev.kobj, &amp;ltc4215_group);
++	if (ret)
++		goto out_sysfs_create_group;
++
++	data-&gt;hwmon_dev = hwmon_device_register(&amp;client-&gt;dev);
++	if (IS_ERR(data-&gt;hwmon_dev)) {
++		ret = PTR_ERR(data-&gt;hwmon_dev);
++		goto out_hwmon_device_register;
++	}
++
++	return 0;
++
++out_hwmon_device_register:
++	sysfs_remove_group(&amp;client-&gt;dev.kobj, &amp;ltc4215_group);
++out_sysfs_create_group:
++	kfree(data);
++out_kzalloc:
++	return ret;
++}
++
++static int ltc4215_remove(struct i2c_client *client)
++{
++	struct ltc4215_data *data = i2c_get_clientdata(client);
++
++	hwmon_device_unregister(data-&gt;hwmon_dev);
++	sysfs_remove_group(&amp;client-&gt;dev.kobj, &amp;ltc4215_group);
++
++	kfree(data);
++
++	return 0;
++}
++
++static int ltc4215_detect(struct i2c_client *client,
++			  int kind,
++			  struct i2c_board_info *info)
++{
++	struct i2c_adapter *adapter = client-&gt;adapter;
++
++	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
++		return -ENODEV;
++
++	if (kind &lt; 0) {		/* probed detection - check the chip type */
++		s32 v;		/* 8 bits from the chip, or -ERRNO */
++
++		/*
++		 * Register 0x01 bit b7 is reserved, expect 0
++		 * Register 0x03 bit b6 and b7 are reserved, expect 0
++		 */
++		v = i2c_smbus_read_byte_data(client, LTC4215_ALERT);
++		if (v &lt; 0 || (v &amp; (1 &lt;&lt; 7)) != 0)
++			return -ENODEV;
++
++		v = i2c_smbus_read_byte_data(client, LTC4215_FAULT);
++		if (v &lt; 0 || (v &amp; ((1 &lt;&lt; 6) | (1 &lt;&lt; 7))) != 0)
++				return -ENODEV;
++	}
++
++	strlcpy(info-&gt;type, "ltc4215", I2C_NAME_SIZE);
++	dev_info(&amp;adapter-&gt;dev, "ltc4215 %s at address 0x%02x\n",
++			kind &lt; 0 ? "probed" : "forced",
++			client-&gt;addr);
++
++	return 0;
++}
++
++static const struct i2c_device_id ltc4215_id[] = {
++	{ "ltc4215", ltc4215 },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, ltc4215_id);
++
++/* This is the driver that will be inserted */
++static struct i2c_driver ltc4215_driver = {
++	.class		= I2C_CLASS_HWMON,
++	.driver = {
++		.name	= "ltc4215",
++	},
++	.probe		= ltc4215_probe,
++	.remove		= ltc4215_remove,
++	.id_table	= ltc4215_id,
++	.detect		= ltc4215_detect,
++	.address_data	= &amp;addr_data,
++};
++
++static int __init ltc4215_init(void)
++{
++	return i2c_add_driver(&amp;ltc4215_driver);
++}
++
++static void __exit ltc4215_exit(void)
++{
++	i2c_del_driver(&amp;ltc4215_driver);
++}
++
++MODULE_AUTHOR("Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;");
++MODULE_DESCRIPTION("LTC4215 driver");
++MODULE_LICENSE("GPL");
++
++module_init(ltc4215_init);
++module_exit(ltc4215_exit);</pre><hr><pre>commit 8527bec548e01a29c6d1928d20d6d3be71861482
+Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Mon Jan 26 21:00:33 2009 -0800
+
+    virtio_net: use correct accessors for scatterlists
+    
+    Without this fix, virtio_net makes incorrect usage of scatterlists. It sets
+    the end of the scatterlist chain after the first element, despite the fact
+    that more entries come after it.
+    
+    If you try to run dma_map_sg() on one of the scatterlists given to you by
+    add_buf(), you will get a null pointer oops.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Signed-off-by: Rusty Russell &lt;rusty@rustcorp.com.au&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/virtio_net.c b/drivers/net/virtio_net.c
+index 63ef2a8905fb..c68808336c8c 100644
+--- a/drivers/net/virtio_net.c
++++ b/drivers/net/virtio_net.c
+@@ -287,7 +287,7 @@ static void try_fill_recv_maxbufs(struct virtnet_info *vi)
+ 		skb_put(skb, MAX_PACKET_LEN);
+ 
+ 		hdr = skb_vnet_hdr(skb);
+-		sg_init_one(sg, hdr, sizeof(*hdr));
++		sg_set_buf(sg, hdr, sizeof(*hdr));
+ 
+ 		if (vi-&gt;big_packets) {
+ 			for (i = 0; i &lt; MAX_SKB_FRAGS; i++) {
+@@ -488,9 +488,9 @@ static int xmit_skb(struct virtnet_info *vi, struct sk_buff *skb)
+ 
+ 	/* Encode metadata header at front. */
+ 	if (vi-&gt;mergeable_rx_bufs)
+-		sg_init_one(sg, mhdr, sizeof(*mhdr));
++		sg_set_buf(sg, mhdr, sizeof(*mhdr));
+ 	else
+-		sg_init_one(sg, hdr, sizeof(*hdr));
++		sg_set_buf(sg, hdr, sizeof(*hdr));
+ 
+ 	num = skb_to_sgvec(skb, sg+1, 0, skb-&gt;len) + 1;
+ </pre><hr><pre>commit 6e34b187bc216fc632769fb8b906d3a29ccd8f14
+Author: Ira Snyder &lt;iws@ovro.caltech.edu&gt;
+Date:   Wed Jan 7 16:37:32 2009 +0100
+
+    hwmon: Add LTC4245 driver
+    
+    Add Linux support for the Linear Technology LTC4245 Multiple Supply Hot
+    Swap controller I2C monitoring interface.
+    
+    Signed-off-by: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
+    Acked-by: Hans de Goede &lt;hdegoede@redhat.com&gt;
+    Signed-off-by: Jean Delvare &lt;khali@linux-fr.org&gt;
+
+diff --git a/Documentation/hwmon/ltc4245 b/Documentation/hwmon/ltc4245
+new file mode 100644
+index 000000000000..bae7a3adc5d8
+--- /dev/null
++++ b/Documentation/hwmon/ltc4245
+@@ -0,0 +1,81 @@
++Kernel driver ltc4245
++=====================
++
++Supported chips:
++  * Linear Technology LTC4245
++    Prefix: 'ltc4245'
++    Addresses scanned: 0x20-0x3f
++    Datasheet:
++        http://www.linear.com/pc/downloadDocument.do?navId=H0,C1,C1003,C1006,C1140,P19392,D13517
++
++Author: Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
++
++
++Description
++-----------
++
++The LTC4245 controller allows a board to be safely inserted and removed
++from a live backplane in multiple supply systems such as CompactPCI and
++PCI Express.
++
++
++Usage Notes
++-----------
++
++This driver does not probe for LTC4245 devices, due to the fact that some
++of the possible addresses are unfriendly to probing. You will need to use
++the "force" parameter to tell the driver where to find the device.
++
++Example: the following will load the driver for an LTC4245 at address 0x23
++on I2C bus #1:
++$ modprobe ltc4245 force=1,0x23
++
++
++Sysfs entries
++-------------
++
++The LTC4245 has built-in limits for over and under current warnings. This
++makes it very likely that the reference circuit will be used.
++
++This driver uses the values in the datasheet to change the register values
++into the values specified in the sysfs-interface document. The current readings
++rely on the sense resistors listed in Table 2: "Sense Resistor Values".
++
++in1_input		12v input voltage (mV)
++in2_input		5v  input voltage (mV)
++in3_input		3v  input voltage (mV)
++in4_input		Vee (-12v) input voltage (mV)
++
++in1_min_alarm		12v input undervoltage alarm
++in2_min_alarm		5v  input undervoltage alarm
++in3_min_alarm		3v  input undervoltage alarm
++in4_min_alarm		Vee (-12v) input undervoltage alarm
++
++curr1_input		12v current (mA)
++curr2_input		5v  current (mA)
++curr3_input		3v  current (mA)
++curr4_input		Vee (-12v) current (mA)
++
++curr1_max_alarm		12v overcurrent alarm
++curr2_max_alarm		5v  overcurrent alarm
++curr3_max_alarm		3v  overcurrent alarm
++curr4_max_alarm		Vee (-12v) overcurrent alarm
++
++in5_input		12v output voltage (mV)
++in6_input		5v  output voltage (mV)
++in7_input		3v  output voltage (mV)
++in8_input		Vee (-12v) output voltage (mV)
++
++in5_min_alarm		12v output undervoltage alarm
++in6_min_alarm		5v  output undervoltage alarm
++in7_min_alarm		3v  output undervoltage alarm
++in8_min_alarm		Vee (-12v) output undervoltage alarm
++
++in9_input		GPIO #1 voltage data
++in10_input		GPIO #2 voltage data
++in11_input		GPIO #3 voltage data
++
++power1_input		12v power usage (mW)
++power2_input		5v  power usage (mW)
++power3_input		3v  power usage (mW)
++power4_input		Vee (-12v) power usage (mW)
+diff --git a/drivers/hwmon/Kconfig b/drivers/hwmon/Kconfig
+index cc611e4b7896..1ef1205b4e8c 100644
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -549,6 +549,17 @@ config SENSORS_LM93
+ 	  This driver can also be built as a module.  If so, the module
+ 	  will be called lm93.
+ 
++config SENSORS_LTC4245
++	tristate "Linear Technology LTC4245"
++	depends on I2C &amp;&amp; EXPERIMENTAL
++	default n
++	help
++	  If you say yes here you get support for Linear Technology LTC4245
++	  Multiple Supply Hot Swap Controller I2C interface.
++
++	  This driver can also be built as a module. If so, the module will
++	  be called ltc4245.
++
+ config SENSORS_MAX1111
+ 	tristate "Maxim MAX1111 Multichannel, Serial 8-bit ADC chip"
+ 	depends on SPI_MASTER
+diff --git a/drivers/hwmon/Makefile b/drivers/hwmon/Makefile
+index 58fc5be5355d..8fd124eff646 100644
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -62,6 +62,7 @@ obj-$(CONFIG_SENSORS_LM87)	+= lm87.o
+ obj-$(CONFIG_SENSORS_LM90)	+= lm90.o
+ obj-$(CONFIG_SENSORS_LM92)	+= lm92.o
+ obj-$(CONFIG_SENSORS_LM93)	+= lm93.o
++obj-$(CONFIG_SENSORS_LTC4245)	+= ltc4245.o
+ obj-$(CONFIG_SENSORS_MAX1111)	+= max1111.o
+ obj-$(CONFIG_SENSORS_MAX1619)	+= max1619.o
+ obj-$(CONFIG_SENSORS_MAX6650)	+= max6650.o
+diff --git a/drivers/hwmon/ltc4245.c b/drivers/hwmon/ltc4245.c
+new file mode 100644
+index 000000000000..034b2c515848
+--- /dev/null
++++ b/drivers/hwmon/ltc4245.c
+@@ -0,0 +1,567 @@
++/*
++ * Driver for Linear Technology LTC4245 I2C Multiple Supply Hot Swap Controller
++ *
++ * Copyright (C) 2008 Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 2 of the License.
++ *
++ * This driver is based on the ds1621 and ina209 drivers.
++ *
++ * Datasheet:
++ * http://www.linear.com/pc/downloadDocument.do?navId=H0,C1,C1003,C1006,C1140,P19392,D13517
++ */
++
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/module.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/err.h&gt;
++#include &lt;linux/slab.h&gt;
++#include &lt;linux/i2c.h&gt;
++#include &lt;linux/hwmon.h&gt;
++#include &lt;linux/hwmon-sysfs.h&gt;
++
++/* Valid addresses are 0x20 - 0x3f
++ *
++ * For now, we do not probe, since some of these addresses
++ * are known to be unfriendly to probing */
++static const unsigned short normal_i2c[] = { I2C_CLIENT_END };
++
++/* Insmod parameters */
++I2C_CLIENT_INSMOD_1(ltc4245);
++
++/* Here are names of the chip's registers (a.k.a. commands) */
++enum ltc4245_cmd {
++	LTC4245_STATUS			= 0x00, /* readonly */
++	LTC4245_ALERT			= 0x01,
++	LTC4245_CONTROL			= 0x02,
++	LTC4245_ON			= 0x03,
++	LTC4245_FAULT1			= 0x04,
++	LTC4245_FAULT2			= 0x05,
++	LTC4245_GPIO			= 0x06,
++	LTC4245_ADCADR			= 0x07,
++
++	LTC4245_12VIN			= 0x10,
++	LTC4245_12VSENSE		= 0x11,
++	LTC4245_12VOUT			= 0x12,
++	LTC4245_5VIN			= 0x13,
++	LTC4245_5VSENSE			= 0x14,
++	LTC4245_5VOUT			= 0x15,
++	LTC4245_3VIN			= 0x16,
++	LTC4245_3VSENSE			= 0x17,
++	LTC4245_3VOUT			= 0x18,
++	LTC4245_VEEIN			= 0x19,
++	LTC4245_VEESENSE		= 0x1a,
++	LTC4245_VEEOUT			= 0x1b,
++	LTC4245_GPIOADC1		= 0x1c,
++	LTC4245_GPIOADC2		= 0x1d,
++	LTC4245_GPIOADC3		= 0x1e,
++};
++
++struct ltc4245_data {
++	struct device *hwmon_dev;
++
++	struct mutex update_lock;
++	bool valid;
++	unsigned long last_updated; /* in jiffies */
++
++	/* Control registers */
++	u8 cregs[0x08];
++
++	/* Voltage registers */
++	u8 vregs[0x0f];
++};
++
++static struct ltc4245_data *ltc4245_update_device(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct ltc4245_data *data = i2c_get_clientdata(client);
++	s32 val;
++	int i;
++
++	mutex_lock(&amp;data-&gt;update_lock);
++
++	if (time_after(jiffies, data-&gt;last_updated + HZ) || !data-&gt;valid) {
++
++		dev_dbg(&amp;client-&gt;dev, "Starting ltc4245 update\n");
++
++		/* Read control registers -- 0x00 to 0x07 */
++		for (i = 0; i &lt; ARRAY_SIZE(data-&gt;cregs); i++) {
++			val = i2c_smbus_read_byte_data(client, i);
++			if (unlikely(val &lt; 0))
++				data-&gt;cregs[i] = 0;
++			else
++				data-&gt;cregs[i] = val;
++		}
++
++		/* Read voltage registers -- 0x10 to 0x1f */
++		for (i = 0; i &lt; ARRAY_SIZE(data-&gt;vregs); i++) {
++			val = i2c_smbus_read_byte_data(client, i+0x10);
++			if (unlikely(val &lt; 0))
++				data-&gt;vregs[i] = 0;
++			else
++				data-&gt;vregs[i] = val;
++		}
++
++		data-&gt;last_updated = jiffies;
++		data-&gt;valid = 1;
++	}
++
++	mutex_unlock(&amp;data-&gt;update_lock);
++
++	return data;
++}
++
++/* Return the voltage from the given register in millivolts */
++static int ltc4245_get_voltage(struct device *dev, u8 reg)
++{
++	struct ltc4245_data *data = ltc4245_update_device(dev);
++	const u8 regval = data-&gt;vregs[reg - 0x10];
++	u32 voltage = 0;
++
++	switch (reg) {
++	case LTC4245_12VIN:
++	case LTC4245_12VOUT:
++		voltage = regval * 55;
++		break;
++	case LTC4245_5VIN:
++	case LTC4245_5VOUT:
++		voltage = regval * 22;
++		break;
++	case LTC4245_3VIN:
++	case LTC4245_3VOUT:
++		voltage = regval * 15;
++		break;
++	case LTC4245_VEEIN:
++	case LTC4245_VEEOUT:
++		voltage = regval * -55;
++		break;
++	case LTC4245_GPIOADC1:
++	case LTC4245_GPIOADC2:
++	case LTC4245_GPIOADC3:
++		voltage = regval * 10;
++		break;
++	default:
++		/* If we get here, the developer messed up */
++		WARN_ON_ONCE(1);
++		break;
++	}
++
++	return voltage;
++}
++
++/* Return the current in the given sense register in milliAmperes */
++static unsigned int ltc4245_get_current(struct device *dev, u8 reg)
++{
++	struct ltc4245_data *data = ltc4245_update_device(dev);
++	const u8 regval = data-&gt;vregs[reg - 0x10];
++	unsigned int voltage;
++	unsigned int curr;
++
++	/* The strange looking conversions that follow are fixed-point
++	 * math, since we cannot do floating point in the kernel.
++	 *
++	 * Step 1: convert sense register to microVolts
++	 * Step 2: convert voltage to milliAmperes
++	 *
++	 * If you play around with the V=IR equation, you come up with
++	 * the following: X uV / Y mOhm == Z mA
++	 *
++	 * With the resistors that are fractions of a milliOhm, we multiply
++	 * the voltage and resistance by 10, to shift the decimal point.
++	 * Now we can use the normal division operator again.
++	 */
++
++	switch (reg) {
++	case LTC4245_12VSENSE:
++		voltage = regval * 250; /* voltage in uV */
++		curr = voltage / 50; /* sense resistor 50 mOhm */
++		break;
++	case LTC4245_5VSENSE:
++		voltage = regval * 125; /* voltage in uV */
++		curr = (voltage * 10) / 35; /* sense resistor 3.5 mOhm */
++		break;
++	case LTC4245_3VSENSE:
++		voltage = regval * 125; /* voltage in uV */
++		curr = (voltage * 10) / 25; /* sense resistor 2.5 mOhm */
++		break;
++	case LTC4245_VEESENSE:
++		voltage = regval * 250; /* voltage in uV */
++		curr = voltage / 100; /* sense resistor 100 mOhm */
++		break;
++	default:
++		/* If we get here, the developer messed up */
++		WARN_ON_ONCE(1);
++		curr = 0;
++		break;
++	}
++
++	return curr;
++}
++
++static ssize_t ltc4245_show_voltage(struct device *dev,
++				    struct device_attribute *da,
++				    char *buf)
++{
++	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
++	const int voltage = ltc4245_get_voltage(dev, attr-&gt;index);
++
++	return snprintf(buf, PAGE_SIZE, "%d\n", voltage);
++}
++
++static ssize_t ltc4245_show_current(struct device *dev,
++				    struct device_attribute *da,
++				    char *buf)
++{
++	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
++	const unsigned int curr = ltc4245_get_current(dev, attr-&gt;index);
++
++	return snprintf(buf, PAGE_SIZE, "%u\n", curr);
++}
++
++static ssize_t ltc4245_show_power(struct device *dev,
++				  struct device_attribute *da,
++				  char *buf)
++{
++	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
++	const unsigned int curr = ltc4245_get_current(dev, attr-&gt;index);
++	const int output_voltage = ltc4245_get_voltage(dev, attr-&gt;index+1);
++
++	/* current in mA * voltage in mV == power in uW */
++	const unsigned int power = abs(output_voltage * curr);
++
++	return snprintf(buf, PAGE_SIZE, "%u\n", power);
++}
++
++static ssize_t ltc4245_show_alarm(struct device *dev,
++					  struct device_attribute *da,
++					  char *buf)
++{
++	struct sensor_device_attribute_2 *attr = to_sensor_dev_attr_2(da);
++	struct ltc4245_data *data = ltc4245_update_device(dev);
++	const u8 reg = data-&gt;cregs[attr-&gt;index];
++	const u32 mask = attr-&gt;nr;
++
++	return snprintf(buf, PAGE_SIZE, "%u\n", (reg &amp; mask) ? 1 : 0);
++}
++
++/* These macros are used below in constructing device attribute objects
++ * for use with sysfs_create_group() to make a sysfs device file
++ * for each register.
++ */
++
++#define LTC4245_VOLTAGE(name, ltc4245_cmd_idx) \
++	static SENSOR_DEVICE_ATTR(name, S_IRUGO, \
++	ltc4245_show_voltage, NULL, ltc4245_cmd_idx)
++
++#define LTC4245_CURRENT(name, ltc4245_cmd_idx) \
++	static SENSOR_DEVICE_ATTR(name, S_IRUGO, \
++	ltc4245_show_current, NULL, ltc4245_cmd_idx)
++
++#define LTC4245_POWER(name, ltc4245_cmd_idx) \
++	static SENSOR_DEVICE_ATTR(name, S_IRUGO, \
++	ltc4245_show_power, NULL, ltc4245_cmd_idx)
++
++#define LTC4245_ALARM(name, mask, reg) \
++	static SENSOR_DEVICE_ATTR_2(name, S_IRUGO, \
++	ltc4245_show_alarm, NULL, (mask), reg)
++
++/* Construct a sensor_device_attribute structure for each register */
++
++/* Input voltages */
++LTC4245_VOLTAGE(in1_input,			LTC4245_12VIN);
++LTC4245_VOLTAGE(in2_input,			LTC4245_5VIN);
++LTC4245_VOLTAGE(in3_input,			LTC4245_3VIN);
++LTC4245_VOLTAGE(in4_input,			LTC4245_VEEIN);
++
++/* Input undervoltage alarms */
++LTC4245_ALARM(in1_min_alarm,	(1 &lt;&lt; 0),	LTC4245_FAULT1);
++LTC4245_ALARM(in2_min_alarm,	(1 &lt;&lt; 1),	LTC4245_FAULT1);
++LTC4245_ALARM(in3_min_alarm,	(1 &lt;&lt; 2),	LTC4245_FAULT1);
++LTC4245_ALARM(in4_min_alarm,	(1 &lt;&lt; 3),	LTC4245_FAULT1);
++
++/* Currents (via sense resistor) */
++LTC4245_CURRENT(curr1_input,			LTC4245_12VSENSE);
++LTC4245_CURRENT(curr2_input,			LTC4245_5VSENSE);
++LTC4245_CURRENT(curr3_input,			LTC4245_3VSENSE);
++LTC4245_CURRENT(curr4_input,			LTC4245_VEESENSE);
++
++/* Overcurrent alarms */
++LTC4245_ALARM(curr1_max_alarm,	(1 &lt;&lt; 4),	LTC4245_FAULT1);
++LTC4245_ALARM(curr2_max_alarm,	(1 &lt;&lt; 5),	LTC4245_FAULT1);
++LTC4245_ALARM(curr3_max_alarm,	(1 &lt;&lt; 6),	LTC4245_FAULT1);
++LTC4245_ALARM(curr4_max_alarm,	(1 &lt;&lt; 7),	LTC4245_FAULT1);
++
++/* Output voltages */
++LTC4245_VOLTAGE(in5_input,			LTC4245_12VOUT);
++LTC4245_VOLTAGE(in6_input,			LTC4245_5VOUT);
++LTC4245_VOLTAGE(in7_input,			LTC4245_3VOUT);
++LTC4245_VOLTAGE(in8_input,			LTC4245_VEEOUT);
++
++/* Power Bad alarms */
++LTC4245_ALARM(in5_min_alarm,	(1 &lt;&lt; 0),	LTC4245_FAULT2);
++LTC4245_ALARM(in6_min_alarm,	(1 &lt;&lt; 1),	LTC4245_FAULT2);
++LTC4245_ALARM(in7_min_alarm,	(1 &lt;&lt; 2),	LTC4245_FAULT2);
++LTC4245_ALARM(in8_min_alarm,	(1 &lt;&lt; 3),	LTC4245_FAULT2);
++
++/* GPIO voltages */
++LTC4245_VOLTAGE(in9_input,			LTC4245_GPIOADC1);
++LTC4245_VOLTAGE(in10_input,			LTC4245_GPIOADC2);
++LTC4245_VOLTAGE(in11_input,			LTC4245_GPIOADC3);
++
++/* Power Consumption (virtual) */
++LTC4245_POWER(power1_input,			LTC4245_12VSENSE);
++LTC4245_POWER(power2_input,			LTC4245_5VSENSE);
++LTC4245_POWER(power3_input,			LTC4245_3VSENSE);
++LTC4245_POWER(power4_input,			LTC4245_VEESENSE);
++
++/* Finally, construct an array of pointers to members of the above objects,
++ * as required for sysfs_create_group()
++ */
++static struct attribute *ltc4245_attributes[] = {
++	&amp;sensor_dev_attr_in1_input.dev_attr.attr,
++	&amp;sensor_dev_attr_in2_input.dev_attr.attr,
++	&amp;sensor_dev_attr_in3_input.dev_attr.attr,
++	&amp;sensor_dev_attr_in4_input.dev_attr.attr,
++
++	&amp;sensor_dev_attr_in1_min_alarm.dev_attr.attr,
++	&amp;sensor_dev_attr_in2_min_alarm.dev_attr.attr,
++	&amp;sensor_dev_attr_in3_min_alarm.dev_attr.attr,
++	&amp;sensor_dev_attr_in4_min_alarm.dev_attr.attr,
++
++	&amp;sensor_dev_attr_curr1_input.dev_attr.attr,
++	&amp;sensor_dev_attr_curr2_input.dev_attr.attr,
++	&amp;sensor_dev_attr_curr3_input.dev_attr.attr,
++	&amp;sensor_dev_attr_curr4_input.dev_attr.attr,
++
++	&amp;sensor_dev_attr_curr1_max_alarm.dev_attr.attr,
++	&amp;sensor_dev_attr_curr2_max_alarm.dev_attr.attr,
++	&amp;sensor_dev_attr_curr3_max_alarm.dev_attr.attr,
++	&amp;sensor_dev_attr_curr4_max_alarm.dev_attr.attr,
++
++	&amp;sensor_dev_attr_in5_input.dev_attr.attr,
++	&amp;sensor_dev_attr_in6_input.dev_attr.attr,
++	&amp;sensor_dev_attr_in7_input.dev_attr.attr,
++	&amp;sensor_dev_attr_in8_input.dev_attr.attr,
++
++	&amp;sensor_dev_attr_in5_min_alarm.dev_attr.attr,
++	&amp;sensor_dev_attr_in6_min_alarm.dev_attr.attr,
++	&amp;sensor_dev_attr_in7_min_alarm.dev_attr.attr,
++	&amp;sensor_dev_attr_in8_min_alarm.dev_attr.attr,
++
++	&amp;sensor_dev_attr_in9_input.dev_attr.attr,
++	&amp;sensor_dev_attr_in10_input.dev_attr.attr,
++	&amp;sensor_dev_attr_in11_input.dev_attr.attr,
++
++	&amp;sensor_dev_attr_power1_input.dev_attr.attr,
++	&amp;sensor_dev_attr_power2_input.dev_attr.attr,
++	&amp;sensor_dev_attr_power3_input.dev_attr.attr,
++	&amp;sensor_dev_attr_power4_input.dev_attr.attr,
++
++	NULL,
++};
++
++static const struct attribute_group ltc4245_group = {
++	.attrs = ltc4245_attributes,
++};
++
++static int ltc4245_probe(struct i2c_client *client,
++			 const struct i2c_device_id *id)
++{
++	struct ltc4245_data *data;
++	int ret;
++
++	data = kzalloc(sizeof(*data), GFP_KERNEL);
++	if (!data) {
++		ret = -ENOMEM;
++		goto out_kzalloc;
++	}
++
++	i2c_set_clientdata(client, data);
++	mutex_init(&amp;data-&gt;update_lock);
++
++	/* Initialize the LTC4245 chip */
++	/* TODO */
++
++	/* Register sysfs hooks */
++	ret = sysfs_create_group(&amp;client-&gt;dev.kobj, &amp;ltc4245_group);
++	if (ret)
++		goto out_sysfs_create_group;
++
++	data-&gt;hwmon_dev = hwmon_device_register(&amp;client-&gt;dev);
++	if (IS_ERR(data-&gt;hwmon_dev)) {
++		ret = PTR_ERR(data-&gt;hwmon_dev);
++		goto out_hwmon_device_register;
++	}
++
++	return 0;
++
++out_hwmon_device_register:
++	sysfs_remove_group(&amp;client-&gt;dev.kobj, &amp;ltc4245_group);
++out_sysfs_create_group:
++	kfree(data);
++out_kzalloc:
++	return ret;
++}
++
++static int ltc4245_remove(struct i2c_client *client)
++{
++	struct ltc4245_data *data = i2c_get_clientdata(client);
++
++	hwmon_device_unregister(data-&gt;hwmon_dev);
++	sysfs_remove_group(&amp;client-&gt;dev.kobj, &amp;ltc4245_group);
++
++	kfree(data);
++
++	return 0;
++}
++
++/* Check that some bits in a control register appear at all possible
++ * locations without changing value
++ *
++ * @client: the i2c client to use
++ * @reg: the register to read
++ * @bits: the bits to check (0xff checks all bits,
++ *                           0x03 checks only the last two bits)
++ *
++ * return -ERRNO if the register read failed
++ * return -ENODEV if the register value doesn't stay constant at all
++ * possible addresses
++ *
++ * return 0 for success
++ */
++static int ltc4245_check_control_reg(struct i2c_client *client, u8 reg, u8 bits)
++{
++	int i;
++	s32 v, voff1, voff2;
++
++	/* Read register and check for error */
++	v = i2c_smbus_read_byte_data(client, reg);
++	if (v &lt; 0)
++		return v;
++
++	v &amp;= bits;
++
++	for (i = 0x00; i &lt; 0xff; i += 0x20) {
++
++		voff1 = i2c_smbus_read_byte_data(client, reg + i);
++		if (voff1 &lt; 0)
++			return voff1;
++
++		voff2 = i2c_smbus_read_byte_data(client, reg + i + 0x08);
++		if (voff2 &lt; 0)
++			return voff2;
++
++		voff1 &amp;= bits;
++		voff2 &amp;= bits;
++
++		if (v != voff1 || v != voff2)
++			return -ENODEV;
++	}
++
++	return 0;
++}
++
++static int ltc4245_detect(struct i2c_client *client,
++			  int kind,
++			  struct i2c_board_info *info)
++{
++	struct i2c_adapter *adapter = client-&gt;adapter;
++
++	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
++		return -ENODEV;
++
++	if (kind &lt; 0) {		/* probed detection - check the chip type */
++		s32 v;		/* 8 bits from the chip, or -ERRNO */
++
++		/* Chip registers 0x00-0x07 are control registers
++		 * Chip registers 0x10-0x1f are data registers
++		 *
++		 * Address bits b7-b5 are ignored. This makes the chip "repeat"
++		 * in steps of 0x20. Any control registers should appear with
++		 * the same values across all duplicated addresses.
++		 *
++		 * Register 0x02 bit b2 is reserved, expect 0
++		 * Register 0x07 bits b7 to b4 are reserved, expect 0
++		 *
++		 * Registers 0x01, 0x02 are control registers and should not
++		 * change on their own.
++		 *
++		 * Register 0x06 bits b6 and b7 are control bits, and should
++		 * not change on their own.
++		 *
++		 * Register 0x07 bits b3 to b0 are control bits, and should
++		 * not change on their own.
++		 */
++
++		/* read register 0x02 reserved bit, expect 0 */
++		v = i2c_smbus_read_byte_data(client, LTC4245_CONTROL);
++		if (v &lt; 0 || (v &amp; 0x04) != 0)
++			return -ENODEV;
++
++		/* read register 0x07 reserved bits, expect 0 */
++		v = i2c_smbus_read_byte_data(client, LTC4245_ADCADR);
++		if (v &lt; 0 || (v &amp; 0xf0) != 0)
++			return -ENODEV;
++
++		/* check that the alert register appears at all locations */
++		if (ltc4245_check_control_reg(client, LTC4245_ALERT, 0xff))
++			return -ENODEV;
++
++		/* check that the control register appears at all locations */
++		if (ltc4245_check_control_reg(client, LTC4245_CONTROL, 0xff))
++			return -ENODEV;
++
++		/* check that register 0x06 bits b6 and b7 stay constant */
++		if (ltc4245_check_control_reg(client, LTC4245_GPIO, 0xc0))
++			return -ENODEV;
++
++		/* check that register 0x07 bits b3-b0 stay constant */
++		if (ltc4245_check_control_reg(client, LTC4245_ADCADR, 0x0f))
++			return -ENODEV;
++	}
++
++	strlcpy(info-&gt;type, "ltc4245", I2C_NAME_SIZE);
++	dev_info(&amp;adapter-&gt;dev, "ltc4245 %s at address 0x%02x\n",
++			kind &lt; 0 ? "probed" : "forced",
++			client-&gt;addr);
++
++	return 0;
++}
++
++static const struct i2c_device_id ltc4245_id[] = {
++	{ "ltc4245", ltc4245 },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, ltc4245_id);
++
++/* This is the driver that will be inserted */
++static struct i2c_driver ltc4245_driver = {
++	.class		= I2C_CLASS_HWMON,
++	.driver = {
++		.name	= "ltc4245",
++	},
++	.probe		= ltc4245_probe,
++	.remove		= ltc4245_remove,
++	.id_table	= ltc4245_id,
++	.detect		= ltc4245_detect,
++	.address_data	= &amp;addr_data,
++};
++
++static int __init ltc4245_init(void)
++{
++	return i2c_add_driver(&amp;ltc4245_driver);
++}
++
++static void __exit ltc4245_exit(void)
++{
++	i2c_del_driver(&amp;ltc4245_driver);
++}
++
++MODULE_AUTHOR("Ira W. Snyder &lt;iws@ovro.caltech.edu&gt;");
++MODULE_DESCRIPTION("LTC4245 driver");
++MODULE_LICENSE("GPL");
++
++module_init(ltc4245_init);
++module_exit(ltc4245_exit);</pre><hr><pre>commit c87f883edbe969ca68c21dfa8a29674c828c22a3
+Author: Rumen Ivanov Zarev &lt;rzarev@its.caltech.edu&gt;
+Date:   Tue Sep 6 13:39:32 2005 -0700
+
+    [PATCH] PCI: Unhide SMBus on Compaq Evo N620c
+    
+    Trivial patch against 2.6.13 to unhide SMBus on Compaq Evo N620c laptop using
+    Intel 82855PM chipset.
+    
+    Signed-off-by: Rumen Zarev &lt;rzarev@caltech.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@suse.de&gt;
+
+diff --git a/drivers/pci/quirks.c b/drivers/pci/quirks.c
+index 4f0c1bd3674a..11ca44387cb0 100644
+--- a/drivers/pci/quirks.c
++++ b/drivers/pci/quirks.c
+@@ -876,6 +876,12 @@ static void __init asus_hides_smbus_hostbridge(struct pci_dev *dev)
+                        case 0xC00C: /* Samsung P35 notebook */
+                                asus_hides_smbus = 1;
+                        }
++	} else if (unlikely(dev-&gt;subsystem_vendor == PCI_VENDOR_ID_COMPAQ)) {
++		if (dev-&gt;device == PCI_DEVICE_ID_INTEL_82855PM_HB)
++			switch(dev-&gt;subsystem_device) {
++			case 0x0058: /* Compaq Evo N620c */
++				asus_hides_smbus = 1;
++			}
+ 	}
+ }
+ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL,	PCI_DEVICE_ID_INTEL_82845_HB,	asus_hides_smbus_hostbridge );</pre>
+    <div class="pagination">
+        <a href='16_6.html'>&lt;&lt;Prev</a><a href='16.html'>1</a><a href='16_2.html'>2</a><a href='16_3.html'>3</a><a href='16_4.html'>4</a><a href='16_5.html'>5</a><a href='16_6.html'>6</a><span>[7]</span>
+    <div>
+</body>

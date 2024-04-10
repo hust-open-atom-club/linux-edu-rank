@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Queensland</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Queensland</h1>
+    <div class="pagination">
+        <a href='18_4.html'>&lt;&lt;Prev</a><a href='18.html'>1</a><a href='18_2.html'>2</a><a href='18_3.html'>3</a><a href='18_4.html'>4</a><span>[5]</span><a href='18_6.html'>6</a><a href='18_7.html'>7</a><a href='18_6.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 47cc5b78102b4e9993ea1c054b4f077cf7aac7db
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Mon Nov 19 04:14:23 2007 -0300
+
+    V4L/DVB (6631): xc2028: eliminate i2c macro side-effects
+    
+    The I2C macros have side effects and send_seq could cause a return from
+    a function with a mutex held.  Change them to behave like real functions.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/video/tuner-xc2028.c b/drivers/media/video/tuner-xc2028.c
+index d23b33a1f696..6e23fad0e560 100644
+--- a/drivers/media/video/tuner-xc2028.c
++++ b/drivers/media/video/tuner-xc2028.c
+@@ -83,31 +83,35 @@ struct xc2028_data {
+ 	struct mutex lock;
+ };
+ 
+-#define i2c_send(rc, priv, buf, size) do {				\
+-	rc = tuner_i2c_xfer_send(&amp;priv-&gt;i2c_props, buf, size);		\
+-	if (size != rc)							\
+-		tuner_err("i2c output error: rc = %d (should be %d)\n",	\
+-			   rc, (int)size);				\
+-} while (0)
+-
+-#define i2c_rcv(rc, priv, buf, size) do {				\
+-	rc = tuner_i2c_xfer_recv(&amp;priv-&gt;i2c_props, buf, size);		\
+-	if (size != rc)							\
++#define i2c_send(priv, buf, size) ({					\
++	int _rc;							\
++	_rc = tuner_i2c_xfer_send(&amp;priv-&gt;i2c_props, buf, size);		\
++	if (size != _rc)						\
++		tuner_info("i2c output error: rc = %d (should be %d)\n",\
++			   _rc, (int)size);				\
++	_rc;								\
++})
++
++#define i2c_rcv(priv, buf, size) ({					\
++	int _rc;							\
++	_rc = tuner_i2c_xfer_recv(&amp;priv-&gt;i2c_props, buf, size);		\
++	if (size != _rc)						\
+ 		tuner_err("i2c input error: rc = %d (should be %d)\n",	\
+-			   rc, (int)size); 				\
+-} while (0)
++			   _rc, (int)size); 				\
++	_rc;								\
++})
+ 
+-#define send_seq(priv, data...)	do {					\
+-	int rc;								\
++#define send_seq(priv, data...)	({					\
+ 	static u8 _val[] = data;					\
++	int _rc;							\
+ 	if (sizeof(_val) !=						\
+-			(rc = tuner_i2c_xfer_send(&amp;priv-&gt;i2c_props,	\
++			(_rc = tuner_i2c_xfer_send(&amp;priv-&gt;i2c_props,	\
+ 						_val, sizeof(_val)))) {	\
+-		tuner_err("Error on line %d: %d\n", __LINE__, rc);	\
+-		return -EINVAL;						\
+-	}								\
+-	msleep(10);							\
+-} while (0)
++		tuner_err("Error on line %d: %d\n", __LINE__, _rc);	\
++	} else 								\
++		msleep(10);						\
++	_rc;								\
++})
+ 
+ static unsigned int xc2028_get_reg(struct xc2028_data *priv, u16 reg)
+ {
+@@ -119,11 +123,11 @@ static unsigned int xc2028_get_reg(struct xc2028_data *priv, u16 reg)
+ 	buf[0] = reg&gt;&gt;8;
+ 	buf[1] = (unsigned char) reg;
+ 
+-	i2c_send(rc, priv, buf, 2);
++	rc = i2c_send(priv, buf, 2);
+ 	if (rc &lt; 0)
+ 		return rc;
+ 
+-	i2c_rcv(rc, priv, buf, 2);
++	rc = i2c_rcv(priv, buf, 2);
+ 	if (rc &lt; 0)
+ 		return rc;
+ 
+@@ -505,7 +509,7 @@ static int load_firmware(struct dvb_frontend *fe, unsigned int type,
+ 
+ 			memcpy(buf + 1, p, len);
+ 
+-			i2c_send(rc, priv, buf, len + 1);
++			rc = i2c_send(priv, buf, len + 1);
+ 			if (rc &lt; 0) {
+ 				tuner_err("%d returned from send\n", rc);
+ 				return -EINVAL;
+@@ -541,15 +545,20 @@ static int load_scode(struct dvb_frontend *fe, unsigned int type,
+ 	if ((priv-&gt;firm[pos].size != 12 * 16) || (scode &gt;= 16))
+ 		return -EINVAL;
+ 
+-	if (priv-&gt;version &lt; 0x0202) {
+-		send_seq(priv, {0x20, 0x00, 0x00, 0x00});
+-	} else {
+-		send_seq(priv, {0xa0, 0x00, 0x00, 0x00});
+-	}
++	if (priv-&gt;version &lt; 0x0202)
++		rc = send_seq(priv, {0x20, 0x00, 0x00, 0x00});
++	else
++		rc = send_seq(priv, {0xa0, 0x00, 0x00, 0x00});
++	if (rc &lt; 0)
++		return -EIO;
+ 
+-	i2c_send(rc, priv, p + 12 * scode, 12);
++	rc = i2c_send(priv, p + 12 * scode, 12);
++	if (rc &lt; 0)
++		return -EIO;
+ 
+-	send_seq(priv, {0x00, 0x8c});
++	rc = send_seq(priv, {0x00, 0x8c});
++	if (rc &lt; 0)
++		return -EIO;
+ 
+ 	return 0;
+ }
+@@ -766,11 +775,12 @@ static int generic_set_tv_freq(struct dvb_frontend *fe, u32 freq /* in Hz */ ,
+ 
+ 	/* CMD= Set frequency */
+ 
+-	if (priv-&gt;version &lt; 0x0202) {
+-		send_seq(priv, {0x00, 0x02, 0x00, 0x00});
+-	} else {
+-		send_seq(priv, {0x80, 0x02, 0x00, 0x00});
+-	}
++	if (priv-&gt;version &lt; 0x0202)
++		rc = send_seq(priv, {0x00, 0x02, 0x00, 0x00});
++	else
++		rc = send_seq(priv, {0x80, 0x02, 0x00, 0x00});
++	if (rc &lt; 0)
++		goto ret;
+ 
+ 	rc = priv-&gt;tuner_callback(priv-&gt;video_dev, XC2028_RESET_CLK, 1);
+ 	if (rc &lt; 0)
+@@ -784,7 +794,7 @@ static int generic_set_tv_freq(struct dvb_frontend *fe, u32 freq /* in Hz */ ,
+ 	buf[3] = 0xff &amp; (div);
+ 	buf[4] = 0;
+ 
+-	i2c_send(rc, priv, buf, sizeof(buf));
++	rc = i2c_send(priv, buf, sizeof(buf));
+ 	if (rc &lt; 0)
+ 		goto ret;
+ 	msleep(100);</pre><hr><pre>commit 794604c3efb511b74fb664af72c5dd7046e91075
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Mon Nov 19 03:55:45 2007 -0300
+
+    V4L/DVB (6630): zl10353: calculate input frequency register instead of using hardcoded value
+    
+    Now we know the zl10353's correct ADC clock, we can calculate the input
+    frequency registers correctly instead of just blindly setting them.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/frontends/zl10353.c b/drivers/media/dvb/frontends/zl10353.c
+index 9bfdc01fed2c..1736c6ac39cc 100644
+--- a/drivers/media/dvb/frontends/zl10353.c
++++ b/drivers/media/dvb/frontends/zl10353.c
+@@ -1,7 +1,7 @@
+ /*
+  * Driver for Zarlink DVB-T ZL10353 demodulator
+  *
+- * Copyright (C) 2006 Christopher Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
++ * Copyright (C) 2006, 2007 Christopher Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -16,7 +16,7 @@
+  *
+  * You should have received a copy of the GNU General Public License
+  * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.=
++ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+  */
+ 
+ #include &lt;linux/kernel.h&gt;
+@@ -25,6 +25,7 @@
+ #include &lt;linux/delay.h&gt;
+ #include &lt;linux/string.h&gt;
+ #include &lt;linux/slab.h&gt;
++#include &lt;asm/div64.h&gt;
+ 
+ #include "dvb_frontend.h"
+ #include "zl10353_priv.h"
+@@ -148,6 +149,35 @@ static void zl10353_calc_nominal_rate(struct dvb_frontend *fe,
+ 		__FUNCTION__, bw, adc_clock, *nominal_rate);
+ }
+ 
++static void zl10353_calc_input_freq(struct dvb_frontend *fe,
++				    u16 *input_freq)
++{
++	struct zl10353_state *state = fe-&gt;demodulator_priv;
++	u32 adc_clock = 45056;	/* 45.056 MHz */
++	int if2 = 36167;	/* 36.167 MHz */
++	int ife;
++	u64 value;
++
++	if (state-&gt;config.adc_clock)
++		adc_clock = state-&gt;config.adc_clock;
++	if (state-&gt;config.if2)
++		if2 = state-&gt;config.if2;
++
++	if (adc_clock &gt;= if2 * 2)
++		ife = if2;
++	else {
++		ife = adc_clock - (if2 % adc_clock);
++		if (ife &gt; adc_clock / 2)
++			ife = adc_clock - ife;
++	}
++	value = 65536ULL * ife + adc_clock / 2;
++	do_div(value, adc_clock);
++	*input_freq = -value;
++
++	dprintk("%s: if2 %d, ife %d, adc_clock %d =&gt; %d / 0x%x\n",
++		__FUNCTION__, if2, ife, adc_clock, -(int)value, *input_freq);
++}
++
+ static int zl10353_sleep(struct dvb_frontend *fe)
+ {
+ 	static u8 zl10353_softdown[] = { 0x50, 0x0C, 0x44 };
+@@ -160,7 +190,7 @@ static int zl10353_set_parameters(struct dvb_frontend *fe,
+ 				  struct dvb_frontend_parameters *param)
+ {
+ 	struct zl10353_state *state = fe-&gt;demodulator_priv;
+-	u16 nominal_rate;
++	u16 nominal_rate, input_freq;
+ 	u8 pllbuf[6] = { 0x67 };
+ 
+ 	/* These settings set "auto-everything" and start the FSM. */
+@@ -178,8 +208,10 @@ static int zl10353_set_parameters(struct dvb_frontend *fe,
+ 	zl10353_single_write(fe, TRL_NOMINAL_RATE_1, msb(nominal_rate));
+ 	zl10353_single_write(fe, TRL_NOMINAL_RATE_0, lsb(nominal_rate));
+ 
+-	zl10353_single_write(fe, 0x6C, 0xCD);
+-	zl10353_single_write(fe, 0x6D, 0x7E);
++	zl10353_calc_input_freq(fe, &amp;input_freq);
++	zl10353_single_write(fe, INPUT_FREQ_1, msb(input_freq));
++	zl10353_single_write(fe, INPUT_FREQ_0, lsb(input_freq));
++
+ 	if (fe-&gt;ops.i2c_gate_ctrl)
+ 		fe-&gt;ops.i2c_gate_ctrl(fe, 0);
+ 
+diff --git a/drivers/media/dvb/frontends/zl10353.h b/drivers/media/dvb/frontends/zl10353.h
+index 1c3d494a6da9..2660cec93f83 100644
+--- a/drivers/media/dvb/frontends/zl10353.h
++++ b/drivers/media/dvb/frontends/zl10353.h
+@@ -1,7 +1,7 @@
+ /*
+  *  Driver for Zarlink DVB-T ZL10353 demodulator
+  *
+- *  Copyright (C) 2006 Christopher Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
++ *  Copyright (C) 2006, 2007 Christopher Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+  *
+  *  This program is free software; you can redistribute it and/or modify
+  *  it under the terms of the GNU General Public License as published by
+@@ -31,6 +31,7 @@ struct zl10353_config
+ 
+ 	/* frequencies in kHz */
+ 	int adc_clock;	/* default: 45056 */
++	int if2;	/* default: 36167 */
+ 
+ 	/* set if no pll is connected to the secondary i2c bus */
+ 	int no_tuner;
+diff --git a/drivers/media/dvb/frontends/zl10353_priv.h b/drivers/media/dvb/frontends/zl10353_priv.h
+index 42855dfe31a7..fcad9221945e 100644
+--- a/drivers/media/dvb/frontends/zl10353_priv.h
++++ b/drivers/media/dvb/frontends/zl10353_priv.h
+@@ -1,7 +1,7 @@
+ /*
+  *  Driver for Zarlink DVB-T ZL10353 demodulator
+  *
+- *  Copyright (C) 2006 Christopher Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
++ *  Copyright (C) 2006, 2007 Christopher Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+  *
+  *  This program is free software; you can redistribute it and/or modify
+  *  it under the terms of the GNU General Public License as published by
+@@ -16,7 +16,7 @@
+  *
+  *  You should have received a copy of the GNU General Public License
+  *  along with this program; if not, write to the Free Software
+- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.=
++ *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+  */
+ 
+ #ifndef _ZL10353_PRIV_
+@@ -48,6 +48,8 @@ enum zl10353_reg_addr {
+ 	RS_UBC_0           = 0x15,
+ 	TRL_NOMINAL_RATE_1 = 0x65,
+ 	TRL_NOMINAL_RATE_0 = 0x66,
++	INPUT_FREQ_1       = 0x6C,
++	INPUT_FREQ_0       = 0x6D,
+ 	TUNER_GO           = 0x70,
+ 	FSM_GO             = 0x71,
+ 	CHIP_ID            = 0x7F,</pre><hr><pre>commit 58d834ea89664b41e6e21ed2d8dc5680d0dd76b6
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Mon Nov 19 03:32:06 2007 -0300
+
+    V4L/DVB (6628): zl10353: Improve support for boards without a tuner on secondary i2c
+    
+    Issue FSM_GO instead of TUNER_GO if there is no tuner attached to the
+    secondary i2c bus.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/frontends/zl10353.c b/drivers/media/dvb/frontends/zl10353.c
+index 0106df4c55e8..9bfdc01fed2c 100644
+--- a/drivers/media/dvb/frontends/zl10353.c
++++ b/drivers/media/dvb/frontends/zl10353.c
+@@ -183,35 +183,31 @@ static int zl10353_set_parameters(struct dvb_frontend *fe,
+ 	if (fe-&gt;ops.i2c_gate_ctrl)
+ 		fe-&gt;ops.i2c_gate_ctrl(fe, 0);
+ 
+-	// if there is no attached secondary tuner, we call set_params to program
+-	// a potential tuner attached somewhere else
++	/*
++	 * If there is no tuner attached to the secondary I2C bus, we call
++	 * set_params to program a potential tuner attached somewhere else.
++	 * Otherwise, we update the PLL registers via calc_regs.
++	 */
+ 	if (state-&gt;config.no_tuner) {
+ 		if (fe-&gt;ops.tuner_ops.set_params) {
+ 			fe-&gt;ops.tuner_ops.set_params(fe, param);
+ 			if (fe-&gt;ops.i2c_gate_ctrl)
+ 				fe-&gt;ops.i2c_gate_ctrl(fe, 0);
+ 		}
+-	}
+-
+-	// if pllbuf is defined, retrieve the settings
+-	if (fe-&gt;ops.tuner_ops.calc_regs) {
+-		fe-&gt;ops.tuner_ops.calc_regs(fe, param, pllbuf+1, 5);
++	} else if (fe-&gt;ops.tuner_ops.calc_regs) {
++		fe-&gt;ops.tuner_ops.calc_regs(fe, param, pllbuf + 1, 5);
+ 		pllbuf[1] &lt;&lt;= 1;
+-	} else {
+-		// fake pllbuf settings
+-		pllbuf[1] = 0x61 &lt;&lt; 1;
+-		pllbuf[2] = 0;
+-		pllbuf[3] = 0;
+-		pllbuf[3] = 0;
+-		pllbuf[4] = 0;
++		zl10353_write(fe, pllbuf, sizeof(pllbuf));
+ 	}
+ 
+-	// there is no call to _just_ start decoding, so we send the pllbuf anyway
+-	// even if there isn't a PLL attached to the secondary bus
+-	zl10353_write(fe, pllbuf, sizeof(pllbuf));
+-
+ 	zl10353_single_write(fe, 0x5F, 0x13);
+-	zl10353_single_write(fe, 0x70, 0x01);
++
++	/* If no attached tuner or invalid PLL registers, just start the FSM. */
++	if (state-&gt;config.no_tuner || fe-&gt;ops.tuner_ops.calc_regs == NULL)
++		zl10353_single_write(fe, FSM_GO, 0x01);
++	else
++		zl10353_single_write(fe, TUNER_GO, 0x01);
++
+ 	udelay(250);
+ 	zl10353_single_write(fe, 0xE4, 0x00);
+ 	zl10353_single_write(fe, 0xE5, 0x2A);
+diff --git a/drivers/media/dvb/frontends/zl10353_priv.h b/drivers/media/dvb/frontends/zl10353_priv.h
+index 4962434b35e7..42855dfe31a7 100644
+--- a/drivers/media/dvb/frontends/zl10353_priv.h
++++ b/drivers/media/dvb/frontends/zl10353_priv.h
+@@ -48,6 +48,8 @@ enum zl10353_reg_addr {
+ 	RS_UBC_0           = 0x15,
+ 	TRL_NOMINAL_RATE_1 = 0x65,
+ 	TRL_NOMINAL_RATE_0 = 0x66,
++	TUNER_GO           = 0x70,
++	FSM_GO             = 0x71,
+ 	CHIP_ID            = 0x7F,
+ };
+ </pre><hr><pre>commit a644e4a3e95f8ca6eca019c92d8dfde101150687
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Mon Nov 19 03:05:09 2007 -0300
+
+    V4L/DVB (6627): CXUSB: handle write then read from different address
+    
+    The path to perform a read immediately after a write was not checking that
+    the address being read from was the same as the one that was written.
+    
+    Handling this case correctly should mean that we now can handle more than
+    two i2c messages at a time.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/dvb-usb/cxusb.c b/drivers/media/dvb/dvb-usb/cxusb.c
+index 016a3780b714..74eeb168f241 100644
+--- a/drivers/media/dvb/dvb-usb/cxusb.c
++++ b/drivers/media/dvb/dvb-usb/cxusb.c
+@@ -83,9 +83,6 @@ static int cxusb_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
+ 	if (mutex_lock_interruptible(&amp;d-&gt;i2c_mutex) &lt; 0)
+ 		return -EAGAIN;
+ 
+-	if (num &gt; 2)
+-		warn("more than two i2c messages at a time is not handled yet. TODO.");
+-
+ 	for (i = 0; i &lt; num; i++) {
+ 
+ 		if (d-&gt;udev-&gt;descriptor.idVendor == USB_VID_MEDION)
+@@ -111,8 +108,9 @@ static int cxusb_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
+ 				break;
+ 			}
+ 			memcpy(msg[i].buf, &amp;ibuf[1], msg[i].len);
+-		} else if (i+1 &lt; num &amp;&amp; (msg[i+1].flags &amp; I2C_M_RD)) {
+-			/* write then read */
++		} else if (i+1 &lt; num &amp;&amp; (msg[i+1].flags &amp; I2C_M_RD) &amp;&amp;
++			   msg[i].addr == msg[i+1].addr) {
++			/* write to then read from same address */
+ 			u8 obuf[3+msg[i].len], ibuf[1+msg[i+1].len];
+ 			obuf[0] = msg[i].len;
+ 			obuf[1] = msg[i+1].len;</pre><hr><pre>commit 272479d7ab067344d118e7633b624bf98f8896f3
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Mon Nov 19 03:01:22 2007 -0300
+
+    V4L/DVB (6626): CXUSB: support only-read i2c requests
+    
+    Any i2c read request that was not immediately preceded by a write request was
+    incorrectly taking the write path.  Add the capability to handle individual
+    read requests.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/dvb-usb/cxusb.c b/drivers/media/dvb/dvb-usb/cxusb.c
+index 86fbd6c73ea9..016a3780b714 100644
+--- a/drivers/media/dvb/dvb-usb/cxusb.c
++++ b/drivers/media/dvb/dvb-usb/cxusb.c
+@@ -98,8 +98,21 @@ static int cxusb_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
+ 				break;
+ 			}
+ 
+-		/* read request */
+-		if (i+1 &lt; num &amp;&amp; (msg[i+1].flags &amp; I2C_M_RD)) {
++		if (msg[i].flags &amp; I2C_M_RD) {
++			/* read only */
++			u8 obuf[3], ibuf[1+msg[i].len];
++			obuf[0] = 0;
++			obuf[1] = msg[i].len;
++			obuf[2] = msg[i].addr;
++			if (cxusb_ctrl_msg(d, CMD_I2C_READ,
++					   obuf, 3,
++					   ibuf, 1+msg[i].len) &lt; 0) {
++				warn("i2c read failed");
++				break;
++			}
++			memcpy(msg[i].buf, &amp;ibuf[1], msg[i].len);
++		} else if (i+1 &lt; num &amp;&amp; (msg[i+1].flags &amp; I2C_M_RD)) {
++			/* write then read */
+ 			u8 obuf[3+msg[i].len], ibuf[1+msg[i+1].len];
+ 			obuf[0] = msg[i].len;
+ 			obuf[1] = msg[i+1].len;
+@@ -117,7 +130,8 @@ static int cxusb_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
+ 			memcpy(msg[i+1].buf, &amp;ibuf[1], msg[i+1].len);
+ 
+ 			i++;
+-		} else { /* write */
++		} else {
++			/* write only */
+ 			u8 obuf[2+msg[i].len], ibuf;
+ 			obuf[0] = msg[i].addr;
+ 			obuf[1] = msg[i].len;</pre><hr><pre>commit 13e001dfe3aeb9e7b05445af76e5b47235e81285
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Mon Nov 19 02:48:27 2007 -0300
+
+    V4L/DVB (6625): CXUSB: i2c transfer failure notification
+    
+    The i2c master_xfer routine should return a negative result if not all
+    transfers completed successfully.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/dvb-usb/cxusb.c b/drivers/media/dvb/dvb-usb/cxusb.c
+index b4a3f7baf1b7..86fbd6c73ea9 100644
+--- a/drivers/media/dvb/dvb-usb/cxusb.c
++++ b/drivers/media/dvb/dvb-usb/cxusb.c
+@@ -132,7 +132,7 @@ static int cxusb_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
+ 	}
+ 
+ 	mutex_unlock(&amp;d-&gt;i2c_mutex);
+-	return i;
++	return i == num ? num : -EREMOTEIO;
+ }
+ 
+ static u32 cxusb_i2c_func(struct i2c_adapter *adapter)</pre><hr><pre>commit b17f109df1cd9fe1009501d59e466701106590d7
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Mon Nov 19 02:42:44 2007 -0300
+
+    V4L/DVB (6624): CXUSB: return control message transfer result to caller
+    
+    Callers to cxusb_ctrl_msg currently do not receive any indication that their
+    transfer failed.  Return the true return code from dvb_usb_generic_{rw,write}.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/dvb-usb/cxusb.c b/drivers/media/dvb/dvb-usb/cxusb.c
+index 5b6431ea38c1..b4a3f7baf1b7 100644
+--- a/drivers/media/dvb/dvb-usb/cxusb.c
++++ b/drivers/media/dvb/dvb-usb/cxusb.c
+@@ -49,11 +49,9 @@ static int cxusb_ctrl_msg(struct dvb_usb_device *d,
+ 	sndbuf[0] = cmd;
+ 	memcpy(&amp;sndbuf[1], wbuf, wlen);
+ 	if (wo)
+-		dvb_usb_generic_write(d, sndbuf, 1+wlen);
++		return dvb_usb_generic_write(d, sndbuf, 1+wlen);
+ 	else
+-		dvb_usb_generic_rw(d, sndbuf, 1+wlen, rbuf, rlen, 0);
+-
+-	return 0;
++		return dvb_usb_generic_rw(d, sndbuf, 1+wlen, rbuf, rlen, 0);
+ }
+ 
+ /* GPIO */</pre><hr><pre>commit 78f3b0b672c79df9ffa55399a7d6fc4b173e9b4b
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Mon Nov 19 03:47:07 2007 -0300
+
+    V4L/DVB (6629): zl10353: fix default adc_clock and TRL nominal rate calculation
+    
+    The default adc_clock for the zl10353 is different from what was originally
+    thought to be the case and the TRL nominal rate formula was incorrect as a
+    result.  Use a better (and hopefully now correct) formula.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/frontends/zl10353.c b/drivers/media/dvb/frontends/zl10353.c
+index a97a7fd2c891..0106df4c55e8 100644
+--- a/drivers/media/dvb/frontends/zl10353.c
++++ b/drivers/media/dvb/frontends/zl10353.c
+@@ -122,7 +122,7 @@ static void zl10353_calc_nominal_rate(struct dvb_frontend *fe,
+ 				      enum fe_bandwidth bandwidth,
+ 				      u16 *nominal_rate)
+ {
+-	u32 adc_clock = 22528; /* 20.480 MHz on the board(!?) */
++	u32 adc_clock = 45056; /* 45.056 MHz */
+ 	u8 bw;
+ 	struct zl10353_state *state = fe-&gt;demodulator_priv;
+ 
+@@ -142,7 +142,7 @@ static void zl10353_calc_nominal_rate(struct dvb_frontend *fe,
+ 		break;
+ 	}
+ 
+-	*nominal_rate = (64 * bw * (1&lt;&lt;16) / (7 * 8) * 4000 / adc_clock + 2) / 4;
++	*nominal_rate = (bw * (1 &lt;&lt; 23) / 7 * 125 + adc_clock / 2) / adc_clock;
+ 
+ 	dprintk("%s: bw %d, adc_clock %d =&gt; 0x%x\n",
+ 		__FUNCTION__, bw, adc_clock, *nominal_rate);
+diff --git a/drivers/media/dvb/frontends/zl10353.h b/drivers/media/dvb/frontends/zl10353.h
+index cb274dc12b82..1c3d494a6da9 100644
+--- a/drivers/media/dvb/frontends/zl10353.h
++++ b/drivers/media/dvb/frontends/zl10353.h
+@@ -30,7 +30,7 @@ struct zl10353_config
+ 	u8 demod_address;
+ 
+ 	/* frequencies in kHz */
+-	int adc_clock;  // default: 22528
++	int adc_clock;	/* default: 45056 */
+ 
+ 	/* set if no pll is connected to the secondary i2c bus */
+ 	int no_tuner;</pre><hr><pre>commit 6345f0f6428cc7a3f73b83624c6f97629a9fddd1
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Sat Feb 10 10:19:16 2007 -0300
+
+    V4L/DVB (5218): Zl10353: register definitions update
+    
+    Update the descriptions of "discovered" registers on the zl10353, using the
+    equivalaent mt352 register names.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/frontends/zl10353.c b/drivers/media/dvb/frontends/zl10353.c
+index dbb53ba6f414..245f9b7dddfa 100644
+--- a/drivers/media/dvb/frontends/zl10353.c
++++ b/drivers/media/dvb/frontends/zl10353.c
+@@ -258,9 +258,9 @@ static int zl10353_read_ber(struct dvb_frontend *fe, u32 *ber)
+ {
+ 	struct zl10353_state *state = fe-&gt;demodulator_priv;
+ 
+-	*ber = zl10353_read_register(state, 0x11) &lt;&lt; 16 |
+-	       zl10353_read_register(state, 0x12) &lt;&lt; 8 |
+-	       zl10353_read_register(state, 0x13);
++	*ber = zl10353_read_register(state, RS_ERR_CNT_2) &lt;&lt; 16 |
++	       zl10353_read_register(state, RS_ERR_CNT_1) &lt;&lt; 8 |
++	       zl10353_read_register(state, RS_ERR_CNT_0);
+ 
+ 	return 0;
+ }
+@@ -269,8 +269,8 @@ static int zl10353_read_signal_strength(struct dvb_frontend *fe, u16 *strength)
+ {
+ 	struct zl10353_state *state = fe-&gt;demodulator_priv;
+ 
+-	u16 signal = zl10353_read_register(state, 0x0a) &lt;&lt; 10 |
+-		     zl10353_read_register(state, 0x0b) &lt;&lt; 2 | 3;
++	u16 signal = zl10353_read_register(state, AGC_GAIN_1) &lt;&lt; 10 |
++		     zl10353_read_register(state, AGC_GAIN_0) &lt;&lt; 2 | 3;
+ 
+ 	*strength = ~signal;
+ 
+@@ -295,8 +295,8 @@ static int zl10353_read_ucblocks(struct dvb_frontend *fe, u32 *ucblocks)
+ {
+ 	struct zl10353_state *state = fe-&gt;demodulator_priv;
+ 
+-	*ucblocks = zl10353_read_register(state, 0x14) &lt;&lt; 8 |
+-		    zl10353_read_register(state, 0x15);
++	*ucblocks = zl10353_read_register(state, RS_UBC_1) &lt;&lt; 8 |
++		    zl10353_read_register(state, RS_UBC_0);
+ 
+ 	return 0;
+ }
+diff --git a/drivers/media/dvb/frontends/zl10353_priv.h b/drivers/media/dvb/frontends/zl10353_priv.h
+index d2186927f8f1..4962434b35e7 100644
+--- a/drivers/media/dvb/frontends/zl10353_priv.h
++++ b/drivers/media/dvb/frontends/zl10353_priv.h
+@@ -38,7 +38,14 @@ enum zl10353_reg_addr {
+ 	STATUS_7           = 0x07,
+ 	STATUS_8           = 0x08,
+ 	STATUS_9           = 0x09,
++	AGC_GAIN_1         = 0x0A,
++	AGC_GAIN_0         = 0x0B,
+ 	SNR                = 0x10,
++	RS_ERR_CNT_2       = 0x11,
++	RS_ERR_CNT_1       = 0x12,
++	RS_ERR_CNT_0       = 0x13,
++	RS_UBC_1           = 0x14,
++	RS_UBC_0           = 0x15,
+ 	TRL_NOMINAL_RATE_1 = 0x65,
+ 	TRL_NOMINAL_RATE_0 = 0x66,
+ 	CHIP_ID            = 0x7F,</pre><hr><pre>commit 67b60aad168cfdd40ffec12f14b93e2e68f7d486
+Author: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+Date:   Sat Feb 10 10:17:57 2007 -0300
+
+    V4L/DVB (5215): Experimental support for signal strength/BER/uncorrectable count
+    
+    After studying many hours worth of register dumps of MT352 and ZL10353 fed
+    with identically damaged RF signals I have made an educated guess at which
+    registers contain the AGC level, bit error rate and uncorrectable error
+    count values.
+    Implement the IOCTLs that return these values to userspace.
+    
+    Signed-off-by: Chris Pascoe &lt;c.pascoe@itee.uq.edu.au&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab@infradead.org&gt;
+
+diff --git a/drivers/media/dvb/frontends/zl10353.c b/drivers/media/dvb/frontends/zl10353.c
+index a1b0afbd47ba..0d8241de89ee 100644
+--- a/drivers/media/dvb/frontends/zl10353.c
++++ b/drivers/media/dvb/frontends/zl10353.c
+@@ -213,6 +213,29 @@ static int zl10353_read_status(struct dvb_frontend *fe, fe_status_t *status)
+ 	return 0;
+ }
+ 
++static int zl10353_read_ber(struct dvb_frontend *fe, u32 *ber)
++{
++	struct zl10353_state *state = fe-&gt;demodulator_priv;
++
++	*ber = zl10353_read_register(state, 0x11) &lt;&lt; 16 |
++	       zl10353_read_register(state, 0x12) &lt;&lt; 8 |
++	       zl10353_read_register(state, 0x13);
++
++	return 0;
++}
++
++static int zl10353_read_signal_strength(struct dvb_frontend *fe, u16 *strength)
++{
++	struct zl10353_state *state = fe-&gt;demodulator_priv;
++
++	u16 signal = zl10353_read_register(state, 0x0a) &lt;&lt; 10 |
++		     zl10353_read_register(state, 0x0b) &lt;&lt; 2 | 3;
++
++	*strength = ~signal;
++
++	return 0;
++}
++
+ static int zl10353_read_snr(struct dvb_frontend *fe, u16 *snr)
+ {
+ 	struct zl10353_state *state = fe-&gt;demodulator_priv;
+@@ -227,6 +250,16 @@ static int zl10353_read_snr(struct dvb_frontend *fe, u16 *snr)
+ 	return 0;
+ }
+ 
++static int zl10353_read_ucblocks(struct dvb_frontend *fe, u32 *ucblocks)
++{
++	struct zl10353_state *state = fe-&gt;demodulator_priv;
++
++	*ucblocks = zl10353_read_register(state, 0x14) &lt;&lt; 8 |
++		    zl10353_read_register(state, 0x15);
++
++	return 0;
++}
++
+ static int zl10353_get_tune_settings(struct dvb_frontend *fe,
+ 				     struct dvb_frontend_tune_settings
+ 					 *fe_tune_settings)
+@@ -325,7 +358,10 @@ static struct dvb_frontend_ops zl10353_ops = {
+ 	.get_tune_settings = zl10353_get_tune_settings,
+ 
+ 	.read_status = zl10353_read_status,
++	.read_ber = zl10353_read_ber,
++	.read_signal_strength = zl10353_read_signal_strength,
+ 	.read_snr = zl10353_read_snr,
++	.read_ucblocks = zl10353_read_ucblocks,
+ };
+ 
+ module_param(debug_regs, int, 0644);</pre>
+    <div class="pagination">
+        <a href='18_4.html'>&lt;&lt;Prev</a><a href='18.html'>1</a><a href='18_2.html'>2</a><a href='18_3.html'>3</a><a href='18_4.html'>4</a><span>[5]</span><a href='18_6.html'>6</a><a href='18_7.html'>7</a><a href='18_6.html'>Next&gt;&gt;</a>
+    <div>
+</body>

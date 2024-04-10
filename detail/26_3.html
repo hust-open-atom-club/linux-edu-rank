@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Adelaide</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Adelaide</h1>
+    <div class="pagination">
+        <a href='26_2.html'>&lt;&lt;Prev</a><a href='26.html'>1</a><a href='26_2.html'>2</a><span>[3]</span>
+    </div>
+    <hr>
+    <pre>commit cdcd9268a1b03c6695ea07983ce029b2b4a099d8
+Author: Jonathan Woithe &lt;jwoithe@physics.adelaide.edu.au&gt;
+Date:   Tue Feb 28 11:36:42 2006 +0100
+
+    [ALSA] HDA/ALC260: 2/7 - switch pin buffer enables
+    
+    Modules: HDA Codec driver
+    
+    This patch adds functionality which switches the input/output buffer enables
+    of retasking pins when the user changes their mode with the mode control.
+    This probably reduces noise *slightly* for recording compared to the case
+    where both input and output buffers were enabled simultaneously.
+    
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/patch_realtek.c b/sound/pci/hda/patch_realtek.c
+index b34d2448d172..600d0a037842 100644
+--- a/sound/pci/hda/patch_realtek.c
++++ b/sound/pci/hda/patch_realtek.c
+@@ -306,9 +306,32 @@ static int alc_pin_mode_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_v
+ 		val = alc_pin_mode_min(dir);
+ 
+ 	change = pinctl != alc_pin_mode_values[val];
+-	if (change)
++	if (change) {
++		/* Set pin mode to that requested */
+ 		snd_hda_codec_write(codec,nid,0,AC_VERB_SET_PIN_WIDGET_CONTROL,
+ 			alc_pin_mode_values[val]);
++
++		/* Also enable the retasking pin's input/output as required 
++		 * for the requested pin mode.  Enum values of 2 or less are
++		 * input modes.
++		 *
++		 * Dynamically switching the input/output buffers probably
++		 * reduces noise slightly, particularly on input.  However,
++		 * havingboth input and output buffers enabled
++		 * simultaneously doesn't seem to be problematic.
++		 */
++		if (val &lt;= 2) {
++			snd_hda_codec_write(codec,nid,0,AC_VERB_SET_AMP_GAIN_MUTE,
++				AMP_OUT_MUTE);
++			snd_hda_codec_write(codec,nid,0,AC_VERB_SET_AMP_GAIN_MUTE,
++				AMP_IN_UNMUTE(0));
++		} else {
++			snd_hda_codec_write(codec,nid,0,AC_VERB_SET_AMP_GAIN_MUTE,
++				AMP_IN_MUTE(0));
++			snd_hda_codec_write(codec,nid,0,AC_VERB_SET_AMP_GAIN_MUTE,
++				AMP_OUT_UNMUTE);
++		}
++	}
+ 	return change;
+ }
+ 
+@@ -2744,14 +2767,16 @@ static struct hda_verb alc260_fujitsu_init_verbs[] = {
+ 
+         /* Unmute HP pin widget amp left and right (no equiv mixer ctrl) */
+         {0x10, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
+-        /* Unmute Line1 pin widget amp left and right (no equiv mixer ctrl) */
++        /* Unmute Line1 pin widget output buffer since it starts as an output.
++         * If the pin mode is changed by the user the pin mode control will
++         * take care of enabling the pin's input/output buffers as needed.
++         * Therefore there's no need to enable the input buffer at this
++         * stage.
++	 */
+         {0x14, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
+-        /* Unmute Line1 pin widget input for when this pin is used as input
+-         * (no equiv mixer ctrl).  Having input and output unmuted doesn't
+-         * seem to cause a problem.
+-         */
+-        {0x14, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
+-	/* Unmute pin widget used for Line-in (no equiv mixer ctrl) */
++	/* Unmute input buffer of pin widget used for Line-in (no equiv 
++	 * mixer ctrl)
++	 */
+         {0x12, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
+ 
+         /* Mute capture amp left and right */
+@@ -2882,7 +2907,11 @@ static struct hda_verb alc260_test_init_verbs[] = {
+ 	{0x0a, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(1)},
+ 	{0x0a, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_ZERO},
+ 
+-	/* Unmute retasking pin widget output amp left/right (no mixer ctrl) */
++	/* Unmute retasking pin widget output buffers since the default
++	 * state appears to be output.  As the pin mode is changed by the
++	 * user the pin mode control will take care of enabling the pin's
++	 * input/output buffers as needed.
++	 */
+ 	{0x10, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
+ 	{0x0f, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
+ 	{0x15, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
+@@ -2892,17 +2921,6 @@ static struct hda_verb alc260_test_init_verbs[] = {
+ 	/* Also unmute the mono-out pin widget */
+ 	{0x11, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
+ 
+-	/* Also unmute the retasking pin input amps.  Having the input and
+-	 * output amps unmuted at the same time doesn't appear to cause any
+-	 * trouble.
+-	 */
+-	{0x10, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
+-	{0x0f, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
+-	{0x15, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
+-	{0x14, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
+-	{0x13, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
+-	{0x12, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
+-
+ 	/* Mute capture amp left and right */
+ 	{0x04, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
+ 	/* Set ADC connection select to match default mixer setting - line </pre><hr><pre>commit 17e7aec680a252ec0cea6d886d3983319af43ac4
+Author: Jonathan Woithe &lt;jwoithe@physics.adelaide.edu.au&gt;
+Date:   Tue Feb 28 11:35:18 2006 +0100
+
+    [ALSA] HDA/ALC260: 1/7 - Fix test model input mux label
+    
+    Modules: HDA Codec driver
+    
+    This patch fixes input mux labels used for the ALC260 'test' model.  This is
+    needed to avoid confusion which comes about because the two ADCs in the
+    ALC260 have slightly different mappings for their input selectors. Since
+    this is just the test model it's sufficient to simply report both options
+    where they exist.  If a model comes along for which this becomes an issue,
+    the ALC260 input mux code will have to be extended to allow different mux
+    layouts for different ADCs.
+    
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/patch_realtek.c b/sound/pci/hda/patch_realtek.c
+index ea4200a4ee42..b34d2448d172 100644
+--- a/sound/pci/hda/patch_realtek.c
++++ b/sound/pci/hda/patch_realtek.c
+@@ -2414,8 +2414,8 @@ static struct hda_input_mux alc260_capture_source = {
+ 	},
+ };
+ 
+-/* On Fujitsu S702x laptops capture only makes sense from Mic/LineIn jack
+- * and the internal CD lines.
++/* On Fujitsu S702x laptops capture only makes sense from Mic/LineIn jack,
++ * headphone jack and the internal CD lines.
+  */
+ static struct hda_input_mux alc260_fujitsu_capture_source = {
+ 	.num_items = 3,
+@@ -2790,16 +2790,26 @@ static hda_nid_t alc260_test_dac_nids[1] = {
+ static hda_nid_t alc260_test_adc_nids[2] = {
+ 	0x04, 0x05,
+ };
++/* This is a bit messy since the two input muxes in the ALC260 have slight
++ * variations in their signal assignments.  The ideal way to deal with this
++ * is to extend alc_spec.input_mux to allow a different input MUX for each
++ * ADC.  For the purposes of the test model it's sufficient to just list
++ * both options for affected signal indices.  The separate input mux
++ * functionality only needs to be considered if a model comes along which
++ * actually uses signals 0x5, 0x6 and 0x7 for something which makes sense to
++ * record.
++ */
+ static struct hda_input_mux alc260_test_capture_source = {
+-	.num_items = 7,
++	.num_items = 8,
+ 	.items = {
+ 		{ "MIC1 pin", 0x0 },
+ 		{ "MIC2 pin", 0x1 },
+ 		{ "LINE1 pin", 0x2 },
+ 		{ "LINE2 pin", 0x3 },
+ 		{ "CD pin", 0x4 },
+-		{ "LINE-OUT pin", 0x5 },
+-		{ "HP-OUT pin", 0x6 },
++		{ "LINE-OUT pin (cap1), Mixer (cap2)", 0x5 },
++		{ "HP-OUT pin (cap1), LINE-OUT pin (cap2)", 0x6 },
++		{ "HP-OUT pin (cap2 only)", 0x7 },
+         },
+ };
+ static struct snd_kcontrol_new alc260_test_mixer[] = {</pre><hr><pre>commit 7cf51e48315d87b4c1cf600d611894f45f661142
+Author: Jonathan Woithe &lt;jwoithe@physics.adelaide.edu.au&gt;
+Date:   Thu Feb 9 12:01:26 2006 +0100
+
+    [ALSA] hda: ALC260 test model implementation
+    
+    Modules: HDA Codec driver
+    
+    The following patch adds a 'test' ALC260 model specification to the
+    patch_realtek.c driver if CONFIG_SND_DEBUG is set.  This is similar to the
+    'test' ALC880 model in that it sets up mixer controls for almost everything
+    to make it easier for people to test their laptop/soundcard when working out
+    what pin widgets are connected to which real-world devices.
+    
+    This patch assumes my previous patch (adding the second PCM to the ALC260)
+    has previously been applied since it uses infrastructure added by that
+    patch.
+    
+    In developing this patch it was found that not all retasking pins accept all
+    the modes - in particular, some ignore the VREFxx variants.  The pin mode
+    control has therefore been tweaked to prevent this becoming a problem in
+    mixer applications.
+    
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/patch_realtek.c b/sound/pci/hda/patch_realtek.c
+index 8ec2db2e9b60..ea4200a4ee42 100644
+--- a/sound/pci/hda/patch_realtek.c
++++ b/sound/pci/hda/patch_realtek.c
+@@ -6,6 +6,7 @@
+  * Copyright (c) 2004 Kailang Yang &lt;kailang@realtek.com.tw&gt;
+  *                    PeiSen Hou &lt;pshou@realtek.com.tw&gt;
+  *                    Takashi Iwai &lt;tiwai@suse.de&gt;
++ *                    Jonathan Woithe &lt;jwoithe@physics.adelaide.edu.au&gt;
+  *
+  *  This driver is free software; you can redistribute it and/or modify
+  *  it under the terms of the GNU General Public License as published by
+@@ -63,6 +64,9 @@ enum {
+ 	ALC260_HP,
+ 	ALC260_HP_3013,
+ 	ALC260_FUJITSU_S702X,
++#ifdef CONFIG_SND_DEBUG
++	ALC260_TEST,
++#endif
+ 	ALC260_AUTO,
+ 	ALC260_MODEL_LAST /* last tag */
+ };
+@@ -223,13 +227,19 @@ static int alc_ch_mode_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_va
+  * instead of "%" to avoid consequences of accidently treating the % as 
+  * being part of a format specifier.  Maximum allowed length of a value is
+  * 63 characters plus NULL terminator.
++ *
++ * Note: some retasking pin complexes seem to ignore requests for input
++ * states other than HiZ (eg: PIN_VREFxx) and revert to HiZ if any of these
++ * are requested.  Therefore order this list so that this behaviour will not
++ * cause problems when mixer clients move through the enum sequentially.
++ * NIDs 0x0f and 0x10 have been observed to have this behaviour.
+  */
+ static char *alc_pin_mode_names[] = {
+-	"Line in", "Mic 80pc bias", "Mic 50pc bias",
+-	"Line out", "Headphone out",
++	"Mic 50pc bias", "Mic 80pc bias",
++	"Line in", "Line out", "Headphone out",
+ };
+ static unsigned char alc_pin_mode_values[] = {
+-	PIN_IN, PIN_VREF80, PIN_VREF50, PIN_OUT, PIN_HP,
++	PIN_VREF50, PIN_VREF80, PIN_IN, PIN_OUT, PIN_HP,
+ };
+ /* The control can present all 5 options, or it can limit the options based
+  * in the pin being assumed to be exclusively an input or an output pin.
+@@ -2770,6 +2780,146 @@ static struct hda_verb alc260_fujitsu_init_verbs[] = {
+ 	{ }
+ };
+ 
++/* Test configuration for debugging, modelled after the ALC880 test
++ * configuration.
++ */
++#ifdef CONFIG_SND_DEBUG
++static hda_nid_t alc260_test_dac_nids[1] = {
++	0x02,
++};
++static hda_nid_t alc260_test_adc_nids[2] = {
++	0x04, 0x05,
++};
++static struct hda_input_mux alc260_test_capture_source = {
++	.num_items = 7,
++	.items = {
++		{ "MIC1 pin", 0x0 },
++		{ "MIC2 pin", 0x1 },
++		{ "LINE1 pin", 0x2 },
++		{ "LINE2 pin", 0x3 },
++		{ "CD pin", 0x4 },
++		{ "LINE-OUT pin", 0x5 },
++		{ "HP-OUT pin", 0x6 },
++        },
++};
++static struct snd_kcontrol_new alc260_test_mixer[] = {
++	/* Output driver widgets */
++	HDA_CODEC_VOLUME_MONO("Mono Playback Volume", 0x0a, 1, 0x0, HDA_OUTPUT),
++	HDA_BIND_MUTE_MONO("Mono Playback Switch", 0x0a, 1, 2, HDA_INPUT),
++	HDA_CODEC_VOLUME("LOUT2 Playback Volume", 0x09, 0x0, HDA_OUTPUT),
++	HDA_BIND_MUTE("LOUT2 Playback Switch", 0x09, 2, HDA_INPUT),
++	HDA_CODEC_VOLUME("LOUT1 Playback Volume", 0x08, 0x0, HDA_OUTPUT),
++	HDA_BIND_MUTE("LOUT1 Playback Switch", 0x08, 2, HDA_INPUT),
++
++	/* Modes for retasking pin widgets */
++	ALC_PIN_MODE("HP-OUT pin mode", 0x10, ALC_PIN_DIR_INOUT),
++	ALC_PIN_MODE("LINE-OUT pin mode", 0x0f, ALC_PIN_DIR_INOUT),
++	ALC_PIN_MODE("LINE2 pin mode", 0x15, ALC_PIN_DIR_INOUT),
++	ALC_PIN_MODE("LINE1 pin mode", 0x14, ALC_PIN_DIR_INOUT),
++	ALC_PIN_MODE("MIC2 pin mode", 0x13, ALC_PIN_DIR_INOUT),
++	ALC_PIN_MODE("MIC1 pin mode", 0x12, ALC_PIN_DIR_INOUT),
++
++	/* Loopback mixer controls */
++	HDA_CODEC_VOLUME("MIC1 Playback Volume", 0x07, 0x00, HDA_INPUT),
++	HDA_CODEC_MUTE("MIC1 Playback Switch", 0x07, 0x00, HDA_INPUT),
++	HDA_CODEC_VOLUME("MIC2 Playback Volume", 0x07, 0x01, HDA_INPUT),
++	HDA_CODEC_MUTE("MIC2 Playback Switch", 0x07, 0x01, HDA_INPUT),
++	HDA_CODEC_VOLUME("LINE1 Playback Volume", 0x07, 0x02, HDA_INPUT),
++	HDA_CODEC_MUTE("LINE1 Playback Switch", 0x07, 0x02, HDA_INPUT),
++	HDA_CODEC_VOLUME("LINE2 Playback Volume", 0x07, 0x03, HDA_INPUT),
++	HDA_CODEC_MUTE("LINE2 Playback Switch", 0x07, 0x03, HDA_INPUT),
++	HDA_CODEC_VOLUME("CD Playback Volume", 0x07, 0x04, HDA_INPUT),
++	HDA_CODEC_MUTE("CD Playback Switch", 0x07, 0x04, HDA_INPUT),
++	HDA_CODEC_VOLUME("Beep Playback Volume", 0x07, 0x05, HDA_INPUT),
++	HDA_CODEC_MUTE("Beep Playback Switch", 0x07, 0x05, HDA_INPUT),
++	HDA_CODEC_VOLUME("LINE-OUT loopback Playback Volume", 0x07, 0x06, HDA_INPUT),
++	HDA_CODEC_MUTE("LINE-OUT loopback Playback Switch", 0x07, 0x06, HDA_INPUT),
++	HDA_CODEC_VOLUME("HP-OUT loopback Playback Volume", 0x07, 0x7, HDA_INPUT),
++	HDA_CODEC_MUTE("HP-OUT loopback Playback Switch", 0x07, 0x7, HDA_INPUT),
++	{ } /* end */
++};
++static struct hda_verb alc260_test_init_verbs[] = {
++	/* Disable all GPIOs */
++	{0x01, AC_VERB_SET_GPIO_MASK, 0},
++	/* Enable retasking pins as output, initially without power amp */
++	{0x10, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
++	{0x0f, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
++	{0x15, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
++	{0x14, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
++	{0x13, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
++	{0x12, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
++
++	/* Disable digital (SPDIF) pins for now */
++	{0x03, AC_VERB_SET_DIGI_CONVERT_1, 0},
++	{0x06, AC_VERB_SET_DIGI_CONVERT_1, 0},
++
++	/* Ensure mic1, mic2, line1 and line2 pin widget take input from the 
++	 * OUT1 sum bus when acting as an output.
++	 */
++	{0x0b, AC_VERB_SET_CONNECT_SEL, 0},
++	{0x0c, AC_VERB_SET_CONNECT_SEL, 0},
++	{0x0d, AC_VERB_SET_CONNECT_SEL, 0},
++	{0x0e, AC_VERB_SET_CONNECT_SEL, 0},
++
++	/* Start with output sum widgets muted and their output gains at min */
++	{0x08, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
++	{0x08, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(1)},
++	{0x08, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_ZERO},
++	{0x09, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
++	{0x09, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(1)},
++	{0x09, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_ZERO},
++	{0x0a, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
++	{0x0a, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(1)},
++	{0x0a, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_ZERO},
++
++	/* Unmute retasking pin widget output amp left/right (no mixer ctrl) */
++	{0x10, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
++	{0x0f, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
++	{0x15, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
++	{0x14, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
++	{0x13, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
++	{0x12, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
++	/* Also unmute the mono-out pin widget */
++	{0x11, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
++
++	/* Also unmute the retasking pin input amps.  Having the input and
++	 * output amps unmuted at the same time doesn't appear to cause any
++	 * trouble.
++	 */
++	{0x10, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
++	{0x0f, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
++	{0x15, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
++	{0x14, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
++	{0x13, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
++	{0x12, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
++
++	/* Mute capture amp left and right */
++	{0x04, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
++	/* Set ADC connection select to match default mixer setting - line 
++	 * in (on mic1 pin)
++	 */
++	{0x04, AC_VERB_SET_CONNECT_SEL, 0x00},
++
++	/* Do the same for the second ADC: mute capture input amp and
++	 * set ADC connection to line in
++	 */
++	{0x05, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
++	{0x05, AC_VERB_SET_CONNECT_SEL, 0x00},
++
++	/* Mute all inputs to mixer widget (even unconnected ones) */
++	{0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)}, /* mic1 pin */
++	{0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(1)}, /* mic2 pin */
++	{0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(2)}, /* line1 pin */
++	{0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(3)}, /* line2 pin */
++	{0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(4)}, /* CD pin */
++	{0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(5)}, /* Beep-gen pin */
++	{0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(6)}, /* Line-out pin */
++	{0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(7)}, /* HP-pin pin */
++
++	{ }
++};
++#endif
++
+ static struct hda_pcm_stream alc260_pcm_analog_playback = {
+ 	.substreams = 1,
+ 	.channels_min = 2,
+@@ -3053,6 +3203,9 @@ static struct hda_board_config alc260_cfg_tbl[] = {
+ 	{ .pci_subvendor = 0x103c, .pci_subdevice = 0x3016, .config = ALC260_HP },
+ 	{ .modelname = "fujitsu", .config = ALC260_FUJITSU_S702X },
+ 	{ .pci_subvendor = 0x10cf, .pci_subdevice = 0x1326, .config = ALC260_FUJITSU_S702X },
++#ifdef CONFIG_SND_DEBUG
++	{ .modelname = "test", .config = ALC260_TEST },
++#endif
+ 	{ .modelname = "auto", .config = ALC260_AUTO },
+ 	{}
+ };
+@@ -3110,6 +3263,20 @@ static struct alc_config_preset alc260_presets[] = {
+ 		.channel_mode = alc260_modes,
+ 		.input_mux = &amp;alc260_fujitsu_capture_source,
+ 	},
++#ifdef CONFIG_SND_DEBUG
++	[ALC260_TEST] = {
++		.mixers = { alc260_test_mixer,
++			    alc260_capture_mixer },
++		.init_verbs = { alc260_test_init_verbs },
++		.num_dacs = ARRAY_SIZE(alc260_test_dac_nids),
++		.dac_nids = alc260_test_dac_nids,
++		.num_adc_nids = ARRAY_SIZE(alc260_test_adc_nids),
++		.adc_nids = alc260_test_adc_nids,
++		.num_channel_mode = ARRAY_SIZE(alc260_modes),
++		.channel_mode = alc260_modes,
++		.input_mux = &amp;alc260_test_capture_source,
++	},
++#endif
+ };
+ 
+ static int patch_alc260(struct hda_codec *codec)</pre><hr><pre>commit 4c5186ed6b25278df595edf2d355ee87b00c4426
+Author: Jonathan Woithe &lt;jwoithe@physics.adelaide.edu.au&gt;
+Date:   Thu Feb 9 11:53:48 2006 +0100
+
+    [ALSA] hda: add PCM for 2nd ADC on ALC260
+    
+    Modules: HDA Codec driver
+    
+    The following patch against alsa 1.0.11rc3 creates a PCM device (pcm1c) for
+    the second ADC present on the ALC260 codec used by the hda driver.  It also
+    defines a new mixer control allowing the mode of retasking pins to be set;
+    this means a user can (for example) designate the headphone jack to be a
+    second input. With this patch in place it is possible to do 4 channel
+    recording on laptops equipped with an ALC260 codec assuming both a stereo
+    line-in jack is provided in addition to a headphone jack.
+    
+    Mixer controls are provided to allow the headphone jack to be switched as
+    an input.  In addition, an (input only) mode control is configured for
+    the line-in jack to allow a bias voltage to be requested (VREF80 or VREF50)
+    so headsets based on condensor microphones have a chance of working.
+    
+    This patch has been tested on a Fujitsu S7020 laptop and as such these
+    features are currently only configured for the 'fujitsu' model.
+    
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/patch_realtek.c b/sound/pci/hda/patch_realtek.c
+index b76755264730..c8fc6269b03c 100644
+--- a/sound/pci/hda/patch_realtek.c
++++ b/sound/pci/hda/patch_realtek.c
+@@ -132,7 +132,7 @@ struct alc_spec {
+ 	int num_channel_mode;
+ 
+ 	/* PCM information */
+-	struct hda_pcm pcm_rec[2];	/* used in alc_build_pcms() */
++	struct hda_pcm pcm_rec[3];	/* used in alc_build_pcms() */
+ 
+ 	/* dynamic controls, init_verbs and input_mux */
+ 	struct auto_pin_cfg autocfg;
+@@ -218,56 +218,96 @@ static int alc_ch_mode_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_va
+ 				   spec-&gt;num_channel_mode, &amp;spec-&gt;multiout.max_channels);
+ }
+ 
+-
+ /*
+- * Control of pin widget settings via the mixer.  Only boolean settings are
+- * supported, so VrefEn can't be controlled using these functions as they
+- * stand.
++ * Control the mode of pin widget settings via the mixer.  "pc" is used
++ * instead of "%" to avoid consequences of accidently treating the % as 
++ * being part of a format specifier.  Maximum allowed length of a value is
++ * 63 characters plus NULL terminator.
++ */
++static char *alc_pin_mode_names[] = {
++	"Line in", "Mic 80pc bias", "Mic 50pc bias",
++	"Line out", "Headphone out",
++};
++static unsigned char alc_pin_mode_values[] = {
++	PIN_IN, PIN_VREF80, PIN_VREF50, PIN_OUT, PIN_HP,
++};
++/* The control can present all 5 options, or it can limit the options based
++ * in the pin being assumed to be exclusively an input or an output pin.
+  */
+-static int alc_pinctl_switch_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo)
++#define ALC_PIN_DIR_IN    0x00
++#define ALC_PIN_DIR_OUT   0x01
++#define ALC_PIN_DIR_INOUT 0x02
++
++/* Info about the pin modes supported by the three different pin directions. 
++ * For each direction the minimum and maximum values are given.
++ */
++static signed char alc_pin_mode_dir_info[3][2] = {
++	{ 0, 2 },    /* ALC_PIN_DIR_IN */
++	{ 3, 4 },    /* ALC_PIN_DIR_OUT */
++	{ 0, 4 },    /* ALC_PIN_DIR_INOUT */
++};
++#define alc_pin_mode_min(_dir) (alc_pin_mode_dir_info[_dir][0])
++#define alc_pin_mode_max(_dir) (alc_pin_mode_dir_info[_dir][1])
++#define alc_pin_mode_n_items(_dir) \
++	(alc_pin_mode_max(_dir)-alc_pin_mode_min(_dir)+1)
++
++static int alc_pin_mode_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo)
+ {
+-	uinfo-&gt;type = SNDRV_CTL_ELEM_TYPE_BOOLEAN;
++	unsigned int item_num = uinfo-&gt;value.enumerated.item;
++	unsigned char dir = (kcontrol-&gt;private_value &gt;&gt; 16) &amp; 0xff;
++
++	uinfo-&gt;type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
+ 	uinfo-&gt;count = 1;
+-	uinfo-&gt;value.integer.min = 0;
+-	uinfo-&gt;value.integer.max = 1;
++	uinfo-&gt;value.enumerated.items = alc_pin_mode_n_items(dir);
++
++	if (item_num&lt;alc_pin_mode_min(dir) || item_num&gt;alc_pin_mode_max(dir))
++		item_num = alc_pin_mode_min(dir);
++	strcpy(uinfo-&gt;value.enumerated.name, alc_pin_mode_names[item_num]);
+ 	return 0;
+ }
+ 
+-static int alc_pinctl_switch_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
++static int alc_pin_mode_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
+ {
++	unsigned int i;
+ 	struct hda_codec *codec = snd_kcontrol_chip(kcontrol);
+ 	hda_nid_t nid = kcontrol-&gt;private_value &amp; 0xffff;
+-	long mask = (kcontrol-&gt;private_value &gt;&gt; 16) &amp; 0xff;
++	unsigned char dir = (kcontrol-&gt;private_value &gt;&gt; 16) &amp; 0xff;
+ 	long *valp = ucontrol-&gt;value.integer.value;
++	unsigned int pinctl = snd_hda_codec_read(codec,nid,0,AC_VERB_GET_PIN_WIDGET_CONTROL,0x00);
+ 
+-	*valp = 0;
+-	if (snd_hda_codec_read(codec,nid,0,AC_VERB_GET_PIN_WIDGET_CONTROL,0x00) &amp; mask)
+-		*valp = 1;
++	/* Find enumerated value for current pinctl setting */
++	i = alc_pin_mode_min(dir);
++	while (alc_pin_mode_values[i]!=pinctl &amp;&amp; i&lt;=alc_pin_mode_max(dir))
++		i++;
++	*valp = i&lt;=alc_pin_mode_max(dir)?i:alc_pin_mode_min(dir);
+ 	return 0;
+ }
+ 
+-static int alc_pinctl_switch_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
++static int alc_pin_mode_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
+ {
++	signed int change;
+ 	struct hda_codec *codec = snd_kcontrol_chip(kcontrol);
+ 	hda_nid_t nid = kcontrol-&gt;private_value &amp; 0xffff;
+-	long mask = (kcontrol-&gt;private_value &gt;&gt; 16) &amp; 0xff;
+-	long *valp = ucontrol-&gt;value.integer.value;
++	unsigned char dir = (kcontrol-&gt;private_value &gt;&gt; 16) &amp; 0xff;
++	long val = *ucontrol-&gt;value.integer.value;
+ 	unsigned int pinctl = snd_hda_codec_read(codec,nid,0,AC_VERB_GET_PIN_WIDGET_CONTROL,0x00);
+-	int change = ((pinctl &amp; mask)!=0) != *valp;
+ 
++	if (val&lt;alc_pin_mode_min(dir) || val&gt;alc_pin_mode_max(dir)) 
++		val = alc_pin_mode_min(dir);
++
++	change = pinctl != alc_pin_mode_values[val];
+ 	if (change)
+ 		snd_hda_codec_write(codec,nid,0,AC_VERB_SET_PIN_WIDGET_CONTROL,
+-			*valp?(pinctl|mask):(pinctl&amp;~mask));
++			alc_pin_mode_values[val]);
+ 	return change;
+ }
+ 
+-#define ALC_PINCTL_SWITCH(xname, nid, mask) \
++#define ALC_PIN_MODE(xname, nid, dir) \
+ 	{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, .index = 0,  \
+-	  .info = alc_pinctl_switch_info, \
+-	  .get = alc_pinctl_switch_get, \
+-	  .put = alc_pinctl_switch_put, \
+-	  .private_value = (nid) | (mask&lt;&lt;16) }
+-
++	  .info = alc_pin_mode_info, \
++	  .get = alc_pin_mode_get, \
++	  .put = alc_pin_mode_put, \
++	  .private_value = nid | (dir&lt;&lt;16) }
+ 
+ /*
+  * set up from the preset table
+@@ -1250,6 +1290,13 @@ static struct hda_pcm_stream alc880_pcm_digital_capture = {
+ 	/* NID is set in alc_build_pcms */
+ };
+ 
++/* Used by alc_build_pcms to flag that a PCM has no playback stream */
++static struct hda_pcm_stream alc_pcm_null_playback = {
++	.substreams = 0,
++	.channels_min = 0,
++	.channels_max = 0,
++};
++
+ static int alc_build_pcms(struct hda_codec *codec)
+ {
+ 	struct alc_spec *spec = codec-&gt;spec;
+@@ -1280,6 +1327,23 @@ static int alc_build_pcms(struct hda_codec *codec)
+ 		}
+ 	}
+ 
++	/* If the use of more than one ADC is requested for the current
++	 * model, configure a second analog capture-only PCM.
++	 */
++	if (spec-&gt;num_adc_nids &gt; 1) {
++		codec-&gt;num_pcms++;
++		info++;
++		info-&gt;name = spec-&gt;stream_name_analog;
++		/* No playback stream for second PCM */
++		info-&gt;stream[SNDRV_PCM_STREAM_PLAYBACK] = alc_pcm_null_playback;
++		info-&gt;stream[SNDRV_PCM_STREAM_PLAYBACK].nid = 0;
++		if (spec-&gt;stream_analog_capture) {
++			snd_assert(spec-&gt;adc_nids, return -EINVAL);
++			info-&gt;stream[SNDRV_PCM_STREAM_CAPTURE] = *(spec-&gt;stream_analog_capture);
++			info-&gt;stream[SNDRV_PCM_STREAM_CAPTURE].nid = spec-&gt;adc_nids[1];
++		}
++	}
++
+ 	if (spec-&gt;multiout.dig_out_nid || spec-&gt;dig_in_nid) {
+ 		codec-&gt;num_pcms++;
+ 		info++;
+@@ -2322,6 +2386,11 @@ static hda_nid_t alc260_hp_adc_nids[2] = {
+ 	0x05, 0x04
+ };
+ 
++static hda_nid_t alc260_fujitsu_adc_nids[2] = {
++	/* ADC0, ADC1 */
++	0x04, 0x05
++};
++
+ #define ALC260_DIGOUT_NID	0x03
+ #define ALC260_DIGIN_NID	0x06
+ 
+@@ -2339,10 +2408,11 @@ static struct hda_input_mux alc260_capture_source = {
+  * and the internal CD lines.
+  */
+ static struct hda_input_mux alc260_fujitsu_capture_source = {
+-	.num_items = 2,
++	.num_items = 3,
+ 	.items = {
+ 		{ "Mic/Line", 0x0 },
+ 		{ "CD", 0x4 },
++		{ "Headphone", 0x2 },
+ 	},
+ };
+ 
+@@ -2408,11 +2478,12 @@ static struct snd_kcontrol_new alc260_hp_3013_mixer[] = {
+ static struct snd_kcontrol_new alc260_fujitsu_mixer[] = {
+ 	HDA_CODEC_VOLUME("Headphone Playback Volume", 0x08, 0x0, HDA_OUTPUT),
+ 	HDA_BIND_MUTE("Headphone Playback Switch", 0x08, 2, HDA_INPUT),
+-	ALC_PINCTL_SWITCH("Headphone Amp Switch", 0x14, PIN_HP_AMP),
++	ALC_PIN_MODE("Headphone Jack Mode", 0x14, ALC_PIN_DIR_INOUT),
+ 	HDA_CODEC_VOLUME("CD Playback Volume", 0x07, 0x04, HDA_INPUT),
+ 	HDA_CODEC_MUTE("CD Playback Switch", 0x07, 0x04, HDA_INPUT),
+ 	HDA_CODEC_VOLUME("Mic/Line Playback Volume", 0x07, 0x0, HDA_INPUT),
+ 	HDA_CODEC_MUTE("Mic/Line Playback Switch", 0x07, 0x0, HDA_INPUT),
++	ALC_PIN_MODE("Mic/Line Jack Mode", 0x12, ALC_PIN_DIR_IN),
+ 	HDA_CODEC_VOLUME("Beep Playback Volume", 0x07, 0x05, HDA_INPUT),
+ 	HDA_CODEC_MUTE("Beep Playback Switch", 0x07, 0x05, HDA_INPUT),
+ 	HDA_CODEC_VOLUME("Internal Speaker Playback Volume", 0x09, 0x0, HDA_OUTPUT),
+@@ -2645,6 +2716,11 @@ static struct hda_verb alc260_fujitsu_init_verbs[] = {
+         {0x03, AC_VERB_SET_DIGI_CONVERT_1, 0},
+         {0x06, AC_VERB_SET_DIGI_CONVERT_1, 0},
+ 
++        /* Ensure Line1 pin widget takes its input from the OUT1 sum bus 
++         * when acting as an output.
++         */
++        {0x0d, AC_VERB_SET_CONNECT_SEL, 0},
++
+         /* Start with mixer outputs muted */
+         {0x08, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_MUTE},
+         {0x09, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_MUTE},
+@@ -2654,14 +2730,27 @@ static struct hda_verb alc260_fujitsu_init_verbs[] = {
+         {0x10, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
+         /* Unmute Line1 pin widget amp left and right (no equiv mixer ctrl) */
+         {0x14, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
++        /* Unmute Line1 pin widget input for when this pin is used as input
++         * (no equiv mixer ctrl).  Having input and output unmuted doesn't
++         * seem to cause a problem.
++         */
++        {0x14, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
+ 	/* Unmute pin widget used for Line-in (no equiv mixer ctrl) */
+         {0x12, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
+ 
+         /* Mute capture amp left and right */
+         {0x04, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
+-        /* Set ADC connection select to line in (on mic1 pin) */
++        /* Set ADC connection select to match default mixer setting - line 
++         * in (on mic1 pin)
++         */
+         {0x04, AC_VERB_SET_CONNECT_SEL, 0x00},
+ 
++        /* Do the same for the second ADC: mute capture input amp and
++         * set ADC connection to line in
++         */
++        {0x05, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
++        {0x05, AC_VERB_SET_CONNECT_SEL, 0x00},
++
+         /* Mute all inputs to mixer widget (even unconnected ones) */
+         {0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)}, /* mic1 pin */
+         {0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(1)}, /* mic2 pin */
+@@ -3009,8 +3098,8 @@ static struct alc_config_preset alc260_presets[] = {
+ 		.init_verbs = { alc260_fujitsu_init_verbs },
+ 		.num_dacs = ARRAY_SIZE(alc260_dac_nids),
+ 		.dac_nids = alc260_dac_nids,
+-		.num_adc_nids = ARRAY_SIZE(alc260_adc_nids),
+-		.adc_nids = alc260_adc_nids,
++		.num_adc_nids = ARRAY_SIZE(alc260_fujitsu_adc_nids),
++		.adc_nids = alc260_fujitsu_adc_nids,
+ 		.num_channel_mode = ARRAY_SIZE(alc260_modes),
+ 		.channel_mode = alc260_modes,
+ 		.input_mux = &amp;alc260_fujitsu_capture_source,</pre><hr><pre>commit fd56f2db9385a651d31fe86eb4cc6cacbb0c5a63
+Author: Jonathan Woithe &lt;jwoithe@physics.adelaide.edu.au&gt;
+Date:   Tue Jan 24 10:35:46 2006 +0100
+
+    [ALSA] hda-codec - Fix init verb of ALC260
+    
+    Modules: HDA Codec driver
+    
+    Fixed the wrong widget id for line-2 selector in the init verb
+    of ALC260.
+    
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/patch_realtek.c b/sound/pci/hda/patch_realtek.c
+index 543980d89b83..043513b94b1c 100644
+--- a/sound/pci/hda/patch_realtek.c
++++ b/sound/pci/hda/patch_realtek.c
+@@ -2475,7 +2475,7 @@ static struct hda_verb alc260_init_verbs[] = {
+ 	/* LINE-2 is used for line-out in rear */
+ 	{0x15, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
+ 	/* select line-out */
+-	{0x15, AC_VERB_SET_CONNECT_SEL, 0x00},
++	{0x0e, AC_VERB_SET_CONNECT_SEL, 0x00},
+ 	/* LINE-OUT pin */
+ 	{0x0f, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
+ 	/* enable HP */</pre><hr><pre>commit a9430dd8fc232cfddcfaedde1a6a915e241366a8
+Author: Jonathan Woithe &lt;jwoithe@physics.adelaide.edu.au&gt;
+Date:   Fri Sep 16 19:12:48 2005 +0200
+
+    [ALSA] hda-codec - A new model for Fujitsu S7020
+    
+    Modules: HDA Codec driver
+    
+    Added a new model 'fujitsu' to ALC260 config for Fujitsu S7020.
+    
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/patch_realtek.c b/sound/pci/hda/patch_realtek.c
+index 7327deb6df9f..48356ab04579 100644
+--- a/sound/pci/hda/patch_realtek.c
++++ b/sound/pci/hda/patch_realtek.c
+@@ -57,6 +57,7 @@ enum {
+ enum {
+ 	ALC260_BASIC,
+ 	ALC260_HP,
++	ALC260_FUJITSU_S702x,
+ 	ALC260_MODEL_LAST /* last tag */
+ };
+ 
+@@ -72,6 +73,7 @@ enum {
+ #define PIN_VREF50	0x21
+ #define PIN_OUT		0x40
+ #define PIN_HP		0xc0
++#define PIN_HP_AMP	0x80
+ 
+ struct alc_spec {
+ 	/* codec parameterization */
+@@ -284,6 +286,54 @@ static int alc_bind_switch_put(snd_kcontrol_t *kcontrol, snd_ctl_elem_value_t *u
+ 
+ #define ALC_BIND_MUTE(xname,nid,indices,dir) ALC_BIND_MUTE_MONO(xname,nid,3,indices,dir)
+ 
++/*
++ * Control of pin widget settings via the mixer.  Only boolean settings are
++ * supported, so VrefEn can't be controlled using these functions as they
++ * stand.
++ */
++static int alc_pinctl_switch_info(snd_kcontrol_t *kcontrol, snd_ctl_elem_info_t *uinfo)
++{
++	uinfo-&gt;type = SNDRV_CTL_ELEM_TYPE_BOOLEAN;
++	uinfo-&gt;count = 1;
++	uinfo-&gt;value.integer.min = 0;
++	uinfo-&gt;value.integer.max = 1;
++	return 0;
++}
++
++static int alc_pinctl_switch_get(snd_kcontrol_t *kcontrol, snd_ctl_elem_value_t *ucontrol)
++{
++	struct hda_codec *codec = snd_kcontrol_chip(kcontrol);
++	hda_nid_t nid = kcontrol-&gt;private_value &amp; 0xffff;
++	long mask = (kcontrol-&gt;private_value &gt;&gt; 16) &amp; 0xff;
++	long *valp = ucontrol-&gt;value.integer.value;
++
++	*valp = 0;
++	if (snd_hda_codec_read(codec,nid,0,AC_VERB_GET_PIN_WIDGET_CONTROL,0x00) &amp; mask)
++		*valp = 1;
++	return 0;
++}
++
++static int alc_pinctl_switch_put(snd_kcontrol_t *kcontrol, snd_ctl_elem_value_t *ucontrol)
++{
++	struct hda_codec *codec = snd_kcontrol_chip(kcontrol);
++	hda_nid_t nid = kcontrol-&gt;private_value &amp; 0xffff;
++	long mask = (kcontrol-&gt;private_value &gt;&gt; 16) &amp; 0xff;
++	long *valp = ucontrol-&gt;value.integer.value;
++	unsigned int pinctl = snd_hda_codec_read(codec,nid,0,AC_VERB_GET_PIN_WIDGET_CONTROL,0x00);
++	int change = ((pinctl &amp; mask)!=0) != *valp;
++
++	if (change)
++		snd_hda_codec_write(codec,nid,0,AC_VERB_SET_PIN_WIDGET_CONTROL,
++			*valp?(pinctl|mask):(pinctl&amp;~mask));
++	return change;
++}
++
++#define ALC_PINCTL_SWITCH(xname, nid, mask) \
++	{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, .index = 0,  \
++	  .info = alc_pinctl_switch_info, \
++	  .get = alc_pinctl_switch_get, \
++	  .put = alc_pinctl_switch_put, \
++	  .private_value = (nid) | (mask&lt;&lt;16) }
+ 
+ /*
+  * ALC880 3-stack model
+@@ -2205,6 +2255,17 @@ static struct hda_input_mux alc260_capture_source = {
+ 	},
+ };
+ 
++/* On Fujitsu S702x laptops capture only makes sense from Mic/LineIn jack
++ * and the internal CD lines.
++ */
++static struct hda_input_mux alc260_fujitsu_capture_source = {
++	.num_items = 2,
++	.items = {
++		{ "Mic/Line", 0x0 },
++		{ "CD", 0x4 },
++	},
++};
++
+ /*
+  * This is just place-holder, so there's something for alc_build_pcms to look
+  * at when it calculates the maximum number of channels. ALC260 has no mixer
+@@ -2271,6 +2332,30 @@ static snd_kcontrol_new_t alc260_hp_mixer[] = {
+ 	{ } /* end */
+ };
+ 
++static snd_kcontrol_new_t alc260_fujitsu_mixer[] = {
++	HDA_CODEC_VOLUME("Headphone Playback Volume", 0x08, 0x0, HDA_OUTPUT),
++	ALC_BIND_MUTE("Headphone Playback Switch", 0x08, 2, HDA_INPUT),
++	ALC_PINCTL_SWITCH("Headphone Amp Switch", 0x14, PIN_HP_AMP),
++	HDA_CODEC_VOLUME("CD Playback Volume", 0x07, 0x04, HDA_INPUT),
++	HDA_CODEC_MUTE("CD Playback Switch", 0x07, 0x04, HDA_INPUT),
++	HDA_CODEC_VOLUME("Mic/Line Playback Volume", 0x07, 0x0, HDA_INPUT),
++	HDA_CODEC_MUTE("Mic/Line Playback Switch", 0x07, 0x0, HDA_INPUT),
++	HDA_CODEC_VOLUME("Beep Playback Volume", 0x07, 0x05, HDA_INPUT),
++	HDA_CODEC_MUTE("Beep Playback Switch", 0x07, 0x05, HDA_INPUT),
++	HDA_CODEC_VOLUME("Internal Speaker Playback Volume", 0x09, 0x0, HDA_OUTPUT),
++	ALC_BIND_MUTE("Internal Speaker Playback Switch", 0x09, 2, HDA_INPUT),
++	HDA_CODEC_VOLUME("Capture Volume", 0x04, 0x0, HDA_INPUT),
++	HDA_CODEC_MUTE("Capture Switch", 0x04, 0x0, HDA_INPUT),
++	{
++		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
++		.name = "Capture Source",
++		.info = alc_mux_enum_info,
++		.get = alc_mux_enum_get,
++		.put = alc_mux_enum_put,
++	},
++	{ } /* end */
++};
++
+ static struct hda_verb alc260_init_verbs[] = {
+ 	/* Line In pin widget for input */
+ 	{0x14, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_IN},
+@@ -2332,6 +2417,60 @@ static struct hda_verb alc260_init_verbs[] = {
+ 	{ }
+ };
+ 
++/* Initialisation sequence for ALC260 as configured in Fujitsu S702x
++ * laptops.
++ */
++static struct hda_verb alc260_fujitsu_init_verbs[] = {
++	/* Disable all GPIOs */
++	{0x01, AC_VERB_SET_GPIO_MASK, 0},
++	/* Internal speaker is connected to headphone pin */
++	{0x10, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_HP},
++	/* Headphone/Line-out jack connects to Line1 pin; make it an output */
++	{0x14, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
++        /* Mic/Line-in jack is connected to mic1 pin, so make it an input */
++        {0x12, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_IN},
++        /* Ensure all other unused pins are disabled and muted.
++	 * Note: trying to set widget 0x15 to anything blocks all audio
++	 * output for some reason, so just leave that at the default.
++	 */
++        {0x0f, AC_VERB_SET_PIN_WIDGET_CONTROL, 0},
++        {0x0f, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
++	{0x11, AC_VERB_SET_PIN_WIDGET_CONTROL, 0},
++        {0x11, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
++	{0x13, AC_VERB_SET_PIN_WIDGET_CONTROL, 0},
++        {0x13, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
++        /* Disable digital (SPDIF) pins */
++        {0x03, AC_VERB_SET_DIGI_CONVERT_1, 0},
++        {0x06, AC_VERB_SET_DIGI_CONVERT_1, 0},
++
++        /* Start with mixer outputs muted */
++        {0x08, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_MUTE},
++        {0x09, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_MUTE},
++        {0x0a, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_MUTE},
++
++        /* Unmute HP pin widget amp left and right (no equiv mixer ctrl) */
++        {0x10, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
++        /* Unmute Line1 pin widget amp left and right (no equiv mixer ctrl) */
++        {0x14, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
++	/* Unmute pin widget used for Line-in (no equiv mixer ctrl) */
++        {0x12, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0)},
++
++        /* Mute capture amp left and right */
++        {0x04, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)},
++        /* Set ADC connection select to line in (on mic1 pin) */
++        {0x04, AC_VERB_SET_CONNECT_SEL, 0x00},
++
++        /* Mute all inputs to mixer widget (even unconnected ones) */
++        {0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(0)}, /* mic1 pin */
++        {0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(1)}, /* mic2 pin */
++        {0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(2)}, /* line1 pin */
++        {0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(3)}, /* line2 pin */
++        {0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(4)}, /* CD pin */
++        {0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(5)}, /* Beep-gen pin */
++        {0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(6)}, /* Line-out pin */
++        {0x07, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_MUTE(7)}, /* HP-pin pin */
++};
++
+ static struct hda_pcm_stream alc260_pcm_analog_playback = {
+ 	.substreams = 1,
+ 	.channels_min = 2,
+@@ -2347,6 +2486,8 @@ static struct hda_pcm_stream alc260_pcm_analog_capture = {
+ static struct hda_board_config alc260_cfg_tbl[] = {
+ 	{ .modelname = "hp", .config = ALC260_HP },
+ 	{ .pci_subvendor = 0x103c, .config = ALC260_HP },
++	{ .modelname = "fujitsu", .config = ALC260_FUJITSU_S702x },
++	{ .pci_subvendor = 0x10cf, .pci_subdevice = 0x1326, .config = ALC260_FUJITSU_S702x },
+ 	{}
+ };
+ 
+@@ -2373,14 +2514,23 @@ static int patch_alc260(struct hda_codec *codec)
+ 		spec-&gt;mixers[spec-&gt;num_mixers] = alc260_hp_mixer;
+ 		spec-&gt;num_mixers++;
+ 		break;
++	case ALC260_FUJITSU_S702x:
++		spec-&gt;mixers[spec-&gt;num_mixers] = alc260_fujitsu_mixer;
++		spec-&gt;num_mixers++;
++		break;
+ 	default:
+ 		spec-&gt;mixers[spec-&gt;num_mixers] = alc260_base_mixer;
+ 		spec-&gt;num_mixers++;
+ 		break;
+ 	}
+ 
+-	spec-&gt;init_verbs[0] = alc260_init_verbs;
+-	spec-&gt;num_init_verbs = 1;
++	if (board_config != ALC260_FUJITSU_S702x) {
++		spec-&gt;init_verbs[0] = alc260_init_verbs;
++		spec-&gt;num_init_verbs = 1;
++	} else {
++		spec-&gt;init_verbs[0] = alc260_fujitsu_init_verbs;
++		spec-&gt;num_init_verbs = 1;
++	}
+ 
+ 	spec-&gt;channel_mode = alc260_modes;
+ 	spec-&gt;num_channel_mode = ARRAY_SIZE(alc260_modes);
+@@ -2393,7 +2543,11 @@ static int patch_alc260(struct hda_codec *codec)
+ 	spec-&gt;multiout.num_dacs = ARRAY_SIZE(alc260_dac_nids);
+ 	spec-&gt;multiout.dac_nids = alc260_dac_nids;
+ 
+-	spec-&gt;input_mux = &amp;alc260_capture_source;
++	if (board_config != ALC260_FUJITSU_S702x) {
++		spec-&gt;input_mux = &amp;alc260_capture_source;
++	} else {
++		spec-&gt;input_mux = &amp;alc260_fujitsu_capture_source;
++	}
+ 	switch (board_config) {
+ 	case ALC260_HP:
+ 		spec-&gt;num_adc_nids = ARRAY_SIZE(alc260_hp_adc_nids);</pre>
+    <div class="pagination">
+        <a href='26_2.html'>&lt;&lt;Prev</a><a href='26.html'>1</a><a href='26_2.html'>2</a><span>[3]</span>
+    <div>
+</body>

@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Minnesota</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Minnesota</h1>
+    <div class="pagination">
+        <a href='7_4.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><span>[5]</span><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><a href='7_28.html'>28</a><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_6.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 659fb5f154c3434c90a34586f3b7aa1c39cf6062
+Author: Aditya Pakki &lt;pakki001@umn.edu&gt;
+Date:   Sat Jun 13 20:41:56 2020 -0500
+
+    drm/nouveau: fix multiple instances of reference count leaks
+    
+    On calling pm_runtime_get_sync() the reference count of the device
+    is incremented. In case of failure, decrement the
+    ref count before returning the error.
+    
+    Signed-off-by: Aditya Pakki &lt;pakki001@umn.edu&gt;
+    Signed-off-by: Ben Skeggs &lt;bskeggs@redhat.com&gt;
+
+diff --git a/drivers/gpu/drm/nouveau/nouveau_drm.c b/drivers/gpu/drm/nouveau/nouveau_drm.c
+index ac93d12201dc..880d962c1b19 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_drm.c
++++ b/drivers/gpu/drm/nouveau/nouveau_drm.c
+@@ -1026,8 +1026,10 @@ nouveau_drm_open(struct drm_device *dev, struct drm_file *fpriv)
+ 
+ 	/* need to bring up power immediately if opening device */
+ 	ret = pm_runtime_get_sync(dev-&gt;dev);
+-	if (ret &lt; 0 &amp;&amp; ret != -EACCES)
++	if (ret &lt; 0 &amp;&amp; ret != -EACCES) {
++		pm_runtime_put_autosuspend(dev-&gt;dev);
+ 		return ret;
++	}
+ 
+ 	get_task_comm(tmpname, current);
+ 	snprintf(name, sizeof(name), "%s[%d]", tmpname, pid_nr(fpriv-&gt;pid));
+@@ -1109,8 +1111,10 @@ nouveau_drm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ 	long ret;
+ 
+ 	ret = pm_runtime_get_sync(dev-&gt;dev);
+-	if (ret &lt; 0 &amp;&amp; ret != -EACCES)
++	if (ret &lt; 0 &amp;&amp; ret != -EACCES) {
++		pm_runtime_put_autosuspend(dev-&gt;dev);
+ 		return ret;
++	}
+ 
+ 	switch (_IOC_NR(cmd) - DRM_COMMAND_BASE) {
+ 	case DRM_NOUVEAU_NVIF:
+diff --git a/drivers/gpu/drm/nouveau/nouveau_gem.c b/drivers/gpu/drm/nouveau/nouveau_gem.c
+index 63b832585390..133ab6fb7798 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_gem.c
++++ b/drivers/gpu/drm/nouveau/nouveau_gem.c
+@@ -45,8 +45,10 @@ nouveau_gem_object_del(struct drm_gem_object *gem)
+ 	int ret;
+ 
+ 	ret = pm_runtime_get_sync(dev);
+-	if (WARN_ON(ret &lt; 0 &amp;&amp; ret != -EACCES))
++	if (WARN_ON(ret &lt; 0 &amp;&amp; ret != -EACCES)) {
++		pm_runtime_put_autosuspend(dev);
+ 		return;
++	}
+ 
+ 	if (gem-&gt;import_attach)
+ 		drm_prime_gem_destroy(gem, nvbo-&gt;bo.sg);</pre><hr><pre>commit bfad51c7633325b5d4b32444efe04329d53297b2
+Author: Aditya Pakki &lt;pakki001@umn.edu&gt;
+Date:   Sat Jun 13 20:33:42 2020 -0500
+
+    drm/nouveau/drm/noveau: fix reference count leak in nouveau_fbcon_open
+    
+    nouveau_fbcon_open() calls calls pm_runtime_get_sync() that
+    increments the reference count. In case of failure, decrement the
+    ref count before returning the error.
+    
+    Signed-off-by: Aditya Pakki &lt;pakki001@umn.edu&gt;
+    Signed-off-by: Ben Skeggs &lt;bskeggs@redhat.com&gt;
+
+diff --git a/drivers/gpu/drm/nouveau/nouveau_fbcon.c b/drivers/gpu/drm/nouveau/nouveau_fbcon.c
+index f9f5a13fdb80..4a93641c33e1 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_fbcon.c
++++ b/drivers/gpu/drm/nouveau/nouveau_fbcon.c
+@@ -189,8 +189,10 @@ nouveau_fbcon_open(struct fb_info *info, int user)
+ 	struct nouveau_fbdev *fbcon = info-&gt;par;
+ 	struct nouveau_drm *drm = nouveau_drm(fbcon-&gt;helper.dev);
+ 	int ret = pm_runtime_get_sync(drm-&gt;dev-&gt;dev);
+-	if (ret &lt; 0 &amp;&amp; ret != -EACCES)
++	if (ret &lt; 0 &amp;&amp; ret != -EACCES) {
++		pm_runtime_put(drm-&gt;dev-&gt;dev);
+ 		return ret;
++	}
+ 	return 0;
+ }
+ </pre><hr><pre>commit 8a94644b440eef5a7b9c104ac8aa7a7f413e35e5
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Wed May 27 21:13:22 2020 -0500
+
+    PCI: Fix pci_create_slot() reference count leak
+    
+    kobject_init_and_add() takes a reference even when it fails.  If it returns
+    an error, kobject_put() must be called to clean up the memory associated
+    with the object.
+    
+    When kobject_init_and_add() fails, call kobject_put() instead of kfree().
+    
+    b8eb718348b8 ("net-sysfs: Fix reference count leak in
+    rx|netdev_queue_add_kobject") fixed a similar problem.
+    
+    Link: https://lore.kernel.org/r/20200528021322.1984-1-wu000273@umn.edu
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Signed-off-by: Bjorn Helgaas &lt;bhelgaas@google.com&gt;
+
+diff --git a/drivers/pci/slot.c b/drivers/pci/slot.c
+index cc386ef2fa12..3861505741e6 100644
+--- a/drivers/pci/slot.c
++++ b/drivers/pci/slot.c
+@@ -268,13 +268,16 @@ struct pci_slot *pci_create_slot(struct pci_bus *parent, int slot_nr,
+ 	slot_name = make_slot_name(name);
+ 	if (!slot_name) {
+ 		err = -ENOMEM;
++		kfree(slot);
+ 		goto err;
+ 	}
+ 
+ 	err = kobject_init_and_add(&amp;slot-&gt;kobj, &amp;pci_slot_ktype, NULL,
+ 				   "%s", slot_name);
+-	if (err)
++	if (err) {
++		kobject_put(&amp;slot-&gt;kobj);
+ 		goto err;
++	}
+ 
+ 	INIT_LIST_HEAD(&amp;slot-&gt;list);
+ 	list_add(&amp;slot-&gt;list, &amp;parent-&gt;slots);
+@@ -293,7 +296,6 @@ struct pci_slot *pci_create_slot(struct pci_bus *parent, int slot_nr,
+ 	mutex_unlock(&amp;pci_slot_mutex);
+ 	return slot;
+ err:
+-	kfree(slot);
+ 	slot = ERR_PTR(err);
+ 	goto out;
+ }</pre><hr><pre>commit 78c2ce9bde70be5be7e3615a2ae7024ed8173087
+Author: Aditya Pakki &lt;pakki001@umn.edu&gt;
+Date:   Sat Jun 13 22:05:18 2020 -0500
+
+    omapfb: fix multiple reference count leaks due to pm_runtime_get_sync
+    
+    On calling pm_runtime_get_sync() the reference count of the device
+    is incremented. In case of failure, decrement the
+    reference count before returning the error.
+    
+    Signed-off-by: Aditya Pakki &lt;pakki001@umn.edu&gt;
+    Cc: kjlu@umn.edu
+    Cc: wu000273@umn.edu
+    Cc: Allison Randal &lt;allison@lohutok.net&gt;
+    Cc: Thomas Gleixner &lt;tglx@linutronix.de&gt;
+    Cc: Enrico Weigelt &lt;info@metux.net&gt;
+    cc: "Andrew F. Davis" &lt;afd@ti.com&gt;
+    Cc: Tomi Valkeinen &lt;tomi.valkeinen@ti.com&gt;
+    Cc: Alexios Zavras &lt;alexios.zavras@intel.com&gt;
+    Cc: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+    Cc: YueHaibing &lt;yuehaibing@huawei.com&gt;
+    Signed-off-by: Bartlomiej Zolnierkiewicz &lt;b.zolnierkie@samsung.com&gt;
+    Link: https://patchwork.freedesktop.org/patch/msgid/20200614030528.128064-1-pakki001@umn.edu
+
+diff --git a/drivers/video/fbdev/omap2/omapfb/dss/dispc.c b/drivers/video/fbdev/omap2/omapfb/dss/dispc.c
+index 3bb951eb29c7..3920a0db0390 100644
+--- a/drivers/video/fbdev/omap2/omapfb/dss/dispc.c
++++ b/drivers/video/fbdev/omap2/omapfb/dss/dispc.c
+@@ -520,8 +520,11 @@ int dispc_runtime_get(void)
+ 	DSSDBG("dispc_runtime_get\n");
+ 
+ 	r = pm_runtime_get_sync(&amp;dispc.pdev-&gt;dev);
+-	WARN_ON(r &lt; 0);
+-	return r &lt; 0 ? r : 0;
++	if (WARN_ON(r &lt; 0)) {
++		pm_runtime_put_sync(&amp;dispc.pdev-&gt;dev);
++		return r;
++	}
++	return 0;
+ }
+ EXPORT_SYMBOL(dispc_runtime_get);
+ 
+diff --git a/drivers/video/fbdev/omap2/omapfb/dss/dsi.c b/drivers/video/fbdev/omap2/omapfb/dss/dsi.c
+index d620376216e1..6f9c25fec994 100644
+--- a/drivers/video/fbdev/omap2/omapfb/dss/dsi.c
++++ b/drivers/video/fbdev/omap2/omapfb/dss/dsi.c
+@@ -1137,8 +1137,11 @@ static int dsi_runtime_get(struct platform_device *dsidev)
+ 	DSSDBG("dsi_runtime_get\n");
+ 
+ 	r = pm_runtime_get_sync(&amp;dsi-&gt;pdev-&gt;dev);
+-	WARN_ON(r &lt; 0);
+-	return r &lt; 0 ? r : 0;
++	if (WARN_ON(r &lt; 0)) {
++		pm_runtime_put_sync(&amp;dsi-&gt;pdev-&gt;dev);
++		return r;
++	}
++	return 0;
+ }
+ 
+ static void dsi_runtime_put(struct platform_device *dsidev)
+diff --git a/drivers/video/fbdev/omap2/omapfb/dss/dss.c b/drivers/video/fbdev/omap2/omapfb/dss/dss.c
+index 7252d22dd117..3586579c838f 100644
+--- a/drivers/video/fbdev/omap2/omapfb/dss/dss.c
++++ b/drivers/video/fbdev/omap2/omapfb/dss/dss.c
+@@ -768,8 +768,11 @@ int dss_runtime_get(void)
+ 	DSSDBG("dss_runtime_get\n");
+ 
+ 	r = pm_runtime_get_sync(&amp;dss.pdev-&gt;dev);
+-	WARN_ON(r &lt; 0);
+-	return r &lt; 0 ? r : 0;
++	if (WARN_ON(r &lt; 0)) {
++		pm_runtime_put_sync(&amp;dss.pdev-&gt;dev);
++		return r;
++	}
++	return 0;
+ }
+ 
+ void dss_runtime_put(void)
+diff --git a/drivers/video/fbdev/omap2/omapfb/dss/hdmi4.c b/drivers/video/fbdev/omap2/omapfb/dss/hdmi4.c
+index ef659c89ba58..1bbbda21d76c 100644
+--- a/drivers/video/fbdev/omap2/omapfb/dss/hdmi4.c
++++ b/drivers/video/fbdev/omap2/omapfb/dss/hdmi4.c
+@@ -39,9 +39,10 @@ static int hdmi_runtime_get(void)
+ 	DSSDBG("hdmi_runtime_get\n");
+ 
+ 	r = pm_runtime_get_sync(&amp;hdmi.pdev-&gt;dev);
+-	WARN_ON(r &lt; 0);
+-	if (r &lt; 0)
++	if (WARN_ON(r &lt; 0)) {
++		pm_runtime_put_sync(&amp;hdmi.pdev-&gt;dev);
+ 		return r;
++	}
+ 
+ 	return 0;
+ }
+diff --git a/drivers/video/fbdev/omap2/omapfb/dss/hdmi5.c b/drivers/video/fbdev/omap2/omapfb/dss/hdmi5.c
+index ac49531e4732..a06b6f1355bd 100644
+--- a/drivers/video/fbdev/omap2/omapfb/dss/hdmi5.c
++++ b/drivers/video/fbdev/omap2/omapfb/dss/hdmi5.c
+@@ -43,9 +43,10 @@ static int hdmi_runtime_get(void)
+ 	DSSDBG("hdmi_runtime_get\n");
+ 
+ 	r = pm_runtime_get_sync(&amp;hdmi.pdev-&gt;dev);
+-	WARN_ON(r &lt; 0);
+-	if (r &lt; 0)
++	if (WARN_ON(r &lt; 0)) {
++		pm_runtime_put_sync(&amp;hdmi.pdev-&gt;dev);
+ 		return r;
++	}
+ 
+ 	return 0;
+ }
+diff --git a/drivers/video/fbdev/omap2/omapfb/dss/venc.c b/drivers/video/fbdev/omap2/omapfb/dss/venc.c
+index d5404d56c922..0b0ad20afd63 100644
+--- a/drivers/video/fbdev/omap2/omapfb/dss/venc.c
++++ b/drivers/video/fbdev/omap2/omapfb/dss/venc.c
+@@ -348,8 +348,11 @@ static int venc_runtime_get(void)
+ 	DSSDBG("venc_runtime_get\n");
+ 
+ 	r = pm_runtime_get_sync(&amp;venc.pdev-&gt;dev);
+-	WARN_ON(r &lt; 0);
+-	return r &lt; 0 ? r : 0;
++	if (WARN_ON(r &lt; 0)) {
++		pm_runtime_put_sync(&amp;venc.pdev-&gt;dev);
++		return r;
++	}
++	return 0;
+ }
+ 
+ static void venc_runtime_put(void)</pre><hr><pre>commit 9fb10671011143d15b6b40d6d5fa9c52c57e9d63
+Author: Aditya Pakki &lt;pakki001@umn.edu&gt;
+Date:   Sat Jun 13 21:21:22 2020 -0500
+
+    drm/radeon: Fix reference count leaks caused by pm_runtime_get_sync
+    
+    On calling pm_runtime_get_sync() the reference count of the device
+    is incremented. In case of failure, decrement the
+    reference count before returning the error.
+    
+    Acked-by: Evan Quan &lt;evan.quan@amd.com&gt;
+    Signed-off-by: Aditya Pakki &lt;pakki001@umn.edu&gt;
+    Signed-off-by: Alex Deucher &lt;alexander.deucher@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/radeon/radeon_display.c b/drivers/gpu/drm/radeon/radeon_display.c
+index 35db79a168bf..df1a7eb73651 100644
+--- a/drivers/gpu/drm/radeon/radeon_display.c
++++ b/drivers/gpu/drm/radeon/radeon_display.c
+@@ -635,8 +635,10 @@ radeon_crtc_set_config(struct drm_mode_set *set,
+ 	dev = set-&gt;crtc-&gt;dev;
+ 
+ 	ret = pm_runtime_get_sync(dev-&gt;dev);
+-	if (ret &lt; 0)
++	if (ret &lt; 0) {
++		pm_runtime_put_autosuspend(dev-&gt;dev);
+ 		return ret;
++	}
+ 
+ 	ret = drm_crtc_helper_set_config(set, ctx);
+ 
+diff --git a/drivers/gpu/drm/radeon/radeon_drv.c b/drivers/gpu/drm/radeon/radeon_drv.c
+index a71f13116d6b..4cd30613fa1d 100644
+--- a/drivers/gpu/drm/radeon/radeon_drv.c
++++ b/drivers/gpu/drm/radeon/radeon_drv.c
+@@ -544,8 +544,10 @@ long radeon_drm_ioctl(struct file *filp,
+ 	long ret;
+ 	dev = file_priv-&gt;minor-&gt;dev;
+ 	ret = pm_runtime_get_sync(dev-&gt;dev);
+-	if (ret &lt; 0)
++	if (ret &lt; 0) {
++		pm_runtime_put_autosuspend(dev-&gt;dev);
+ 		return ret;
++	}
+ 
+ 	ret = drm_ioctl(filp, cmd, arg);
+ 	
+diff --git a/drivers/gpu/drm/radeon/radeon_kms.c b/drivers/gpu/drm/radeon/radeon_kms.c
+index 95006cbf42c3..c76955228731 100644
+--- a/drivers/gpu/drm/radeon/radeon_kms.c
++++ b/drivers/gpu/drm/radeon/radeon_kms.c
+@@ -638,8 +638,10 @@ int radeon_driver_open_kms(struct drm_device *dev, struct drm_file *file_priv)
+ 	file_priv-&gt;driver_priv = NULL;
+ 
+ 	r = pm_runtime_get_sync(dev-&gt;dev);
+-	if (r &lt; 0)
++	if (r &lt; 0) {
++		pm_runtime_put_autosuspend(dev-&gt;dev);
+ 		return r;
++	}
+ 
+ 	/* new gpu have virtual address space support */
+ 	if (rdev-&gt;family &gt;= CHIP_CAYMAN) {</pre><hr><pre>commit 6f2e8acdb48ed166b65d47837c31b177460491ec
+Author: Aditya Pakki &lt;pakki001@umn.edu&gt;
+Date:   Sat Jun 13 20:55:39 2020 -0500
+
+    drm/radeon: fix multiple reference count leak
+    
+    On calling pm_runtime_get_sync() the reference count of the device
+    is incremented. In case of failure, decrement the
+    reference count before returning the error.
+    
+    Signed-off-by: Aditya Pakki &lt;pakki001@umn.edu&gt;
+    Signed-off-by: Alex Deucher &lt;alexander.deucher@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/radeon/radeon_connectors.c b/drivers/gpu/drm/radeon/radeon_connectors.c
+index fe12d9d91d7a..e30834434442 100644
+--- a/drivers/gpu/drm/radeon/radeon_connectors.c
++++ b/drivers/gpu/drm/radeon/radeon_connectors.c
+@@ -879,8 +879,10 @@ radeon_lvds_detect(struct drm_connector *connector, bool force)
+ 
+ 	if (!drm_kms_helper_is_poll_worker()) {
+ 		r = pm_runtime_get_sync(connector-&gt;dev-&gt;dev);
+-		if (r &lt; 0)
++		if (r &lt; 0) {
++			pm_runtime_put_autosuspend(connector-&gt;dev-&gt;dev);
+ 			return connector_status_disconnected;
++		}
+ 	}
+ 
+ 	if (encoder) {
+@@ -1025,8 +1027,10 @@ radeon_vga_detect(struct drm_connector *connector, bool force)
+ 
+ 	if (!drm_kms_helper_is_poll_worker()) {
+ 		r = pm_runtime_get_sync(connector-&gt;dev-&gt;dev);
+-		if (r &lt; 0)
++		if (r &lt; 0) {
++			pm_runtime_put_autosuspend(connector-&gt;dev-&gt;dev);
+ 			return connector_status_disconnected;
++		}
+ 	}
+ 
+ 	encoder = radeon_best_single_encoder(connector);
+@@ -1163,8 +1167,10 @@ radeon_tv_detect(struct drm_connector *connector, bool force)
+ 
+ 	if (!drm_kms_helper_is_poll_worker()) {
+ 		r = pm_runtime_get_sync(connector-&gt;dev-&gt;dev);
+-		if (r &lt; 0)
++		if (r &lt; 0) {
++			pm_runtime_put_autosuspend(connector-&gt;dev-&gt;dev);
+ 			return connector_status_disconnected;
++		}
+ 	}
+ 
+ 	encoder = radeon_best_single_encoder(connector);
+@@ -1247,8 +1253,10 @@ radeon_dvi_detect(struct drm_connector *connector, bool force)
+ 
+ 	if (!drm_kms_helper_is_poll_worker()) {
+ 		r = pm_runtime_get_sync(connector-&gt;dev-&gt;dev);
+-		if (r &lt; 0)
++		if (r &lt; 0) {
++			pm_runtime_put_autosuspend(connector-&gt;dev-&gt;dev);
+ 			return connector_status_disconnected;
++		}
+ 	}
+ 
+ 	if (radeon_connector-&gt;detected_hpd_without_ddc) {
+@@ -1657,8 +1665,10 @@ radeon_dp_detect(struct drm_connector *connector, bool force)
+ 
+ 	if (!drm_kms_helper_is_poll_worker()) {
+ 		r = pm_runtime_get_sync(connector-&gt;dev-&gt;dev);
+-		if (r &lt; 0)
++		if (r &lt; 0) {
++			pm_runtime_put_autosuspend(connector-&gt;dev-&gt;dev);
+ 			return connector_status_disconnected;
++		}
+ 	}
+ 
+ 	if (!force &amp;&amp; radeon_check_hpd_status_unchanged(connector)) {</pre><hr><pre>commit 20eca0123a35305e38b344d571cf32768854168c
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Sat Jun 13 14:32:26 2020 -0500
+
+    drm/amdkfd: Fix reference count leaks.
+    
+    kobject_init_and_add() takes reference even when it fails.
+    If this function returns an error, kobject_put() must be called to
+    properly clean up the memory associated with the object.
+    
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Reviewed-by: Felix Kuehling &lt;Felix.Kuehling@amd.com&gt;
+    Signed-off-by: Felix Kuehling &lt;Felix.Kuehling@amd.com&gt;
+    Signed-off-by: Alex Deucher &lt;alexander.deucher@amd.com&gt;
+
+diff --git a/drivers/gpu/drm/amd/amdkfd/kfd_topology.c b/drivers/gpu/drm/amd/amdkfd/kfd_topology.c
+index 4025efc619c7..cd18baf62727 100644
+--- a/drivers/gpu/drm/amd/amdkfd/kfd_topology.c
++++ b/drivers/gpu/drm/amd/amdkfd/kfd_topology.c
+@@ -636,8 +636,10 @@ static int kfd_build_sysfs_node_entry(struct kfd_topology_device *dev,
+ 
+ 	ret = kobject_init_and_add(dev-&gt;kobj_node, &amp;node_type,
+ 			sys_props.kobj_nodes, "%d", id);
+-	if (ret &lt; 0)
++	if (ret &lt; 0) {
++		kobject_put(dev-&gt;kobj_node);
+ 		return ret;
++	}
+ 
+ 	dev-&gt;kobj_mem = kobject_create_and_add("mem_banks", dev-&gt;kobj_node);
+ 	if (!dev-&gt;kobj_mem)
+@@ -684,8 +686,10 @@ static int kfd_build_sysfs_node_entry(struct kfd_topology_device *dev,
+ 			return -ENOMEM;
+ 		ret = kobject_init_and_add(mem-&gt;kobj, &amp;mem_type,
+ 				dev-&gt;kobj_mem, "%d", i);
+-		if (ret &lt; 0)
++		if (ret &lt; 0) {
++			kobject_put(mem-&gt;kobj);
+ 			return ret;
++		}
+ 
+ 		mem-&gt;attr.name = "properties";
+ 		mem-&gt;attr.mode = KFD_SYSFS_FILE_MODE;
+@@ -703,8 +707,10 @@ static int kfd_build_sysfs_node_entry(struct kfd_topology_device *dev,
+ 			return -ENOMEM;
+ 		ret = kobject_init_and_add(cache-&gt;kobj, &amp;cache_type,
+ 				dev-&gt;kobj_cache, "%d", i);
+-		if (ret &lt; 0)
++		if (ret &lt; 0) {
++			kobject_put(cache-&gt;kobj);
+ 			return ret;
++		}
+ 
+ 		cache-&gt;attr.name = "properties";
+ 		cache-&gt;attr.mode = KFD_SYSFS_FILE_MODE;
+@@ -722,8 +728,10 @@ static int kfd_build_sysfs_node_entry(struct kfd_topology_device *dev,
+ 			return -ENOMEM;
+ 		ret = kobject_init_and_add(iolink-&gt;kobj, &amp;iolink_type,
+ 				dev-&gt;kobj_iolink, "%d", i);
+-		if (ret &lt; 0)
++		if (ret &lt; 0) {
++			kobject_put(iolink-&gt;kobj);
+ 			return ret;
++		}
+ 
+ 		iolink-&gt;attr.name = "properties";
+ 		iolink-&gt;attr.mode = KFD_SYSFS_FILE_MODE;
+@@ -802,8 +810,10 @@ static int kfd_topology_update_sysfs(void)
+ 		ret = kobject_init_and_add(sys_props.kobj_topology,
+ 				&amp;sysprops_type,  &amp;kfd_device-&gt;kobj,
+ 				"topology");
+-		if (ret &lt; 0)
++		if (ret &lt; 0) {
++			kobject_put(sys_props.kobj_topology);
+ 			return ret;
++		}
+ 
+ 		sys_props.kobj_nodes = kobject_create_and_add("nodes",
+ 				sys_props.kobj_topology);</pre><hr><pre>commit aaa3cbbac326c95308e315f1ab964a3369c4d07d
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Fri May 22 22:16:08 2020 -0500
+
+    platform/chrome: cros_ec_ishtp: Fix a double-unlock issue
+    
+    In function cros_ec_ishtp_probe(), "up_write" is already called
+    before function "cros_ec_dev_init". But "up_write" will be called
+    again after the calling of the function "cros_ec_dev_init" failed.
+    Thus add a call of the function “down_write” in this if branch
+    for the completion of the exception handling.
+    
+    Fixes: 26a14267aff2 ("platform/chrome: Add ChromeOS EC ISHTP driver")
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Tested-by: Mathew King &lt;mathewk@chromium.org&gt;
+    Signed-off-by: Enric Balletbo i Serra &lt;enric.balletbo@collabora.com&gt;
+
+diff --git a/drivers/platform/chrome/cros_ec_ishtp.c b/drivers/platform/chrome/cros_ec_ishtp.c
+index ed794a7ddba9..81364029af36 100644
+--- a/drivers/platform/chrome/cros_ec_ishtp.c
++++ b/drivers/platform/chrome/cros_ec_ishtp.c
+@@ -681,8 +681,10 @@ static int cros_ec_ishtp_probe(struct ishtp_cl_device *cl_device)
+ 
+ 	/* Register croc_ec_dev mfd */
+ 	rv = cros_ec_dev_init(client_data);
+-	if (rv)
++	if (rv) {
++		down_write(&amp;init_lock);
+ 		goto end_cros_ec_dev_init_error;
++	}
+ 
+ 	return 0;
+ </pre><hr><pre>commit 2655971ad4b34e97dd921df16bb0b08db9449df7
+Author: Aditya Pakki &lt;pakki001@umn.edu&gt;
+Date:   Sat Jun 13 22:15:25 2020 -0500
+
+    usb: dwc3: pci: Fix reference count leak in dwc3_pci_resume_work
+    
+    dwc3_pci_resume_work() calls pm_runtime_get_sync() that increments
+    the reference counter. In case of failure, decrement the reference
+    before returning.
+    
+    Signed-off-by: Aditya Pakki &lt;pakki001@umn.edu&gt;
+    Signed-off-by: Felipe Balbi &lt;balbi@kernel.org&gt;
+
+diff --git a/drivers/usb/dwc3/dwc3-pci.c b/drivers/usb/dwc3/dwc3-pci.c
+index b67372737dc9..96c05b121fac 100644
+--- a/drivers/usb/dwc3/dwc3-pci.c
++++ b/drivers/usb/dwc3/dwc3-pci.c
+@@ -206,8 +206,10 @@ static void dwc3_pci_resume_work(struct work_struct *work)
+ 	int ret;
+ 
+ 	ret = pm_runtime_get_sync(&amp;dwc3-&gt;dev);
+-	if (ret)
++	if (ret) {
++		pm_runtime_put_sync_autosuspend(&amp;dwc3-&gt;dev);
+ 		return;
++	}
+ 
+ 	pm_runtime_mark_last_busy(&amp;dwc3-&gt;dev);
+ 	pm_runtime_put_sync_autosuspend(&amp;dwc3-&gt;dev);</pre><hr><pre>commit f141a422159a199f4c8dedb7e0df55b3b2cf16cd
+Author: Qiushi Wu &lt;wu000273@umn.edu&gt;
+Date:   Sat Jun 13 15:51:58 2020 -0500
+
+    ASoC: rockchip: Fix a reference count leak.
+    
+    Calling pm_runtime_get_sync increments the counter even in case of
+    failure, causing incorrect ref count if pm_runtime_put is not called in
+    error handling paths. Call pm_runtime_put if pm_runtime_get_sync fails.
+    
+    Fixes: fc05a5b22253 ("ASoC: rockchip: add support for pdm controller")
+    Signed-off-by: Qiushi Wu &lt;wu000273@umn.edu&gt;
+    Reviewed-by: Heiko Stuebner &lt;heiko@sntech.de&gt;
+    Link: https://lore.kernel.org/r/20200613205158.27296-1-wu000273@umn.edu
+    Signed-off-by: Mark Brown &lt;broonie@kernel.org&gt;
+
+diff --git a/sound/soc/rockchip/rockchip_pdm.c b/sound/soc/rockchip/rockchip_pdm.c
+index 7cd42fcfcf38..1707414cfa92 100644
+--- a/sound/soc/rockchip/rockchip_pdm.c
++++ b/sound/soc/rockchip/rockchip_pdm.c
+@@ -590,8 +590,10 @@ static int rockchip_pdm_resume(struct device *dev)
+ 	int ret;
+ 
+ 	ret = pm_runtime_get_sync(dev);
+-	if (ret &lt; 0)
++	if (ret &lt; 0) {
++		pm_runtime_put(dev);
+ 		return ret;
++	}
+ 
+ 	ret = regcache_sync(pdm-&gt;regmap);
+ </pre>
+    <div class="pagination">
+        <a href='7_4.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><span>[5]</span><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><a href='7_28.html'>28</a><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_6.html'>Next&gt;&gt;</a>
+    <div>
+</body>

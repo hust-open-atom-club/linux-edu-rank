@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Georgia</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Georgia</h1>
+    <div class="pagination">
+        <a href='19_4.html'>&lt;&lt;Prev</a><a href='19.html'>1</a><a href='19_2.html'>2</a><a href='19_3.html'>3</a><a href='19_4.html'>4</a><span>[5]</span><a href='19_6.html'>6</a><a href='19_6.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 1eca92eef18719027d394bf1a2d276f43e7cf886
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Wed Aug 14 13:03:38 2019 -0500
+
+    cx82310_eth: fix a memory leak bug
+    
+    In cx82310_bind(), 'dev-&gt;partial_data' is allocated through kmalloc().
+    Then, the execution waits for the firmware to become ready. If the firmware
+    is not ready in time, the execution is terminated. However, the allocated
+    'dev-&gt;partial_data' is not deallocated on this path, leading to a memory
+    leak bug. To fix this issue, free 'dev-&gt;partial_data' before returning the
+    error.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/usb/cx82310_eth.c b/drivers/net/usb/cx82310_eth.c
+index 5519248a791e..32b08b18e120 100644
+--- a/drivers/net/usb/cx82310_eth.c
++++ b/drivers/net/usb/cx82310_eth.c
+@@ -163,7 +163,8 @@ static int cx82310_bind(struct usbnet *dev, struct usb_interface *intf)
+ 	}
+ 	if (!timeout) {
+ 		dev_err(&amp;udev-&gt;dev, "firmware not ready in time\n");
+-		return -ETIMEDOUT;
++		ret = -ETIMEDOUT;
++		goto err;
+ 	}
+ 
+ 	/* enable ethernet mode (?) */</pre><hr><pre>commit b9cbf8a64865b50fd0f4a3915fa00ac7365cdf8f
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Wed Aug 14 11:23:13 2019 -0500
+
+    lan78xx: Fix memory leaks
+    
+    In lan78xx_probe(), a new urb is allocated through usb_alloc_urb() and
+    saved to 'dev-&gt;urb_intr'. However, in the following execution, if an error
+    occurs, 'dev-&gt;urb_intr' is not deallocated, leading to memory leaks. To fix
+    this issue, invoke usb_free_urb() to free the allocated urb before
+    returning from the function.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/usb/lan78xx.c b/drivers/net/usb/lan78xx.c
+index 3d92ea6fcc02..f033fee225a1 100644
+--- a/drivers/net/usb/lan78xx.c
++++ b/drivers/net/usb/lan78xx.c
+@@ -3792,7 +3792,7 @@ static int lan78xx_probe(struct usb_interface *intf,
+ 	ret = register_netdev(netdev);
+ 	if (ret != 0) {
+ 		netif_err(dev, probe, netdev, "couldn't register the device\n");
+-		goto out3;
++		goto out4;
+ 	}
+ 
+ 	usb_set_intfdata(intf, dev);
+@@ -3807,12 +3807,14 @@ static int lan78xx_probe(struct usb_interface *intf,
+ 
+ 	ret = lan78xx_phy_init(dev);
+ 	if (ret &lt; 0)
+-		goto out4;
++		goto out5;
+ 
+ 	return 0;
+ 
+-out4:
++out5:
+ 	unregister_netdev(netdev);
++out4:
++	usb_free_urb(dev-&gt;urb_intr);
+ out3:
+ 	lan78xx_unbind(dev, intf);
+ out2:</pre><hr><pre>commit 20fb7c7a39b5c719e2e619673b5f5729ee7d2306
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Wed Aug 14 01:38:39 2019 -0500
+
+    net: myri10ge: fix memory leaks
+    
+    In myri10ge_probe(), myri10ge_alloc_slices() is invoked to allocate slices
+    related structures. Later on, myri10ge_request_irq() is used to get an irq.
+    However, if this process fails, the allocated slices related structures are
+    not deallocated, leading to memory leaks. To fix this issue, revise the
+    target label of the goto statement to 'abort_with_slices'.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/myricom/myri10ge/myri10ge.c b/drivers/net/ethernet/myricom/myri10ge/myri10ge.c
+index d8b7fba96d58..337b0cbfd153 100644
+--- a/drivers/net/ethernet/myricom/myri10ge/myri10ge.c
++++ b/drivers/net/ethernet/myricom/myri10ge/myri10ge.c
+@@ -3919,7 +3919,7 @@ static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 	 * setup (if available). */
+ 	status = myri10ge_request_irq(mgp);
+ 	if (status != 0)
+-		goto abort_with_firmware;
++		goto abort_with_slices;
+ 	myri10ge_free_irq(mgp);
+ 
+ 	/* Save configuration space to be restored if the</pre><hr><pre>commit 6f967f8b1be7001b31c46429f2ee7d275af2190f
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Wed Aug 14 00:14:49 2019 -0500
+
+    liquidio: add cleanup in octeon_setup_iq()
+    
+    If oct-&gt;fn_list.enable_io_queues() fails, no cleanup is executed, leading
+    to memory/resource leaks. To fix this issue, invoke
+    octeon_delete_instr_queue() before returning from the function.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/cavium/liquidio/request_manager.c b/drivers/net/ethernet/cavium/liquidio/request_manager.c
+index 032224178b64..6dd65f9b347c 100644
+--- a/drivers/net/ethernet/cavium/liquidio/request_manager.c
++++ b/drivers/net/ethernet/cavium/liquidio/request_manager.c
+@@ -237,8 +237,10 @@ int octeon_setup_iq(struct octeon_device *oct,
+ 	}
+ 
+ 	oct-&gt;num_iqs++;
+-	if (oct-&gt;fn_list.enable_io_queues(oct))
++	if (oct-&gt;fn_list.enable_io_queues(oct)) {
++		octeon_delete_instr_queue(oct, iq_no);
+ 		return 1;
++	}
+ 
+ 	return 0;
+ }</pre><hr><pre>commit c554336efa9bbc28d6ec14efbee3c7d63c61a34f
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Tue Aug 13 04:18:52 2019 -0500
+
+    cxgb4: fix a memory leak bug
+    
+    In blocked_fl_write(), 't' is not deallocated if bitmap_parse_user() fails,
+    leading to a memory leak bug. To fix this issue, free t before returning
+    the error.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/chelsio/cxgb4/cxgb4_debugfs.c b/drivers/net/ethernet/chelsio/cxgb4/cxgb4_debugfs.c
+index 02959035ed3f..d692251ee252 100644
+--- a/drivers/net/ethernet/chelsio/cxgb4/cxgb4_debugfs.c
++++ b/drivers/net/ethernet/chelsio/cxgb4/cxgb4_debugfs.c
+@@ -3236,8 +3236,10 @@ static ssize_t blocked_fl_write(struct file *filp, const char __user *ubuf,
+ 		return -ENOMEM;
+ 
+ 	err = bitmap_parse_user(ubuf, count, t, adap-&gt;sge.egr_sz);
+-	if (err)
++	if (err) {
++		kvfree(t);
+ 		return err;
++	}
+ 
+ 	bitmap_copy(adap-&gt;sge.blocked_fl, t, adap-&gt;sge.egr_sz);
+ 	kvfree(t);</pre><hr><pre>commit 48ec7014c56e5eb2fbf6f479896143622d834f3b
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Mon Aug 12 14:11:35 2019 -0500
+
+    net/mlx4_en: fix a memory leak bug
+    
+    In mlx4_en_config_rss_steer(), 'rss_map-&gt;indir_qp' is allocated through
+    kzalloc(). After that, mlx4_qp_alloc() is invoked to configure RSS
+    indirection. However, if mlx4_qp_alloc() fails, the allocated
+    'rss_map-&gt;indir_qp' is not deallocated, leading to a memory leak bug.
+    
+    To fix the above issue, add the 'qp_alloc_err' label to free
+    'rss_map-&gt;indir_qp'.
+    
+    Fixes: 4931c6ef04b4 ("net/mlx4_en: Optimized single ring steering")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Reviewed-by: Tariq Toukan &lt;tariqt@mellanox.com&gt;
+    Signed-off-by: Jakub Kicinski &lt;jakub.kicinski@netronome.com&gt;
+
+diff --git a/drivers/net/ethernet/mellanox/mlx4/en_rx.c b/drivers/net/ethernet/mellanox/mlx4/en_rx.c
+index 6c01314e87b0..db3552f2d087 100644
+--- a/drivers/net/ethernet/mellanox/mlx4/en_rx.c
++++ b/drivers/net/ethernet/mellanox/mlx4/en_rx.c
+@@ -1187,7 +1187,7 @@ int mlx4_en_config_rss_steer(struct mlx4_en_priv *priv)
+ 	err = mlx4_qp_alloc(mdev-&gt;dev, priv-&gt;base_qpn, rss_map-&gt;indir_qp);
+ 	if (err) {
+ 		en_err(priv, "Failed to allocate RSS indirection QP\n");
+-		goto rss_err;
++		goto qp_alloc_err;
+ 	}
+ 
+ 	rss_map-&gt;indir_qp-&gt;event = mlx4_en_sqp_event;
+@@ -1241,6 +1241,7 @@ int mlx4_en_config_rss_steer(struct mlx4_en_priv *priv)
+ 		       MLX4_QP_STATE_RST, NULL, 0, 0, rss_map-&gt;indir_qp);
+ 	mlx4_qp_remove(mdev-&gt;dev, rss_map-&gt;indir_qp);
+ 	mlx4_qp_free(mdev-&gt;dev, rss_map-&gt;indir_qp);
++qp_alloc_err:
+ 	kfree(rss_map-&gt;indir_qp);
+ 	rss_map-&gt;indir_qp = NULL;
+ rss_err:</pre><hr><pre>commit ae78ca3cf3d9e9f914bfcd0bc5c389ff18b9c2e0
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Aug 11 12:23:22 2019 -0500
+
+    xen/blkback: fix memory leaks
+    
+    In read_per_ring_refs(), after 'req' and related memory regions are
+    allocated, xen_blkif_map() is invoked to map the shared frame, irq, and
+    etc. However, if this mapping process fails, no cleanup is performed,
+    leading to memory leaks. To fix this issue, invoke the cleanup before
+    returning the error.
+    
+    Acked-by: Roger Pau Monné &lt;roger.pau@citrix.com&gt;
+    Reviewed-by: Boris Ostrovsky &lt;boris.ostrovsky@oracle.com&gt;
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/drivers/block/xen-blkback/xenbus.c b/drivers/block/xen-blkback/xenbus.c
+index 3ac6a5d18071..b90dbcd99c03 100644
+--- a/drivers/block/xen-blkback/xenbus.c
++++ b/drivers/block/xen-blkback/xenbus.c
+@@ -965,6 +965,7 @@ static int read_per_ring_refs(struct xen_blkif_ring *ring, const char *dir)
+ 		}
+ 	}
+ 
++	err = -ENOMEM;
+ 	for (i = 0; i &lt; nr_grefs * XEN_BLKIF_REQS_PER_PAGE; i++) {
+ 		req = kzalloc(sizeof(*req), GFP_KERNEL);
+ 		if (!req)
+@@ -987,7 +988,7 @@ static int read_per_ring_refs(struct xen_blkif_ring *ring, const char *dir)
+ 	err = xen_blkif_map(ring, ring_ref, nr_grefs, evtchn);
+ 	if (err) {
+ 		xenbus_dev_fatal(dev, err, "mapping ring-ref port %u", evtchn);
+-		return err;
++		goto fail;
+ 	}
+ 
+ 	return 0;
+@@ -1007,8 +1008,7 @@ static int read_per_ring_refs(struct xen_blkif_ring *ring, const char *dir)
+ 		}
+ 		kfree(req);
+ 	}
+-	return -ENOMEM;
+-
++	return err;
+ }
+ 
+ static int connect_ring(struct backend_info *be)</pre><hr><pre>commit 7afe9a4e56658bd659660ea10671831664469e5f
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Sun Aug 11 13:33:06 2019 -0500
+
+    i3c: master: fix a memory leak bug
+    
+    In i3c_master_getmwl_locked(), the buffer used for the dest payload data is
+    allocated using kzalloc() in i3c_ccc_cmd_dest_init(). Later on, the length
+    of the dest payload data is checked against 'sizeof(*mwl)'. If they are not
+    equal, -EIO is returned to indicate the error. However, the allocated
+    buffer is not deallocated on this path, leading to a memory leak.
+    
+    To fix the above issue, free the buffer before returning the error.
+    
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Signed-off-by: Boris Brezillon &lt;boris.brezillon@collabora.com&gt;
+
+diff --git a/drivers/i3c/master.c b/drivers/i3c/master.c
+index a38fdf325d30..8ff527263f46 100644
+--- a/drivers/i3c/master.c
++++ b/drivers/i3c/master.c
+@@ -1041,8 +1041,10 @@ static int i3c_master_getmwl_locked(struct i3c_master_controller *master,
+ 	if (ret)
+ 		goto out;
+ 
+-	if (dest.payload.len != sizeof(*mwl))
+-		return -EIO;
++	if (dest.payload.len != sizeof(*mwl)) {
++		ret = -EIO;
++		goto out;
++	}
+ 
+ 	info-&gt;max_write_len = be16_to_cpu(mwl-&gt;len);
+ </pre><hr><pre>commit cfef67f016e4c00a2f423256fc678a6967a9fc09
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Fri Aug 9 23:29:48 2019 -0500
+
+    ALSA: hda - Fix a memory leak bug
+    
+    In snd_hda_parse_generic_codec(), 'spec' is allocated through kzalloc().
+    Then, the pin widgets in 'codec' are parsed. However, if the parsing
+    process fails, 'spec' is not deallocated, leading to a memory leak.
+    
+    To fix the above issue, free 'spec' before returning the error.
+    
+    Fixes: 352f7f914ebb ("ALSA: hda - Merge Realtek parser code to generic parser")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/pci/hda/hda_generic.c b/sound/pci/hda/hda_generic.c
+index 485edaba0037..8f2beb1f3ae4 100644
+--- a/sound/pci/hda/hda_generic.c
++++ b/sound/pci/hda/hda_generic.c
+@@ -6100,7 +6100,7 @@ static int snd_hda_parse_generic_codec(struct hda_codec *codec)
+ 
+ 	err = snd_hda_parse_pin_defcfg(codec, &amp;spec-&gt;autocfg, NULL, 0);
+ 	if (err &lt; 0)
+-		return err;
++		goto error;
+ 
+ 	err = snd_hda_gen_parse_auto_config(codec, &amp;spec-&gt;autocfg);
+ 	if (err &lt; 0)</pre><hr><pre>commit 1be3c1fae6c1e1f5bb982b255d2034034454527a
+Author: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+Date:   Thu Aug 8 00:50:58 2019 -0500
+
+    ALSA: firewire: fix a memory leak bug
+    
+    In iso_packets_buffer_init(), 'b-&gt;packets' is allocated through
+    kmalloc_array(). Then, the aligned packet size is checked. If it is
+    larger than PAGE_SIZE, -EINVAL will be returned to indicate the error.
+    However, the allocated 'b-&gt;packets' is not deallocated on this path,
+    leading to a memory leak.
+    
+    To fix the above issue, free 'b-&gt;packets' before returning the error code.
+    
+    Fixes: 31ef9134eb52 ("ALSA: add LaCie FireWire Speakers/Griffin FireWave Surround driver")
+    Signed-off-by: Wenwen Wang &lt;wenwen@cs.uga.edu&gt;
+    Reviewed-by: Takashi Sakamoto &lt;o-takashi@sakamocchi.jp&gt;
+    Cc: &lt;stable@vger.kernel.org&gt; # v2.6.39+
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/firewire/packets-buffer.c b/sound/firewire/packets-buffer.c
+index 0d35359d25cd..0ecafd0c6722 100644
+--- a/sound/firewire/packets-buffer.c
++++ b/sound/firewire/packets-buffer.c
+@@ -37,7 +37,7 @@ int iso_packets_buffer_init(struct iso_packets_buffer *b, struct fw_unit *unit,
+ 	packets_per_page = PAGE_SIZE / packet_size;
+ 	if (WARN_ON(!packets_per_page)) {
+ 		err = -EINVAL;
+-		goto error;
++		goto err_packets;
+ 	}
+ 	pages = DIV_ROUND_UP(count, packets_per_page);
+ </pre>
+    <div class="pagination">
+        <a href='19_4.html'>&lt;&lt;Prev</a><a href='19.html'>1</a><a href='19_2.html'>2</a><a href='19_3.html'>3</a><a href='19_4.html'>4</a><span>[5]</span><a href='19_6.html'>6</a><a href='19_6.html'>Next&gt;&gt;</a>
+    <div>
+</body>

@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Pennsylvania</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Pennsylvania</h1>
+    <div class="pagination">
+        <a href='25_2.html'>&lt;&lt;Prev</a><a href='25.html'>1</a><a href='25_2.html'>2</a><span>[3]</span>
+    </div>
+    <hr>
+    <pre>commit 943ed464f3722de0569cf41ba6ec094768ac046d
+Author: Rafi Rubin &lt;rafi@seas.upenn.edu&gt;
+Date:   Thu Feb 11 22:14:05 2010 -0500
+
+    HID: hid-ntrig add multi input quirk and clean up
+    
+    Added a quirk to enable distinct input devices.  The digitizer utilizes
+    three inputs to represent pen, multitouch and a normal touch screen.
+    
+    With the Pen partitioned, it behaves well and does not need special
+    handling.
+    
+    Also, I set names to the input devices to clarify the functions of the
+    various inputs.
+    
+    Signed-off-by: Rafi Rubin &lt;rafi@seas.upenn.edu&gt;
+    Signed-off-by: Jiri Kosina &lt;jkosina@suse.cz&gt;
+
+diff --git a/drivers/hid/hid-ntrig.c b/drivers/hid/hid-ntrig.c
+index 49ce69d7bba7..38b2364c8867 100644
+--- a/drivers/hid/hid-ntrig.c
++++ b/drivers/hid/hid-ntrig.c
+@@ -26,10 +26,10 @@
+ 
+ struct ntrig_data {
+ 	__s32 x, y, id, w, h;
+-	char reading_a_point, found_contact_id;
+-	char pen_active;
+-	char finger_active;
+-	char inverted;
++	bool reading_a_point, found_contact_id;
++	bool pen_active;
++	bool finger_active;
++	bool inverted;
+ };
+ 
+ /*
+@@ -42,6 +42,10 @@ static int ntrig_input_mapping(struct hid_device *hdev, struct hid_input *hi,
+ 		struct hid_field *field, struct hid_usage *usage,
+ 		unsigned long **bit, int *max)
+ {
++	/* No special mappings needed for the pen */
++	if (field-&gt;application == HID_DG_PEN)
++		return 0;
++
+ 	switch (usage-&gt;hid &amp; HID_USAGE_PAGE) {
+ 
+ 	case HID_UP_GENDESK:
+@@ -104,6 +108,9 @@ static int ntrig_input_mapped(struct hid_device *hdev, struct hid_input *hi,
+ 		struct hid_field *field, struct hid_usage *usage,
+ 		unsigned long **bit, int *max)
+ {
++	/* No special mappings needed for the pen */
++	if (field-&gt;application == HID_DG_PEN)
++		return 0;
+ 	if (usage-&gt;type == EV_KEY || usage-&gt;type == EV_REL
+ 			|| usage-&gt;type == EV_ABS)
+ 		clear_bit(usage-&gt;code, *bit);
+@@ -123,6 +130,10 @@ static int ntrig_event (struct hid_device *hid, struct hid_field *field,
+ 	struct input_dev *input = field-&gt;hidinput-&gt;input;
+ 	struct ntrig_data *nd = hid_get_drvdata(hid);
+ 
++	/* No special handling needed for the pen */
++	if (field-&gt;application == HID_DG_PEN)
++		return 0;
++
+         if (hid-&gt;claimed &amp; HID_CLAIMED_INPUT) {
+ 		switch (usage-&gt;hid) {
+ 
+@@ -231,8 +242,8 @@ static int ntrig_event (struct hid_device *hid, struct hid_field *field,
+ 	}
+ 
+ 	/* we have handled the hidinput part, now remains hiddev */
+-        if (hid-&gt;claimed &amp; HID_CLAIMED_HIDDEV &amp;&amp; hid-&gt;hiddev_hid_event)
+-                hid-&gt;hiddev_hid_event(hid, field, usage, value);
++	if ((hid-&gt;claimed &amp; HID_CLAIMED_HIDDEV) &amp;&amp; hid-&gt;hiddev_hid_event)
++		hid-&gt;hiddev_hid_event(hid, field, usage, value);
+ 
+ 	return 1;
+ }
+@@ -241,6 +252,11 @@ static int ntrig_probe(struct hid_device *hdev, const struct hid_device_id *id)
+ {
+ 	int ret;
+ 	struct ntrig_data *nd;
++	struct hid_input *hidinput;
++	struct input_dev *input;
++
++	if (id-&gt;driver_data)
++		hdev-&gt;quirks |= HID_QUIRK_MULTI_INPUT;
+ 
+ 	nd = kmalloc(sizeof(struct ntrig_data), GFP_KERNEL);
+ 	if (!nd) {
+@@ -252,12 +268,43 @@ static int ntrig_probe(struct hid_device *hdev, const struct hid_device_id *id)
+ 	hid_set_drvdata(hdev, nd);
+ 
+ 	ret = hid_parse(hdev);
+-	if (!ret)
+-		ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
++	if (ret) {
++		dev_err(&amp;hdev-&gt;dev, "parse failed\n");
++		goto err_free;
++	}
++
++	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT &amp; ~HID_CONNECT_FF);
++	if (ret) {
++		dev_err(&amp;hdev-&gt;dev, "hw start failed\n");
++		goto err_free;
++	}
+ 
+-	if (ret)
+-		kfree (nd);
+ 
++	list_for_each_entry(hidinput, &amp;hdev-&gt;inputs, list) {
++		input = hidinput-&gt;input;
++		switch (hidinput-&gt;report-&gt;field[0]-&gt;application) {
++		case HID_DG_PEN:
++			input-&gt;name = "N-Trig Pen";
++			break;
++		case HID_DG_TOUCHSCREEN:
++			/*
++			 * The physical touchscreen (single touch)
++			 * input has a value for physical, whereas
++			 * the multitouch only has logical input
++			 * fields.
++			 */
++			input-&gt;name =
++				(hidinput-&gt;report-&gt;field[0]
++				 -&gt;physical) ?
++				"N-Trig Touchscreen" :
++				"N-Trig MultiTouch";
++			break;
++		}
++	}
++
++	return 0;
++err_free:
++	kfree(nd);
+ 	return ret;
+ }
+ 
+@@ -276,7 +323,7 @@ MODULE_DEVICE_TABLE(hid, ntrig_devices);
+ 
+ static const struct hid_usage_id ntrig_grabbed_usages[] = {
+ 	{ HID_ANY_ID, HID_ANY_ID, HID_ANY_ID },
+-	{ HID_ANY_ID - 1, HID_ANY_ID - 1, HID_ANY_ID - 1}
++	{ HID_ANY_ID - 1, HID_ANY_ID - 1, HID_ANY_ID - 1 }
+ };
+ 
+ static struct hid_driver ntrig_driver = {</pre><hr><pre>commit 837b47533a6476ab3fb96b1f52edd3ce9f3162b8
+Author: Rafi Rubin &lt;rafi@seas.upenn.edu&gt;
+Date:   Tue Jun 23 14:09:26 2009 -0400
+
+    HID: ntrig tool separation and pen usages
+    
+    When both touch and pen are active send a tool announcement before
+    sending any status changes so that event users may differentiate
+    which tool is changing.
+    
+    Restored three usage codes used by the pen.
+    
+    Signed-off-by: Rafi Rubin &lt;rafi@seas.upenn.edu&gt;
+    Acked-by: Stephane Chatty &lt;chatty@enac.fr&gt;
+    Signed-off-by: Jiri Kosina &lt;jkosina@suse.cz&gt;
+
+diff --git a/drivers/hid/hid-ntrig.c b/drivers/hid/hid-ntrig.c
+index 75ed9d2c1a36..d7b3e61fbf8f 100644
+--- a/drivers/hid/hid-ntrig.c
++++ b/drivers/hid/hid-ntrig.c
+@@ -27,6 +27,9 @@
+ struct ntrig_data {
+ 	__s32 x, y, id, w, h;
+ 	char reading_a_point, found_contact_id;
++	char pen_active;
++	char finger_active;
++	char inverted;
+ };
+ 
+ /*
+@@ -63,10 +66,7 @@ static int ntrig_input_mapping(struct hid_device *hdev, struct hid_input *hi,
+ 	case HID_UP_DIGITIZER:
+ 		switch (usage-&gt;hid) {
+ 		/* we do not want to map these for now */
+-		case HID_DG_INVERT: /* value is always 0 */
+-		case HID_DG_ERASER: /* value is always 0 */
+ 		case HID_DG_CONTACTID: /* value is useless */
+-		case HID_DG_BARRELSWITCH:  /* doubtful */
+ 		case HID_DG_INPUTMODE:
+ 		case HID_DG_DEVICEINDEX:
+ 		case HID_DG_CONTACTCOUNT:
+@@ -125,6 +125,18 @@ static int ntrig_event (struct hid_device *hid, struct hid_field *field,
+ 
+         if (hid-&gt;claimed &amp; HID_CLAIMED_INPUT) {
+ 		switch (usage-&gt;hid) {
++
++		case HID_DG_INRANGE:
++			if (field-&gt;application &amp; 0x3)
++				nd-&gt;pen_active = (value != 0);
++			else
++				nd-&gt;finger_active = (value != 0);
++			return 0;
++
++		case HID_DG_INVERT:
++			nd-&gt;inverted = value;
++			return 0;
++
+ 		case HID_GD_X:
+ 			nd-&gt;x = value;
+ 			nd-&gt;reading_a_point = 1;
+@@ -147,7 +159,11 @@ static int ntrig_event (struct hid_device *hid, struct hid_field *field,
+ 			 * report received in a finger event. We want
+ 			 * to emit a normal (X, Y) position
+ 			 */
+-			if (! nd-&gt;found_contact_id) {
++			if (!nd-&gt;found_contact_id) {
++				if (nd-&gt;pen_active &amp;&amp; nd-&gt;finger_active) {
++					input_report_key(input, BTN_TOOL_DOUBLETAP, 0);
++					input_report_key(input, BTN_TOOL_DOUBLETAP, 1);
++				}
+ 				input_event(input, EV_ABS, ABS_X, nd-&gt;x);
+ 				input_event(input, EV_ABS, ABS_Y, nd-&gt;y);
+ 			}
+@@ -159,6 +175,14 @@ static int ntrig_event (struct hid_device *hid, struct hid_field *field,
+ 			 * to emit a normal (X, Y) position
+ 			 */
+ 			if (! nd-&gt;found_contact_id) {
++				if (nd-&gt;pen_active &amp;&amp; nd-&gt;finger_active) {
++					input_report_key(input,
++							nd-&gt;inverted ? BTN_TOOL_RUBBER : BTN_TOOL_PEN
++							, 0);
++					input_report_key(input,
++							nd-&gt;inverted ? BTN_TOOL_RUBBER : BTN_TOOL_PEN
++							, 1);
++				}
+ 				input_event(input, EV_ABS, ABS_X, nd-&gt;x);
+ 				input_event(input, EV_ABS, ABS_Y, nd-&gt;y);
+ 				input_event(input, EV_ABS, ABS_PRESSURE, value);
+@@ -233,6 +257,7 @@ static int ntrig_probe(struct hid_device *hdev, const struct hid_device_id *id)
+ 
+ 	if (ret)
+ 		kfree (nd);
++
+ 	return ret;
+ }
+ </pre><hr><pre>commit 94011f93f2cd7410401e22390cf7a14fe5495a22
+Author: Rafi Rubin &lt;rafi@seas.upenn.edu&gt;
+Date:   Wed Nov 19 15:54:46 2008 +0100
+
+    HID: add n-trig digitizer support
+    
+    Added quirks for the N-Trig digitizer.
+    
+    Signed-off-by: Rafi Rubin &lt;rafi@seas.upenn.edu&gt;
+    Signed-off-by: Jiri Kosina &lt;jkosina@suse.cz&gt;
+
+diff --git a/drivers/hid/Kconfig b/drivers/hid/Kconfig
+index 65b577eaf823..aadef9abc05d 100644
+--- a/drivers/hid/Kconfig
++++ b/drivers/hid/Kconfig
+@@ -187,6 +187,13 @@ config HID_MONTEREY
+ 	---help---
+ 	Support for Monterey Genius KB29E.
+ 
++config HID_NTRIG
++	tristate "NTrig" if EMBEDDED
++	depends on USB_HID
++	default y
++	---help---
++	Support for N-Trig touch screen.
++
+ config HID_PANTHERLORD
+ 	tristate "Pantherlord devices support" if EMBEDDED
+ 	depends on USB_HID
+diff --git a/drivers/hid/Makefile b/drivers/hid/Makefile
+index e2294a8b2a68..7d34e8bf3de5 100644
+--- a/drivers/hid/Makefile
++++ b/drivers/hid/Makefile
+@@ -31,6 +31,7 @@ obj-$(CONFIG_HID_GYRATION)	+= hid-gyration.o
+ obj-$(CONFIG_HID_LOGITECH)	+= hid-logitech.o
+ obj-$(CONFIG_HID_MICROSOFT)	+= hid-microsoft.o
+ obj-$(CONFIG_HID_MONTEREY)	+= hid-monterey.o
++obj-$(CONFIG_HID_NTRIG)		+= hid-ntrig.o
+ obj-$(CONFIG_HID_PANTHERLORD)	+= hid-pl.o
+ obj-$(CONFIG_HID_PETALYNX)	+= hid-petalynx.o
+ obj-$(CONFIG_HID_SAMSUNG)	+= hid-samsung.o
+diff --git a/drivers/hid/hid-core.c b/drivers/hid/hid-core.c
+index 8624a8fe085b..344f8fdb2824 100644
+--- a/drivers/hid/hid-core.c
++++ b/drivers/hid/hid-core.c
+@@ -1292,6 +1292,7 @@ static const struct hid_device_id hid_blacklist[] = {
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_MICROSOFT, USB_DEVICE_ID_MS_PRESENTER_8K_USB) },
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_MICROSOFT, USB_DEVICE_ID_WIRELESS_OPTICAL_DESKTOP_3_0) },
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_MONTEREY, USB_DEVICE_ID_GENIUS_KB29E) },
++	{ HID_USB_DEVICE(USB_VENDOR_ID_NTRIG, USB_DEVICE_ID_NTRIG_TOUCH_SCREEN) },
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_PETALYNX, USB_DEVICE_ID_PETALYNX_MAXTER_REMOTE) },
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_SAMSUNG, USB_DEVICE_ID_SAMSUNG_IR_REMOTE) },
+ 	{ HID_USB_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_PS3_CONTROLLER) },
+diff --git a/drivers/hid/hid-dummy.c b/drivers/hid/hid-dummy.c
+index e148f86fb58e..4a6af3cf192d 100644
+--- a/drivers/hid/hid-dummy.c
++++ b/drivers/hid/hid-dummy.c
+@@ -43,6 +43,9 @@ static int __init hid_dummy_init(void)
+ #ifdef CONFIG_HID_MONTEREY_MODULE
+ 	HID_COMPAT_CALL_DRIVER(monterey);
+ #endif
++#ifdef CONFIG_HID_NTRIG_MODULE
++	HID_COMPAT_CALL_DRIVER(ntrig);
++#endif
+ #ifdef CONFIG_HID_PANTHERLORD_MODULE
+ 	HID_COMPAT_CALL_DRIVER(pantherlord);
+ #endif
+diff --git a/drivers/hid/hid-ids.h b/drivers/hid/hid-ids.h
+index aae2ceca0bce..2b7b6eeae8c6 100644
+--- a/drivers/hid/hid-ids.h
++++ b/drivers/hid/hid-ids.h
+@@ -328,6 +328,9 @@
+ #define USB_VENDOR_ID_NEC		0x073e
+ #define USB_DEVICE_ID_NEC_USB_GAME_PAD	0x0301
+ 
++#define USB_VENDOR_ID_NTRIG                0x1b96
++#define USB_DEVICE_ID_NTRIG_TOUCH_SCREEN   0x0001
++
+ #define USB_VENDOR_ID_ONTRAK		0x0a07
+ #define USB_DEVICE_ID_ONTRAK_ADU100	0x0064
+ 
+diff --git a/drivers/hid/hid-ntrig.c b/drivers/hid/hid-ntrig.c
+new file mode 100644
+index 000000000000..db44fbd7bdf6
+--- /dev/null
++++ b/drivers/hid/hid-ntrig.c
+@@ -0,0 +1,82 @@
++/*
++ *  HID driver for some ntrig "special" devices
++ *
++ *  Copyright (c) 1999 Andreas Gal
++ *  Copyright (c) 2000-2005 Vojtech Pavlik &lt;vojtech@suse.cz&gt;
++ *  Copyright (c) 2005 Michael Haboustak &lt;mike-@cinci.rr.com&gt; for Concept2, Inc
++ *  Copyright (c) 2006-2007 Jiri Kosina
++ *  Copyright (c) 2007 Paul Walmsley
++ *  Copyright (c) 2008 Jiri Slaby
++ *  Copyright (c) 2008 Rafi Rubin
++ *
++ */
++
++/*
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the Free
++ * Software Foundation; either version 2 of the License, or (at your option)
++ * any later version.
++ */
++
++#include &lt;linux/device.h&gt;
++#include &lt;linux/hid.h&gt;
++#include &lt;linux/module.h&gt;
++
++#include "hid-ids.h"
++
++#define NTRIG_DUPLICATE_USAGES	0x001
++
++#define nt_map_key_clear(c)	hid_map_usage_clear(hi, usage, bit, max, \
++					EV_KEY, (c))
++
++static int ntrig_input_mapping(struct hid_device *hdev, struct hid_input *hi,
++		struct hid_field *field, struct hid_usage *usage,
++		unsigned long **bit, int *max)
++{
++	if ((usage-&gt;hid &amp; HID_USAGE_PAGE) == HID_UP_DIGITIZER &amp;&amp;
++			(usage-&gt;hid &amp; 0xff) == 0x47) {
++		nt_map_key_clear(BTN_TOOL_DOUBLETAP);
++		return 1;
++	}
++	return 0;
++}
++
++static int ntrig_input_mapped(struct hid_device *hdev, struct hid_input *hi,
++		struct hid_field *field, struct hid_usage *usage,
++		unsigned long **bit, int *max)
++{
++	if (usage-&gt;type == EV_KEY || usage-&gt;type == EV_REL
++			|| usage-&gt;type == EV_ABS)
++		clear_bit(usage-&gt;code, *bit);
++
++	return 0;
++}
++static const struct hid_device_id ntrig_devices[] = {
++	{ HID_USB_DEVICE(USB_VENDOR_ID_NTRIG, USB_DEVICE_ID_NTRIG_TOUCH_SCREEN),
++		.driver_data = NTRIG_DUPLICATE_USAGES },
++	{ }
++};
++MODULE_DEVICE_TABLE(hid, ntrig_devices);
++
++static struct hid_driver ntrig_driver = {
++	.name = "ntrig",
++	.id_table = ntrig_devices,
++	.input_mapping = ntrig_input_mapping,
++	.input_mapped = ntrig_input_mapped,
++};
++
++static int ntrig_init(void)
++{
++	return hid_register_driver(&amp;ntrig_driver);
++}
++
++static void ntrig_exit(void)
++{
++	hid_unregister_driver(&amp;ntrig_driver);
++}
++
++module_init(ntrig_init);
++module_exit(ntrig_exit);
++MODULE_LICENSE("GPL");
++
++HID_COMPAT_LOAD_DRIVER(ntrig);</pre><hr><pre>commit f472f80034ae5d0be7d7196c7e65d0ca8890afb4
+Author: Rafi Rubin &lt;rafi@seas.upenn.edu&gt;
+Date:   Thu Jun 19 11:51:04 2008 +0200
+
+    HID: add n-trig digitizer usage
+    
+    This adds a hid usage that is reported by the N-Trig digitizer in the Dell
+    Latitude XT screen.
+    
+    Signed-off-by: Rafi Rubin &lt;rafi@seas.upenn.edu&gt;
+    Signed-off-by: Vojtech Pavlik &lt;vojtech@suse.cz&gt;
+    Signed-off-by: Jiri Kosina &lt;jkosina@suse.cz&gt;
+
+diff --git a/include/linux/hid.h b/include/linux/hid.h
+index fe56b86f2c67..ac4e678a04ed 100644
+--- a/include/linux/hid.h
++++ b/include/linux/hid.h
+@@ -512,7 +512,7 @@ struct hid_descriptor {
+ 
+ /* Applications from HID Usage Tables 4/8/99 Version 1.1 */
+ /* We ignore a few input applications that are not widely used */
+-#define IS_INPUT_APPLICATION(a) (((a &gt;= 0x00010000) &amp;&amp; (a &lt;= 0x00010008)) || (a == 0x00010080) || (a == 0x000c0001))
++#define IS_INPUT_APPLICATION(a) (((a &gt;= 0x00010000) &amp;&amp; (a &lt;= 0x00010008)) || (a == 0x00010080) || (a == 0x000c0001) || (a == 0x000d0002))
+ 
+ /* HID core API */
+ </pre><hr><pre>commit 139c3a0492745192f999aaa67d11cb63983211f5
+Author: Volker Braun &lt;vbraun@physics.upenn.edu&gt;
+Date:   Fri Sep 14 11:10:25 2007 -0400
+
+    [MAC80211]: ignore key index on pairwise key (WEP only)
+    
+    Work-around for broken APs that use a non-zero key index for WEP
+    pairwise keys. With this patch, WEP encryption only is exempt from
+    providing a zero key index.
+    
+    Signed-off-by: Volker Braun &lt;volker.braun@physik.hu-berlin.de&gt;
+    Signed-off-by: Johannes Berg &lt;johannes@sipsolutions.net&gt;
+    Acked-by: Michael Wu &lt;flamingice@sourmilk.net&gt;
+    Signed-off-by: John W. Linville &lt;linville@tuxdriver.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/mac80211/ieee80211_ioctl.c b/net/mac80211/ieee80211_ioctl.c
+index e1c4502b26bf..51dca21f77c7 100644
+--- a/net/mac80211/ieee80211_ioctl.c
++++ b/net/mac80211/ieee80211_ioctl.c
+@@ -73,17 +73,23 @@ static int ieee80211_set_encryption(struct net_device *dev, u8 *sta_addr,
+ 
+ 	sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+ 
++	if (idx &lt; 0 || idx &gt;= NUM_DEFAULT_KEYS) {
++		printk(KERN_DEBUG "%s: set_encrypt - invalid idx=%d\n",
++		       dev-&gt;name, idx);
++		return -EINVAL;
++	}
++
+ 	if (is_broadcast_ether_addr(sta_addr)) {
+ 		sta = NULL;
+-		if (idx &gt;= NUM_DEFAULT_KEYS) {
+-			printk(KERN_DEBUG "%s: set_encrypt - invalid idx=%d\n",
+-			       dev-&gt;name, idx);
+-			return -EINVAL;
+-		}
+ 		key = sdata-&gt;keys[idx];
+ 	} else {
+ 		set_tx_key = 0;
+-		if (idx != 0) {
++		/*
++		 * According to the standard, the key index of a pairwise
++		 * key must be zero. However, some AP are broken when it
++		 * comes to WEP key indices, so we work around this.
++		 */
++		if (idx != 0 &amp;&amp; alg != ALG_WEP) {
+ 			printk(KERN_DEBUG "%s: set_encrypt - non-zero idx for "
+ 			       "individual key\n", dev-&gt;name);
+ 			return -EINVAL;</pre><hr><pre>commit 994aad251acab32a5d40d4a9501dc3e736562b6d
+Author: Volker Braun &lt;vbraun@physics.upenn.edu&gt;
+Date:   Sun Jul 30 03:04:18 2006 -0700
+
+    [PATCH] radeonfb sleep fixes
+    
+    Many IBM Thinkpad T4* models and some R* and X* with radeon video cards draw
+    too much power when suspended to RAM, reducing drastically the battery
+    lifetime.  The solution is to enable suspend-to-D2 on these machines.  They
+    are whitelisted through their subsystem vendor/device ID.  This fixes
+    http://bugzilla.kernel.org/show_bug.cgi?id=3022
+    
+    The patch introduces a framework to alter the pm_mode and reinit_func fields
+    of the radeonfb_info structure based on a whitelist.  This should facilitate
+    future hardware-dependent workarounds.  The workaround for the Samsung P35
+    that is already in the radeonfb code has been rewritten using this framework.
+    
+    The behavior can be overridden with module options:
+    
+    i)  video=radeonfb:force_sleep=1
+        enable suspend-to-D2 also on non-whitelisted machines (useful for
+        testing new notebook models),
+    
+    ii) video=radeonfb:ignore_devlist=1
+        Disable checking the whitelist and do not apply any workarounds.
+    
+    Cc: Benjamin Herrenschmidt &lt;benh@kernel.crashing.org&gt;
+    Cc: "Antonino A. Daplas" &lt;adaplas@pol.net&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/video/aty/radeon_base.c b/drivers/video/aty/radeon_base.c
+index 8d85fc58142e..8e3400d5dd21 100644
+--- a/drivers/video/aty/radeon_base.c
++++ b/drivers/video/aty/radeon_base.c
+@@ -266,6 +266,8 @@ static int force_measure_pll = 0;
+ #ifdef CONFIG_MTRR
+ static int nomtrr = 0;
+ #endif
++static int force_sleep;
++static int ignore_devlist;
+ 
+ /*
+  * prototypes
+@@ -2327,9 +2329,9 @@ static int __devinit radeonfb_pci_register (struct pci_dev *pdev,
+ 		/* -2 is special: means  ON on mobility chips and do not
+ 		 * change on others
+ 		 */
+-		radeonfb_pm_init(rinfo, rinfo-&gt;is_mobility ? 1 : -1);
++		radeonfb_pm_init(rinfo, rinfo-&gt;is_mobility ? 1 : -1, ignore_devlist, force_sleep);
+ 	} else
+-		radeonfb_pm_init(rinfo, default_dynclk);
++		radeonfb_pm_init(rinfo, default_dynclk, ignore_devlist, force_sleep);
+ 
+ 	pci_set_drvdata(pdev, info);
+ 
+@@ -2477,6 +2479,12 @@ static int __init radeonfb_setup (char *options)
+ 			force_measure_pll = 1;
+ 		} else if (!strncmp(this_opt, "ignore_edid", 11)) {
+ 			ignore_edid = 1;
++#if defined(CONFIG_PM) &amp;&amp; defined(CONFIG_X86)
++	 	} else if (!strncmp(this_opt, "force_sleep", 11)) {
++			force_sleep = 1;
++		} else if (!strncmp(this_opt, "ignore_devlist", 14)) {
++			ignore_devlist = 1;
++#endif
+ 		} else
+ 			mode_option = this_opt;
+ 	}
+@@ -2532,3 +2540,9 @@ module_param(panel_yres, int, 0);
+ MODULE_PARM_DESC(panel_yres, "int: set panel yres");
+ module_param(mode_option, charp, 0);
+ MODULE_PARM_DESC(mode_option, "Specify resolution as \"&lt;xres&gt;x&lt;yres&gt;[-&lt;bpp&gt;][@&lt;refresh&gt;]\" ");
++#if defined(CONFIG_PM) &amp;&amp; defined(CONFIG_X86)
++module_param(force_sleep, bool, 0);
++MODULE_PARM_DESC(force_sleep, "bool: force D2 sleep mode on all hardware");
++module_param(ignore_devlist, bool, 0);
++MODULE_PARM_DESC(ignore_devlist, "bool: ignore workarounds for bugs in specific laptops");
++#endif
+diff --git a/drivers/video/aty/radeon_pm.c b/drivers/video/aty/radeon_pm.c
+index c7091761cef4..f31e606a2ded 100644
+--- a/drivers/video/aty/radeon_pm.c
++++ b/drivers/video/aty/radeon_pm.c
+@@ -27,6 +27,99 @@
+ 
+ #include "ati_ids.h"
+ 
++static void radeon_reinitialize_M10(struct radeonfb_info *rinfo);
++
++/*
++ * Workarounds for bugs in PC laptops:
++ * - enable D2 sleep in some IBM Thinkpads
++ * - special case for Samsung P35
++ *
++ * Whitelist by subsystem vendor/device because
++ * its the subsystem vendor's fault!
++ */
++
++#if defined(CONFIG_PM) &amp;&amp; defined(CONFIG_X86)
++struct radeon_device_id {
++        const char *ident;                     /* (arbitrary) Name */
++        const unsigned short subsystem_vendor; /* Subsystem Vendor ID */
++        const unsigned short subsystem_device; /* Subsystem Device ID */
++	const enum radeon_pm_mode pm_mode_modifier; /* modify pm_mode */
++	const reinit_function_ptr new_reinit_func;   /* changed reinit_func */
++};
++
++#define BUGFIX(model, sv, sd, pm, fn) { \
++	.ident = model, \
++	.subsystem_vendor = sv, \
++	.subsystem_device = sd, \
++	.pm_mode_modifier = pm, \
++	.new_reinit_func  = fn  \
++}
++
++static struct radeon_device_id radeon_workaround_list[] = {
++	BUGFIX("IBM Thinkpad R32",
++	       PCI_VENDOR_ID_IBM, 0x1905,
++	       radeon_pm_d2, NULL),
++	BUGFIX("IBM Thinkpad R40",
++	       PCI_VENDOR_ID_IBM, 0x0526,
++	       radeon_pm_d2, NULL),
++	BUGFIX("IBM Thinkpad R40",
++	       PCI_VENDOR_ID_IBM, 0x0527,
++	       radeon_pm_d2, NULL),
++	BUGFIX("IBM Thinkpad R50/R51/T40/T41",
++	       PCI_VENDOR_ID_IBM, 0x0531,
++	       radeon_pm_d2, NULL),
++	BUGFIX("IBM Thinkpad R51/T40/T41/T42",
++	       PCI_VENDOR_ID_IBM, 0x0530,
++	       radeon_pm_d2, NULL),
++	BUGFIX("IBM Thinkpad T30",
++	       PCI_VENDOR_ID_IBM, 0x0517,
++	       radeon_pm_d2, NULL),
++	BUGFIX("IBM Thinkpad T40p",
++	       PCI_VENDOR_ID_IBM, 0x054d,
++	       radeon_pm_d2, NULL),
++	BUGFIX("IBM Thinkpad T42",
++	       PCI_VENDOR_ID_IBM, 0x0550,
++	       radeon_pm_d2, NULL),
++	BUGFIX("IBM Thinkpad X31/X32",
++	       PCI_VENDOR_ID_IBM, 0x052f,
++	       radeon_pm_d2, NULL),
++	BUGFIX("Samsung P35",
++	       PCI_VENDOR_ID_SAMSUNG, 0xc00c,
++	       radeon_pm_off, radeon_reinitialize_M10),
++	{ .ident = NULL }
++};
++
++static int radeon_apply_workarounds(struct radeonfb_info *rinfo)
++{
++	struct radeon_device_id *id;
++
++	for (id = radeon_workaround_list; id-&gt;ident != NULL; id++ )
++		if ((id-&gt;subsystem_vendor == rinfo-&gt;pdev-&gt;subsystem_vendor ) &amp;&amp;
++		    (id-&gt;subsystem_device == rinfo-&gt;pdev-&gt;subsystem_device )) {
++
++			/* we found a device that requires workaround */
++			printk(KERN_DEBUG "radeonfb: %s detected"
++			       ", enabling workaround\n", id-&gt;ident);
++
++			rinfo-&gt;pm_mode |= id-&gt;pm_mode_modifier;
++
++			if (id-&gt;new_reinit_func != NULL)
++				rinfo-&gt;reinit_func = id-&gt;new_reinit_func;
++
++			return 1;
++		}
++	return 0;  /* not found */
++}
++
++#else  /* defined(CONFIG_PM) &amp;&amp; defined(CONFIG_X86) */
++static inline int radeon_apply_workarounds(struct radeonfb_info *rinfo)
++{
++        return 0;
++}
++#endif /* defined(CONFIG_PM) &amp;&amp; defined(CONFIG_X86) */
++
++
++
+ static void radeon_pm_disable_dynamic_mode(struct radeonfb_info *rinfo)
+ {
+ 	u32 tmp;
+@@ -852,18 +945,26 @@ static void radeon_pm_setup_for_suspend(struct radeonfb_info *rinfo)
+ 	/* because both INPLL and OUTPLL take the same lock, that's why. */
+ 	tmp = INPLL( pllMCLK_MISC) | MCLK_MISC__EN_MCLK_TRISTATE_IN_SUSPEND;
+ 	OUTPLL( pllMCLK_MISC, tmp);
+-	
+-	/* AGP PLL control */
+-	if (rinfo-&gt;family &lt;= CHIP_FAMILY_RV280) {
+-		OUTREG(BUS_CNTL1, INREG(BUS_CNTL1) |  BUS_CNTL1__AGPCLK_VALID);
+ 
+-		OUTREG(BUS_CNTL1,
+-		       (INREG(BUS_CNTL1) &amp; ~BUS_CNTL1__MOBILE_PLATFORM_SEL_MASK)
+-		       | (2&lt;&lt;BUS_CNTL1__MOBILE_PLATFORM_SEL__SHIFT));	// 440BX
+-	} else {
+-		OUTREG(BUS_CNTL1, INREG(BUS_CNTL1));
+-		OUTREG(BUS_CNTL1, (INREG(BUS_CNTL1) &amp; ~0x4000) | 0x8000);
++	/* BUS_CNTL1__MOBILE_PLATORM_SEL setting is northbridge chipset
++	 * and radeon chip dependent. Thus we only enable it on Mac for
++	 * now (until we get more info on how to compute the correct
++	 * value for various X86 bridges).
++	 */
++#ifdef CONFIG_PPC_PMAC
++	if (machine_is(powermac)) {
++		/* AGP PLL control */
++		if (rinfo-&gt;family &lt;= CHIP_FAMILY_RV280) {
++			OUTREG(BUS_CNTL1, INREG(BUS_CNTL1) |  BUS_CNTL1__AGPCLK_VALID);
++			OUTREG(BUS_CNTL1,
++			       (INREG(BUS_CNTL1) &amp; ~BUS_CNTL1__MOBILE_PLATFORM_SEL_MASK)
++			       | (2&lt;&lt;BUS_CNTL1__MOBILE_PLATFORM_SEL__SHIFT));	// 440BX
++		} else {
++			OUTREG(BUS_CNTL1, INREG(BUS_CNTL1));
++			OUTREG(BUS_CNTL1, (INREG(BUS_CNTL1) &amp; ~0x4000) | 0x8000);
++		}
+ 	}
++#endif
+ 
+ 	OUTREG(CRTC_OFFSET_CNTL, (INREG(CRTC_OFFSET_CNTL)
+ 				  &amp; ~CRTC_OFFSET_CNTL__CRTC_STEREO_SYNC_OUT_EN));
+@@ -2713,7 +2814,7 @@ static void radeonfb_early_resume(void *data)
+ 
+ #endif /* CONFIG_PM */
+ 
+-void radeonfb_pm_init(struct radeonfb_info *rinfo, int dynclk)
++void radeonfb_pm_init(struct radeonfb_info *rinfo, int dynclk, int ignore_devlist, int force_sleep)
+ {
+ 	/* Find PM registers in config space if any*/
+ 	rinfo-&gt;pm_reg = pci_find_capability(rinfo-&gt;pdev, PCI_CAP_ID_PM);
+@@ -2729,22 +2830,13 @@ void radeonfb_pm_init(struct radeonfb_info *rinfo, int dynclk)
+ 	}
+ 
+ #if defined(CONFIG_PM)
++#if defined(CONFIG_PPC_PMAC)
+ 	/* Check if we can power manage on suspend/resume. We can do
+ 	 * D2 on M6, M7 and M9, and we can resume from D3 cold a few other
+ 	 * "Mac" cards, but that's all. We need more infos about what the
+ 	 * BIOS does tho. Right now, all this PM stuff is pmac-only for that
+ 	 * reason. --BenH
+ 	 */
+-	/* Special case for Samsung P35 laptops
+-	 */
+-	if ((rinfo-&gt;pdev-&gt;vendor == PCI_VENDOR_ID_ATI) &amp;&amp;
+-	    (rinfo-&gt;pdev-&gt;device == PCI_CHIP_RV350_NP) &amp;&amp;
+-	    (rinfo-&gt;pdev-&gt;subsystem_vendor == PCI_VENDOR_ID_SAMSUNG) &amp;&amp;
+-	    (rinfo-&gt;pdev-&gt;subsystem_device == 0xc00c)) {
+-		rinfo-&gt;reinit_func = radeon_reinitialize_M10;
+-		rinfo-&gt;pm_mode |= radeon_pm_off;
+-	}
+-#if defined(CONFIG_PPC_PMAC)
+ 	if (machine_is(powermac) &amp;&amp; rinfo-&gt;of_node) {
+ 		if (rinfo-&gt;is_mobility &amp;&amp; rinfo-&gt;pm_reg &amp;&amp;
+ 		    rinfo-&gt;family &lt;= CHIP_FAMILY_RV250)
+@@ -2790,6 +2882,18 @@ void radeonfb_pm_init(struct radeonfb_info *rinfo, int dynclk)
+ 	}
+ #endif /* defined(CONFIG_PPC_PMAC) */
+ #endif /* defined(CONFIG_PM) */
++
++	if (ignore_devlist)
++		printk(KERN_DEBUG
++		       "radeonfb: skipping test for device workarounds\n");
++	else
++		radeon_apply_workarounds(rinfo);
++
++	if (force_sleep) {
++		printk(KERN_DEBUG
++		       "radeonfb: forcefully enabling D2 sleep mode\n");
++		rinfo-&gt;pm_mode |= radeon_pm_d2;
++	}
+ }
+ 
+ void radeonfb_pm_exit(struct radeonfb_info *rinfo)
+diff --git a/drivers/video/aty/radeonfb.h b/drivers/video/aty/radeonfb.h
+index 38657b2d10eb..d5ff224a6258 100644
+--- a/drivers/video/aty/radeonfb.h
++++ b/drivers/video/aty/radeonfb.h
+@@ -273,6 +273,8 @@ enum radeon_pm_mode {
+ 	radeon_pm_off	= 0x00000002,	/* Can resume from D3 cold */
+ };
+ 
++typedef void (*reinit_function_ptr)(struct radeonfb_info *rinfo);
++
+ struct radeonfb_info {
+ 	struct fb_info		*info;
+ 
+@@ -338,7 +340,7 @@ struct radeonfb_info {
+ 	int			dynclk;
+ 	int			no_schedule;
+ 	enum radeon_pm_mode	pm_mode;
+-	void			(*reinit_func)(struct radeonfb_info *rinfo);
++	reinit_function_ptr     reinit_func;
+ 
+ 	/* Lock on register access */
+ 	spinlock_t		reg_lock;
+@@ -600,7 +602,7 @@ extern int radeon_probe_i2c_connector(struct radeonfb_info *rinfo, int conn, u8
+ /* PM Functions */
+ extern int radeonfb_pci_suspend(struct pci_dev *pdev, pm_message_t state);
+ extern int radeonfb_pci_resume(struct pci_dev *pdev);
+-extern void radeonfb_pm_init(struct radeonfb_info *rinfo, int dynclk);
++extern void radeonfb_pm_init(struct radeonfb_info *rinfo, int dynclk, int ignore_devlist, int force_sleep);
+ extern void radeonfb_pm_exit(struct radeonfb_info *rinfo);
+ 
+ /* Monitor probe functions */</pre>
+    <div class="pagination">
+        <a href='25_2.html'>&lt;&lt;Prev</a><a href='25.html'>1</a><a href='25_2.html'>2</a><span>[3]</span>
+    <div>
+</body>

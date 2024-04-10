@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Minnesota</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Minnesota</h1>
+    <div class="pagination">
+        <a href='7_26.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><span>[27]</span><a href='7_28.html'>28</a><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_28.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 966e927bf8cc6a44f8b72582a1d6d3ffc73b12ad
+Author: Kangjie Lu &lt;kjlu@umn.edu&gt;
+Date:   Tue Dec 18 23:04:13 2018 -0600
+
+    drivers/regulator: fix a missing check of return value
+    
+    If palmas_smps_read() fails, we should not use the read data in "reg"
+    which may contain random value. The fix inserts a check for the return
+    value of palmas_smps_read(): If it fails, we return the error code
+    upstream and stop using "reg".
+    
+    Signed-off-by: Kangjie Lu &lt;kjlu@umn.edu&gt;
+    Signed-off-by: Mark Brown &lt;broonie@kernel.org&gt;
+
+diff --git a/drivers/regulator/palmas-regulator.c b/drivers/regulator/palmas-regulator.c
+index bb5ab7d78895..c2cc392a27d4 100644
+--- a/drivers/regulator/palmas-regulator.c
++++ b/drivers/regulator/palmas-regulator.c
+@@ -443,13 +443,16 @@ static int palmas_ldo_write(struct palmas *palmas, unsigned int reg,
+ static int palmas_set_mode_smps(struct regulator_dev *dev, unsigned int mode)
+ {
+ 	int id = rdev_get_id(dev);
++	int ret;
+ 	struct palmas_pmic *pmic = rdev_get_drvdata(dev);
+ 	struct palmas_pmic_driver_data *ddata = pmic-&gt;palmas-&gt;pmic_ddata;
+ 	struct palmas_regs_info *rinfo = &amp;ddata-&gt;palmas_regs_info[id];
+ 	unsigned int reg;
+ 	bool rail_enable = true;
+ 
+-	palmas_smps_read(pmic-&gt;palmas, rinfo-&gt;ctrl_addr, &amp;reg);
++	ret = palmas_smps_read(pmic-&gt;palmas, rinfo-&gt;ctrl_addr, &amp;reg);
++	if (ret)
++		return ret;
+ 
+ 	reg &amp;= ~PALMAS_SMPS12_CTRL_MODE_ACTIVE_MASK;
+ </pre><hr><pre>commit 15b3048aeed8bf8232156456c884ae94ed52d6cd
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Tue Dec 4 09:16:41 2018 -0600
+
+    misc: mic: fix a DMA pool free failure
+    
+    In _scif_prog_signal(), a DMA pool is allocated if the MIC Coprocessor is
+    not X100, i.e., the boolean variable 'x100' is false. This DMA pool will be
+    freed eventually through the callback function scif_prog_signal_cb() with
+    the parameter of 'status', which actually points to the start of DMA pool.
+    Specifically, in scif_prog_signal_cb(), the 'ep' field and the
+    'src_dma_addr' field of 'status' are used to free the DMA pool by invoking
+    dma_pool_free(). Given that 'status' points to the start address of the DMA
+    pool, both 'status-&gt;ep' and 'status-&gt;src_dma_addr' are in the DMA pool. And
+    so, the device has the permission to access them. Even worse, a malicious
+    device can modify them. As a result, dma_pool_free() will not succeed.
+    
+    To avoid the above issue, this patch introduces a new data structure, i.e.,
+    scif_cb_arg, to store the arguments required by the call back function. A
+    variable 'cb_arg' is allocated in _scif_prog_signal() to pass the
+    arguments. 'cb_arg' will be freed after dma_pool_free() in
+    scif_prog_signal_cb().
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/misc/mic/scif/scif_fence.c b/drivers/misc/mic/scif/scif_fence.c
+index 7bb929f05d85..2e7ce6ae9dd2 100644
+--- a/drivers/misc/mic/scif/scif_fence.c
++++ b/drivers/misc/mic/scif/scif_fence.c
+@@ -195,10 +195,11 @@ static inline void *scif_get_local_va(off_t off, struct scif_window *window)
+ 
+ static void scif_prog_signal_cb(void *arg)
+ {
+-	struct scif_status *status = arg;
++	struct scif_cb_arg *cb_arg = arg;
+ 
+-	dma_pool_free(status-&gt;ep-&gt;remote_dev-&gt;signal_pool, status,
+-		      status-&gt;src_dma_addr);
++	dma_pool_free(cb_arg-&gt;ep-&gt;remote_dev-&gt;signal_pool, cb_arg-&gt;status,
++		      cb_arg-&gt;src_dma_addr);
++	kfree(cb_arg);
+ }
+ 
+ static int _scif_prog_signal(scif_epd_t epd, dma_addr_t dst, u64 val)
+@@ -209,6 +210,7 @@ static int _scif_prog_signal(scif_epd_t epd, dma_addr_t dst, u64 val)
+ 	bool x100 = !is_dma_copy_aligned(chan-&gt;device, 1, 1, 1);
+ 	struct dma_async_tx_descriptor *tx;
+ 	struct scif_status *status = NULL;
++	struct scif_cb_arg *cb_arg = NULL;
+ 	dma_addr_t src;
+ 	dma_cookie_t cookie;
+ 	int err;
+@@ -257,8 +259,16 @@ static int _scif_prog_signal(scif_epd_t epd, dma_addr_t dst, u64 val)
+ 		goto dma_fail;
+ 	}
+ 	if (!x100) {
++		cb_arg = kmalloc(sizeof(*cb_arg), GFP_KERNEL);
++		if (!cb_arg) {
++			err = -ENOMEM;
++			goto dma_fail;
++		}
++		cb_arg-&gt;src_dma_addr = src;
++		cb_arg-&gt;status = status;
++		cb_arg-&gt;ep = ep;
+ 		tx-&gt;callback = scif_prog_signal_cb;
+-		tx-&gt;callback_param = status;
++		tx-&gt;callback_param = cb_arg;
+ 	}
+ 	cookie = tx-&gt;tx_submit(tx);
+ 	if (dma_submit_error(cookie)) {
+@@ -270,9 +280,11 @@ static int _scif_prog_signal(scif_epd_t epd, dma_addr_t dst, u64 val)
+ 	dma_async_issue_pending(chan);
+ 	return 0;
+ dma_fail:
+-	if (!x100)
++	if (!x100) {
+ 		dma_pool_free(ep-&gt;remote_dev-&gt;signal_pool, status,
+ 			      src - offsetof(struct scif_status, val));
++		kfree(cb_arg);
++	}
+ alloc_fail:
+ 	return err;
+ }
+diff --git a/drivers/misc/mic/scif/scif_rma.h b/drivers/misc/mic/scif/scif_rma.h
+index fa6722279196..84af3033a473 100644
+--- a/drivers/misc/mic/scif/scif_rma.h
++++ b/drivers/misc/mic/scif/scif_rma.h
+@@ -205,6 +205,19 @@ struct scif_status {
+ 	struct scif_endpt *ep;
+ };
+ 
++/*
++ * struct scif_cb_arg - Stores the argument of the callback func
++ *
++ * @src_dma_addr: Source buffer DMA address
++ * @status: DMA status
++ * @ep: SCIF endpoint
++ */
++struct scif_cb_arg {
++	dma_addr_t src_dma_addr;
++	struct scif_status *status;
++	struct scif_endpt *ep;
++};
++
+ /*
+  * struct scif_window - Registration Window for Self and Remote
+  *</pre><hr><pre>commit 7172122be6a4712d699da4d261f92aa5ab3a78b8
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Thu Oct 18 19:50:43 2018 -0500
+
+    crypto: cavium/nitrox - fix a DMA pool free failure
+    
+    In crypto_alloc_context(), a DMA pool is allocated through dma_pool_alloc()
+    to hold the crypto context. The meta data of the DMA pool, including the
+    pool used for the allocation 'ndev-&gt;ctx_pool' and the base address of the
+    DMA pool used by the device 'dma', are then stored to the beginning of the
+    pool. These meta data are eventually used in crypto_free_context() to free
+    the DMA pool through dma_pool_free(). However, given that the DMA pool can
+    also be accessed by the device, a malicious device can modify these meta
+    data, especially when the device is controlled to deploy an attack. This
+    can cause an unexpected DMA pool free failure.
+    
+    To avoid the above issue, this patch introduces a new structure
+    crypto_ctx_hdr and a new field chdr in the structure nitrox_crypto_ctx hold
+    the meta data information of the DMA pool after the allocation. Note that
+    the original structure ctx_hdr is not changed to ensure the compatibility.
+    
+    Cc: &lt;stable@vger.kernel.org&gt;
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: Herbert Xu &lt;herbert@gondor.apana.org.au&gt;
+
+diff --git a/drivers/crypto/cavium/nitrox/nitrox_algs.c b/drivers/crypto/cavium/nitrox/nitrox_algs.c
+index 2ae6124e5da6..5d54ebc20cb3 100644
+--- a/drivers/crypto/cavium/nitrox/nitrox_algs.c
++++ b/drivers/crypto/cavium/nitrox/nitrox_algs.c
+@@ -73,7 +73,7 @@ static int flexi_aes_keylen(int keylen)
+ static int nitrox_skcipher_init(struct crypto_skcipher *tfm)
+ {
+ 	struct nitrox_crypto_ctx *nctx = crypto_skcipher_ctx(tfm);
+-	void *fctx;
++	struct crypto_ctx_hdr *chdr;
+ 
+ 	/* get the first device */
+ 	nctx-&gt;ndev = nitrox_get_first_device();
+@@ -81,12 +81,14 @@ static int nitrox_skcipher_init(struct crypto_skcipher *tfm)
+ 		return -ENODEV;
+ 
+ 	/* allocate nitrox crypto context */
+-	fctx = crypto_alloc_context(nctx-&gt;ndev);
+-	if (!fctx) {
++	chdr = crypto_alloc_context(nctx-&gt;ndev);
++	if (!chdr) {
+ 		nitrox_put_device(nctx-&gt;ndev);
+ 		return -ENOMEM;
+ 	}
+-	nctx-&gt;u.ctx_handle = (uintptr_t)fctx;
++	nctx-&gt;chdr = chdr;
++	nctx-&gt;u.ctx_handle = (uintptr_t)((u8 *)chdr-&gt;vaddr +
++					 sizeof(struct ctx_hdr));
+ 	crypto_skcipher_set_reqsize(tfm, crypto_skcipher_reqsize(tfm) +
+ 				    sizeof(struct nitrox_kcrypt_request));
+ 	return 0;
+@@ -102,7 +104,7 @@ static void nitrox_skcipher_exit(struct crypto_skcipher *tfm)
+ 
+ 		memset(&amp;fctx-&gt;crypto, 0, sizeof(struct crypto_keys));
+ 		memset(&amp;fctx-&gt;auth, 0, sizeof(struct auth_keys));
+-		crypto_free_context((void *)fctx);
++		crypto_free_context((void *)nctx-&gt;chdr);
+ 	}
+ 	nitrox_put_device(nctx-&gt;ndev);
+ 
+diff --git a/drivers/crypto/cavium/nitrox/nitrox_lib.c b/drivers/crypto/cavium/nitrox/nitrox_lib.c
+index 2260efa42308..9138bae12521 100644
+--- a/drivers/crypto/cavium/nitrox/nitrox_lib.c
++++ b/drivers/crypto/cavium/nitrox/nitrox_lib.c
+@@ -158,12 +158,19 @@ static void destroy_crypto_dma_pool(struct nitrox_device *ndev)
+ void *crypto_alloc_context(struct nitrox_device *ndev)
+ {
+ 	struct ctx_hdr *ctx;
++	struct crypto_ctx_hdr *chdr;
+ 	void *vaddr;
+ 	dma_addr_t dma;
+ 
++	chdr = kmalloc(sizeof(*chdr), GFP_KERNEL);
++	if (!chdr)
++		return NULL;
++
+ 	vaddr = dma_pool_zalloc(ndev-&gt;ctx_pool, GFP_KERNEL, &amp;dma);
+-	if (!vaddr)
++	if (!vaddr) {
++		kfree(chdr);
+ 		return NULL;
++	}
+ 
+ 	/* fill meta data */
+ 	ctx = vaddr;
+@@ -171,7 +178,11 @@ void *crypto_alloc_context(struct nitrox_device *ndev)
+ 	ctx-&gt;dma = dma;
+ 	ctx-&gt;ctx_dma = dma + sizeof(struct ctx_hdr);
+ 
+-	return ((u8 *)vaddr + sizeof(struct ctx_hdr));
++	chdr-&gt;pool = ndev-&gt;ctx_pool;
++	chdr-&gt;dma = dma;
++	chdr-&gt;vaddr = vaddr;
++
++	return chdr;
+ }
+ 
+ /**
+@@ -180,13 +191,14 @@ void *crypto_alloc_context(struct nitrox_device *ndev)
+  */
+ void crypto_free_context(void *ctx)
+ {
+-	struct ctx_hdr *ctxp;
++	struct crypto_ctx_hdr *ctxp;
+ 
+ 	if (!ctx)
+ 		return;
+ 
+-	ctxp = (struct ctx_hdr *)((u8 *)ctx - sizeof(struct ctx_hdr));
+-	dma_pool_free(ctxp-&gt;pool, ctxp, ctxp-&gt;dma);
++	ctxp = ctx;
++	dma_pool_free(ctxp-&gt;pool, ctxp-&gt;vaddr, ctxp-&gt;dma);
++	kfree(ctxp);
+ }
+ 
+ /**
+diff --git a/drivers/crypto/cavium/nitrox/nitrox_req.h b/drivers/crypto/cavium/nitrox/nitrox_req.h
+index d091b6f5f5dd..19f0a20e3bb3 100644
+--- a/drivers/crypto/cavium/nitrox/nitrox_req.h
++++ b/drivers/crypto/cavium/nitrox/nitrox_req.h
+@@ -181,12 +181,19 @@ struct flexi_crypto_context {
+ 	struct auth_keys auth;
+ };
+ 
++struct crypto_ctx_hdr {
++	struct dma_pool *pool;
++	dma_addr_t dma;
++	void *vaddr;
++};
++
+ struct nitrox_crypto_ctx {
+ 	struct nitrox_device *ndev;
+ 	union {
+ 		u64 ctx_handle;
+ 		struct flexi_crypto_context *fctx;
+ 	} u;
++	struct crypto_ctx_hdr *chdr;
+ };
+ 
+ struct nitrox_kcrypt_request {</pre><hr><pre>commit b6168562c8ce2bd5a30e213021650422e08764dc
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Thu Oct 18 09:36:46 2018 -0500
+
+    net: socket: fix a missing-check bug
+    
+    In ethtool_ioctl(), the ioctl command 'ethcmd' is checked through a switch
+    statement to see whether it is necessary to pre-process the ethtool
+    structure, because, as mentioned in the comment, the structure
+    ethtool_rxnfc is defined with padding. If yes, a user-space buffer 'rxnfc'
+    is allocated through compat_alloc_user_space(). One thing to note here is
+    that, if 'ethcmd' is ETHTOOL_GRXCLSRLALL, the size of the buffer 'rxnfc' is
+    partially determined by 'rule_cnt', which is actually acquired from the
+    user-space buffer 'compat_rxnfc', i.e., 'compat_rxnfc-&gt;rule_cnt', through
+    get_user(). After 'rxnfc' is allocated, the data in the original user-space
+    buffer 'compat_rxnfc' is then copied to 'rxnfc' through copy_in_user(),
+    including the 'rule_cnt' field. However, after this copy, no check is
+    re-enforced on 'rxnfc-&gt;rule_cnt'. So it is possible that a malicious user
+    race to change the value in the 'compat_rxnfc-&gt;rule_cnt' between these two
+    copies. Through this way, the attacker can bypass the previous check on
+    'rule_cnt' and inject malicious data. This can cause undefined behavior of
+    the kernel and introduce potential security risk.
+    
+    This patch avoids the above issue via copying the value acquired by
+    get_user() to 'rxnfc-&gt;rule_cn', if 'ethcmd' is ETHTOOL_GRXCLSRLALL.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/socket.c b/net/socket.c
+index 01f3f8f32d6f..390a8ecef4bf 100644
+--- a/net/socket.c
++++ b/net/socket.c
+@@ -2875,9 +2875,14 @@ static int ethtool_ioctl(struct net *net, struct compat_ifreq __user *ifr32)
+ 		    copy_in_user(&amp;rxnfc-&gt;fs.ring_cookie,
+ 				 &amp;compat_rxnfc-&gt;fs.ring_cookie,
+ 				 (void __user *)(&amp;rxnfc-&gt;fs.location + 1) -
+-				 (void __user *)&amp;rxnfc-&gt;fs.ring_cookie) ||
+-		    copy_in_user(&amp;rxnfc-&gt;rule_cnt, &amp;compat_rxnfc-&gt;rule_cnt,
+-				 sizeof(rxnfc-&gt;rule_cnt)))
++				 (void __user *)&amp;rxnfc-&gt;fs.ring_cookie))
++			return -EFAULT;
++		if (ethcmd == ETHTOOL_GRXCLSRLALL) {
++			if (put_user(rule_cnt, &amp;rxnfc-&gt;rule_cnt))
++				return -EFAULT;
++		} else if (copy_in_user(&amp;rxnfc-&gt;rule_cnt,
++					&amp;compat_rxnfc-&gt;rule_cnt,
++					sizeof(rxnfc-&gt;rule_cnt)))
+ 			return -EFAULT;
+ 	}
+ </pre><hr><pre>commit 800a7340ab7dd667edf95e74d8e4f23a17e87076
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Wed Oct 3 11:43:59 2018 -0500
+
+    dm ioctl: harden copy_params()'s copy_from_user() from malicious users
+    
+    In copy_params(), the struct 'dm_ioctl' is first copied from the user
+    space buffer 'user' to 'param_kernel' and the field 'data_size' is
+    checked against 'minimum_data_size' (size of 'struct dm_ioctl' payload
+    up to its 'data' member).  If the check fails, an error code EINVAL will be
+    returned.  Otherwise, param_kernel-&gt;data_size is used to do a second copy,
+    which copies from the same user-space buffer to 'dmi'.  After the second
+    copy, only 'dmi-&gt;data_size' is checked against 'param_kernel-&gt;data_size'.
+    Given that the buffer 'user' resides in the user space, a malicious
+    user-space process can race to change the content in the buffer between
+    the two copies.  This way, the attacker can inject inconsistent data
+    into 'dmi' (versus previously validated 'param_kernel').
+    
+    Fix redundant copying of 'minimum_data_size' from user-space buffer by
+    using the first copy stored in 'param_kernel'.  Also remove the
+    'data_size' check after the second copy because it is now unnecessary.
+    
+    Cc: stable@vger.kernel.org
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: Mike Snitzer &lt;snitzer@redhat.com&gt;
+
+diff --git a/drivers/md/dm-ioctl.c b/drivers/md/dm-ioctl.c
+index b810ea77e6b1..f666778ad237 100644
+--- a/drivers/md/dm-ioctl.c
++++ b/drivers/md/dm-ioctl.c
+@@ -1720,8 +1720,7 @@ static void free_params(struct dm_ioctl *param, size_t param_size, int param_fla
+ }
+ 
+ static int copy_params(struct dm_ioctl __user *user, struct dm_ioctl *param_kernel,
+-		       int ioctl_flags,
+-		       struct dm_ioctl **param, int *param_flags)
++		       int ioctl_flags, struct dm_ioctl **param, int *param_flags)
+ {
+ 	struct dm_ioctl *dmi;
+ 	int secure_data;
+@@ -1762,18 +1761,13 @@ static int copy_params(struct dm_ioctl __user *user, struct dm_ioctl *param_kern
+ 
+ 	*param_flags |= DM_PARAMS_MALLOC;
+ 
+-	if (copy_from_user(dmi, user, param_kernel-&gt;data_size))
+-		goto bad;
++	/* Copy from param_kernel (which was already copied from user) */
++	memcpy(dmi, param_kernel, minimum_data_size);
+ 
+-data_copied:
+-	/*
+-	 * Abort if something changed the ioctl data while it was being copied.
+-	 */
+-	if (dmi-&gt;data_size != param_kernel-&gt;data_size) {
+-		DMERR("rejecting ioctl: data size modified while processing parameters");
++	if (copy_from_user(&amp;dmi-&gt;data, (char __user *)user + minimum_data_size,
++			   param_kernel-&gt;data_size - minimum_data_size))
+ 		goto bad;
+-	}
+-
++data_copied:
+ 	/* Wipe the user buffer so we do not return it to userspace */
+ 	if (secure_data &amp;&amp; clear_user(user, param_kernel-&gt;data_size))
+ 		goto bad;</pre><hr><pre>commit 47db7873136a9c57c45390a53b57019cf73c8259
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Sat Oct 6 13:34:21 2018 -0500
+
+    scsi: megaraid_sas: fix a missing-check bug
+    
+    In megasas_mgmt_compat_ioctl_fw(), to handle the structure
+    compat_megasas_iocpacket 'cioc', a user-space structure megasas_iocpacket
+    'ioc' is allocated before megasas_mgmt_ioctl_fw() is invoked to handle
+    the packet. Since the two data structures have different fields, the data
+    is copied from 'cioc' to 'ioc' field by field. In the copy process,
+    'sense_ptr' is prepared if the field 'sense_len' is not null, because it
+    will be used in megasas_mgmt_ioctl_fw(). To prepare 'sense_ptr', the
+    user-space data 'ioc-&gt;sense_off' and 'cioc-&gt;sense_off' are copied and
+    saved to kernel-space variables 'local_sense_off' and 'user_sense_off'
+    respectively. Given that 'ioc-&gt;sense_off' is also copied from
+    'cioc-&gt;sense_off', 'local_sense_off' and 'user_sense_off' should have the
+    same value. However, 'cioc' is in the user space and a malicious user can
+    race to change the value of 'cioc-&gt;sense_off' after it is copied to
+    'ioc-&gt;sense_off' but before it is copied to 'user_sense_off'. By doing
+    so, the attacker can inject different values into 'local_sense_off' and
+    'user_sense_off'. This can cause undefined behavior in the following
+    execution, because the two variables are supposed to be same.
+    
+    This patch enforces a check on the two kernel variables 'local_sense_off'
+    and 'user_sense_off' to make sure they are the same after the copy. In
+    case they are not, an error code EINVAL will be returned.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Acked-by: Sumit Saxena &lt;sumit.saxena@broadcom.com&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/megaraid/megaraid_sas_base.c b/drivers/scsi/megaraid/megaraid_sas_base.c
+index 9aa9590c5373..f6de7526ded5 100644
+--- a/drivers/scsi/megaraid/megaraid_sas_base.c
++++ b/drivers/scsi/megaraid/megaraid_sas_base.c
+@@ -7523,6 +7523,9 @@ static int megasas_mgmt_compat_ioctl_fw(struct file *file, unsigned long arg)
+ 		get_user(user_sense_off, &amp;cioc-&gt;sense_off))
+ 		return -EFAULT;
+ 
++	if (local_sense_off != user_sense_off)
++		return -EINVAL;
++
+ 	if (local_sense_len) {
+ 		void __user **sense_ioc_ptr =
+ 			(void __user **)((u8 *)((unsigned long)&amp;ioc-&gt;frame.raw) + local_sense_off);</pre><hr><pre>commit 58f5bbe331c566f49c9559568f982202a278aa78
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Mon Oct 8 10:49:35 2018 -0500
+
+    ethtool: fix a privilege escalation bug
+    
+    In dev_ethtool(), the eth command 'ethcmd' is firstly copied from the
+    use-space buffer 'useraddr' and checked to see whether it is
+    ETHTOOL_PERQUEUE. If yes, the sub-command 'sub_cmd' is further copied from
+    the user space. Otherwise, 'sub_cmd' is the same as 'ethcmd'. Next,
+    according to 'sub_cmd', a permission check is enforced through the function
+    ns_capable(). For example, the permission check is required if 'sub_cmd' is
+    ETHTOOL_SCOALESCE, but it is not necessary if 'sub_cmd' is
+    ETHTOOL_GCOALESCE, as suggested in the comment "Allow some commands to be
+    done by anyone". The following execution invokes different handlers
+    according to 'ethcmd'. Specifically, if 'ethcmd' is ETHTOOL_PERQUEUE,
+    ethtool_set_per_queue() is called. In ethtool_set_per_queue(), the kernel
+    object 'per_queue_opt' is copied again from the user-space buffer
+    'useraddr' and 'per_queue_opt.sub_command' is used to determine which
+    operation should be performed. Given that the buffer 'useraddr' is in the
+    user space, a malicious user can race to change the sub-command between the
+    two copies. In particular, the attacker can supply ETHTOOL_PERQUEUE and
+    ETHTOOL_GCOALESCE to bypass the permission check in dev_ethtool(). Then
+    before ethtool_set_per_queue() is called, the attacker changes
+    ETHTOOL_GCOALESCE to ETHTOOL_SCOALESCE. In this way, the attacker can
+    bypass the permission check and execute ETHTOOL_SCOALESCE.
+    
+    This patch enforces a check in ethtool_set_per_queue() after the second
+    copy from 'useraddr'. If the sub-command is different from the one obtained
+    in the first copy in dev_ethtool(), an error code EINVAL will be returned.
+    
+    Fixes: f38d138a7da6 ("net/ethtool: support set coalesce per queue")
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Reviewed-by: Michal Kubecek &lt;mkubecek@suse.cz&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/core/ethtool.c b/net/core/ethtool.c
+index 192f2f76b7bd..aeabc4831fca 100644
+--- a/net/core/ethtool.c
++++ b/net/core/ethtool.c
+@@ -2472,13 +2472,17 @@ static int ethtool_set_per_queue_coalesce(struct net_device *dev,
+ 	return ret;
+ }
+ 
+-static int ethtool_set_per_queue(struct net_device *dev, void __user *useraddr)
++static int ethtool_set_per_queue(struct net_device *dev,
++				 void __user *useraddr, u32 sub_cmd)
+ {
+ 	struct ethtool_per_queue_op per_queue_opt;
+ 
+ 	if (copy_from_user(&amp;per_queue_opt, useraddr, sizeof(per_queue_opt)))
+ 		return -EFAULT;
+ 
++	if (per_queue_opt.sub_command != sub_cmd)
++		return -EINVAL;
++
+ 	switch (per_queue_opt.sub_command) {
+ 	case ETHTOOL_GCOALESCE:
+ 		return ethtool_get_per_queue_coalesce(dev, useraddr, &amp;per_queue_opt);
+@@ -2849,7 +2853,7 @@ int dev_ethtool(struct net *net, struct ifreq *ifr)
+ 		rc = ethtool_get_phy_stats(dev, useraddr);
+ 		break;
+ 	case ETHTOOL_PERQUEUE:
+-		rc = ethtool_set_per_queue(dev, useraddr);
++		rc = ethtool_set_per_queue(dev, useraddr, sub_cmd);
+ 		break;
+ 	case ETHTOOL_GLINKSETTINGS:
+ 		rc = ethtool_get_link_ksettings(dev, useraddr);</pre><hr><pre>commit 2bb3207dbbd4d30e96dd0e1c8e013104193bd59c
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Tue Oct 9 08:15:38 2018 -0500
+
+    ethtool: fix a missing-check bug
+    
+    In ethtool_get_rxnfc(), the eth command 'cmd' is compared against
+    'ETHTOOL_GRXFH' to see whether it is necessary to adjust the variable
+    'info_size'. Then the whole structure of 'info' is copied from the
+    user-space buffer 'useraddr' with 'info_size' bytes. In the following
+    execution, 'info' may be copied again from the buffer 'useraddr' depending
+    on the 'cmd' and the 'info.flow_type'. However, after these two copies,
+    there is no check between 'cmd' and 'info.cmd'. In fact, 'cmd' is also
+    copied from the buffer 'useraddr' in dev_ethtool(), which is the caller
+    function of ethtool_get_rxnfc(). Given that 'useraddr' is in the user
+    space, a malicious user can race to change the eth command in the buffer
+    between these copies. By doing so, the attacker can supply inconsistent
+    data and cause undefined behavior because in the following execution 'info'
+    will be passed to ops-&gt;get_rxnfc().
+    
+    This patch adds a necessary check on 'info.cmd' and 'cmd' to confirm that
+    they are still same after the two copies in ethtool_get_rxnfc(). Otherwise,
+    an error code EINVAL will be returned.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/core/ethtool.c b/net/core/ethtool.c
+index 0762aaf8e964..192f2f76b7bd 100644
+--- a/net/core/ethtool.c
++++ b/net/core/ethtool.c
+@@ -1015,6 +1015,9 @@ static noinline_for_stack int ethtool_get_rxnfc(struct net_device *dev,
+ 			return -EINVAL;
+ 	}
+ 
++	if (info.cmd != cmd)
++		return -EINVAL;
++
+ 	if (info.cmd == ETHTOOL_GRXCLSRLALL) {
+ 		if (info.rule_cnt &gt; 0) {
+ 			if (info.rule_cnt &lt;= KMALLOC_MAX_SIZE / sizeof(u32))</pre><hr><pre>commit 6b995f4eec34745f6cb20d66d5277611f0b3c3fa
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Wed Oct 10 18:38:28 2018 -0500
+
+    misc: mic: fix a DMA pool free failure
+    
+    In _scif_prog_signal(), the boolean variable 'x100' is used to indicate
+    whether the MIC Coprocessor is X100. If 'x100' is true, the status
+    descriptor will be used to write the value to the destination. Otherwise, a
+    DMA pool will be allocated for this purpose. Specifically, if the DMA pool
+    is allocated successfully, two memory addresses will be returned. One is
+    for the CPU and the other is for the device to access the DMA pool. The
+    former is stored to the variable 'status' and the latter is stored to the
+    variable 'src'. After the allocation, the address in 'src' is saved to
+    'status-&gt;src_dma_addr', which is actually in the DMA pool, and 'src' is
+    then modified.
+    
+    Later on, if an error occurs, the execution flow will transfer to the label
+    'dma_fail', which will check 'x100' and free up the allocated DMA pool if
+    'x100' is false. The point here is that 'status-&gt;src_dma_addr' is used for
+    freeing up the DMA pool. As mentioned before, 'status-&gt;src_dma_addr' is in
+    the DMA pool. And thus, the device is able to modify this data. This can
+    potentially cause failures when freeing up the DMA pool because of the
+    modified device address.
+    
+    This patch avoids the above issue by using the variable 'src' (with
+    necessary calculation) to free up the DMA pool.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/misc/mic/scif/scif_fence.c b/drivers/misc/mic/scif/scif_fence.c
+index cac3bcc308a7..7bb929f05d85 100644
+--- a/drivers/misc/mic/scif/scif_fence.c
++++ b/drivers/misc/mic/scif/scif_fence.c
+@@ -272,7 +272,7 @@ static int _scif_prog_signal(scif_epd_t epd, dma_addr_t dst, u64 val)
+ dma_fail:
+ 	if (!x100)
+ 		dma_pool_free(ep-&gt;remote_dev-&gt;signal_pool, status,
+-			      status-&gt;src_dma_addr);
++			      src - offsetof(struct scif_status, val));
+ alloc_fail:
+ 	return err;
+ }</pre><hr><pre>commit 8af03d1ae2e154a8be3631e8694b87007e1bdbc2
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Sun Oct 7 15:23:15 2018 -0500
+
+    bpf: btf: Fix a missing check bug
+    
+    In btf_parse_hdr(), the length of the btf data header is firstly copied
+    from the user space to 'hdr_len' and checked to see whether it is larger
+    than 'btf_data_size'. If yes, an error code EINVAL is returned. Otherwise,
+    the whole header is copied again from the user space to 'btf-&gt;hdr'.
+    However, after the second copy, there is no check between
+    'btf-&gt;hdr-&gt;hdr_len' and 'hdr_len' to confirm that the two copies get the
+    same value. Given that the btf data is in the user space, a malicious user
+    can race to change the data between the two copies. By doing so, the user
+    can provide malicious data to the kernel and cause undefined behavior.
+    
+    This patch adds a necessary check after the second copy, to make sure
+    'btf-&gt;hdr-&gt;hdr_len' has the same value as 'hdr_len'. Otherwise, an error
+    code EINVAL will be returned.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Acked-by: Song Liu &lt;songliubraving@fb.com&gt;
+    Signed-off-by: Alexei Starovoitov &lt;ast@kernel.org&gt;
+
+diff --git a/kernel/bpf/btf.c b/kernel/bpf/btf.c
+index 138f0302692e..378cef70341c 100644
+--- a/kernel/bpf/btf.c
++++ b/kernel/bpf/btf.c
+@@ -2114,6 +2114,9 @@ static int btf_parse_hdr(struct btf_verifier_env *env, void __user *btf_data,
+ 
+ 	hdr = &amp;btf-&gt;hdr;
+ 
++	if (hdr-&gt;hdr_len != hdr_len)
++		return -EINVAL;
++
+ 	btf_verifier_log_hdr(env, btf_data_size);
+ 
+ 	if (hdr-&gt;magic != BTF_MAGIC) {</pre>
+    <div class="pagination">
+        <a href='7_26.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><span>[27]</span><a href='7_28.html'>28</a><a href='7_29.html'>29</a><a href='7_30.html'>30</a><a href='7_28.html'>Next&gt;&gt;</a>
+    <div>
+</body>

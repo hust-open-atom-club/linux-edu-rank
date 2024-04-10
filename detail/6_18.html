@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6_17.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><span>[18]</span><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_19.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 5352a761308397a0e6250fdc629bb3f615b94747
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Mon Mar 28 21:00:14 2022 +0800
+
+    ax25: fix UAF bug in ax25_send_control()
+    
+    There are UAF bugs in ax25_send_control(), when we call ax25_release()
+    to deallocate ax25_dev. The possible race condition is shown below:
+    
+          (Thread 1)              |     (Thread 2)
+    ax25_dev_device_up() //(1)    |
+                                  | ax25_kill_by_device()
+    ax25_bind()          //(2)    |
+    ax25_connect()                | ...
+     ax25-&gt;state = AX25_STATE_1   |
+     ...                          | ax25_dev_device_down() //(3)
+    
+          (Thread 3)
+    ax25_release()                |
+     ax25_dev_put()  //(4) FREE   |
+     case AX25_STATE_1:           |
+      ax25_send_control()         |
+       alloc_skb()       //USE    |
+    
+    The refcount of ax25_dev increases in position (1) and (2), and
+    decreases in position (3) and (4). The ax25_dev will be freed
+    before dereference sites in ax25_send_control().
+    
+    The following is part of the report:
+    
+    [  102.297448] BUG: KASAN: use-after-free in ax25_send_control+0x33/0x210
+    [  102.297448] Read of size 8 at addr ffff888009e6e408 by task ax25_close/602
+    [  102.297448] Call Trace:
+    [  102.303751]  ax25_send_control+0x33/0x210
+    [  102.303751]  ax25_release+0x356/0x450
+    [  102.305431]  __sock_release+0x6d/0x120
+    [  102.305431]  sock_close+0xf/0x20
+    [  102.305431]  __fput+0x11f/0x420
+    [  102.305431]  task_work_run+0x86/0xd0
+    [  102.307130]  get_signal+0x1075/0x1220
+    [  102.308253]  arch_do_signal_or_restart+0x1df/0xc00
+    [  102.308253]  exit_to_user_mode_prepare+0x150/0x1e0
+    [  102.308253]  syscall_exit_to_user_mode+0x19/0x50
+    [  102.308253]  do_syscall_64+0x48/0x90
+    [  102.308253]  entry_SYSCALL_64_after_hwframe+0x44/0xae
+    [  102.308253] RIP: 0033:0x405ae7
+    
+    This patch defers the free operation of ax25_dev and net_device after
+    all corresponding dereference sites in ax25_release() to avoid UAF.
+    
+    Fixes: 9fd75b66b8f6 ("ax25: Fix refcount leaks caused by ax25_cb_del()")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: Paolo Abeni &lt;pabeni@redhat.com&gt;
+
+diff --git a/net/ax25/af_ax25.c b/net/ax25/af_ax25.c
+index 992b6e5d85d7..f5686c463bc0 100644
+--- a/net/ax25/af_ax25.c
++++ b/net/ax25/af_ax25.c
+@@ -991,10 +991,6 @@ static int ax25_release(struct socket *sock)
+ 	sock_orphan(sk);
+ 	ax25 = sk_to_ax25(sk);
+ 	ax25_dev = ax25-&gt;ax25_dev;
+-	if (ax25_dev) {
+-		dev_put_track(ax25_dev-&gt;dev, &amp;ax25_dev-&gt;dev_tracker);
+-		ax25_dev_put(ax25_dev);
+-	}
+ 
+ 	if (sk-&gt;sk_type == SOCK_SEQPACKET) {
+ 		switch (ax25-&gt;state) {
+@@ -1056,6 +1052,10 @@ static int ax25_release(struct socket *sock)
+ 		sk-&gt;sk_state_change(sk);
+ 		ax25_destroy_socket(ax25);
+ 	}
++	if (ax25_dev) {
++		dev_put_track(ax25_dev-&gt;dev, &amp;ax25_dev-&gt;dev_tracker);
++		ax25_dev_put(ax25_dev);
++	}
+ 
+ 	sock-&gt;sk   = NULL;
+ 	release_sock(sk);</pre><hr><pre>commit 7781607938c8371d4c2b243527430241c62e39c2
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sat Mar 26 18:43:46 2022 +0800
+
+    net/x25: Fix null-ptr-deref caused by x25_disconnect
+    
+    When the link layer is terminating, x25-&gt;neighbour will be set to NULL
+    in x25_disconnect(). As a result, it could cause null-ptr-deref bugs in
+    x25_sendmsg(),x25_recvmsg() and x25_connect(). One of the bugs is
+    shown below.
+    
+        (Thread 1)                 |  (Thread 2)
+    x25_link_terminated()          | x25_recvmsg()
+     x25_kill_by_neigh()           |  ...
+      x25_disconnect()             |  lock_sock(sk)
+       ...                         |  ...
+       x25-&gt;neighbour = NULL //(1) |
+       ...                         |  x25-&gt;neighbour-&gt;extended //(2)
+    
+    The code sets NULL to x25-&gt;neighbour in position (1) and dereferences
+    x25-&gt;neighbour in position (2), which could cause null-ptr-deref bug.
+    
+    This patch adds lock_sock() in x25_kill_by_neigh() in order to synchronize
+    with x25_sendmsg(), x25_recvmsg() and x25_connect(). What`s more, the
+    sock held by lock_sock() is not NULL, because it is extracted from x25_list
+    and uses x25_list_lock to synchronize.
+    
+    Fixes: 4becb7ee5b3d ("net/x25: Fix x25_neigh refcnt leak when x25 disconnect")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/x25/af_x25.c b/net/x25/af_x25.c
+index 3583354a7d7f..3a171828638b 100644
+--- a/net/x25/af_x25.c
++++ b/net/x25/af_x25.c
+@@ -1765,10 +1765,15 @@ void x25_kill_by_neigh(struct x25_neigh *nb)
+ 
+ 	write_lock_bh(&amp;x25_list_lock);
+ 
+-	sk_for_each(s, &amp;x25_list)
+-		if (x25_sk(s)-&gt;neighbour == nb)
++	sk_for_each(s, &amp;x25_list) {
++		if (x25_sk(s)-&gt;neighbour == nb) {
++			write_unlock_bh(&amp;x25_list_lock);
++			lock_sock(s);
+ 			x25_disconnect(s, ENETUNREACH, 0, 0);
+-
++			release_sock(s);
++			write_lock_bh(&amp;x25_list_lock);
++		}
++	}
+ 	write_unlock_bh(&amp;x25_list_lock);
+ 
+ 	/* Remove any related forwards */</pre><hr><pre>commit fc6d01ff9ef03b66d4a3a23b46fc3c3d8cf92009
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Fri Mar 18 08:54:05 2022 +0800
+
+    ax25: Fix NULL pointer dereferences in ax25 timers
+    
+    The previous commit 7ec02f5ac8a5 ("ax25: fix NPD bug in ax25_disconnect")
+    move ax25_disconnect into lock_sock() in order to prevent NPD bugs. But
+    there are race conditions that may lead to null pointer dereferences in
+    ax25_heartbeat_expiry(), ax25_t1timer_expiry(), ax25_t2timer_expiry(),
+    ax25_t3timer_expiry() and ax25_idletimer_expiry(), when we use
+    ax25_kill_by_device() to detach the ax25 device.
+    
+    One of the race conditions that cause null pointer dereferences can be
+    shown as below:
+    
+          (Thread 1)                    |      (Thread 2)
+    ax25_connect()                      |
+     ax25_std_establish_data_link()     |
+      ax25_start_t1timer()              |
+       mod_timer(&amp;ax25-&gt;t1timer,..)     |
+                                        | ax25_kill_by_device()
+       (wait a time)                    |  ...
+                                        |  s-&gt;ax25_dev = NULL; //(1)
+       ax25_t1timer_expiry()            |
+        ax25-&gt;ax25_dev-&gt;values[..] //(2)|  ...
+         ...                            |
+    
+    We set null to ax25_cb-&gt;ax25_dev in position (1) and dereference
+    the null pointer in position (2).
+    
+    The corresponding fail log is shown below:
+    ===============================================================
+    BUG: kernel NULL pointer dereference, address: 0000000000000050
+    CPU: 1 PID: 0 Comm: swapper/1 Not tainted 5.17.0-rc6-00794-g45690b7d0
+    RIP: 0010:ax25_t1timer_expiry+0x12/0x40
+    ...
+    Call Trace:
+     call_timer_fn+0x21/0x120
+     __run_timers.part.0+0x1ca/0x250
+     run_timer_softirq+0x2c/0x60
+     __do_softirq+0xef/0x2f3
+     irq_exit_rcu+0xb6/0x100
+     sysvec_apic_timer_interrupt+0xa2/0xd0
+    ...
+    
+    This patch moves ax25_disconnect() before s-&gt;ax25_dev = NULL
+    and uses del_timer_sync() to delete timers in ax25_disconnect().
+    If ax25_disconnect() is called by ax25_kill_by_device() or
+    ax25-&gt;ax25_dev is NULL, the reason in ax25_disconnect() will be
+    equal to ENETUNREACH, it will wait all timers to stop before we
+    set null to s-&gt;ax25_dev in ax25_kill_by_device().
+    
+    Fixes: 7ec02f5ac8a5 ("ax25: fix NPD bug in ax25_disconnect")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ax25/af_ax25.c b/net/ax25/af_ax25.c
+index cf8847cfc664..992b6e5d85d7 100644
+--- a/net/ax25/af_ax25.c
++++ b/net/ax25/af_ax25.c
+@@ -89,20 +89,20 @@ static void ax25_kill_by_device(struct net_device *dev)
+ 			sk = s-&gt;sk;
+ 			if (!sk) {
+ 				spin_unlock_bh(&amp;ax25_list_lock);
+-				s-&gt;ax25_dev = NULL;
+ 				ax25_disconnect(s, ENETUNREACH);
++				s-&gt;ax25_dev = NULL;
+ 				spin_lock_bh(&amp;ax25_list_lock);
+ 				goto again;
+ 			}
+ 			sock_hold(sk);
+ 			spin_unlock_bh(&amp;ax25_list_lock);
+ 			lock_sock(sk);
++			ax25_disconnect(s, ENETUNREACH);
+ 			s-&gt;ax25_dev = NULL;
+ 			if (sk-&gt;sk_socket) {
+ 				dev_put_track(ax25_dev-&gt;dev, &amp;ax25_dev-&gt;dev_tracker);
+ 				ax25_dev_put(ax25_dev);
+ 			}
+-			ax25_disconnect(s, ENETUNREACH);
+ 			release_sock(sk);
+ 			spin_lock_bh(&amp;ax25_list_lock);
+ 			sock_put(sk);
+diff --git a/net/ax25/ax25_subr.c b/net/ax25/ax25_subr.c
+index 15ab812c4fe4..3a476e4f6cd0 100644
+--- a/net/ax25/ax25_subr.c
++++ b/net/ax25/ax25_subr.c
+@@ -261,12 +261,20 @@ void ax25_disconnect(ax25_cb *ax25, int reason)
+ {
+ 	ax25_clear_queues(ax25);
+ 
+-	if (!ax25-&gt;sk || !sock_flag(ax25-&gt;sk, SOCK_DESTROY))
+-		ax25_stop_heartbeat(ax25);
+-	ax25_stop_t1timer(ax25);
+-	ax25_stop_t2timer(ax25);
+-	ax25_stop_t3timer(ax25);
+-	ax25_stop_idletimer(ax25);
++	if (reason == ENETUNREACH) {
++		del_timer_sync(&amp;ax25-&gt;timer);
++		del_timer_sync(&amp;ax25-&gt;t1timer);
++		del_timer_sync(&amp;ax25-&gt;t2timer);
++		del_timer_sync(&amp;ax25-&gt;t3timer);
++		del_timer_sync(&amp;ax25-&gt;idletimer);
++	} else {
++		if (!ax25-&gt;sk || !sock_flag(ax25-&gt;sk, SOCK_DESTROY))
++			ax25_stop_heartbeat(ax25);
++		ax25_stop_t1timer(ax25);
++		ax25_stop_t2timer(ax25);
++		ax25_stop_t3timer(ax25);
++		ax25_stop_idletimer(ax25);
++	}
+ 
+ 	ax25-&gt;state = AX25_STATE_0;
+ </pre><hr><pre>commit 9fd75b66b8f68498454d685dc4ba13192ae069b0
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Fri Mar 18 08:54:04 2022 +0800
+
+    ax25: Fix refcount leaks caused by ax25_cb_del()
+    
+    The previous commit d01ffb9eee4a ("ax25: add refcount in ax25_dev to
+    avoid UAF bugs") and commit feef318c855a ("ax25: fix UAF bugs of
+    net_device caused by rebinding operation") increase the refcounts of
+    ax25_dev and net_device in ax25_bind() and decrease the matching refcounts
+    in ax25_kill_by_device() in order to prevent UAF bugs, but there are
+    reference count leaks.
+    
+    The root cause of refcount leaks is shown below:
+    
+         (Thread 1)                      |      (Thread 2)
+    ax25_bind()                          |
+     ...                                 |
+     ax25_addr_ax25dev()                 |
+      ax25_dev_hold()   //(1)            |
+      ...                                |
+     dev_hold_track()   //(2)            |
+     ...                                 | ax25_destroy_socket()
+                                         |  ax25_cb_del()
+                                         |   ...
+                                         |   hlist_del_init() //(3)
+                                         |
+                                         |
+         (Thread 3)                      |
+    ax25_kill_by_device()                |
+     ...                                 |
+     ax25_for_each(s, &amp;ax25_list) {      |
+      if (s-&gt;ax25_dev == ax25_dev) //(4) |
+       ...                               |
+    
+    Firstly, we use ax25_bind() to increase the refcount of ax25_dev in
+    position (1) and increase the refcount of net_device in position (2).
+    Then, we use ax25_cb_del() invoked by ax25_destroy_socket() to delete
+    ax25_cb in hlist in position (3) before calling ax25_kill_by_device().
+    Finally, the decrements of refcounts in ax25_kill_by_device() will not
+    be executed, because no s-&gt;ax25_dev equals to ax25_dev in position (4).
+    
+    This patch adds decrements of refcounts in ax25_release() and use
+    lock_sock() to do synchronization. If refcounts decrease in ax25_release(),
+    the decrements of refcounts in ax25_kill_by_device() will not be
+    executed and vice versa.
+    
+    Fixes: d01ffb9eee4a ("ax25: add refcount in ax25_dev to avoid UAF bugs")
+    Fixes: 87563a043cef ("ax25: fix reference count leaks of ax25_dev")
+    Fixes: feef318c855a ("ax25: fix UAF bugs of net_device caused by rebinding operation")
+    Reported-by: Thomas Osterried &lt;thomas@osterried.de&gt;
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ax25/af_ax25.c b/net/ax25/af_ax25.c
+index 6bd097180772..cf8847cfc664 100644
+--- a/net/ax25/af_ax25.c
++++ b/net/ax25/af_ax25.c
+@@ -98,8 +98,10 @@ static void ax25_kill_by_device(struct net_device *dev)
+ 			spin_unlock_bh(&amp;ax25_list_lock);
+ 			lock_sock(sk);
+ 			s-&gt;ax25_dev = NULL;
+-			dev_put_track(ax25_dev-&gt;dev, &amp;ax25_dev-&gt;dev_tracker);
+-			ax25_dev_put(ax25_dev);
++			if (sk-&gt;sk_socket) {
++				dev_put_track(ax25_dev-&gt;dev, &amp;ax25_dev-&gt;dev_tracker);
++				ax25_dev_put(ax25_dev);
++			}
+ 			ax25_disconnect(s, ENETUNREACH);
+ 			release_sock(sk);
+ 			spin_lock_bh(&amp;ax25_list_lock);
+@@ -979,14 +981,20 @@ static int ax25_release(struct socket *sock)
+ {
+ 	struct sock *sk = sock-&gt;sk;
+ 	ax25_cb *ax25;
++	ax25_dev *ax25_dev;
+ 
+ 	if (sk == NULL)
+ 		return 0;
+ 
+ 	sock_hold(sk);
+-	sock_orphan(sk);
+ 	lock_sock(sk);
++	sock_orphan(sk);
+ 	ax25 = sk_to_ax25(sk);
++	ax25_dev = ax25-&gt;ax25_dev;
++	if (ax25_dev) {
++		dev_put_track(ax25_dev-&gt;dev, &amp;ax25_dev-&gt;dev_tracker);
++		ax25_dev_put(ax25_dev);
++	}
+ 
+ 	if (sk-&gt;sk_type == SOCK_SEQPACKET) {
+ 		switch (ax25-&gt;state) {</pre><hr><pre>commit 71171ac8eb34ce7fe6b3267dce27c313ab3cb3ac
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue Mar 8 16:12:23 2022 +0800
+
+    ax25: Fix NULL pointer dereference in ax25_kill_by_device
+    
+    When two ax25 devices attempted to establish connection, the requester use ax25_create(),
+    ax25_bind() and ax25_connect() to initiate connection. The receiver use ax25_rcv() to
+    accept connection and use ax25_create_cb() in ax25_rcv() to create ax25_cb, but the
+    ax25_cb-&gt;sk is NULL. When the receiver is detaching, a NULL pointer dereference bug
+    caused by sock_hold(sk) in ax25_kill_by_device() will happen. The corresponding
+    fail log is shown below:
+    
+    ===============================================================
+    BUG: KASAN: null-ptr-deref in ax25_device_event+0xfd/0x290
+    Call Trace:
+    ...
+    ax25_device_event+0xfd/0x290
+    raw_notifier_call_chain+0x5e/0x70
+    dev_close_many+0x174/0x220
+    unregister_netdevice_many+0x1f7/0xa60
+    unregister_netdevice_queue+0x12f/0x170
+    unregister_netdev+0x13/0x20
+    mkiss_close+0xcd/0x140
+    tty_ldisc_release+0xc0/0x220
+    tty_release_struct+0x17/0xa0
+    tty_release+0x62d/0x670
+    ...
+    
+    This patch add condition check in ax25_kill_by_device(). If s-&gt;sk is
+    NULL, it will goto if branch to kill device.
+    
+    Fixes: 4e0f718daf97 ("ax25: improve the incomplete fix to avoid UAF and NPD bugs")
+    Reported-by: Thomas Osterried &lt;thomas@osterried.de&gt;
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ax25/af_ax25.c b/net/ax25/af_ax25.c
+index d53cbb4e2503..6bd097180772 100644
+--- a/net/ax25/af_ax25.c
++++ b/net/ax25/af_ax25.c
+@@ -87,6 +87,13 @@ static void ax25_kill_by_device(struct net_device *dev)
+ 	ax25_for_each(s, &amp;ax25_list) {
+ 		if (s-&gt;ax25_dev == ax25_dev) {
+ 			sk = s-&gt;sk;
++			if (!sk) {
++				spin_unlock_bh(&amp;ax25_list_lock);
++				s-&gt;ax25_dev = NULL;
++				ax25_disconnect(s, ENETUNREACH);
++				spin_lock_bh(&amp;ax25_list_lock);
++				goto again;
++			}
+ 			sock_hold(sk);
+ 			spin_unlock_bh(&amp;ax25_list_lock);
+ 			lock_sock(sk);</pre><hr><pre>commit fa78d2d1d64f147062e384a4a10a26a5f89944b5
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Wed Feb 16 12:37:14 2022 +0800
+
+    Bluetooth: fix data races in smp_unregister(), smp_del_chan()
+    
+    Previous commit e04480920d1e ("Bluetooth: defer cleanup of resources
+    in hci_unregister_dev()") defers all destructive actions to
+    hci_release_dev() to prevent cocurrent problems like NPD, UAF.
+    
+    However, there are still some exceptions that are ignored.
+    
+    The smp_unregister() in hci_dev_close_sync() (previously in
+    hci_dev_do_close) will release resources like the sensitive channel
+    and the smp_dev objects. Consider the situations the device is detaching
+    or power down while the kernel is still operating on it, the following
+    data race could take place.
+    
+    thread-A  hci_dev_close_sync  | thread-B  read_local_oob_ext_data
+                                  |
+    hci_dev_unlock()              |
+    ...                           | hci_dev_lock()
+    if (hdev-&gt;smp_data)           |
+      chan = hdev-&gt;smp_data       |
+                                  | chan = hdev-&gt;smp_data (3)
+                                  |
+      hdev-&gt;smp_data = NULL (1)   | if (!chan || !chan-&gt;data) (4)
+      ...                         |
+      smp = chan-&gt;data            | smp = chan-&gt;data
+      if (smp)                    |
+        chan-&gt;data = NULL (2)     |
+        ...                       |
+        kfree_sensitive(smp)      |
+                                  | // dereference smp trigger UFA
+    
+    That is, the objects hdev-&gt;smp_data and chan-&gt;data both suffer from the
+    data races. In a preempt-enable kernel, the above schedule (when (3) is
+    before (1) and (4) is before (2)) leads to UAF bugs. It can be
+    reproduced in the latest kernel and below is part of the report:
+    
+    [   49.097146] ================================================================
+    [   49.097611] BUG: KASAN: use-after-free in smp_generate_oob+0x2dd/0x570
+    [   49.097611] Read of size 8 at addr ffff888006528360 by task generate_oob/155
+    [   49.097611]
+    [   49.097611] Call Trace:
+    [   49.097611]  &lt;TASK&gt;
+    [   49.097611]  dump_stack_lvl+0x34/0x44
+    [   49.097611]  print_address_description.constprop.0+0x1f/0x150
+    [   49.097611]  ? smp_generate_oob+0x2dd/0x570
+    [   49.097611]  ? smp_generate_oob+0x2dd/0x570
+    [   49.097611]  kasan_report.cold+0x7f/0x11b
+    [   49.097611]  ? smp_generate_oob+0x2dd/0x570
+    [   49.097611]  smp_generate_oob+0x2dd/0x570
+    [   49.097611]  read_local_oob_ext_data+0x689/0xc30
+    [   49.097611]  ? hci_event_packet+0xc80/0xc80
+    [   49.097611]  ? sysvec_apic_timer_interrupt+0x9b/0xc0
+    [   49.097611]  ? asm_sysvec_apic_timer_interrupt+0x12/0x20
+    [   49.097611]  ? mgmt_init_hdev+0x1c/0x240
+    [   49.097611]  ? mgmt_init_hdev+0x28/0x240
+    [   49.097611]  hci_sock_sendmsg+0x1880/0x1e70
+    [   49.097611]  ? create_monitor_event+0x890/0x890
+    [   49.097611]  ? create_monitor_event+0x890/0x890
+    [   49.097611]  sock_sendmsg+0xdf/0x110
+    [   49.097611]  __sys_sendto+0x19e/0x270
+    [   49.097611]  ? __ia32_sys_getpeername+0xa0/0xa0
+    [   49.097611]  ? kernel_fpu_begin_mask+0x1c0/0x1c0
+    [   49.097611]  __x64_sys_sendto+0xd8/0x1b0
+    [   49.097611]  ? syscall_exit_to_user_mode+0x1d/0x40
+    [   49.097611]  do_syscall_64+0x3b/0x90
+    [   49.097611]  entry_SYSCALL_64_after_hwframe+0x44/0xae
+    [   49.097611] RIP: 0033:0x7f5a59f51f64
+    ...
+    [   49.097611] RAX: ffffffffffffffda RBX: 0000000000000000 RCX: 00007f5a59f51f64
+    [   49.097611] RDX: 0000000000000007 RSI: 00007f5a59d6ac70 RDI: 0000000000000006
+    [   49.097611] RBP: 0000000000000000 R08: 0000000000000000 R09: 0000000000000000
+    [   49.097611] R10: 0000000000000040 R11: 0000000000000246 R12: 00007ffec26916ee
+    [   49.097611] R13: 00007ffec26916ef R14: 00007f5a59d6afc0 R15: 00007f5a59d6b700
+    
+    To solve these data races, this patch places the smp_unregister()
+    function in the protected area by the hci_dev_lock(). That is, the
+    smp_unregister() function can not be concurrently executed when
+    operating functions (most of them are mgmt operations in mgmt.c) hold
+    the device lock.
+    
+    This patch is tested with kernel LOCK DEBUGGING enabled. The price from
+    the extended holding time of the device lock is supposed to be low as the
+    smp_unregister() function is fairly short and efficient.
+    
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Signed-off-by: Marcel Holtmann &lt;marcel@holtmann.org&gt;
+
+diff --git a/net/bluetooth/hci_sync.c b/net/bluetooth/hci_sync.c
+index 0feb68f12545..e34fc15b7d2c 100644
+--- a/net/bluetooth/hci_sync.c
++++ b/net/bluetooth/hci_sync.c
+@@ -4106,9 +4106,9 @@ int hci_dev_close_sync(struct hci_dev *hdev)
+ 	hci_inquiry_cache_flush(hdev);
+ 	hci_pend_le_actions_clear(hdev);
+ 	hci_conn_hash_flush(hdev);
+-	hci_dev_unlock(hdev);
+-
++	/* Prevent data races on hdev-&gt;smp_data or hdev-&gt;smp_bredr_data */
+ 	smp_unregister(hdev);
++	hci_dev_unlock(hdev);
+ 
+ 	hci_sock_dev_event(hdev, HCI_DEV_DOWN);
+ </pre><hr><pre>commit efe4186e6a1b54bf38b9e05450d43b0da1fd7739
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Thu Feb 17 09:43:03 2022 +0800
+
+    drivers: hamradio: 6pack: fix UAF bug caused by mod_timer()
+    
+    When a 6pack device is detaching, the sixpack_close() will act to cleanup
+    necessary resources. Although del_timer_sync() in sixpack_close()
+    won't return if there is an active timer, one could use mod_timer() in
+    sp_xmit_on_air() to wake up timer again by calling userspace syscall such
+    as ax25_sendmsg(), ax25_connect() and ax25_ioctl().
+    
+    This unexpected waked handler, sp_xmit_on_air(), realizes nothing about
+    the undergoing cleanup and may still call pty_write() to use driver layer
+    resources that have already been released.
+    
+    One of the possible race conditions is shown below:
+    
+          (USE)                      |      (FREE)
+    ax25_sendmsg()                   |
+     ax25_queue_xmit()               |
+      ...                            |
+      sp_xmit()                      |
+       sp_encaps()                   | sixpack_close()
+        sp_xmit_on_air()             |  del_timer_sync(&amp;sp-&gt;tx_t)
+         mod_timer(&amp;sp-&gt;tx_t,...)    |  ...
+                                     |  unregister_netdev()
+                                     |  ...
+         (wait a while)              | tty_release()
+                                     |  tty_release_struct()
+                                     |   release_tty()
+        sp_xmit_on_air()             |    tty_kref_put(tty_struct) //FREE
+         pty_write(tty_struct) //USE |    ...
+    
+    The corresponding fail log is shown below:
+    ===============================================================
+    BUG: KASAN: use-after-free in __run_timers.part.0+0x170/0x470
+    Write of size 8 at addr ffff88800a652ab8 by task swapper/2/0
+    ...
+    Call Trace:
+      ...
+      queue_work_on+0x3f/0x50
+      pty_write+0xcd/0xe0pty_write+0xcd/0xe0
+      sp_xmit_on_air+0xb2/0x1f0
+      call_timer_fn+0x28/0x150
+      __run_timers.part.0+0x3c2/0x470
+      run_timer_softirq+0x3b/0x80
+      __do_softirq+0xf1/0x380
+      ...
+    
+    This patch reorders the del_timer_sync() after the unregister_netdev()
+    to avoid UAF bugs. Because the unregister_netdev() is well synchronized,
+    it flushs out any pending queues, waits the refcount of net_device
+    decreases to zero and removes net_device from kernel. There is not any
+    running routines after executing unregister_netdev(). Therefore, we could
+    not arouse timer from userspace again.
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/hamradio/6pack.c b/drivers/net/hamradio/6pack.c
+index b1fc153125d9..45c3c4a1101b 100644
+--- a/drivers/net/hamradio/6pack.c
++++ b/drivers/net/hamradio/6pack.c
+@@ -668,11 +668,11 @@ static void sixpack_close(struct tty_struct *tty)
+ 	 */
+ 	netif_stop_queue(sp-&gt;dev);
+ 
++	unregister_netdev(sp-&gt;dev);
++
+ 	del_timer_sync(&amp;sp-&gt;tx_t);
+ 	del_timer_sync(&amp;sp-&gt;resync_t);
+ 
+-	unregister_netdev(sp-&gt;dev);
+-
+ 	/* Free all 6pack frame buffers after unreg. */
+ 	kfree(sp-&gt;rbuff);
+ 	kfree(sp-&gt;xbuff);</pre><hr><pre>commit feef318c855a361a1eccd880f33e88c460eb63b4
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Wed Feb 9 20:53:45 2022 +0800
+
+    ax25: fix UAF bugs of net_device caused by rebinding operation
+    
+    The ax25_kill_by_device() will set s-&gt;ax25_dev = NULL and
+    call ax25_disconnect() to change states of ax25_cb and
+    sock, if we call ax25_bind() before ax25_kill_by_device().
+    
+    However, if we call ax25_bind() again between the window of
+    ax25_kill_by_device() and ax25_dev_device_down(), the values
+    and states changed by ax25_kill_by_device() will be reassigned.
+    
+    Finally, ax25_dev_device_down() will deallocate net_device.
+    If we dereference net_device in syscall functions such as
+    ax25_release(), ax25_sendmsg(), ax25_getsockopt(), ax25_getname()
+    and ax25_info_show(), a UAF bug will occur.
+    
+    One of the possible race conditions is shown below:
+    
+          (USE)                   |      (FREE)
+    ax25_bind()                   |
+                                  |  ax25_kill_by_device()
+    ax25_bind()                   |
+    ax25_connect()                |    ...
+                                  |  ax25_dev_device_down()
+                                  |    ...
+                                  |    dev_put_track(dev, ...) //FREE
+    ax25_release()                |    ...
+      ax25_send_control()         |
+        alloc_skb()      //USE    |
+    
+    the corresponding fail log is shown below:
+    ===============================================================
+    BUG: KASAN: use-after-free in ax25_send_control+0x43/0x210
+    ...
+    Call Trace:
+      ...
+      ax25_send_control+0x43/0x210
+      ax25_release+0x2db/0x3b0
+      __sock_release+0x6d/0x120
+      sock_close+0xf/0x20
+      __fput+0x11f/0x420
+      ...
+    Allocated by task 1283:
+      ...
+      __kasan_kmalloc+0x81/0xa0
+      alloc_netdev_mqs+0x5a/0x680
+      mkiss_open+0x6c/0x380
+      tty_ldisc_open+0x55/0x90
+      ...
+    Freed by task 1969:
+      ...
+      kfree+0xa3/0x2c0
+      device_release+0x54/0xe0
+      kobject_put+0xa5/0x120
+      tty_ldisc_kill+0x3e/0x80
+      ...
+    
+    In order to fix these UAF bugs caused by rebinding operation,
+    this patch adds dev_hold_track() into ax25_bind() and
+    corresponding dev_put_track() into ax25_kill_by_device().
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ax25/af_ax25.c b/net/ax25/af_ax25.c
+index 3d87040d1bfc..d53cbb4e2503 100644
+--- a/net/ax25/af_ax25.c
++++ b/net/ax25/af_ax25.c
+@@ -91,6 +91,7 @@ static void ax25_kill_by_device(struct net_device *dev)
+ 			spin_unlock_bh(&amp;ax25_list_lock);
+ 			lock_sock(sk);
+ 			s-&gt;ax25_dev = NULL;
++			dev_put_track(ax25_dev-&gt;dev, &amp;ax25_dev-&gt;dev_tracker);
+ 			ax25_dev_put(ax25_dev);
+ 			ax25_disconnect(s, ENETUNREACH);
+ 			release_sock(sk);
+@@ -1116,8 +1117,10 @@ static int ax25_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
+ 		}
+ 	}
+ 
+-	if (ax25_dev != NULL)
++	if (ax25_dev) {
+ 		ax25_fillin_cb(ax25, ax25_dev);
++		dev_hold_track(ax25_dev-&gt;dev, &amp;ax25_dev-&gt;dev_tracker, GFP_ATOMIC);
++	}
+ 
+ done:
+ 	ax25_cb_add(ax25);</pre><hr><pre>commit 7ec02f5ac8a5be5a3f20611731243dc5e1d9ba10
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue Feb 8 23:40:00 2022 +0800
+
+    ax25: fix NPD bug in ax25_disconnect
+    
+    The ax25_disconnect() in ax25_kill_by_device() is not
+    protected by any locks, thus there is a race condition
+    between ax25_disconnect() and ax25_destroy_socket().
+    when ax25-&gt;sk is assigned as NULL by ax25_destroy_socket(),
+    a NULL pointer dereference bug will occur if site (1) or (2)
+    dereferences ax25-&gt;sk.
+    
+    ax25_kill_by_device()                | ax25_release()
+      ax25_disconnect()                  |   ax25_destroy_socket()
+        ...                              |
+        if(ax25-&gt;sk != NULL)             |     ...
+          ...                            |     ax25-&gt;sk = NULL;
+          bh_lock_sock(ax25-&gt;sk); //(1)  |     ...
+          ...                            |
+          bh_unlock_sock(ax25-&gt;sk); //(2)|
+    
+    This patch moves ax25_disconnect() into lock_sock(), which can
+    synchronize with ax25_destroy_socket() in ax25_release().
+    
+    Fail log:
+    ===============================================================
+    BUG: kernel NULL pointer dereference, address: 0000000000000088
+    ...
+    RIP: 0010:_raw_spin_lock+0x7e/0xd0
+    ...
+    Call Trace:
+    ax25_disconnect+0xf6/0x220
+    ax25_device_event+0x187/0x250
+    raw_notifier_call_chain+0x5e/0x70
+    dev_close_many+0x17d/0x230
+    rollback_registered_many+0x1f1/0x950
+    unregister_netdevice_queue+0x133/0x200
+    unregister_netdev+0x13/0x20
+    ...
+    
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ax25/af_ax25.c b/net/ax25/af_ax25.c
+index 3e49d28824ed..3d87040d1bfc 100644
+--- a/net/ax25/af_ax25.c
++++ b/net/ax25/af_ax25.c
+@@ -92,8 +92,8 @@ static void ax25_kill_by_device(struct net_device *dev)
+ 			lock_sock(sk);
+ 			s-&gt;ax25_dev = NULL;
+ 			ax25_dev_put(ax25_dev);
+-			release_sock(sk);
+ 			ax25_disconnect(s, ENETUNREACH);
++			release_sock(sk);
+ 			spin_lock_bh(&amp;ax25_list_lock);
+ 			sock_put(sk);
+ 			/* The entry could have been deleted from the</pre><hr><pre>commit 87563a043cef044fed5db7967a75741cc16ad2b1
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Thu Feb 3 23:08:11 2022 +0800
+
+    ax25: fix reference count leaks of ax25_dev
+    
+    The previous commit d01ffb9eee4a ("ax25: add refcount in ax25_dev
+    to avoid UAF bugs") introduces refcount into ax25_dev, but there
+    are reference leak paths in ax25_ctl_ioctl(), ax25_fwd_ioctl(),
+    ax25_rt_add(), ax25_rt_del() and ax25_rt_opt().
+    
+    This patch uses ax25_dev_put() and adjusts the position of
+    ax25_addr_ax25dev() to fix reference cout leaks of ax25_dev.
+    
+    Fixes: d01ffb9eee4a ("ax25: add refcount in ax25_dev to avoid UAF bugs")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Dan Carpenter &lt;dan.carpenter@oracle.com&gt;
+    Link: https://lore.kernel.org/r/20220203150811.42256-1-duoming@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/include/net/ax25.h b/include/net/ax25.h
+index 50b417df6221..8221af1811df 100644
+--- a/include/net/ax25.h
++++ b/include/net/ax25.h
+@@ -294,10 +294,12 @@ static __inline__ void ax25_cb_put(ax25_cb *ax25)
+ 	}
+ }
+ 
+-#define ax25_dev_hold(__ax25_dev) \
+-	refcount_inc(&amp;((__ax25_dev)-&gt;refcount))
++static inline void ax25_dev_hold(ax25_dev *ax25_dev)
++{
++	refcount_inc(&amp;ax25_dev-&gt;refcount);
++}
+ 
+-static __inline__ void ax25_dev_put(ax25_dev *ax25_dev)
++static inline void ax25_dev_put(ax25_dev *ax25_dev)
+ {
+ 	if (refcount_dec_and_test(&amp;ax25_dev-&gt;refcount)) {
+ 		kfree(ax25_dev);
+diff --git a/net/ax25/af_ax25.c b/net/ax25/af_ax25.c
+index 32f61978ff29..3e49d28824ed 100644
+--- a/net/ax25/af_ax25.c
++++ b/net/ax25/af_ax25.c
+@@ -359,21 +359,25 @@ static int ax25_ctl_ioctl(const unsigned int cmd, void __user *arg)
+ 	if (copy_from_user(&amp;ax25_ctl, arg, sizeof(ax25_ctl)))
+ 		return -EFAULT;
+ 
+-	if ((ax25_dev = ax25_addr_ax25dev(&amp;ax25_ctl.port_addr)) == NULL)
+-		return -ENODEV;
+-
+ 	if (ax25_ctl.digi_count &gt; AX25_MAX_DIGIS)
+ 		return -EINVAL;
+ 
+ 	if (ax25_ctl.arg &gt; ULONG_MAX / HZ &amp;&amp; ax25_ctl.cmd != AX25_KILL)
+ 		return -EINVAL;
+ 
++	ax25_dev = ax25_addr_ax25dev(&amp;ax25_ctl.port_addr);
++	if (!ax25_dev)
++		return -ENODEV;
++
+ 	digi.ndigi = ax25_ctl.digi_count;
+ 	for (k = 0; k &lt; digi.ndigi; k++)
+ 		digi.calls[k] = ax25_ctl.digi_addr[k];
+ 
+-	if ((ax25 = ax25_find_cb(&amp;ax25_ctl.source_addr, &amp;ax25_ctl.dest_addr, &amp;digi, ax25_dev-&gt;dev)) == NULL)
++	ax25 = ax25_find_cb(&amp;ax25_ctl.source_addr, &amp;ax25_ctl.dest_addr, &amp;digi, ax25_dev-&gt;dev);
++	if (!ax25) {
++		ax25_dev_put(ax25_dev);
+ 		return -ENOTCONN;
++	}
+ 
+ 	switch (ax25_ctl.cmd) {
+ 	case AX25_KILL:
+diff --git a/net/ax25/ax25_dev.c b/net/ax25/ax25_dev.c
+index 770b787fb7bb..d2a244e1c260 100644
+--- a/net/ax25/ax25_dev.c
++++ b/net/ax25/ax25_dev.c
+@@ -85,8 +85,8 @@ void ax25_dev_device_up(struct net_device *dev)
+ 	spin_lock_bh(&amp;ax25_dev_lock);
+ 	ax25_dev-&gt;next = ax25_dev_list;
+ 	ax25_dev_list  = ax25_dev;
+-	ax25_dev_hold(ax25_dev);
+ 	spin_unlock_bh(&amp;ax25_dev_lock);
++	ax25_dev_hold(ax25_dev);
+ 
+ 	ax25_register_dev_sysctl(ax25_dev);
+ }
+@@ -115,8 +115,8 @@ void ax25_dev_device_down(struct net_device *dev)
+ 
+ 	if ((s = ax25_dev_list) == ax25_dev) {
+ 		ax25_dev_list = s-&gt;next;
+-		ax25_dev_put(ax25_dev);
+ 		spin_unlock_bh(&amp;ax25_dev_lock);
++		ax25_dev_put(ax25_dev);
+ 		dev-&gt;ax25_ptr = NULL;
+ 		dev_put_track(dev, &amp;ax25_dev-&gt;dev_tracker);
+ 		ax25_dev_put(ax25_dev);
+@@ -126,8 +126,8 @@ void ax25_dev_device_down(struct net_device *dev)
+ 	while (s != NULL &amp;&amp; s-&gt;next != NULL) {
+ 		if (s-&gt;next == ax25_dev) {
+ 			s-&gt;next = ax25_dev-&gt;next;
+-			ax25_dev_put(ax25_dev);
+ 			spin_unlock_bh(&amp;ax25_dev_lock);
++			ax25_dev_put(ax25_dev);
+ 			dev-&gt;ax25_ptr = NULL;
+ 			dev_put_track(dev, &amp;ax25_dev-&gt;dev_tracker);
+ 			ax25_dev_put(ax25_dev);
+@@ -150,25 +150,35 @@ int ax25_fwd_ioctl(unsigned int cmd, struct ax25_fwd_struct *fwd)
+ 
+ 	switch (cmd) {
+ 	case SIOCAX25ADDFWD:
+-		if ((fwd_dev = ax25_addr_ax25dev(&amp;fwd-&gt;port_to)) == NULL)
++		fwd_dev = ax25_addr_ax25dev(&amp;fwd-&gt;port_to);
++		if (!fwd_dev) {
++			ax25_dev_put(ax25_dev);
+ 			return -EINVAL;
+-		if (ax25_dev-&gt;forward != NULL)
++		}
++		if (ax25_dev-&gt;forward) {
++			ax25_dev_put(fwd_dev);
++			ax25_dev_put(ax25_dev);
+ 			return -EINVAL;
++		}
+ 		ax25_dev-&gt;forward = fwd_dev-&gt;dev;
+ 		ax25_dev_put(fwd_dev);
++		ax25_dev_put(ax25_dev);
+ 		break;
+ 
+ 	case SIOCAX25DELFWD:
+-		if (ax25_dev-&gt;forward == NULL)
++		if (!ax25_dev-&gt;forward) {
++			ax25_dev_put(ax25_dev);
+ 			return -EINVAL;
++		}
+ 		ax25_dev-&gt;forward = NULL;
++		ax25_dev_put(ax25_dev);
+ 		break;
+ 
+ 	default:
++		ax25_dev_put(ax25_dev);
+ 		return -EINVAL;
+ 	}
+ 
+-	ax25_dev_put(ax25_dev);
+ 	return 0;
+ }
+ 
+diff --git a/net/ax25/ax25_route.c b/net/ax25/ax25_route.c
+index 1e32693833e5..9751207f7757 100644
+--- a/net/ax25/ax25_route.c
++++ b/net/ax25/ax25_route.c
+@@ -75,11 +75,13 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
+ 	ax25_dev *ax25_dev;
+ 	int i;
+ 
+-	if ((ax25_dev = ax25_addr_ax25dev(&amp;route-&gt;port_addr)) == NULL)
+-		return -EINVAL;
+ 	if (route-&gt;digi_count &gt; AX25_MAX_DIGIS)
+ 		return -EINVAL;
+ 
++	ax25_dev = ax25_addr_ax25dev(&amp;route-&gt;port_addr);
++	if (!ax25_dev)
++		return -EINVAL;
++
+ 	write_lock_bh(&amp;ax25_route_lock);
+ 
+ 	ax25_rt = ax25_route_list;
+@@ -91,6 +93,7 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
+ 			if (route-&gt;digi_count != 0) {
+ 				if ((ax25_rt-&gt;digipeat = kmalloc(sizeof(ax25_digi), GFP_ATOMIC)) == NULL) {
+ 					write_unlock_bh(&amp;ax25_route_lock);
++					ax25_dev_put(ax25_dev);
+ 					return -ENOMEM;
+ 				}
+ 				ax25_rt-&gt;digipeat-&gt;lastrepeat = -1;
+@@ -101,6 +104,7 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
+ 				}
+ 			}
+ 			write_unlock_bh(&amp;ax25_route_lock);
++			ax25_dev_put(ax25_dev);
+ 			return 0;
+ 		}
+ 		ax25_rt = ax25_rt-&gt;next;
+@@ -108,6 +112,7 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
+ 
+ 	if ((ax25_rt = kmalloc(sizeof(ax25_route), GFP_ATOMIC)) == NULL) {
+ 		write_unlock_bh(&amp;ax25_route_lock);
++		ax25_dev_put(ax25_dev);
+ 		return -ENOMEM;
+ 	}
+ 
+@@ -116,11 +121,11 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
+ 	ax25_rt-&gt;dev          = ax25_dev-&gt;dev;
+ 	ax25_rt-&gt;digipeat     = NULL;
+ 	ax25_rt-&gt;ip_mode      = ' ';
+-	ax25_dev_put(ax25_dev);
+ 	if (route-&gt;digi_count != 0) {
+ 		if ((ax25_rt-&gt;digipeat = kmalloc(sizeof(ax25_digi), GFP_ATOMIC)) == NULL) {
+ 			write_unlock_bh(&amp;ax25_route_lock);
+ 			kfree(ax25_rt);
++			ax25_dev_put(ax25_dev);
+ 			return -ENOMEM;
+ 		}
+ 		ax25_rt-&gt;digipeat-&gt;lastrepeat = -1;
+@@ -133,6 +138,7 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
+ 	ax25_rt-&gt;next   = ax25_route_list;
+ 	ax25_route_list = ax25_rt;
+ 	write_unlock_bh(&amp;ax25_route_lock);
++	ax25_dev_put(ax25_dev);
+ 
+ 	return 0;
+ }
+@@ -173,8 +179,8 @@ static int ax25_rt_del(struct ax25_routes_struct *route)
+ 			}
+ 		}
+ 	}
+-	ax25_dev_put(ax25_dev);
+ 	write_unlock_bh(&amp;ax25_route_lock);
++	ax25_dev_put(ax25_dev);
+ 
+ 	return 0;
+ }
+@@ -216,8 +222,8 @@ static int ax25_rt_opt(struct ax25_route_opt_struct *rt_option)
+ 	}
+ 
+ out:
+-	ax25_dev_put(ax25_dev);
+ 	write_unlock_bh(&amp;ax25_route_lock);
++	ax25_dev_put(ax25_dev);
+ 	return err;
+ }
+ </pre>
+    <div class="pagination">
+        <a href='6_17.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><span>[18]</span><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_19.html'>Next&gt;&gt;</a>
+    <div>
+</body>

@@ -1,0 +1,1556 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of New South Wales</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of New South Wales</h1>
+    <div class="pagination">
+        <a href='8_6.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><span>[7]</span><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_8.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit a6ccbbb8865101d83c2e716f08feae1da1c48584
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jul 7 17:59:11 2005 -0700
+
+    [PATCH] nfsd4: fix sync'ing of recovery directory
+    
+    We need to fsync the recovery directory after writing to it, but we weren't
+    doing this correctly.  (For example, we weren't taking the i_sem when calling
+    -&gt;fsync().)
+    
+    Just reuse the existing nfsd fsync code instead.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4recover.c b/fs/nfsd/nfs4recover.c
+index 095f1740f3ae..bb40083b6b7d 100644
+--- a/fs/nfsd/nfs4recover.c
++++ b/fs/nfsd/nfs4recover.c
+@@ -119,25 +119,12 @@ nfs4_make_rec_clidname(char *dname, struct xdr_netobj *clname)
+ 	return status;
+ }
+ 
+-static int
+-nfsd4_rec_fsync(struct dentry *dentry)
++static void
++nfsd4_sync_rec_dir(void)
+ {
+-	struct file *filp;
+-	int status = nfs_ok;
+-
+-	dprintk("NFSD: nfs4_fsync_rec_dir\n");
+-	filp = dentry_open(dget(dentry), mntget(rec_dir.mnt), O_RDWR);
+-	if (IS_ERR(filp)) {
+-		status = PTR_ERR(filp);
+-		goto out;
+-	}
+-	if (filp-&gt;f_op &amp;&amp; filp-&gt;f_op-&gt;fsync)
+-		status = filp-&gt;f_op-&gt;fsync(filp, filp-&gt;f_dentry, 0);
+-	fput(filp);
+-out:
+-	if (status)
+-		printk("nfsd4: unable to sync recovery directory\n");
+-	return status;
++	down(&amp;rec_dir.dentry-&gt;d_inode-&gt;i_sem);
++	nfsd_sync_dir(rec_dir.dentry);
++	up(&amp;rec_dir.dentry-&gt;d_inode-&gt;i_sem);
+ }
+ 
+ int
+@@ -176,7 +163,7 @@ nfsd4_create_clid_dir(struct nfs4_client *clp)
+ 	up(&amp;rec_dir.dentry-&gt;d_inode-&gt;i_sem);
+ 	if (status == 0) {
+ 		clp-&gt;cl_firststate = 1;
+-		status = nfsd4_rec_fsync(rec_dir.dentry);
++		nfsd4_sync_rec_dir();
+ 	}
+ 	nfs4_reset_user(uid, gid);
+ 	dprintk("NFSD: nfsd4_create_clid_dir returns %d\n", status);
+@@ -331,7 +318,7 @@ nfsd4_remove_clid_dir(struct nfs4_client *clp)
+ 	status = nfsd4_unlink_clid_dir(clp-&gt;cl_recdir, HEXDIR_LEN-1);
+ 	nfs4_reset_user(uid, gid);
+ 	if (status == 0)
+-		status = nfsd4_rec_fsync(rec_dir.dentry);
++		nfsd4_sync_rec_dir();
+ 	if (status)
+ 		printk("NFSD: Failed to remove expired client state directory"
+ 				" %.*s\n", HEXDIR_LEN, clp-&gt;cl_recdir);
+@@ -362,7 +349,7 @@ nfsd4_recdir_purge_old(void) {
+ 		return;
+ 	status = nfsd4_list_rec_dir(rec_dir.dentry, purge_old);
+ 	if (status == 0)
+-		status = nfsd4_rec_fsync(rec_dir.dentry);
++		nfsd4_sync_rec_dir();
+ 	if (status)
+ 		printk("nfsd4: failed to purge old clients from recovery"
+ 			" directory %s\n", rec_dir.dentry-&gt;d_name.name);
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index be24ead89d94..5e0bf3917607 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -733,7 +733,7 @@ nfsd_sync(struct file *filp)
+ 	up(&amp;inode-&gt;i_sem);
+ }
+ 
+-static void
++void
+ nfsd_sync_dir(struct dentry *dp)
+ {
+ 	nfsd_dosync(NULL, dp, dp-&gt;d_inode-&gt;i_fop);
+diff --git a/include/linux/nfsd/nfsd.h b/include/linux/nfsd/nfsd.h
+index 5791dfd30dd0..c2da1b62d416 100644
+--- a/include/linux/nfsd/nfsd.h
++++ b/include/linux/nfsd/nfsd.h
+@@ -124,6 +124,7 @@ int		nfsd_statfs(struct svc_rqst *, struct svc_fh *,
+ 
+ int		nfsd_notify_change(struct inode *, struct iattr *);
+ int		nfsd_permission(struct svc_export *, struct dentry *, int);
++void		nfsd_sync_dir(struct dentry *dp);
+ 
+ #if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)
+ #ifdef CONFIG_NFSD_V2_ACL</pre><hr><pre>commit 463090294e1e460cf97f5ade376d4b1e62bc5263
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jul 7 17:59:10 2005 -0700
+
+    [PATCH] nfsd4: reboot recovery fix
+    
+    We need to remove the recovery directory here too.  (This chunk just got lost
+    somehow in the process of commuting the reboot recovery patches past the other
+    patches.)
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 89e36526d7f2..9f9db40b5666 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -874,6 +874,7 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp, struct nfsd4_setclientid_confi
+ 			  * change request correctly. */
+ 			atomic_set(&amp;conf-&gt;cl_callback.cb_set, 0);
+ 			gen_confirm(conf);
++			nfsd4_remove_clid_dir(unconf);
+ 			expire_client(unconf);
+ 			status = nfs_ok;
+ </pre><hr><pre>commit f8b58edf3acf0dcc186b8330939000ecf709368a
+Author: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Mon Jun 27 22:29:34 2005 -0700
+
+    [PATCH] md: bio leak fix
+    
+    insert a missing bio_put when writting the md superblock.
+    
+    Without this we have a steady growth in the "bio" slab.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index 3802f7a17f16..4a0c57db2b67 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -338,6 +338,7 @@ static int super_written(struct bio *bio, unsigned int bytes_done, int error)
+ 
+ 	if (atomic_dec_and_test(&amp;rdev-&gt;mddev-&gt;pending_writes))
+ 		wake_up(&amp;rdev-&gt;mddev-&gt;sb_wait);
++	bio_put(bio);
+ 	return 0;
+ }
+ </pre><hr><pre>commit 0964a3d3f1aa96468091924f6b0c391a46dc6d0b
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:04:32 2005 -0700
+
+    [PATCH] knfsd: nfsd4 reboot dirname fix
+    
+    Set the recovery directory via /proc/fs/nfsd/nfs4recoverydir.
+    
+    It may be changed any time, but is used only on startup.
+    
+    Signed-off-by: Andy Adamson &lt;andros@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4recover.c b/fs/nfsd/nfs4recover.c
+index 2805c5245eac..095f1740f3ae 100644
+--- a/fs/nfsd/nfs4recover.c
++++ b/fs/nfsd/nfs4recover.c
+@@ -50,7 +50,6 @@
+ #define NFSDDBG_FACILITY                NFSDDBG_PROC
+ 
+ /* Globals */
+-char recovery_dirname[PATH_MAX] = "/var/lib/nfs/v4recovery";
+ static struct nameidata rec_dir;
+ static int rec_dir_init = 0;
+ 
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 6cca358cd650..89e36526d7f2 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -48,6 +48,7 @@
+ #include &lt;linux/nfs4.h&gt;
+ #include &lt;linux/nfsd/state.h&gt;
+ #include &lt;linux/nfsd/xdr4.h&gt;
++#include &lt;linux/namei.h&gt;
+ 
+ #define NFSDDBG_FACILITY                NFSDDBG_PROC
+ 
+@@ -71,7 +72,8 @@ static stateid_t onestateid;              /* bits all 1 */
+ static struct nfs4_stateid * find_stateid(stateid_t *stid, int flags);
+ static struct nfs4_delegation * find_delegation_stateid(struct inode *ino, stateid_t *stid);
+ static void release_stateid_lockowners(struct nfs4_stateid *open_stp);
+-extern char recovery_dirname[];
++static char user_recovery_dirname[PATH_MAX] = "/var/lib/nfs/v4recovery";
++static void nfs4_set_recdir(char *recdir);
+ 
+ /* Locking:
+  *
+@@ -3224,8 +3226,10 @@ nfsd4_load_reboot_recovery_data(void)
+ {
+ 	int status;
+ 
+-	nfsd4_init_recdir(recovery_dirname);
++	nfs4_lock_state();
++	nfsd4_init_recdir(user_recovery_dirname);
+ 	status = nfsd4_recdir_load();
++	nfs4_unlock_state();
+ 	if (status)
+ 		printk("NFSD: Failure reading reboot recovery data\n");
+ }
+@@ -3329,6 +3333,35 @@ nfs4_state_shutdown(void)
+ 	nfs4_unlock_state();
+ }
+ 
++static void
++nfs4_set_recdir(char *recdir)
++{
++	nfs4_lock_state();
++	strcpy(user_recovery_dirname, recdir);
++	nfs4_unlock_state();
++}
++
++/*
++ * Change the NFSv4 recovery directory to recdir.
++ */
++int
++nfs4_reset_recoverydir(char *recdir)
++{
++	int status;
++	struct nameidata nd;
++
++	status = path_lookup(recdir, LOOKUP_FOLLOW, &amp;nd);
++	if (status)
++		return status;
++	status = -ENOTDIR;
++	if (S_ISDIR(nd.dentry-&gt;d_inode-&gt;i_mode)) {
++		nfs4_set_recdir(recdir);
++		status = 0;
++	}
++	path_release(&amp;nd);
++	return status;
++}
++
+ /*
+  * Called when leasetime is changed.
+  *
+diff --git a/fs/nfsd/nfsctl.c b/fs/nfsd/nfsctl.c
+index 3da43a3ed32c..841c562991e8 100644
+--- a/fs/nfsd/nfsctl.c
++++ b/fs/nfsd/nfsctl.c
+@@ -51,6 +51,7 @@ enum {
+ 	NFSD_Fh,
+ 	NFSD_Threads,
+ 	NFSD_Leasetime,
++	NFSD_RecoveryDir,
+ };
+ 
+ /*
+@@ -66,6 +67,7 @@ static ssize_t write_getfs(struct file *file, char *buf, size_t size);
+ static ssize_t write_filehandle(struct file *file, char *buf, size_t size);
+ static ssize_t write_threads(struct file *file, char *buf, size_t size);
+ static ssize_t write_leasetime(struct file *file, char *buf, size_t size);
++static ssize_t write_recoverydir(struct file *file, char *buf, size_t size);
+ 
+ static ssize_t (*write_op[])(struct file *, char *, size_t) = {
+ 	[NFSD_Svc] = write_svc,
+@@ -78,6 +80,7 @@ static ssize_t (*write_op[])(struct file *, char *, size_t) = {
+ 	[NFSD_Fh] = write_filehandle,
+ 	[NFSD_Threads] = write_threads,
+ 	[NFSD_Leasetime] = write_leasetime,
++	[NFSD_RecoveryDir] = write_recoverydir,
+ };
+ 
+ static ssize_t nfsctl_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)
+@@ -349,6 +352,25 @@ static ssize_t write_leasetime(struct file *file, char *buf, size_t size)
+ 	return strlen(buf);
+ }
+ 
++static ssize_t write_recoverydir(struct file *file, char *buf, size_t size)
++{
++	char *mesg = buf;
++	char *recdir;
++	int len, status;
++
++	if (size &gt; PATH_MAX || buf[size-1] != '\n')
++		return -EINVAL;
++	buf[size-1] = 0;
++
++	recdir = mesg;
++	len = qword_get(&amp;mesg, recdir, size);
++	if (len &lt;= 0)
++		return -EINVAL;
++
++	status = nfs4_reset_recoverydir(recdir);
++	return strlen(buf);
++}
++
+ /*----------------------------------------------------------------------------*/
+ /*
+  *	populating the filesystem.
+@@ -369,6 +391,7 @@ static int nfsd_fill_super(struct super_block * sb, void * data, int silent)
+ 		[NFSD_Threads] = {"threads", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+ #ifdef CONFIG_NFSD_V4
+ 		[NFSD_Leasetime] = {"nfsv4leasetime", &amp;transaction_ops, S_IWUSR|S_IRUSR},
++		[NFSD_RecoveryDir] = {"nfsv4recoverydir", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+ #endif
+ 		/* last one */ {""}
+ 	};
+diff --git a/include/linux/nfsd/nfsd.h b/include/linux/nfsd/nfsd.h
+index 21c6e9d86e4f..5791dfd30dd0 100644
+--- a/include/linux/nfsd/nfsd.h
++++ b/include/linux/nfsd/nfsd.h
+@@ -150,12 +150,14 @@ int nfs4_state_start(void);
+ void nfs4_state_shutdown(void);
+ time_t nfs4_lease_time(void);
+ void nfs4_reset_lease(time_t leasetime);
++int nfs4_reset_recoverydir(char *recdir);
+ #else
+ static inline void nfs4_state_init(void){};
+ static inline int nfs4_state_start(void){return 0;}
+ static inline void nfs4_state_shutdown(void){}
+ static inline time_t nfs4_lease_time(void){return 0;}
+ static inline void nfs4_reset_lease(time_t leasetime){}
++static inline int nfs4_reset_recoverydir(char *recdir) {return 0;}
+ #endif
+ 
+ /*</pre><hr><pre>commit c7b9a45927e74c81d6562153f7fde9d32da00159
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:04:30 2005 -0700
+
+    [PATCH] knfsd: nfsd4: reboot recovery
+    
+    This patch adds the code to create and remove client subdirectories from the
+    recovery directory, as described in the previous patch comment.
+    
+    Signed-off-by: Andy Adamson &lt;andros@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4recover.c b/fs/nfsd/nfs4recover.c
+index 2dc9851a1d37..2805c5245eac 100644
+--- a/fs/nfsd/nfs4recover.c
++++ b/fs/nfsd/nfs4recover.c
+@@ -120,6 +120,70 @@ nfs4_make_rec_clidname(char *dname, struct xdr_netobj *clname)
+ 	return status;
+ }
+ 
++static int
++nfsd4_rec_fsync(struct dentry *dentry)
++{
++	struct file *filp;
++	int status = nfs_ok;
++
++	dprintk("NFSD: nfs4_fsync_rec_dir\n");
++	filp = dentry_open(dget(dentry), mntget(rec_dir.mnt), O_RDWR);
++	if (IS_ERR(filp)) {
++		status = PTR_ERR(filp);
++		goto out;
++	}
++	if (filp-&gt;f_op &amp;&amp; filp-&gt;f_op-&gt;fsync)
++		status = filp-&gt;f_op-&gt;fsync(filp, filp-&gt;f_dentry, 0);
++	fput(filp);
++out:
++	if (status)
++		printk("nfsd4: unable to sync recovery directory\n");
++	return status;
++}
++
++int
++nfsd4_create_clid_dir(struct nfs4_client *clp)
++{
++	char *dname = clp-&gt;cl_recdir;
++	struct dentry *dentry;
++	uid_t uid;
++	gid_t gid;
++	int status;
++
++	dprintk("NFSD: nfsd4_create_clid_dir for \"%s\"\n", dname);
++
++	if (!rec_dir_init || clp-&gt;cl_firststate)
++		return 0;
++
++	nfs4_save_user(&amp;uid, &amp;gid);
++
++	/* lock the parent */
++	down(&amp;rec_dir.dentry-&gt;d_inode-&gt;i_sem);
++
++	dentry = lookup_one_len(dname, rec_dir.dentry, HEXDIR_LEN-1);
++	if (IS_ERR(dentry)) {
++		status = PTR_ERR(dentry);
++		goto out_unlock;
++	}
++	status = -EEXIST;
++	if (dentry-&gt;d_inode) {
++		dprintk("NFSD: nfsd4_create_clid_dir: DIRECTORY EXISTS\n");
++		goto out_put;
++	}
++	status = vfs_mkdir(rec_dir.dentry-&gt;d_inode, dentry, S_IRWXU);
++out_put:
++	dput(dentry);
++out_unlock:
++	up(&amp;rec_dir.dentry-&gt;d_inode-&gt;i_sem);
++	if (status == 0) {
++		clp-&gt;cl_firststate = 1;
++		status = nfsd4_rec_fsync(rec_dir.dentry);
++	}
++	nfs4_reset_user(uid, gid);
++	dprintk("NFSD: nfsd4_create_clid_dir returns %d\n", status);
++	return status;
++}
++
+ typedef int (recdir_func)(struct dentry *, struct dentry *);
+ 
+ struct dentry_list {
+@@ -201,6 +265,111 @@ nfsd4_list_rec_dir(struct dentry *dir, recdir_func *f)
+ 	return status;
+ }
+ 
++static int
++nfsd4_remove_clid_file(struct dentry *dir, struct dentry *dentry)
++{
++	int status;
++
++	if (!S_ISREG(dir-&gt;d_inode-&gt;i_mode)) {
++		printk("nfsd4: non-file found in client recovery directory\n");
++		return -EINVAL;
++	}
++	down(&amp;dir-&gt;d_inode-&gt;i_sem);
++	status = vfs_unlink(dir-&gt;d_inode, dentry);
++	up(&amp;dir-&gt;d_inode-&gt;i_sem);
++	return status;
++}
++
++static int
++nfsd4_clear_clid_dir(struct dentry *dir, struct dentry *dentry)
++{
++	int status;
++
++	/* For now this directory should already be empty, but we empty it of
++	 * any regular files anyway, just in case the directory was created by
++	 * a kernel from the future.... */
++	nfsd4_list_rec_dir(dentry, nfsd4_remove_clid_file);
++	down(&amp;dir-&gt;d_inode-&gt;i_sem);
++	status = vfs_rmdir(dir-&gt;d_inode, dentry);
++	up(&amp;dir-&gt;d_inode-&gt;i_sem);
++	return status;
++}
++
++static int
++nfsd4_unlink_clid_dir(char *name, int namlen)
++{
++	struct dentry *dentry;
++	int status;
++
++	dprintk("NFSD: nfsd4_unlink_clid_dir. name %.*s\n", namlen, name);
++
++	dentry = lookup_one_len(name, rec_dir.dentry, namlen);
++	if (IS_ERR(dentry)) {
++		status = PTR_ERR(dentry);
++		return status;
++	}
++	status = -ENOENT;
++	if (!dentry-&gt;d_inode)
++		goto out;
++
++	status = nfsd4_clear_clid_dir(rec_dir.dentry, dentry);
++out:
++	dput(dentry);
++	return status;
++}
++
++void
++nfsd4_remove_clid_dir(struct nfs4_client *clp)
++{
++	uid_t uid;
++	gid_t gid;
++	int status;
++
++	if (!rec_dir_init || !clp-&gt;cl_firststate)
++		return;
++
++	nfs4_save_user(&amp;uid, &amp;gid);
++	status = nfsd4_unlink_clid_dir(clp-&gt;cl_recdir, HEXDIR_LEN-1);
++	nfs4_reset_user(uid, gid);
++	if (status == 0)
++		status = nfsd4_rec_fsync(rec_dir.dentry);
++	if (status)
++		printk("NFSD: Failed to remove expired client state directory"
++				" %.*s\n", HEXDIR_LEN, clp-&gt;cl_recdir);
++	return;
++}
++
++static int
++purge_old(struct dentry *parent, struct dentry *child)
++{
++	int status;
++
++	if (nfs4_has_reclaimed_state(child-&gt;d_name.name))
++		return nfs_ok;
++
++	status = nfsd4_clear_clid_dir(parent, child);
++	if (status)
++		printk("failed to remove client recovery directory %s\n",
++				child-&gt;d_name.name);
++	/* Keep trying, success or failure: */
++	return nfs_ok;
++}
++
++void
++nfsd4_recdir_purge_old(void) {
++	int status;
++
++	if (!rec_dir_init)
++		return;
++	status = nfsd4_list_rec_dir(rec_dir.dentry, purge_old);
++	if (status == 0)
++		status = nfsd4_rec_fsync(rec_dir.dentry);
++	if (status)
++		printk("nfsd4: failed to purge old clients from recovery"
++			" directory %s\n", rec_dir.dentry-&gt;d_name.name);
++	return;
++}
++
+ static int
+ load_recdir(struct dentry *parent, struct dentry *child)
+ {
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 6b9d23c39afe..6cca358cd650 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -905,6 +905,7 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp, struct nfsd4_setclientid_confi
+ 			conf = find_confirmed_client_by_str(unconf-&gt;cl_recdir,
+ 									hash);
+ 			if (conf) {
++				nfsd4_remove_clid_dir(conf);
+ 				expire_client(conf);
+ 			}
+ 			move_to_confirmed(unconf);
+@@ -1691,6 +1692,7 @@ nfs4_set_claim_prev(struct nfsd4_open *open, int *status)
+ 			*status = nfserr_reclaim_bad;
+ 		else {
+ 			open-&gt;op_stateowner-&gt;so_confirmed = 1;
++			open-&gt;op_stateowner-&gt;so_client-&gt;cl_firststate = 1;
+ 			open-&gt;op_stateowner-&gt;so_seqid--;
+ 		}
+ 	}
+@@ -1903,6 +1905,7 @@ static void
+ end_grace(void)
+ {
+ 	dprintk("NFSD: end of grace period\n");
++	nfsd4_recdir_purge_old();
+ 	in_grace = 0;
+ }
+ 
+@@ -1932,6 +1935,7 @@ nfs4_laundromat(void)
+ 		}
+ 		dprintk("NFSD: purging unused client (clientid %08x)\n",
+ 			clp-&gt;cl_clientid.cl_id);
++		nfsd4_remove_clid_dir(clp);
+ 		expire_client(clp);
+ 	}
+ 	INIT_LIST_HEAD(&amp;reaplist);
+@@ -2320,6 +2324,8 @@ nfsd4_open_confirm(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfs
+ 		         stp-&gt;st_stateid.si_stateownerid,
+ 		         stp-&gt;st_stateid.si_fileid,
+ 		         stp-&gt;st_stateid.si_generation);
++
++	nfsd4_create_clid_dir(sop-&gt;so_client);
+ out:
+ 	if (oc-&gt;oc_stateowner)
+ 		nfs4_get_stateowner(oc-&gt;oc_stateowner);
+@@ -3089,6 +3095,16 @@ alloc_reclaim(void)
+ 	return kmalloc(sizeof(struct nfs4_client_reclaim), GFP_KERNEL);
+ }
+ 
++int
++nfs4_has_reclaimed_state(const char *name)
++{
++	unsigned int strhashval = clientstr_hashval(name);
++	struct nfs4_client *clp;
++
++	clp = find_confirmed_client_by_str(name, strhashval);
++	return clp ? 1 : 0;
++}
++
+ /*
+  * failure =&gt; all reset bets are off, nfserr_no_grace...
+  */
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index 19481ab122df..a84a3fa99be1 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -131,6 +131,7 @@ struct nfs4_client {
+ 	nfs4_verifier		cl_confirm;	/* generated by server */
+ 	struct nfs4_callback	cl_callback;    /* callback info */
+ 	atomic_t		cl_count;	/* ref count */
++	u32			cl_firststate;	/* recovery dir creation */
+ };
+ 
+ /* struct nfs4_client_reset
+@@ -282,6 +283,10 @@ extern void nfsd4_init_recdir(char *recdir_name);
+ extern int nfsd4_recdir_load(void);
+ extern void nfsd4_shutdown_recdir(void);
+ extern int nfs4_client_to_reclaim(const char *name);
++extern int nfs4_has_reclaimed_state(const char *name);
++extern void nfsd4_recdir_purge_old(void);
++extern int nfsd4_create_clid_dir(struct nfs4_client *clp);
++extern void nfsd4_remove_clid_dir(struct nfs4_client *clp);
+ 
+ static inline void
+ nfs4_put_stateowner(struct nfs4_stateowner *so)</pre><hr><pre>commit 190e4fbf96037e5e526ba3210f2bcc2a3b6fe964
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:04:25 2005 -0700
+
+    [PATCH] knfsd: nfsd4: initialize recovery directory
+    
+    NFSv4 clients are required to know what state they have on the server so that
+    they can reclaim it on server reboot.  However, it is possible for
+    pathalogical combinations of server reboots and network partitions to leave a
+    client in a state where it cannot know whether it has lost its state on the
+    server.
+    
+    For this reason, rfc3530 requires that we store some information about clients
+    to stable storage.
+    
+    So we maintain a directory /var/lib/nfs/v4recovery with a subdirectory for
+    each client with active state.  We leave open the possibility of including
+    files underneath each such subdirectory with information about the client, but
+    for now the subdirectories are empty.
+    
+    We create a client subdirectory whenever a client makes its first non-reclaim
+    open_confirm.
+    
+    We remove a client subdirectory whenever either
+            a) its lease expires, or
+            b) the grace period ends without it reclaiming anything.
+    When handling reclaims, we allow the reclaim if and only if the client doing
+    the reclaim has a subdirectory.
+    
+    This patch adds just the code to scan the recovery directory on nfsd startup.
+    
+    Signed-off-by: Andy Adamson &lt;andros@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4recover.c b/fs/nfsd/nfs4recover.c
+index 841a305d7948..2dc9851a1d37 100644
+--- a/fs/nfsd/nfs4recover.c
++++ b/fs/nfsd/nfs4recover.c
+@@ -39,6 +39,9 @@
+ #include &lt;linux/nfs4.h&gt;
+ #include &lt;linux/nfsd/state.h&gt;
+ #include &lt;linux/nfsd/xdr4.h&gt;
++#include &lt;linux/param.h&gt;
++#include &lt;linux/file.h&gt;
++#include &lt;linux/namei.h&gt;
+ #include &lt;asm/uaccess.h&gt;
+ #include &lt;asm/scatterlist.h&gt;
+ #include &lt;linux/crypto.h&gt;
+@@ -46,6 +49,27 @@
+ 
+ #define NFSDDBG_FACILITY                NFSDDBG_PROC
+ 
++/* Globals */
++char recovery_dirname[PATH_MAX] = "/var/lib/nfs/v4recovery";
++static struct nameidata rec_dir;
++static int rec_dir_init = 0;
++
++static void
++nfs4_save_user(uid_t *saveuid, gid_t *savegid)
++{
++	*saveuid = current-&gt;fsuid;
++	*savegid = current-&gt;fsgid;
++	current-&gt;fsuid = 0;
++	current-&gt;fsgid = 0;
++}
++
++static void
++nfs4_reset_user(uid_t saveuid, gid_t savegid)
++{
++	current-&gt;fsuid = saveuid;
++	current-&gt;fsgid = savegid;
++}
++
+ static void
+ md5_to_hex(char *out, char *md5)
+ {
+@@ -95,3 +119,145 @@ nfs4_make_rec_clidname(char *dname, struct xdr_netobj *clname)
+ 		crypto_free_tfm(tfm);
+ 	return status;
+ }
++
++typedef int (recdir_func)(struct dentry *, struct dentry *);
++
++struct dentry_list {
++	struct dentry *dentry;
++	struct list_head list;
++};
++
++struct dentry_list_arg {
++	struct list_head dentries;
++	struct dentry *parent;
++};
++
++static int
++nfsd4_build_dentrylist(void *arg, const char *name, int namlen,
++		loff_t offset, ino_t ino, unsigned int d_type)
++{
++	struct dentry_list_arg *dla = arg;
++	struct list_head *dentries = &amp;dla-&gt;dentries;
++	struct dentry *parent = dla-&gt;parent;
++	struct dentry *dentry;
++	struct dentry_list *child;
++
++	if (name &amp;&amp; isdotent(name, namlen))
++		return nfs_ok;
++	dentry = lookup_one_len(name, parent, namlen);
++	if (IS_ERR(dentry))
++		return PTR_ERR(dentry);
++	child = kmalloc(sizeof(*child), GFP_KERNEL);
++	if (child == NULL)
++		return -ENOMEM;
++	child-&gt;dentry = dentry;
++	list_add(&amp;child-&gt;list, dentries);
++	return 0;
++}
++
++static int
++nfsd4_list_rec_dir(struct dentry *dir, recdir_func *f)
++{
++	struct file *filp;
++	struct dentry_list_arg dla = {
++		.parent = dir,
++	};
++	struct list_head *dentries = &amp;dla.dentries;
++	struct dentry_list *child;
++	uid_t uid;
++	gid_t gid;
++	int status;
++
++	if (!rec_dir_init)
++		return 0;
++
++	nfs4_save_user(&amp;uid, &amp;gid);
++
++	filp = dentry_open(dget(dir), mntget(rec_dir.mnt),
++			O_RDWR);
++	status = PTR_ERR(filp);
++	if (IS_ERR(filp))
++		goto out;
++	INIT_LIST_HEAD(dentries);
++	status = vfs_readdir(filp, nfsd4_build_dentrylist, &amp;dla);
++	fput(filp);
++	while (!list_empty(dentries)) {
++		child = list_entry(dentries-&gt;next, struct dentry_list, list);
++		status = f(dir, child-&gt;dentry);
++		if (status)
++			goto out;
++		list_del(&amp;child-&gt;list);
++		dput(child-&gt;dentry);
++		kfree(child);
++	}
++out:
++	while (!list_empty(dentries)) {
++		child = list_entry(dentries-&gt;next, struct dentry_list, list);
++		list_del(&amp;child-&gt;list);
++		dput(child-&gt;dentry);
++		kfree(child);
++	}
++	nfs4_reset_user(uid, gid);
++	return status;
++}
++
++static int
++load_recdir(struct dentry *parent, struct dentry *child)
++{
++	if (child-&gt;d_name.len != HEXDIR_LEN - 1) {
++		printk("nfsd4: illegal name %s in recovery directory\n",
++				child-&gt;d_name.name);
++		/* Keep trying; maybe the others are OK: */
++		return nfs_ok;
++	}
++	nfs4_client_to_reclaim(child-&gt;d_name.name);
++	return nfs_ok;
++}
++
++int
++nfsd4_recdir_load(void) {
++	int status;
++
++	status = nfsd4_list_rec_dir(rec_dir.dentry, load_recdir);
++	if (status)
++		printk("nfsd4: failed loading clients from recovery"
++			" directory %s\n", rec_dir.dentry-&gt;d_name.name);
++	return status;
++}
++
++/*
++ * Hold reference to the recovery directory.
++ */
++
++void
++nfsd4_init_recdir(char *rec_dirname)
++{
++	uid_t			uid = 0;
++	gid_t			gid = 0;
++	int 			status;
++
++	printk("NFSD: Using %s as the NFSv4 state recovery directory\n",
++			rec_dirname);
++
++	BUG_ON(rec_dir_init);
++
++	nfs4_save_user(&amp;uid, &amp;gid);
++
++	status = path_lookup(rec_dirname, LOOKUP_FOLLOW, &amp;rec_dir);
++	if (status == -ENOENT)
++		printk("NFSD: recovery directory %s doesn't exist\n",
++				rec_dirname);
++
++	if (!status)
++		rec_dir_init = 1;
++	nfs4_reset_user(uid, gid);
++}
++
++void
++nfsd4_shutdown_recdir(void)
++{
++	if (!rec_dir_init)
++		return;
++	rec_dir_init = 0;
++	path_release(&amp;rec_dir);
++}
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 0b47a97e953d..6b9d23c39afe 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -71,6 +71,7 @@ static stateid_t onestateid;              /* bits all 1 */
+ static struct nfs4_stateid * find_stateid(stateid_t *stid, int flags);
+ static struct nfs4_delegation * find_delegation_stateid(struct inode *ino, stateid_t *stid);
+ static void release_stateid_lockowners(struct nfs4_stateid *open_stp);
++extern char recovery_dirname[];
+ 
+ /* Locking:
+  *
+@@ -3091,8 +3092,8 @@ alloc_reclaim(void)
+ /*
+  * failure =&gt; all reset bets are off, nfserr_no_grace...
+  */
+-static int
+-nfs4_client_to_reclaim(char *name)
++int
++nfs4_client_to_reclaim(const char *name)
+ {
+ 	unsigned int strhashval;
+ 	struct nfs4_client_reclaim *crp = NULL;
+@@ -3202,6 +3203,17 @@ nfs4_state_init(void)
+ 	reclaim_str_hashtbl_size = 0;
+ }
+ 
++static void
++nfsd4_load_reboot_recovery_data(void)
++{
++	int status;
++
++	nfsd4_init_recdir(recovery_dirname);
++	status = nfsd4_recdir_load();
++	if (status)
++		printk("NFSD: Failure reading reboot recovery data\n");
++}
++
+ /* initialization to perform when the nfsd service is started: */
+ 
+ static void
+@@ -3228,6 +3240,7 @@ nfs4_state_start(void)
+ 	status = nfsd4_init_slabs();
+ 	if (status)
+ 		return status;
++	nfsd4_load_reboot_recovery_data();
+ 	__nfs4_state_start();
+ 	nfs4_init = 1;
+ 	return 0;
+@@ -3286,6 +3299,7 @@ __nfs4_state_shutdown(void)
+ 	cancel_delayed_work(&amp;laundromat_work);
+ 	flush_workqueue(laundry_wq);
+ 	destroy_workqueue(laundry_wq);
++	nfsd4_shutdown_recdir();
+ 	nfs4_init = 0;
+ }
+ 
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index 83d29ec03a58..19481ab122df 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -278,6 +278,10 @@ extern void nfsd4_probe_callback(struct nfs4_client *clp);
+ extern void nfsd4_cb_recall(struct nfs4_delegation *dp);
+ extern void nfs4_put_delegation(struct nfs4_delegation *dp);
+ extern int nfs4_make_rec_clidname(char *clidname, struct xdr_netobj *clname);
++extern void nfsd4_init_recdir(char *recdir_name);
++extern int nfsd4_recdir_load(void);
++extern void nfsd4_shutdown_recdir(void);
++extern int nfs4_client_to_reclaim(const char *name);
+ 
+ static inline void
+ nfs4_put_stateowner(struct nfs4_stateowner *so)</pre><hr><pre>commit cb36d6345752fa24827044c68e15f6708a40d9f6
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:04:23 2005 -0700
+
+    [PATCH] knfsd: nfsd4: remove cb_parsed
+    
+    The cb_parsed field is only used by probe_callback, to determine whether the
+    callback information has been filled in by setclientid.  But there is no way
+    that probe_callback() can be called without that having already happened, so
+    that check is superfluous, as is cb_parsed.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 68bb245491f6..583c0710e45e 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -386,9 +386,7 @@ nfsd4_probe_callback(struct nfs4_client *clp)
+ 	char                    hostname[32];
+ 	int status;
+ 
+-	dprintk("NFSD: probe_callback. cb_parsed %d cb_set %d\n",
+-			cb-&gt;cb_parsed, atomic_read(&amp;cb-&gt;cb_set));
+-	if (!cb-&gt;cb_parsed || atomic_read(&amp;cb-&gt;cb_set))
++	if (atomic_read(&amp;cb-&gt;cb_set))
+ 		return;
+ 
+ 	/* Initialize address */
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 26d00465c28a..0b47a97e953d 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -377,7 +377,6 @@ create_client(struct xdr_netobj name, char *recdir) {
+ 	memcpy(clp-&gt;cl_recdir, recdir, HEXDIR_LEN);
+ 	atomic_set(&amp;clp-&gt;cl_count, 1);
+ 	atomic_set(&amp;clp-&gt;cl_callback.cb_set, 0);
+-	clp-&gt;cl_callback.cb_parsed = 0;
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_idhash);
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_strhash);
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_openowners);
+@@ -620,14 +619,12 @@ gen_callback(struct nfs4_client *clp, struct nfsd4_setclientid *se)
+ 		goto out_err;
+ 	cb-&gt;cb_prog = se-&gt;se_callback_prog;
+ 	cb-&gt;cb_ident = se-&gt;se_callback_ident;
+-	cb-&gt;cb_parsed = 1;
+ 	return;
+ out_err:
+ 	printk(KERN_INFO "NFSD: this client (clientid %08x/%08x) "
+ 		"will not receive delegations\n",
+ 		clp-&gt;cl_clientid.cl_boot, clp-&gt;cl_clientid.cl_id);
+ 
+-	cb-&gt;cb_parsed = 0;
+ 	return;
+ }
+ 
+@@ -872,7 +869,7 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp, struct nfsd4_setclientid_confi
+ 		else {
+ 			/* XXX: We just turn off callbacks until we can handle
+ 			  * change request correctly. */
+-			conf-&gt;cl_callback.cb_parsed = 0;
++			atomic_set(&amp;conf-&gt;cl_callback.cb_set, 0);
+ 			gen_confirm(conf);
+ 			expire_client(unconf);
+ 			status = nfs_ok;
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index f4f27b76ee64..83d29ec03a58 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -92,7 +92,6 @@ struct nfs4_delegation {
+ /* client delegation callback info */
+ struct nfs4_callback {
+ 	/* SETCLIENTID info */
+-	u32			cb_parsed;  /* addr parsed */
+ 	u32                     cb_addr;
+ 	unsigned short          cb_port;
+ 	u32                     cb_prog;</pre><hr><pre>commit 3e9e3dbe0fe36c824ce2c5d7b05997c87a64bbdc
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:04:20 2005 -0700
+
+    [PATCH] knfsd: nfsd4: allow multiple lockowners
+    
+    &gt;From the language of rfc3530 section 8.1.3 (e.g., the suggestion that a
+    "process id" might be a reasonable lockowner value) it's conceivable that a
+    client might want to use the same lockowner string on multiple files, so we may
+    as well allow that.  We expect each use of open_to_lockowner to create a
+    distinct seqid stream, though.
+    
+    For now we're also allowing multiple uses of open_to_lockowner with the same
+    open, though it seems unlikely clients would actually do that.
+    
+    Also add a comment reminding myself of some very non-scalable data structures.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 22e76e3f06a5..26d00465c28a 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -2583,22 +2583,6 @@ nfs4_set_lock_denied(struct file_lock *fl, struct nfsd4_lock_denied *deny)
+ 		deny-&gt;ld_type = NFS4_WRITE_LT;
+ }
+ 
+-static struct nfs4_stateowner *
+-find_lockstateowner(struct xdr_netobj *owner, clientid_t *clid)
+-{
+-	struct nfs4_stateowner *local = NULL;
+-	int i;
+-
+-	for (i = 0; i &lt; LOCK_HASH_SIZE; i++) {
+-		list_for_each_entry(local, &amp;lock_ownerid_hashtbl[i], so_idhash) {
+-			if (!cmp_owner_str(local, owner, clid))
+-				continue;
+-			return local;
+-		}
+-	}
+-	return NULL;
+-}
+-
+ static struct nfs4_stateowner *
+ find_lockstateowner_str(struct inode *inode, clientid_t *clid,
+ 		struct xdr_netobj *owner)
+@@ -2697,7 +2681,7 @@ check_lock_length(u64 offset, u64 length)
+ int
+ nfsd4_lock(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_lock *lock)
+ {
+-	struct nfs4_stateowner *lock_sop = NULL, *open_sop = NULL;
++	struct nfs4_stateowner *open_sop = NULL;
+ 	struct nfs4_stateid *lock_stp;
+ 	struct file *filp;
+ 	struct file_lock file_lock;
+@@ -2756,16 +2740,9 @@ nfsd4_lock(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_lock
+ 		strhashval = lock_ownerstr_hashval(fp-&gt;fi_inode, 
+ 				open_sop-&gt;so_client-&gt;cl_clientid.cl_id, 
+ 				&amp;lock-&gt;v.new.owner);
+-		/* 
+-		 * If we already have this lock owner, the client is in 
+-		 * error (or our bookeeping is wrong!) 
+-		 * for asking for a 'new lock'.
+-		 */
+-		status = nfserr_bad_stateid;
+-		lock_sop = find_lockstateowner(&amp;lock-&gt;v.new.owner,
+-						&amp;lock-&gt;v.new.clientid);
+-		if (lock_sop)
+-			goto out;
++		/* XXX: Do we need to check for duplicate stateowners on
++		 * the same file, or should they just be allowed (and
++		 * create new stateids)? */
+ 		status = nfserr_resource;
+ 		if (!(lock-&gt;lk_stateowner = alloc_init_lock_stateowner(strhashval, open_sop-&gt;so_client, open_stp, lock)))
+ 			goto out;
+@@ -3056,8 +3033,11 @@ int
+ nfsd4_release_lockowner(struct svc_rqst *rqstp, struct nfsd4_release_lockowner *rlockowner)
+ {
+ 	clientid_t *clid = &amp;rlockowner-&gt;rl_clientid;
+-	struct nfs4_stateowner *local = NULL;
++	struct nfs4_stateowner *sop;
++	struct nfs4_stateid *stp;
+ 	struct xdr_netobj *owner = &amp;rlockowner-&gt;rl_owner;
++	struct list_head matches;
++	int i;
+ 	int status;
+ 
+ 	dprintk("nfsd4_release_lockowner clientid: (%08x/%08x):\n",
+@@ -3073,22 +3053,32 @@ nfsd4_release_lockowner(struct svc_rqst *rqstp, struct nfsd4_release_lockowner *
+ 
+ 	nfs4_lock_state();
+ 
+-	status = nfs_ok;
+-	local = find_lockstateowner(owner, clid);
+-	if (local) {
+-		struct nfs4_stateid *stp;
+-
+-		/* check for any locks held by any stateid
+-		 * associated with the (lock) stateowner */
+-		status = nfserr_locks_held;
+-		list_for_each_entry(stp, &amp;local-&gt;so_stateids,
+-				st_perstateowner) {
+-			if (check_for_locks(stp-&gt;st_vfs_file, local))
+-				goto out;
++	status = nfserr_locks_held;
++	/* XXX: we're doing a linear search through all the lockowners.
++	 * Yipes!  For now we'll just hope clients aren't really using
++	 * release_lockowner much, but eventually we have to fix these
++	 * data structures. */
++	INIT_LIST_HEAD(&amp;matches);
++	for (i = 0; i &lt; LOCK_HASH_SIZE; i++) {
++		list_for_each_entry(sop, &amp;lock_ownerid_hashtbl[i], so_idhash) {
++			if (!cmp_owner_str(sop, owner, clid))
++				continue;
++			list_for_each_entry(stp, &amp;sop-&gt;so_stateids,
++					st_perstateowner) {
++				if (check_for_locks(stp-&gt;st_vfs_file, sop))
++					goto out;
++				/* Note: so_perclient unused for lockowners,
++				 * so it's OK to fool with here. */
++				list_add(&amp;sop-&gt;so_perclient, &amp;matches);
++			}
+ 		}
+-		/* no locks held by (lock) stateowner */
+-		status = nfs_ok;
+-		release_stateowner(local);
++	}
++	/* Clients probably won't expect us to return with some (but not all)
++	 * of the lockowner state released; so don't release any until all
++	 * have been checked. */
++	status = nfs_ok;
++	list_for_each_entry(sop, &amp;matches, so_perclient) {
++		release_stateowner(sop);
+ 	}
+ out:
+ 	nfs4_unlock_state();</pre><hr><pre>commit ea1da636e956ad1591a74904f23d98bbc26a644b
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:04:17 2005 -0700
+
+    [PATCH] knfsd: nfsd4: rename state list fields
+    
+    Trivial renaming patch:
+    
+    I can never remember, while looking at various lists relating the nfsd4 state
+    structures, which are the "heads" and which are items on other lists, or which
+    structures are actually on the various lists.  The following convention helps
+    me: given structures foo and bar, with foo containing the head of a list of
+    bars, use "bars" for the name of the head of the list contained in the struct
+    foo, and use "per_foo" for the entries in the struct bars.
+    
+    Already done for struct nfs4_file; go ahead and do it for the other nfsd4
+    state structures.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 884115198116..22e76e3f06a5 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -154,8 +154,8 @@ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_stateid *stp, struct svc_f
+ 	dp = kmem_cache_alloc(deleg_slab, GFP_KERNEL);
+ 	if (dp == NULL)
+ 		return dp;
+-	INIT_LIST_HEAD(&amp;dp-&gt;dl_del_perfile);
+-	INIT_LIST_HEAD(&amp;dp-&gt;dl_del_perclnt);
++	INIT_LIST_HEAD(&amp;dp-&gt;dl_perfile);
++	INIT_LIST_HEAD(&amp;dp-&gt;dl_perclnt);
+ 	INIT_LIST_HEAD(&amp;dp-&gt;dl_recall_lru);
+ 	dp-&gt;dl_client = clp;
+ 	get_nfs4_file(fp);
+@@ -176,8 +176,8 @@ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_stateid *stp, struct svc_f
+ 		        current_fh-&gt;fh_handle.fh_size);
+ 	dp-&gt;dl_time = 0;
+ 	atomic_set(&amp;dp-&gt;dl_count, 1);
+-	list_add(&amp;dp-&gt;dl_del_perfile, &amp;fp-&gt;fi_delegations);
+-	list_add(&amp;dp-&gt;dl_del_perclnt, &amp;clp-&gt;cl_del_perclnt);
++	list_add(&amp;dp-&gt;dl_perfile, &amp;fp-&gt;fi_delegations);
++	list_add(&amp;dp-&gt;dl_perclnt, &amp;clp-&gt;cl_delegations);
+ 	return dp;
+ }
+ 
+@@ -214,8 +214,8 @@ nfs4_close_delegation(struct nfs4_delegation *dp)
+ static void
+ unhash_delegation(struct nfs4_delegation *dp)
+ {
+-	list_del_init(&amp;dp-&gt;dl_del_perfile);
+-	list_del_init(&amp;dp-&gt;dl_del_perclnt);
++	list_del_init(&amp;dp-&gt;dl_perfile);
++	list_del_init(&amp;dp-&gt;dl_perclnt);
+ 	spin_lock(&amp;recall_lock);
+ 	list_del_init(&amp;dp-&gt;dl_recall_lru);
+ 	spin_unlock(&amp;recall_lock);
+@@ -345,11 +345,11 @@ expire_client(struct nfs4_client *clp)
+ 
+ 	INIT_LIST_HEAD(&amp;reaplist);
+ 	spin_lock(&amp;recall_lock);
+-	while (!list_empty(&amp;clp-&gt;cl_del_perclnt)) {
+-		dp = list_entry(clp-&gt;cl_del_perclnt.next, struct nfs4_delegation, dl_del_perclnt);
++	while (!list_empty(&amp;clp-&gt;cl_delegations)) {
++		dp = list_entry(clp-&gt;cl_delegations.next, struct nfs4_delegation, dl_perclnt);
+ 		dprintk("NFSD: expire client. dp %p, fp %p\n", dp,
+ 				dp-&gt;dl_flock);
+-		list_del_init(&amp;dp-&gt;dl_del_perclnt);
++		list_del_init(&amp;dp-&gt;dl_perclnt);
+ 		list_move(&amp;dp-&gt;dl_recall_lru, &amp;reaplist);
+ 	}
+ 	spin_unlock(&amp;recall_lock);
+@@ -361,8 +361,8 @@ expire_client(struct nfs4_client *clp)
+ 	list_del(&amp;clp-&gt;cl_idhash);
+ 	list_del(&amp;clp-&gt;cl_strhash);
+ 	list_del(&amp;clp-&gt;cl_lru);
+-	while (!list_empty(&amp;clp-&gt;cl_perclient)) {
+-		sop = list_entry(clp-&gt;cl_perclient.next, struct nfs4_stateowner, so_perclient);
++	while (!list_empty(&amp;clp-&gt;cl_openowners)) {
++		sop = list_entry(clp-&gt;cl_openowners.next, struct nfs4_stateowner, so_perclient);
+ 		release_stateowner(sop);
+ 	}
+ 	put_nfs4_client(clp);
+@@ -380,8 +380,8 @@ create_client(struct xdr_netobj name, char *recdir) {
+ 	clp-&gt;cl_callback.cb_parsed = 0;
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_idhash);
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_strhash);
+-	INIT_LIST_HEAD(&amp;clp-&gt;cl_perclient);
+-	INIT_LIST_HEAD(&amp;clp-&gt;cl_del_perclnt);
++	INIT_LIST_HEAD(&amp;clp-&gt;cl_openowners);
++	INIT_LIST_HEAD(&amp;clp-&gt;cl_delegations);
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_lru);
+ out:
+ 	return clp;
+@@ -1074,13 +1074,13 @@ alloc_init_open_stateowner(unsigned int strhashval, struct nfs4_client *clp, str
+ 	INIT_LIST_HEAD(&amp;sop-&gt;so_idhash);
+ 	INIT_LIST_HEAD(&amp;sop-&gt;so_strhash);
+ 	INIT_LIST_HEAD(&amp;sop-&gt;so_perclient);
+-	INIT_LIST_HEAD(&amp;sop-&gt;so_perfilestate);
+-	INIT_LIST_HEAD(&amp;sop-&gt;so_perlockowner);  /* not used */
++	INIT_LIST_HEAD(&amp;sop-&gt;so_stateids);
++	INIT_LIST_HEAD(&amp;sop-&gt;so_perstateid);  /* not used */
+ 	INIT_LIST_HEAD(&amp;sop-&gt;so_close_lru);
+ 	sop-&gt;so_time = 0;
+ 	list_add(&amp;sop-&gt;so_idhash, &amp;ownerid_hashtbl[idhashval]);
+ 	list_add(&amp;sop-&gt;so_strhash, &amp;ownerstr_hashtbl[strhashval]);
+-	list_add(&amp;sop-&gt;so_perclient, &amp;clp-&gt;cl_perclient);
++	list_add(&amp;sop-&gt;so_perclient, &amp;clp-&gt;cl_openowners);
+ 	sop-&gt;so_is_open_owner = 1;
+ 	sop-&gt;so_id = current_ownerid++;
+ 	sop-&gt;so_client = clp;
+@@ -1098,10 +1098,10 @@ release_stateid_lockowners(struct nfs4_stateid *open_stp)
+ {
+ 	struct nfs4_stateowner *lock_sop;
+ 
+-	while (!list_empty(&amp;open_stp-&gt;st_perlockowner)) {
+-		lock_sop = list_entry(open_stp-&gt;st_perlockowner.next,
+-				struct nfs4_stateowner, so_perlockowner);
+-		/* list_del(&amp;open_stp-&gt;st_perlockowner);  */
++	while (!list_empty(&amp;open_stp-&gt;st_lockowners)) {
++		lock_sop = list_entry(open_stp-&gt;st_lockowners.next,
++				struct nfs4_stateowner, so_perstateid);
++		/* list_del(&amp;open_stp-&gt;st_lockowners);  */
+ 		BUG_ON(lock_sop-&gt;so_is_open_owner);
+ 		release_stateowner(lock_sop);
+ 	}
+@@ -1116,10 +1116,10 @@ unhash_stateowner(struct nfs4_stateowner *sop)
+ 	list_del(&amp;sop-&gt;so_strhash);
+ 	if (sop-&gt;so_is_open_owner)
+ 		list_del(&amp;sop-&gt;so_perclient);
+-	list_del(&amp;sop-&gt;so_perlockowner);
+-	while (!list_empty(&amp;sop-&gt;so_perfilestate)) {
+-		stp = list_entry(sop-&gt;so_perfilestate.next, 
+-			struct nfs4_stateid, st_perfilestate);
++	list_del(&amp;sop-&gt;so_perstateid);
++	while (!list_empty(&amp;sop-&gt;so_stateids)) {
++		stp = list_entry(sop-&gt;so_stateids.next,
++			struct nfs4_stateid, st_perstateowner);
+ 		if (sop-&gt;so_is_open_owner)
+ 			release_stateid(stp, OPEN_STATE);
+ 		else
+@@ -1141,11 +1141,11 @@ init_stateid(struct nfs4_stateid *stp, struct nfs4_file *fp, struct nfsd4_open *
+ 	unsigned int hashval = stateid_hashval(sop-&gt;so_id, fp-&gt;fi_id);
+ 
+ 	INIT_LIST_HEAD(&amp;stp-&gt;st_hash);
+-	INIT_LIST_HEAD(&amp;stp-&gt;st_perfilestate);
+-	INIT_LIST_HEAD(&amp;stp-&gt;st_perlockowner);
++	INIT_LIST_HEAD(&amp;stp-&gt;st_perstateowner);
++	INIT_LIST_HEAD(&amp;stp-&gt;st_lockowners);
+ 	INIT_LIST_HEAD(&amp;stp-&gt;st_perfile);
+ 	list_add(&amp;stp-&gt;st_hash, &amp;stateid_hashtbl[hashval]);
+-	list_add(&amp;stp-&gt;st_perfilestate, &amp;sop-&gt;so_perfilestate);
++	list_add(&amp;stp-&gt;st_perstateowner, &amp;sop-&gt;so_stateids);
+ 	list_add(&amp;stp-&gt;st_perfile, &amp;fp-&gt;fi_stateids);
+ 	stp-&gt;st_stateowner = sop;
+ 	get_nfs4_file(fp);
+@@ -1167,7 +1167,7 @@ release_stateid(struct nfs4_stateid *stp, int flags)
+ 
+ 	list_del(&amp;stp-&gt;st_hash);
+ 	list_del(&amp;stp-&gt;st_perfile);
+-	list_del(&amp;stp-&gt;st_perfilestate);
++	list_del(&amp;stp-&gt;st_perstateowner);
+ 	if (flags &amp; OPEN_STATE) {
+ 		release_stateid_lockowners(stp);
+ 		stp-&gt;st_vfs_file = NULL;
+@@ -1201,7 +1201,7 @@ release_state_owner(struct nfs4_stateid *stp, int flag)
+ 	 * released by the laundromat service after the lease period
+ 	 * to enable us to handle CLOSE replay
+ 	 */
+-	if (sop-&gt;so_confirmed &amp;&amp; list_empty(&amp;sop-&gt;so_perfilestate))
++	if (sop-&gt;so_confirmed &amp;&amp; list_empty(&amp;sop-&gt;so_stateids))
+ 		move_to_close_lru(sop);
+ }
+ 
+@@ -1548,7 +1548,7 @@ find_delegation_file(struct nfs4_file *fp, stateid_t *stid)
+ {
+ 	struct nfs4_delegation *dp;
+ 
+-	list_for_each_entry(dp, &amp;fp-&gt;fi_delegations, dl_del_perfile) {
++	list_for_each_entry(dp, &amp;fp-&gt;fi_delegations, dl_perfile) {
+ 		if (dp-&gt;dl_stateid.si_stateownerid == stid-&gt;si_stateownerid)
+ 			return dp;
+ 	}
+@@ -1892,7 +1892,7 @@ nfsd4_renew(clientid_t *clid)
+ 	}
+ 	renew_client(clp);
+ 	status = nfserr_cb_path_down;
+-	if (!list_empty(&amp;clp-&gt;cl_del_perclnt)
++	if (!list_empty(&amp;clp-&gt;cl_delegations)
+ 			&amp;&amp; !atomic_read(&amp;clp-&gt;cl_callback.cb_set))
+ 		goto out;
+ 	status = nfs_ok;
+@@ -2634,13 +2634,13 @@ alloc_init_lock_stateowner(unsigned int strhashval, struct nfs4_client *clp, str
+ 	INIT_LIST_HEAD(&amp;sop-&gt;so_idhash);
+ 	INIT_LIST_HEAD(&amp;sop-&gt;so_strhash);
+ 	INIT_LIST_HEAD(&amp;sop-&gt;so_perclient);
+-	INIT_LIST_HEAD(&amp;sop-&gt;so_perfilestate);
+-	INIT_LIST_HEAD(&amp;sop-&gt;so_perlockowner);
++	INIT_LIST_HEAD(&amp;sop-&gt;so_stateids);
++	INIT_LIST_HEAD(&amp;sop-&gt;so_perstateid);
+ 	INIT_LIST_HEAD(&amp;sop-&gt;so_close_lru); /* not used */
+ 	sop-&gt;so_time = 0;
+ 	list_add(&amp;sop-&gt;so_idhash, &amp;lock_ownerid_hashtbl[idhashval]);
+ 	list_add(&amp;sop-&gt;so_strhash, &amp;lock_ownerstr_hashtbl[strhashval]);
+-	list_add(&amp;sop-&gt;so_perlockowner, &amp;open_stp-&gt;st_perlockowner);
++	list_add(&amp;sop-&gt;so_perstateid, &amp;open_stp-&gt;st_lockowners);
+ 	sop-&gt;so_is_open_owner = 0;
+ 	sop-&gt;so_id = current_ownerid++;
+ 	sop-&gt;so_client = clp;
+@@ -2664,11 +2664,11 @@ alloc_init_lock_stateid(struct nfs4_stateowner *sop, struct nfs4_file *fp, struc
+ 		goto out;
+ 	INIT_LIST_HEAD(&amp;stp-&gt;st_hash);
+ 	INIT_LIST_HEAD(&amp;stp-&gt;st_perfile);
+-	INIT_LIST_HEAD(&amp;stp-&gt;st_perfilestate);
+-	INIT_LIST_HEAD(&amp;stp-&gt;st_perlockowner); /* not used */
++	INIT_LIST_HEAD(&amp;stp-&gt;st_perstateowner);
++	INIT_LIST_HEAD(&amp;stp-&gt;st_lockowners); /* not used */
+ 	list_add(&amp;stp-&gt;st_hash, &amp;lockstateid_hashtbl[hashval]);
+ 	list_add(&amp;stp-&gt;st_perfile, &amp;fp-&gt;fi_stateids);
+-	list_add(&amp;stp-&gt;st_perfilestate, &amp;sop-&gt;so_perfilestate);
++	list_add(&amp;stp-&gt;st_perstateowner, &amp;sop-&gt;so_stateids);
+ 	stp-&gt;st_stateowner = sop;
+ 	get_nfs4_file(fp);
+ 	stp-&gt;st_file = fp;
+@@ -3081,8 +3081,8 @@ nfsd4_release_lockowner(struct svc_rqst *rqstp, struct nfsd4_release_lockowner *
+ 		/* check for any locks held by any stateid
+ 		 * associated with the (lock) stateowner */
+ 		status = nfserr_locks_held;
+-		list_for_each_entry(stp, &amp;local-&gt;so_perfilestate,
+-				st_perfilestate) {
++		list_for_each_entry(stp, &amp;local-&gt;so_stateids,
++				st_perstateowner) {
+ 			if (check_for_locks(stp-&gt;st_vfs_file, local))
+ 				goto out;
+ 		}
+diff --git a/include/linux/nfsd/state.h b/include/linux/nfsd/state.h
+index 0e18ae22127d..f4f27b76ee64 100644
+--- a/include/linux/nfsd/state.h
++++ b/include/linux/nfsd/state.h
+@@ -72,8 +72,8 @@ struct nfs4_cb_recall {
+ };
+ 
+ struct nfs4_delegation {
+-	struct list_head	dl_del_perfile; /* nfs4_file-&gt;fi_del_perfile */
+-	struct list_head	dl_del_perclnt; /* nfs4_client-&gt;cl_del_perclnt*/
++	struct list_head	dl_perfile;
++	struct list_head	dl_perclnt;
+ 	struct list_head	dl_recall_lru;  /* delegation recalled */
+ 	atomic_t		dl_count;       /* ref count */
+ 	struct nfs4_client	*dl_client;
+@@ -119,8 +119,8 @@ struct nfs4_callback {
+ struct nfs4_client {
+ 	struct list_head	cl_idhash; 	/* hash by cl_clientid.id */
+ 	struct list_head	cl_strhash; 	/* hash by cl_name */
+-	struct list_head	cl_perclient; 	/* list: stateowners */
+-	struct list_head	cl_del_perclnt; /* list: delegations */
++	struct list_head	cl_openowners;
++	struct list_head	cl_delegations;
+ 	struct list_head        cl_lru;         /* tail queue */
+ 	struct xdr_netobj	cl_name; 	/* id generated by client */
+ 	char                    cl_recdir[HEXDIR_LEN]; /* recovery dir */
+@@ -195,9 +195,9 @@ struct nfs4_stateowner {
+ 	struct kref		so_ref;
+ 	struct list_head        so_idhash;   /* hash by so_id */
+ 	struct list_head        so_strhash;   /* hash by op_name */
+-	struct list_head        so_perclient; /* nfs4_client-&gt;cl_perclient */
+-	struct list_head        so_perfilestate; /* list: nfs4_stateid */
+-	struct list_head        so_perlockowner; /* nfs4_stateid-&gt;st_perlockowner */
++	struct list_head        so_perclient;
++	struct list_head        so_stateids;
++	struct list_head        so_perstateid; /* for lockowners only */
+ 	struct list_head	so_close_lru; /* tail queue */
+ 	time_t			so_time; /* time of placement on so_close_lru */
+ 	int			so_is_open_owner; /* 1=openowner,0=lockowner */
+@@ -240,8 +240,8 @@ struct nfs4_file {
+ struct nfs4_stateid {
+ 	struct list_head              st_hash; 
+ 	struct list_head              st_perfile;
+-	struct list_head              st_perfilestate; 
+-	struct list_head              st_perlockowner;
++	struct list_head              st_perstateowner;
++	struct list_head              st_lockowners;
+ 	struct nfs4_stateowner      * st_stateowner;
+ 	struct nfs4_file            * st_file;
+ 	stateid_t                     st_stateid;</pre><hr><pre>commit 21ab45a480ec7705d177e959ebf452d62340c004
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:04:14 2005 -0700
+
+    [PATCH] knfsd: nfsd4: miscellaneous setclientid_confirm cleanup
+    
+    Minor cleanup, remove some unnecessary printk's.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index f100eeab5458..884115198116 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -834,7 +834,7 @@ int
+ nfsd4_setclientid_confirm(struct svc_rqst *rqstp, struct nfsd4_setclientid_confirm *setclientid_confirm)
+ {
+ 	u32 ip_addr = rqstp-&gt;rq_addr.sin_addr.s_addr;
+-	struct nfs4_client *clp, *conf = NULL, *unconf = NULL;
++	struct nfs4_client *conf, *unconf;
+ 	nfs4_verifier confirm = setclientid_confirm-&gt;sc_confirm; 
+ 	clientid_t * clid = &amp;setclientid_confirm-&gt;sc_clientid;
+ 	int status;
+@@ -847,28 +847,16 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp, struct nfsd4_setclientid_confi
+ 	 */
+ 
+ 	nfs4_lock_state();
+-	clp = find_confirmed_client(clid);
+-	if (clp) {
+-		status = nfserr_clid_inuse;
+-		if (clp-&gt;cl_addr != ip_addr) { 
+-			printk("NFSD: setclientid: string in use by client"
+-			"(clientid %08x/%08x)\n",
+-			clp-&gt;cl_clientid.cl_boot, clp-&gt;cl_clientid.cl_id);
+-			goto out;
+-		}
+-		conf = clp;
+-	}
+-	clp = find_unconfirmed_client(clid);
+-	if (clp) {
+-		status = nfserr_clid_inuse;
+-		if (clp-&gt;cl_addr != ip_addr) { 
+-			printk("NFSD: setclientid: string in use by client"
+-			"(clientid %08x/%08x)\n",
+-			clp-&gt;cl_clientid.cl_boot, clp-&gt;cl_clientid.cl_id);
+-			goto out;
+-		}
+-		unconf = clp;
+-	}
++
++	conf = find_confirmed_client(clid);
++	unconf = find_unconfirmed_client(clid);
++
++	status = nfserr_clid_inuse;
++	if (conf &amp;&amp; conf-&gt;cl_addr != ip_addr)
++		goto out;
++	if (unconf &amp;&amp; unconf-&gt;cl_addr != ip_addr)
++		goto out;
++
+ 	if ((conf &amp;&amp; unconf) &amp;&amp; 
+ 	    (cmp_verf(&amp;unconf-&gt;cl_confirm, &amp;confirm)) &amp;&amp;
+ 	    (cmp_verf(&amp;conf-&gt;cl_verifier, &amp;unconf-&gt;cl_verifier)) &amp;&amp;
+@@ -884,9 +872,8 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp, struct nfsd4_setclientid_confi
+ 		else {
+ 			/* XXX: We just turn off callbacks until we can handle
+ 			  * change request correctly. */
+-			clp = conf;
+-			clp-&gt;cl_callback.cb_parsed = 0;
+-			gen_confirm(clp);
++			conf-&gt;cl_callback.cb_parsed = 0;
++			gen_confirm(conf);
+ 			expire_client(unconf);
+ 			status = nfs_ok;
+ 
+@@ -901,12 +888,10 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp, struct nfsd4_setclientid_confi
+ 		 * unconf-&gt;cl_name or unconf-&gt;cl_verifier don't match the
+ 		 * conf record.
+ 		 */
+-		if (!cmp_creds(&amp;conf-&gt;cl_cred,&amp;rqstp-&gt;rq_cred)) {
++		if (!cmp_creds(&amp;conf-&gt;cl_cred,&amp;rqstp-&gt;rq_cred))
+ 			status = nfserr_clid_inuse;
+-		} else {
+-			clp = conf;
++		else
+ 			status = nfs_ok;
+-		}
+ 	} else if (!conf &amp;&amp; unconf
+ 			&amp;&amp; cmp_verf(&amp;unconf-&gt;cl_confirm, &amp;confirm)) {
+ 		/* CASE 3:
+@@ -924,8 +909,8 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp, struct nfsd4_setclientid_confi
+ 			if (conf) {
+ 				expire_client(conf);
+ 			}
+-			clp = unconf;
+ 			move_to_confirmed(unconf);
++			conf = unconf;
+ 			status = nfs_ok;
+ 		}
+ 	} else if ((!conf || (conf &amp;&amp; !cmp_verf(&amp;conf-&gt;cl_confirm, &amp;confirm)))
+@@ -944,7 +929,7 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp, struct nfsd4_setclientid_confi
+ 	}
+ out:
+ 	if (!status)
+-		nfsd4_probe_callback(clp);
++		nfsd4_probe_callback(conf);
+ 	nfs4_unlock_state();
+ 	return status;
+ }</pre>
+    <div class="pagination">
+        <a href='8_6.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><span>[7]</span><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><a href='8_11.html'>11</a><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_8.html'>Next&gt;&gt;</a>
+    <div>
+</body>

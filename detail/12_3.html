@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Science and Technology of China</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Science and Technology of China</h1>
+    <div class="pagination">
+        <a href='12_2.html'>&lt;&lt;Prev</a><a href='12.html'>1</a><a href='12_2.html'>2</a><span>[3]</span><a href='12_4.html'>4</a><a href='12_5.html'>5</a><a href='12_6.html'>6</a><a href='12_7.html'>7</a><a href='12_8.html'>8</a><a href='12_9.html'>9</a><a href='12_4.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 8392df5d7e0b6a7d21440da1fc259f9938f4dec3
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Mar 29 05:01:54 2021 -0700
+
+    ath10k: Fix a use after free in ath10k_htc_send_bundle
+    
+    In ath10k_htc_send_bundle, the bundle_skb could be freed by
+    dev_kfree_skb_any(bundle_skb). But the bundle_skb is used later
+    by bundle_skb-&gt;len.
+    
+    As skb_len = bundle_skb-&gt;len, my patch replaces bundle_skb-&gt;len to
+    skb_len after the bundle_skb was freed.
+    
+    Fixes: c8334512f3dd1 ("ath10k: add htt TX bundle for sdio")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@codeaurora.org&gt;
+    Link: https://lore.kernel.org/r/20210329120154.8963-1-lyl2019@mail.ustc.edu.cn
+
+diff --git a/drivers/net/wireless/ath/ath10k/htc.c b/drivers/net/wireless/ath/ath10k/htc.c
+index 0a37be6a7d33..fab398046a3f 100644
+--- a/drivers/net/wireless/ath/ath10k/htc.c
++++ b/drivers/net/wireless/ath/ath10k/htc.c
+@@ -669,7 +669,7 @@ static int ath10k_htc_send_bundle(struct ath10k_htc_ep *ep,
+ 
+ 	ath10k_dbg(ar, ATH10K_DBG_HTC,
+ 		   "bundle tx status %d eid %d req count %d count %d len %d\n",
+-		   ret, ep-&gt;eid, skb_queue_len(&amp;ep-&gt;tx_req_head), cn, bundle_skb-&gt;len);
++		   ret, ep-&gt;eid, skb_queue_len(&amp;ep-&gt;tx_req_head), cn, skb_len);
+ 	return ret;
+ }
+ </pre><hr><pre>commit a8e083ee8e2a6c94c29733835adae8bf5b832748
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Fri Apr 2 11:26:27 2021 -0700
+
+    mwl8k: Fix a double Free in mwl8k_probe_hw
+    
+    In mwl8k_probe_hw, hw-&gt;priv-&gt;txq is freed at the first time by
+    dma_free_coherent() in the call chain:
+    if(!priv-&gt;ap_fw)-&gt;mwl8k_init_txqs(hw)-&gt;mwl8k_txq_init(hw, i).
+    
+    Then in err_free_queues of mwl8k_probe_hw, hw-&gt;priv-&gt;txq is freed
+    at the second time by mwl8k_txq_deinit(hw, i)-&gt;dma_free_coherent().
+    
+    My patch set txq-&gt;txd to NULL after the first free to avoid the
+    double free.
+    
+    Fixes: a66098daacee2 ("mwl8k: Marvell TOPDOG wireless driver")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@codeaurora.org&gt;
+    Link: https://lore.kernel.org/r/20210402182627.4256-1-lyl2019@mail.ustc.edu.cn
+
+diff --git a/drivers/net/wireless/marvell/mwl8k.c b/drivers/net/wireless/marvell/mwl8k.c
+index c9f8c056aa51..84b32a5f01ee 100644
+--- a/drivers/net/wireless/marvell/mwl8k.c
++++ b/drivers/net/wireless/marvell/mwl8k.c
+@@ -1473,6 +1473,7 @@ static int mwl8k_txq_init(struct ieee80211_hw *hw, int index)
+ 	if (txq-&gt;skb == NULL) {
+ 		dma_free_coherent(&amp;priv-&gt;pdev-&gt;dev, size, txq-&gt;txd,
+ 				  txq-&gt;txd_dma);
++		txq-&gt;txd = NULL;
+ 		return -ENOMEM;
+ 	}
+ </pre><hr><pre>commit ea45b6008f8095db0cc09ad6e03c7785c2986197
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Tue Mar 30 18:44:58 2021 -0700
+
+    dmaengine: Fix a double free in dma_async_device_register
+    
+    In the first list_for_each_entry() macro of dma_async_device_register,
+    it gets the chan from list and calls __dma_async_device_channel_register
+    (..,chan). We can see that chan-&gt;local is allocated by alloc_percpu() and
+    it is freed chan-&gt;local by free_percpu(chan-&gt;local) when
+    __dma_async_device_channel_register() failed.
+    
+    But after __dma_async_device_channel_register() failed, the caller will
+    goto err_out and freed the chan-&gt;local in the second time by free_percpu().
+    
+    The cause of this problem is forget to set chan-&gt;local to NULL when
+    chan-&gt;local was freed in __dma_async_device_channel_register(). My
+    patch sets chan-&gt;local to NULL when the callee failed to avoid double free.
+    
+    Fixes: d2fb0a0438384 ("dmaengine: break out channel registration")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Reviewed-by: Dave Jiang &lt;dave.jiang@intel.com&gt;
+    Link: https://lore.kernel.org/r/20210331014458.3944-1-lyl2019@mail.ustc.edu.cn
+    Signed-off-by: Vinod Koul &lt;vkoul@kernel.org&gt;
+
+diff --git a/drivers/dma/dmaengine.c b/drivers/dma/dmaengine.c
+index fe6a460c4373..af3ee288bc11 100644
+--- a/drivers/dma/dmaengine.c
++++ b/drivers/dma/dmaengine.c
+@@ -1086,6 +1086,7 @@ static int __dma_async_device_channel_register(struct dma_device *device,
+ 	kfree(chan-&gt;dev);
+  err_free_local:
+ 	free_percpu(chan-&gt;local);
++	chan-&gt;local = NULL;
+ 	return rc;
+ }
+ </pre><hr><pre>commit f7cae626cabb3350b23722b78fe34dd7a615ca04
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Fri Apr 2 10:13:48 2021 -0700
+
+    crypto: qat - Fix a double free in adf_create_ring
+    
+    In adf_create_ring, if the callee adf_init_ring() failed, the callee will
+    free the ring-&gt;base_addr by dma_free_coherent() and return -EFAULT. Then
+    adf_create_ring will goto err and the ring-&gt;base_addr will be freed again
+    in adf_cleanup_ring().
+    
+    My patch sets ring-&gt;base_addr to NULL after the first freed to avoid the
+    double free.
+    
+    Fixes: a672a9dc872ec ("crypto: qat - Intel(R) QAT transport code")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Signed-off-by: Herbert Xu &lt;herbert@gondor.apana.org.au&gt;
+
+diff --git a/drivers/crypto/qat/qat_common/adf_transport.c b/drivers/crypto/qat/qat_common/adf_transport.c
+index 888c1e047295..8ba28409fb74 100644
+--- a/drivers/crypto/qat/qat_common/adf_transport.c
++++ b/drivers/crypto/qat/qat_common/adf_transport.c
+@@ -172,6 +172,7 @@ static int adf_init_ring(struct adf_etr_ring_data *ring)
+ 		dev_err(&amp;GET_DEV(accel_dev), "Ring address not aligned\n");
+ 		dma_free_coherent(&amp;GET_DEV(accel_dev), ring_size_bytes,
+ 				  ring-&gt;base_addr, ring-&gt;dma_addr);
++		ring-&gt;base_addr = NULL;
+ 		return -EFAULT;
+ 	}
+ </pre><hr><pre>commit 076de75de1e53160e9b099f75872c1f9adf41a0b
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Fri Apr 2 23:09:05 2021 -0700
+
+    mtd: rawnand: gpmi: Fix a double free in gpmi_nand_init
+    
+    If the callee gpmi_alloc_dma_buffer() failed to alloc memory for
+    this-&gt;raw_buffer, gpmi_free_dma_buffer() will be called to free
+    this-&gt;auxiliary_virt. But this-&gt;auxiliary_virt is still a non-NULL
+    and valid ptr.
+    
+    Then gpmi_alloc_dma_buffer() returns err and gpmi_free_dma_buffer()
+    is called again to free this-&gt;auxiliary_virt in err_out. This causes
+    a double free.
+    
+    As gpmi_free_dma_buffer() has already called in gpmi_alloc_dma_buffer's
+    error path, so it should return err directly instead of releasing the dma
+    buffer again.
+    
+    Fixes: 4d02423e9afe6 ("mtd: nand: gpmi: Fix gpmi_nand_init() error path")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Signed-off-by: Miquel Raynal &lt;miquel.raynal@bootlin.com&gt;
+    Link: https://lore.kernel.org/linux-mtd/20210403060905.5251-1-lyl2019@mail.ustc.edu.cn
+
+diff --git a/drivers/mtd/nand/raw/gpmi-nand/gpmi-nand.c b/drivers/mtd/nand/raw/gpmi-nand/gpmi-nand.c
+index 3fa8c22d3f36..4d08e4ab5c1b 100644
+--- a/drivers/mtd/nand/raw/gpmi-nand/gpmi-nand.c
++++ b/drivers/mtd/nand/raw/gpmi-nand/gpmi-nand.c
+@@ -2449,7 +2449,7 @@ static int gpmi_nand_init(struct gpmi_nand_data *this)
+ 	this-&gt;bch_geometry.auxiliary_size = 128;
+ 	ret = gpmi_alloc_dma_buffer(this);
+ 	if (ret)
+-		goto err_out;
++		return ret;
+ 
+ 	nand_controller_init(&amp;this-&gt;base);
+ 	this-&gt;base.ops = &amp;gpmi_nand_controller_ops;</pre><hr><pre>commit b25b343db0526669947a427e9a31bac91d29bb06
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Fri Apr 2 10:40:19 2021 -0700
+
+    net: broadcom: bcm4908enet: Fix a double free in bcm4908_enet_dma_alloc
+    
+    In bcm4908_enet_dma_alloc, if callee bcm4908_dma_alloc_buf_descs() failed,
+    it will free the ring-&gt;cpu_addr by dma_free_coherent() and return error.
+    Then bcm4908_enet_dma_free() will be called, and free the same cpu_addr
+    by dma_free_coherent() again.
+    
+    My patch set ring-&gt;cpu_addr to NULL after it is freed in
+    bcm4908_dma_alloc_buf_descs() to avoid the double free.
+    
+    Fixes: 4feffeadbcb2e ("net: broadcom: bcm4908enet: add BCM4908 controller driver")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/broadcom/bcm4908_enet.c b/drivers/net/ethernet/broadcom/bcm4908_enet.c
+index 98cf82dea3e4..65981931a798 100644
+--- a/drivers/net/ethernet/broadcom/bcm4908_enet.c
++++ b/drivers/net/ethernet/broadcom/bcm4908_enet.c
+@@ -172,6 +172,7 @@ static int bcm4908_dma_alloc_buf_descs(struct bcm4908_enet *enet,
+ 
+ err_free_buf_descs:
+ 	dma_free_coherent(dev, size, ring-&gt;cpu_addr, ring-&gt;dma_addr);
++	ring-&gt;cpu_addr = NULL;
+ 	return -ENOMEM;
+ }
+ </pre><hr><pre>commit bdc2ab5c61a5c07388f4820ff21e787b4dfd1ced
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Tue Mar 30 18:59:59 2021 -0700
+
+    net/rds: Fix a use after free in rds_message_map_pages
+    
+    In rds_message_map_pages, the rm is freed by rds_message_put(rm).
+    But rm is still used by rm-&gt;data.op_sg in return value.
+    
+    My patch assigns ERR_CAST(rm-&gt;data.op_sg) to err before the rm is
+    freed to avoid the uaf.
+    
+    Fixes: 7dba92037baf3 ("net/rds: Use ERR_PTR for rds_message_alloc_sgs()")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Reviewed-by: Håkon Bugge &lt;haakon.bugge@oracle.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/rds/message.c b/net/rds/message.c
+index 071a261fdaab..799034e0f513 100644
+--- a/net/rds/message.c
++++ b/net/rds/message.c
+@@ -347,8 +347,9 @@ struct rds_message *rds_message_map_pages(unsigned long *page_addrs, unsigned in
+ 	rm-&gt;data.op_nents = DIV_ROUND_UP(total_len, PAGE_SIZE);
+ 	rm-&gt;data.op_sg = rds_message_alloc_sgs(rm, num_sgs);
+ 	if (IS_ERR(rm-&gt;data.op_sg)) {
++		void *err = ERR_CAST(rm-&gt;data.op_sg);
+ 		rds_message_put(rm);
+-		return ERR_CAST(rm-&gt;data.op_sg);
++		return err;
+ 	}
+ 
+ 	for (i = 0; i &lt; rm-&gt;data.op_nents; ++i) {</pre><hr><pre>commit 6e5a03bcba44e080a6bf300194a68ce9bb1e5184
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Mar 29 04:50:02 2021 -0700
+
+    ethernet/netronome/nfp: Fix a use after free in nfp_bpf_ctrl_msg_rx
+    
+    In nfp_bpf_ctrl_msg_rx, if
+    nfp_ccm_get_type(skb) == NFP_CCM_TYPE_BPF_BPF_EVENT is true, the skb
+    will be freed. But the skb is still used by nfp_ccm_rx(&amp;bpf-&gt;ccm, skb).
+    
+    My patch adds a return when the skb was freed.
+    
+    Fixes: bcf0cafab44fd ("nfp: split out common control message handling code")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Reviewed-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/netronome/nfp/bpf/cmsg.c b/drivers/net/ethernet/netronome/nfp/bpf/cmsg.c
+index 0e2db6ea79e9..2ec62c8d86e1 100644
+--- a/drivers/net/ethernet/netronome/nfp/bpf/cmsg.c
++++ b/drivers/net/ethernet/netronome/nfp/bpf/cmsg.c
+@@ -454,6 +454,7 @@ void nfp_bpf_ctrl_msg_rx(struct nfp_app *app, struct sk_buff *skb)
+ 			dev_consume_skb_any(skb);
+ 		else
+ 			dev_kfree_skb_any(skb);
++		return;
+ 	}
+ 
+ 	nfp_ccm_rx(&amp;bpf-&gt;ccm, skb);</pre><hr><pre>commit 6bf24dc0cc0cc43b29ba344b66d78590e687e046
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Sun Mar 28 00:30:29 2021 -0700
+
+    net:tipc: Fix a double free in tipc_sk_mcast_rcv
+    
+    In the if(skb_peek(arrvq) == skb) branch, it calls __skb_dequeue(arrvq) to get
+    the skb by skb = skb_peek(arrvq). Then __skb_dequeue() unlinks the skb from arrvq
+    and returns the skb which equals to skb_peek(arrvq). After __skb_dequeue(arrvq)
+    finished, the skb is freed by kfree_skb(__skb_dequeue(arrvq)) in the first time.
+    
+    Unfortunately, the same skb is freed in the second time by kfree_skb(skb) after
+    the branch completed.
+    
+    My patch removes kfree_skb() in the if(skb_peek(arrvq) == skb) branch, because
+    this skb will be freed by kfree_skb(skb) finally.
+    
+    Fixes: cb1b728096f54 ("tipc: eliminate race condition at multicast reception")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/tipc/socket.c b/net/tipc/socket.c
+index cebcc104dc70..022999e0202d 100644
+--- a/net/tipc/socket.c
++++ b/net/tipc/socket.c
+@@ -1265,7 +1265,7 @@ void tipc_sk_mcast_rcv(struct net *net, struct sk_buff_head *arrvq,
+ 		spin_lock_bh(&amp;inputq-&gt;lock);
+ 		if (skb_peek(arrvq) == skb) {
+ 			skb_queue_splice_tail_init(&amp;tmpq, inputq);
+-			kfree_skb(__skb_dequeue(arrvq));
++			__skb_dequeue(arrvq);
+ 		}
+ 		spin_unlock_bh(&amp;inputq-&gt;lock);
+ 		__skb_queue_purge(&amp;tmpq);</pre><hr><pre>commit 63415767a2446136372e777cde5bb351f21ec21d
+Author: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+Date:   Mon Mar 29 05:36:48 2021 -0700
+
+    ethernet: myri10ge: Fix a use after free in myri10ge_sw_tso
+    
+    In myri10ge_sw_tso, the skb_list_walk_safe macro will set
+    (curr) = (segs) and (next) = (curr)-&gt;next. If status!=0 is true,
+    the memory pointed by curr and segs will be free by dev_kfree_skb_any(curr).
+    But later, the segs is used by segs = segs-&gt;next and causes a uaf.
+    
+    As (next) = (curr)-&gt;next, my patch replaces seg-&gt;next to next.
+    
+    Fixes: 536577f36ff7a ("net: myri10ge: use skb_list_walk_safe helper for gso segments")
+    Signed-off-by: Lv Yunlong &lt;lyl2019@mail.ustc.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/myricom/myri10ge/myri10ge.c b/drivers/net/ethernet/myricom/myri10ge/myri10ge.c
+index 1634ca6d4a8f..c84c8bf2bc20 100644
+--- a/drivers/net/ethernet/myricom/myri10ge/myri10ge.c
++++ b/drivers/net/ethernet/myricom/myri10ge/myri10ge.c
+@@ -2897,7 +2897,7 @@ static netdev_tx_t myri10ge_sw_tso(struct sk_buff *skb,
+ 			dev_kfree_skb_any(curr);
+ 			if (segs != NULL) {
+ 				curr = segs;
+-				segs = segs-&gt;next;
++				segs = next;
+ 				curr-&gt;next = NULL;
+ 				dev_kfree_skb_any(segs);
+ 			}</pre>
+    <div class="pagination">
+        <a href='12_2.html'>&lt;&lt;Prev</a><a href='12.html'>1</a><a href='12_2.html'>2</a><span>[3]</span><a href='12_4.html'>4</a><a href='12_5.html'>5</a><a href='12_6.html'>6</a><a href='12_7.html'>7</a><a href='12_8.html'>8</a><a href='12_9.html'>9</a><a href='12_4.html'>Next&gt;&gt;</a>
+    <div>
+</body>

@@ -1,0 +1,6380 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Peking University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Peking University</h1>
+    <div class="pagination">
+        <a href='11_7.html'>&lt;&lt;Prev</a><a href='11.html'>1</a><a href='11_2.html'>2</a><a href='11_3.html'>3</a><a href='11_4.html'>4</a><a href='11_5.html'>5</a><a href='11_6.html'>6</a><a href='11_7.html'>7</a><span>[8]</span><a href='11_9.html'>9</a><a href='11_10.html'>10</a><a href='11_9.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 70fac51feaf2ca50c84e102e2a2699eb19ef24bd
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Jan 15 18:23:31 2011 +0800
+
+    unicore32 additional architecture files: boot process
+    
+    This patch implements booting process, including uncompression process.
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Reviewed-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/boot/Makefile b/arch/unicore32/boot/Makefile
+new file mode 100644
+index 000000000000..79e5f88845d9
+--- /dev/null
++++ b/arch/unicore32/boot/Makefile
+@@ -0,0 +1,47 @@
++#
++# arch/unicore32/boot/Makefile
++#
++# This file is included by the global makefile so that you can add your own
++# architecture-specific flags and dependencies.
++#
++# This file is subject to the terms and conditions of the GNU General Public
++# License.  See the file "COPYING" in the main directory of this archive
++# for more details.
++#
++# Copyright (C) 2001~2010 GUAN Xue-tao
++#
++
++MKIMAGE := $(srctree)/scripts/mkuboot.sh
++
++targets := Image zImage uImage
++
++$(obj)/Image: vmlinux FORCE
++	$(call if_changed,objcopy)
++	@echo '  Kernel: $@ is ready'
++
++$(obj)/compressed/vmlinux: $(obj)/Image FORCE
++	$(Q)$(MAKE) $(build)=$(obj)/compressed $@
++
++$(obj)/zImage: $(obj)/compressed/vmlinux FORCE
++	$(call if_changed,objcopy)
++	@echo '  Kernel: $@ is ready'
++
++quiet_cmd_uimage = UIMAGE  $@
++      cmd_uimage = $(CONFIG_SHELL) $(MKIMAGE) -A unicore -O linux -T kernel \
++		   -C none -a $(LOADADDR) -e $(STARTADDR) \
++		   -n 'Linux-$(KERNELRELEASE)' -d $&lt; $@
++
++$(obj)/uImage: LOADADDR=0x0
++
++$(obj)/uImage: STARTADDR=$(LOADADDR)
++
++$(obj)/uImage: $(obj)/zImage FORCE
++	$(call if_changed,uimage)
++	@echo '  Image $@ is ready'
++
++PHONY += initrd FORCE
++initrd:
++	@test "$(INITRD)" != "" || \
++	(echo You must specify INITRD; exit -1)
++
++subdir- := compressed
+diff --git a/arch/unicore32/boot/compressed/Makefile b/arch/unicore32/boot/compressed/Makefile
+new file mode 100644
+index 000000000000..95373428cb3d
+--- /dev/null
++++ b/arch/unicore32/boot/compressed/Makefile
+@@ -0,0 +1,68 @@
++#
++# linux/arch/unicore32/boot/compressed/Makefile
++#
++# create a compressed vmlinuz image from the original vmlinux
++#
++# This file is subject to the terms and conditions of the GNU General Public
++# License.  See the file "COPYING" in the main directory of this archive
++# for more details.
++#
++# Copyright (C) 2001~2010 GUAN Xue-tao
++#
++
++EXTRA_CFLAGS	:= -fpic -fno-builtin
++EXTRA_AFLAGS	:= -Wa,-march=all
++
++OBJS		:= misc.o
++
++# font.c and font.o
++CFLAGS_font.o	:= -Dstatic=
++$(obj)/font.c: $(srctree)/drivers/video/console/font_8x8.c
++	$(call cmd,shipped)
++
++# piggy.S and piggy.o
++suffix_$(CONFIG_KERNEL_GZIP)	:= gzip
++suffix_$(CONFIG_KERNEL_BZIP2)	:= bz2
++suffix_$(CONFIG_KERNEL_LZO)	:= lzo
++suffix_$(CONFIG_KERNEL_LZMA)	:= lzma
++
++$(obj)/piggy.$(suffix_y): $(obj)/../Image FORCE
++	$(call if_changed,$(suffix_y))
++
++SEDFLAGS_piggy	= s/DECOMP_SUFFIX/$(suffix_y)/
++$(obj)/piggy.S: $(obj)/piggy.S.in
++	@sed "$(SEDFLAGS_piggy)" &lt; $&lt; &gt; $@
++
++$(obj)/piggy.o:  $(obj)/piggy.$(suffix_y) $(obj)/piggy.S FORCE
++
++targets		:= vmlinux vmlinux.lds font.o font.c head.o misc.o \
++			piggy.$(suffix_y) piggy.o piggy.S \
++
++# Make sure files are removed during clean
++extra-y		+= piggy.gzip piggy.bz2 piggy.lzo piggy.lzma
++
++# ?
++LDFLAGS_vmlinux += -p
++# Report unresolved symbol references
++LDFLAGS_vmlinux += --no-undefined
++# Delete all temporary local symbols
++LDFLAGS_vmlinux += -X
++# Next argument is a linker script
++LDFLAGS_vmlinux += -T
++
++# For uidivmod
++$(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/head.o $(obj)/piggy.o \
++		$(obj)/misc.o FORCE
++	$(call if_changed,ld)
++	@:
++
++# We now have a PIC decompressor implementation.  Decompressors running
++# from RAM should not define ZTEXTADDR.  Decompressors running directly
++# from ROM or Flash must define ZTEXTADDR (preferably via the config)
++ZTEXTADDR	:= 0
++ZBSSADDR	:= ALIGN(4)
++
++SEDFLAGS_lds	= s/TEXT_START/$(ZTEXTADDR)/;s/BSS_START/$(ZBSSADDR)/
++$(obj)/vmlinux.lds: $(obj)/vmlinux.lds.in arch/unicore32/boot/Makefile $(KCONFIG_CONFIG)
++	@sed "$(SEDFLAGS_lds)" &lt; $&lt; &gt; $@
++
+diff --git a/arch/unicore32/boot/compressed/head.S b/arch/unicore32/boot/compressed/head.S
+new file mode 100644
+index 000000000000..fbd1e374c685
+--- /dev/null
++++ b/arch/unicore32/boot/compressed/head.S
+@@ -0,0 +1,204 @@
++/*
++ * linux/arch/unicore32/boot/compressed/head.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/linkage.h&gt;
++#include &lt;mach/memory.h&gt;
++
++#define csub	cmpsub
++#define cand	cmpand
++#define nop8	nop; nop; nop; nop; nop; nop; nop; nop
++
++		.section ".start", #alloc, #execinstr
++		.text
++start:
++		.type	start,#function
++
++		/* Initialize ASR, PRIV mode and INTR off */
++		mov	r0, #0xD3
++		mov.a	asr, r0
++
++		adr	r0, LC0
++		ldm	(r1, r2, r3, r5, r6, r7, r8), [r0]+
++		ldw	sp, [r0+], #28
++		sub.a	r0, r0, r1		@ calculate the delta offset
++
++		/*
++		 * if delta is zero, we are running at the address
++		 * we were linked at.
++		 */
++		beq	not_relocated
++
++		/*
++		 * We're running at a different address.  We need to fix
++		 * up various pointers:
++		 *   r5 - zImage base address (_start)
++		 *   r7 - GOT start
++		 *   r8 - GOT end
++		 */
++		add	r5, r5, r0
++		add	r7, r7, r0
++		add	r8, r8, r0
++
++		/*
++		 * we need to fix up pointers into the BSS region.
++		 *   r2 - BSS start
++		 *   r3 - BSS end
++		 *   sp - stack pointer
++		 */
++		add	r2, r2, r0
++		add	r3, r3, r0
++		add	sp, sp, r0
++
++		/*
++		 * Relocate all entries in the GOT table.
++		 * This fixes up the C references.
++		 *   r7 - GOT start
++		 *   r8 - GOT end
++		 */
++1001:		ldw	r1, [r7+], #0
++		add	r1, r1, r0
++		stw.w	r1, [r7]+, #4
++		csub.a	r7, r8
++		bub	1001b
++
++not_relocated:
++		/*
++		 * Clear BSS region.
++		 *   r2 - BSS start
++		 *   r3 - BSS end
++		 */
++		mov	r0, #0
++1002:		stw.w	r0, [r2]+, #4
++		csub.a	r2, r3
++		bub	1002b
++
++		/*
++		 * Turn on the cache.
++		 */
++                mov     r0, #0
++                movc    p0.c5, r0, #28		@ cache invalidate all
++                nop8
++                movc    p0.c6, r0, #6		@ tlb invalidate all
++                nop8
++
++                mov     r0, #0x1c		@ en icache and wb dcache
++                movc    p0.c1, r0, #0
++                nop8
++
++		/*
++		 * Set up some pointers, for starting decompressing.
++		 */
++
++		mov	r1, sp			@ malloc space above stack
++		add	r2, sp, #0x10000	@ 64k max
++
++		/*
++		 * Check to see if we will overwrite ourselves.
++		 *   r4 = final kernel address
++		 *   r5 = start of this image
++		 *   r6 = size of decompressed image
++		 *   r2 = end of malloc space (and therefore this image)
++		 * We basically want:
++		 *   r4 &gt;= r2 -&gt; OK
++		 *   r4 + image length &lt;= r5 -&gt; OK
++		 */
++		ldw	r4, =KERNEL_IMAGE_START
++		csub.a	r4, r2
++		bea	wont_overwrite
++		add	r0, r4, r6
++		csub.a	r0, r5
++		beb	wont_overwrite
++
++		/*
++		 * If overwrite, just print error message
++		 */
++		b	__error_overwrite
++
++		/*
++		 * We're not in danger of overwriting ourselves.
++		 * Do this the simple way.
++		 */
++wont_overwrite:
++		/*
++		 * decompress_kernel:
++		 *   r0: output_start
++		 *   r1: free_mem_ptr_p
++		 *   r2: free_mem_ptr_end_p
++		 */
++		mov	r0, r4
++		b.l	decompress_kernel	@ C functions
++
++		/*
++		 * Clean and flush the cache to maintain consistency.
++		 */
++		mov	r0, #0
++                movc    p0.c5, r0, #14		@ flush dcache
++		nop8
++                movc    p0.c5, r0, #20		@ icache invalidate all
++                nop8
++
++		/*
++		 * Turn off the Cache and MMU.
++		 */
++		mov	r0, #0			@ disable i/d cache and MMU
++		movc	p0.c1, r0, #0
++                nop8
++
++		mov	r0, #0			@ must be zero
++		ldw	r4, =KERNEL_IMAGE_START
++		mov	pc, r4			@ call kernel
++
++
++		.align	2
++		.type	LC0, #object
++LC0:		.word	LC0			@ r1
++		.word	__bss_start		@ r2
++		.word	_end			@ r3
++		.word	_start			@ r5
++		.word	_image_size		@ r6
++		.word	_got_start		@ r7
++		.word	_got_end		@ r8
++		.word	decompress_stack_end	@ sp
++		.size	LC0, . - LC0
++
++print_string:
++#ifdef CONFIG_DEBUG_OCD
++2001:		ldb.w	r1, [r0]+, #1
++		csub.a	r1, #0
++		bne	2002f
++		mov	pc, lr
++2002:
++		movc	r2, p1.c0, #0
++		cand.a	r2, #2
++		bne	2002b
++		movc	p1.c1, r1, #1
++		csub.a	r1, #'\n'
++		cmoveq	r1, #'\r'
++		beq	2002b
++		b	2001b
++#else
++		mov	pc, lr
++#endif
++
++__error_overwrite:
++		adr	r0, str_error
++		b.l	print_string
++2001:		nop8
++		b	2001b
++str_error:	.asciz	"\nError: Kernel address OVERWRITE\n"
++		.align
++
++		.ltorg
++
++		.align	4
++		.section ".stack", "aw", %nobits
++decompress_stack:	.space	4096
++decompress_stack_end:
+diff --git a/arch/unicore32/boot/compressed/misc.c b/arch/unicore32/boot/compressed/misc.c
+new file mode 100644
+index 000000000000..176d5bda3559
+--- /dev/null
++++ b/arch/unicore32/boot/compressed/misc.c
+@@ -0,0 +1,126 @@
++/*
++ * linux/arch/unicore32/boot/compressed/misc.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include &lt;asm/unaligned.h&gt;
++#include &lt;mach/uncompress.h&gt;
++
++/*
++ * gzip delarations
++ */
++unsigned char *output_data;
++unsigned long output_ptr;
++
++unsigned int free_mem_ptr;
++unsigned int free_mem_end_ptr;
++
++#define STATIC static
++#define STATIC_RW_DATA	/* non-static please */
++
++/*
++ * arch-dependent implementations
++ */
++#ifndef ARCH_HAVE_DECOMP_ERROR
++#define arch_decomp_error(x)
++#endif
++
++#ifndef ARCH_HAVE_DECOMP_SETUP
++#define arch_decomp_setup()
++#endif
++
++#ifndef ARCH_HAVE_DECOMP_PUTS
++#define arch_decomp_puts(p)
++#endif
++
++void *memcpy(void *dest, const void *src, size_t n)
++{
++	int i = 0;
++	unsigned char *d = (unsigned char *)dest, *s = (unsigned char *)src;
++
++	for (i = n &gt;&gt; 3; i &gt; 0; i--) {
++		*d++ = *s++;
++		*d++ = *s++;
++		*d++ = *s++;
++		*d++ = *s++;
++		*d++ = *s++;
++		*d++ = *s++;
++		*d++ = *s++;
++		*d++ = *s++;
++	}
++
++	if (n &amp; 1 &lt;&lt; 2) {
++		*d++ = *s++;
++		*d++ = *s++;
++		*d++ = *s++;
++		*d++ = *s++;
++	}
++
++	if (n &amp; 1 &lt;&lt; 1) {
++		*d++ = *s++;
++		*d++ = *s++;
++	}
++
++	if (n &amp; 1)
++		*d++ = *s++;
++
++	return dest;
++}
++
++void error(char *x)
++{
++	arch_decomp_puts("\n\n");
++	arch_decomp_puts(x);
++	arch_decomp_puts("\n\n -- System halted");
++
++	arch_decomp_error(x);
++
++	for (;;)
++		; /* Halt */
++}
++
++/* Heap size should be adjusted for different decompress method */
++#ifdef CONFIG_KERNEL_GZIP
++#include "../../../../lib/decompress_inflate.c"
++#endif
++
++#ifdef CONFIG_KERNEL_BZIP2
++#include "../../../../lib/decompress_bunzip2.c"
++#endif
++
++#ifdef CONFIG_KERNEL_LZO
++#include "../../../../lib/decompress_unlzo.c"
++#endif
++
++#ifdef CONFIG_KERNEL_LZMA
++#include "../../../../lib/decompress_unlzma.c"
++#endif
++
++unsigned long decompress_kernel(unsigned long output_start,
++		unsigned long free_mem_ptr_p,
++		unsigned long free_mem_ptr_end_p)
++{
++	unsigned char *tmp;
++
++	output_data		= (unsigned char *)output_start;
++	free_mem_ptr		= free_mem_ptr_p;
++	free_mem_end_ptr	= free_mem_ptr_end_p;
++
++	arch_decomp_setup();
++
++	tmp = (unsigned char *) (((unsigned long)input_data_end) - 4);
++	output_ptr = get_unaligned_le32(tmp);
++
++	arch_decomp_puts("Uncompressing Linux...");
++	decompress(input_data, input_data_end - input_data, NULL, NULL,
++			output_data, NULL, error);
++	arch_decomp_puts(" done, booting the kernel.\n");
++	return output_ptr;
++}
+diff --git a/arch/unicore32/boot/compressed/piggy.S.in b/arch/unicore32/boot/compressed/piggy.S.in
+new file mode 100644
+index 000000000000..b79704d58026
+--- /dev/null
++++ b/arch/unicore32/boot/compressed/piggy.S.in
+@@ -0,0 +1,6 @@
++	.section .piggydata,#alloc
++	.globl	input_data
++input_data:
++	.incbin	"arch/unicore32/boot/compressed/piggy.DECOMP_SUFFIX"
++	.globl	input_data_end
++input_data_end:
+diff --git a/arch/unicore32/boot/compressed/vmlinux.lds.in b/arch/unicore32/boot/compressed/vmlinux.lds.in
+new file mode 100644
+index 000000000000..d5a3ce296239
+--- /dev/null
++++ b/arch/unicore32/boot/compressed/vmlinux.lds.in
+@@ -0,0 +1,61 @@
++/*
++ * linux/arch/unicore/boot/compressed/vmlinux.lds.in
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++OUTPUT_ARCH(unicore32)
++ENTRY(_start)
++SECTIONS
++{
++  /DISCARD/ : {
++    /*
++     * Discard any r/w data - this produces a link error if we have any,
++     * which is required for PIC decompression.  Local data generates
++     * GOTOFF relocations, which prevents it being relocated independently
++     * of the text/got segments.
++     */
++    *(.data)
++  }
++
++  . = TEXT_START;
++  _text = .;
++
++  .text : {
++    _start = .;
++    *(.start)
++    *(.text)
++    *(.text.*)
++    *(.fixup)
++    *(.gnu.warning)
++    *(.rodata)
++    *(.rodata.*)
++    *(.piggydata)
++    . = ALIGN(4);
++  }
++
++  _etext = .;
++
++  /* Assume size of decompressed image is 4x the compressed image */
++  _image_size = (_etext - _text) * 4;
++
++  _got_start = .;
++  .got			: { *(.got) }
++  _got_end = .;
++  .got.plt		: { *(.got.plt) }
++  _edata = .;
++
++  . = BSS_START;
++  __bss_start = .;
++  .bss			: { *(.bss) }
++  _end = .;
++
++  .stack		: { *(.stack) }
++  .comment 0		: { *(.comment) }
++}
++
+diff --git a/arch/unicore32/include/mach/uncompress.h b/arch/unicore32/include/mach/uncompress.h
+new file mode 100644
+index 000000000000..142d3e7958a9
+--- /dev/null
++++ b/arch/unicore32/include/mach/uncompress.h
+@@ -0,0 +1,34 @@
++/*
++ * linux/arch/unicore32/include/mach/uncompress.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef __MACH_PUV3_UNCOMPRESS_H__
++#define __MACH_PUV3_UNCOMPRESS_H__
++
++#include "hardware.h"
++#include "ocd.h"
++
++extern char input_data[];
++extern char input_data_end[];
++
++static void arch_decomp_puts(const char *ptr)
++{
++	char c;
++
++	while ((c = *ptr++) != '\0') {
++		if (c == '\n')
++			putc('\r');
++		putc(c);
++	}
++}
++#define ARCH_HAVE_DECOMP_PUTS
++
++#endif /* __MACH_PUV3_UNCOMPRESS_H__ */</pre><hr><pre>commit 96cf5185a95e0b304596fe19edcf8dfcd5c10699
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Jan 15 18:23:09 2011 +0800
+
+    unicore32 additional architecture files: low-level lib: misc
+    
+    This patch implements the rest low-level libraries.
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Acked-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/include/asm/assembler.h b/arch/unicore32/include/asm/assembler.h
+new file mode 100644
+index 000000000000..8e87ed7faeba
+--- /dev/null
++++ b/arch/unicore32/include/asm/assembler.h
+@@ -0,0 +1,131 @@
++/*
++ * linux/arch/unicore32/include/asm/assembler.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ *  Do not include any C declarations in this file - it is included by
++ *  assembler source.
++ */
++#ifndef __ASSEMBLY__
++#error "Only include this from assembly code"
++#endif
++
++#include &lt;asm/ptrace.h&gt;
++
++/*
++ * Little Endian independent macros for shifting bytes within registers.
++ */
++#define pull            &gt;&gt;
++#define push            &lt;&lt;
++#define get_byte_0      &lt;&lt; #0
++#define get_byte_1	&gt;&gt; #8
++#define get_byte_2	&gt;&gt; #16
++#define get_byte_3	&gt;&gt; #24
++#define put_byte_0      &lt;&lt; #0
++#define put_byte_1	&lt;&lt; #8
++#define put_byte_2	&lt;&lt; #16
++#define put_byte_3	&lt;&lt; #24
++
++#define cadd		cmpadd
++#define cand		cmpand
++#define csub		cmpsub
++#define cxor		cmpxor
++
++/*
++ * Enable and disable interrupts
++ */
++	.macro disable_irq, temp
++	mov	\temp, asr
++	andn     \temp, \temp, #0xFF
++	or	\temp, \temp, #PSR_I_BIT | PRIV_MODE
++	mov.a	asr, \temp
++	.endm
++
++	.macro enable_irq, temp
++	mov	\temp, asr
++	andn     \temp, \temp, #0xFF
++	or	\temp, \temp, #PRIV_MODE
++	mov.a	asr, \temp
++	.endm
++
++#define USER(x...)				\
++9999:	x;					\
++	.pushsection __ex_table, "a";		\
++	.align	3;				\
++	.long	9999b, 9001f;			\
++	.popsection
++
++	.macro	notcond, cond, nexti = .+8
++	.ifc	\cond, eq
++		bne	\nexti
++	.else;	.ifc	\cond, ne
++		beq	\nexti
++	.else;	.ifc	\cond, ea
++		bub	\nexti
++	.else;	.ifc	\cond, ub
++		bea	\nexti
++	.else;	.ifc	\cond, fs
++		bns	\nexti
++	.else;	.ifc	\cond, ns
++		bfs	\nexti
++	.else;	.ifc	\cond, fv
++		bnv	\nexti
++	.else;	.ifc	\cond, nv
++		bfv	\nexti
++	.else;	.ifc	\cond, ua
++		beb	\nexti
++	.else;	.ifc	\cond, eb
++		bua	\nexti
++	.else;	.ifc	\cond, eg
++		bsl	\nexti
++	.else;	.ifc	\cond, sl
++		beg	\nexti
++	.else;	.ifc	\cond, sg
++		bel	\nexti
++	.else;	.ifc	\cond, el
++		bsg	\nexti
++	.else;	.ifnc	\cond, al
++		.error  "Unknown cond in notcond macro argument"
++	.endif;	.endif;	.endif;	.endif;	.endif;	.endif;	.endif
++	.endif;	.endif;	.endif;	.endif;	.endif;	.endif;	.endif
++	.endif
++	.endm
++
++	.macro	usracc, instr, reg, ptr, inc, cond, rept, abort
++	.rept	\rept
++	notcond	\cond, .+8
++9999 :
++	.if	\inc == 1
++	\instr\()b.u \reg, [\ptr], #\inc
++	.elseif	\inc == 4
++	\instr\()w.u \reg, [\ptr], #\inc
++	.else
++	.error	"Unsupported inc macro argument"
++	.endif
++
++	.pushsection __ex_table, "a"
++	.align	3
++	.long	9999b, \abort
++	.popsection
++	.endr
++	.endm
++
++	.macro	strusr, reg, ptr, inc, cond = al, rept = 1, abort = 9001f
++	usracc	st, \reg, \ptr, \inc, \cond, \rept, \abort
++	.endm
++
++	.macro	ldrusr, reg, ptr, inc, cond = al, rept = 1, abort = 9001f
++	usracc	ld, \reg, \ptr, \inc, \cond, \rept, \abort
++	.endm
++
++	.macro	nop8
++	.rept	8
++		nop
++	.endr
++	.endm
+diff --git a/arch/unicore32/include/asm/bitops.h b/arch/unicore32/include/asm/bitops.h
+new file mode 100644
+index 000000000000..1628a6328994
+--- /dev/null
++++ b/arch/unicore32/include/asm/bitops.h
+@@ -0,0 +1,47 @@
++/*
++ * linux/arch/unicore32/include/asm/bitops.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef __UNICORE_BITOPS_H__
++#define __UNICORE_BITOPS_H__
++
++#define find_next_bit		__uc32_find_next_bit
++#define find_next_zero_bit	__uc32_find_next_zero_bit
++
++#define find_first_bit		__uc32_find_first_bit
++#define find_first_zero_bit	__uc32_find_first_zero_bit
++
++#define _ASM_GENERIC_BITOPS_FLS_H_
++#define _ASM_GENERIC_BITOPS___FLS_H_
++#define _ASM_GENERIC_BITOPS_FFS_H_
++#define _ASM_GENERIC_BITOPS___FFS_H_
++/*
++ * On UNICORE, those functions can be implemented around
++ * the cntlz instruction for much better code efficiency.
++ */
++
++static inline int fls(int x)
++{
++	int ret;
++
++	asm("cntlz\t%0, %1" : "=r" (ret) : "r" (x) : "cc");
++	ret = 32 - ret;
++
++	return ret;
++}
++
++#define __fls(x) (fls(x) - 1)
++#define ffs(x) ({ unsigned long __t = (x); fls(__t &amp; -__t); })
++#define __ffs(x) (ffs(x) - 1)
++
++#include &lt;asm-generic/bitops.h&gt;
++
++#endif /* __UNICORE_BITOPS_H__ */
+diff --git a/arch/unicore32/include/asm/checksum.h b/arch/unicore32/include/asm/checksum.h
+new file mode 100644
+index 000000000000..f55c3f937c3e
+--- /dev/null
++++ b/arch/unicore32/include/asm/checksum.h
+@@ -0,0 +1,41 @@
++/*
++ * linux/arch/unicore32/include/asm/checksum.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ * IP checksum routines
++ */
++#ifndef __UNICORE_CHECKSUM_H__
++#define __UNICORE_CHECKSUM_H__
++
++/*
++ * computes the checksum of the TCP/UDP pseudo-header
++ * returns a 16-bit checksum, already complemented
++ */
++
++static inline __wsum
++csum_tcpudp_nofold(__be32 saddr, __be32 daddr, unsigned short len,
++		   unsigned short proto, __wsum sum)
++{
++	__asm__(
++	"add.a	%0, %1, %2\n"
++	"addc.a	%0, %0, %3\n"
++	"addc.a	%0, %0, %4 &lt;&lt; #8\n"
++	"addc.a	%0, %0, %5\n"
++	"addc	%0, %0, #0\n"
++	: "=&amp;r"(sum)
++	: "r" (sum), "r" (daddr), "r" (saddr), "r" (len), "Ir" (htons(proto))
++	: "cc");
++	return sum;
++}
++#define csum_tcpudp_nofold	csum_tcpudp_nofold
++
++#include &lt;asm-generic/checksum.h&gt;
++
++#endif
+diff --git a/arch/unicore32/include/asm/delay.h b/arch/unicore32/include/asm/delay.h
+new file mode 100644
+index 000000000000..164ae61cd6f7
+--- /dev/null
++++ b/arch/unicore32/include/asm/delay.h
+@@ -0,0 +1,52 @@
++/*
++ * linux/arch/unicore32/include/asm/delay.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ * Delay routines, using a pre-computed "loops_per_second" value.
++ */
++#ifndef __UNICORE_DELAY_H__
++#define __UNICORE_DELAY_H__
++
++#include &lt;asm/param.h&gt;	/* HZ */
++
++extern void __delay(int loops);
++
++/*
++ * This function intentionally does not exist; if you see references to
++ * it, it means that you're calling udelay() with an out of range value.
++ *
++ * With currently imposed limits, this means that we support a max delay
++ * of 2000us. Further limits: HZ&lt;=1000 and bogomips&lt;=3355
++ */
++extern void __bad_udelay(void);
++
++/*
++ * division by multiplication: you don't have to worry about
++ * loss of precision.
++ *
++ * Use only for very small delays ( &lt; 1 msec).  Should probably use a
++ * lookup table, really, as the multiplications take much too long with
++ * short delays.  This is a "reasonable" implementation, though (and the
++ * first constant multiplications gets optimized away if the delay is
++ * a constant)
++ */
++extern void __udelay(unsigned long usecs);
++extern void __const_udelay(unsigned long);
++
++#define MAX_UDELAY_MS 2
++
++#define udelay(n)							\
++	(__builtin_constant_p(n) ?					\
++	  ((n) &gt; (MAX_UDELAY_MS * 1000) ? __bad_udelay() :		\
++			__const_udelay((n) * ((2199023U*HZ)&gt;&gt;11))) :	\
++	  __udelay(n))
++
++#endif /* __UNICORE_DELAY_H__ */
++
+diff --git a/arch/unicore32/include/asm/futex.h b/arch/unicore32/include/asm/futex.h
+new file mode 100644
+index 000000000000..07dea6170558
+--- /dev/null
++++ b/arch/unicore32/include/asm/futex.h
+@@ -0,0 +1,143 @@
++/*
++ * linux/arch/unicore32/include/asm/futex.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef __UNICORE_FUTEX_H__
++#define __UNICORE_FUTEX_H__
++
++#ifdef __KERNEL__
++
++#include &lt;linux/futex.h&gt;
++#include &lt;linux/preempt.h&gt;
++#include &lt;linux/uaccess.h&gt;
++#include &lt;linux/errno.h&gt;
++
++#define __futex_atomic_op(insn, ret, oldval, uaddr, oparg)	\
++	__asm__ __volatile__(					\
++	"1:	ldw.u	%1, [%2]\n"				\
++	"	" insn "\n"					\
++	"2:	stw.u	%0, [%2]\n"				\
++	"	mov	%0, #0\n"				\
++	"3:\n"							\
++	"	.pushsection __ex_table,\"a\"\n"		\
++	"	.align	3\n"					\
++	"	.long	1b, 4f, 2b, 4f\n"			\
++	"	.popsection\n"					\
++	"	.pushsection .fixup,\"ax\"\n"			\
++	"4:	mov	%0, %4\n"				\
++	"	b	3b\n"					\
++	"	.popsection"					\
++	: "=&amp;r" (ret), "=&amp;r" (oldval)				\
++	: "r" (uaddr), "r" (oparg), "Ir" (-EFAULT)		\
++	: "cc", "memory")
++
++static inline int
++futex_atomic_op_inuser(int encoded_op, int __user *uaddr)
++{
++	int op = (encoded_op &gt;&gt; 28) &amp; 7;
++	int cmp = (encoded_op &gt;&gt; 24) &amp; 15;
++	int oparg = (encoded_op &lt;&lt; 8) &gt;&gt; 20;
++	int cmparg = (encoded_op &lt;&lt; 20) &gt;&gt; 20;
++	int oldval = 0, ret;
++
++	if (encoded_op &amp; (FUTEX_OP_OPARG_SHIFT &lt;&lt; 28))
++		oparg = 1 &lt;&lt; oparg;
++
++	if (!access_ok(VERIFY_WRITE, uaddr, sizeof(int)))
++		return -EFAULT;
++
++	pagefault_disable();	/* implies preempt_disable() */
++
++	switch (op) {
++	case FUTEX_OP_SET:
++		__futex_atomic_op("mov	%0, %3", ret, oldval, uaddr, oparg);
++		break;
++	case FUTEX_OP_ADD:
++		__futex_atomic_op("add	%0, %1, %3", ret, oldval, uaddr, oparg);
++		break;
++	case FUTEX_OP_OR:
++		__futex_atomic_op("or	%0, %1, %3", ret, oldval, uaddr, oparg);
++		break;
++	case FUTEX_OP_ANDN:
++		__futex_atomic_op("and	%0, %1, %3",
++				ret, oldval, uaddr, ~oparg);
++		break;
++	case FUTEX_OP_XOR:
++		__futex_atomic_op("xor	%0, %1, %3", ret, oldval, uaddr, oparg);
++		break;
++	default:
++		ret = -ENOSYS;
++	}
++
++	pagefault_enable();	/* subsumes preempt_enable() */
++
++	if (!ret) {
++		switch (cmp) {
++		case FUTEX_OP_CMP_EQ:
++			ret = (oldval == cmparg);
++			break;
++		case FUTEX_OP_CMP_NE:
++			ret = (oldval != cmparg);
++			break;
++		case FUTEX_OP_CMP_LT:
++			ret = (oldval &lt;  cmparg);
++			break;
++		case FUTEX_OP_CMP_GE:
++			ret = (oldval &gt;= cmparg);
++			break;
++		case FUTEX_OP_CMP_LE:
++			ret = (oldval &lt;= cmparg);
++			break;
++		case FUTEX_OP_CMP_GT:
++			ret = (oldval &gt;  cmparg);
++			break;
++		default:
++			ret = -ENOSYS;
++		}
++	}
++	return ret;
++}
++
++static inline int
++futex_atomic_cmpxchg_inatomic(int __user *uaddr, int oldval, int newval)
++{
++	int val;
++
++	if (!access_ok(VERIFY_WRITE, uaddr, sizeof(int)))
++		return -EFAULT;
++
++	pagefault_disable();	/* implies preempt_disable() */
++
++	__asm__ __volatile__("@futex_atomic_cmpxchg_inatomic\n"
++	"1:	ldw.u	%0, [%3]\n"
++	"	cmpxor.a	%0, %1\n"
++	"	bne	3f\n"
++	"2:	stw.u	%2, [%3]\n"
++	"3:\n"
++	"	.pushsection __ex_table,\"a\"\n"
++	"	.align	3\n"
++	"	.long	1b, 4f, 2b, 4f\n"
++	"	.popsection\n"
++	"	.pushsection .fixup,\"ax\"\n"
++	"4:	mov	%0, %4\n"
++	"	b	3b\n"
++	"	.popsection"
++	: "=&amp;r" (val)
++	: "r" (oldval), "r" (newval), "r" (uaddr), "Ir" (-EFAULT)
++	: "cc", "memory");
++
++	pagefault_enable();	/* subsumes preempt_enable() */
++
++	return val;
++}
++
++#endif /* __KERNEL__ */
++#endif /* __UNICORE_FUTEX_H__ */
+diff --git a/arch/unicore32/include/asm/io.h b/arch/unicore32/include/asm/io.h
+new file mode 100644
+index 000000000000..d73457c1800a
+--- /dev/null
++++ b/arch/unicore32/include/asm/io.h
+@@ -0,0 +1,52 @@
++/*
++ * linux/arch/unicore32/include/asm/io.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#ifndef __UNICORE_IO_H__
++#define __UNICORE_IO_H__
++
++#ifdef __KERNEL__
++
++#include &lt;asm/byteorder.h&gt;
++#include &lt;asm/memory.h&gt;
++#include &lt;asm/system.h&gt;
++
++#include &lt;asm-generic/io.h&gt;
++
++/*
++ * __uc32_ioremap and __uc32_ioremap_cached takes CPU physical address.
++ */
++extern void __iomem *__uc32_ioremap(unsigned long, size_t);
++extern void __iomem *__uc32_ioremap_cached(unsigned long, size_t);
++extern void __uc32_iounmap(volatile void __iomem *addr);
++
++/*
++ * ioremap and friends.
++ *
++ * ioremap takes a PCI memory address, as specified in
++ * Documentation/IO-mapping.txt.
++ *
++ */
++#define ioremap(cookie, size)		__uc32_ioremap(cookie, size)
++#define ioremap_cached(cookie, size)	__uc32_ioremap_cached(cookie, size)
++#define iounmap(cookie)			__uc32_iounmap(cookie)
++
++extern void __iomem *ioport_map(unsigned long port, unsigned int nr);
++extern void ioport_unmap(void __iomem *addr);
++
++/*
++ * Convert a physical pointer to a virtual kernel pointer for /dev/mem
++ * access
++ */
++#undef xlate_dev_mem_ptr
++#define xlate_dev_mem_ptr(p)	__va(p)
++
++#endif	/* __KERNEL__ */
++#endif	/* __UNICORE_IO_H__ */
+diff --git a/arch/unicore32/include/asm/mutex.h b/arch/unicore32/include/asm/mutex.h
+new file mode 100644
+index 000000000000..fab7d0e8adf6
+--- /dev/null
++++ b/arch/unicore32/include/asm/mutex.h
+@@ -0,0 +1,20 @@
++/*
++ * linux/arch/unicore32/include/asm/mutex.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ * UniCore optimized mutex locking primitives
++ *
++ * Please look into asm-generic/mutex-xchg.h for a formal definition.
++ */
++#ifndef __UNICORE_MUTEX_H__
++#define __UNICORE_MUTEX_H__
++
++# include &lt;asm-generic/mutex-xchg.h&gt;
++#endif
+diff --git a/arch/unicore32/lib/Makefile b/arch/unicore32/lib/Makefile
+new file mode 100644
+index 000000000000..87229a558b36
+--- /dev/null
++++ b/arch/unicore32/lib/Makefile
+@@ -0,0 +1,27 @@
++#
++# linux/arch/unicore32/lib/Makefile
++#
++# Copyright (C) 2001-2010 GUAN Xue-tao
++#
++
++lib-y	:= backtrace.o delay.o findbit.o
++lib-y	+= strncpy_from_user.o strnlen_user.o
++lib-y	+= clear_user.o copy_page.o
++lib-y	+= copy_from_user.o copy_to_user.o
++
++GNU_LIBC_A		:= $(shell $(CC) $(KBUILD_CFLAGS) -print-file-name=libc.a)
++GNU_LIBC_A_OBJS		:= memchr.o memcpy.o memmove.o memset.o
++GNU_LIBC_A_OBJS		+= strchr.o strrchr.o
++GNU_LIBC_A_OBJS		+= rawmemchr.o			# needed by strrchr.o
++
++GNU_LIBGCC_A		:= $(shell $(CC) $(KBUILD_CFLAGS) -print-file-name=libgcc.a)
++GNU_LIBGCC_A_OBJS	:= _ashldi3.o _ashrdi3.o _lshrdi3.o
++GNU_LIBGCC_A_OBJS	+= _divsi3.o _modsi3.o _ucmpdi2.o _umodsi3.o _udivsi3.o
++
++lib-y	+= $(GNU_LIBC_A_OBJS) $(GNU_LIBGCC_A_OBJS)
++
++$(addprefix $(obj)/, $(GNU_LIBC_A_OBJS)):
++	$(Q)$(AR) p $(GNU_LIBC_A) $(notdir $@) &gt; $@
++
++$(addprefix $(obj)/, $(GNU_LIBGCC_A_OBJS)):
++	$(Q)$(AR) p $(GNU_LIBGCC_A) $(notdir $@) &gt; $@
+diff --git a/arch/unicore32/lib/delay.S b/arch/unicore32/lib/delay.S
+new file mode 100644
+index 000000000000..24664c009e78
+--- /dev/null
++++ b/arch/unicore32/lib/delay.S
+@@ -0,0 +1,51 @@
++/*
++ * linux/arch/unicore32/lib/delay.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/linkage.h&gt;
++#include &lt;asm/assembler.h&gt;
++#include &lt;asm/param.h&gt;
++		.text
++
++.LC0:		.word	loops_per_jiffy
++.LC1:		.word	(2199023*HZ)&gt;&gt;11
++
++/*
++ * r0  &lt;= 2000
++ * lpj &lt;= 0x01ffffff (max. 3355 bogomips)
++ * HZ  &lt;= 1000
++ */
++
++ENTRY(__udelay)
++		ldw	r2, .LC1
++		mul	r0, r2, r0
++ENTRY(__const_udelay)				@ 0 &lt;= r0 &lt;= 0x7fffff06
++		ldw	r2, .LC0
++		ldw	r2, [r2]		@ max = 0x01ffffff
++		mov	r0, r0 &gt;&gt; #14		@ max = 0x0001ffff
++		mov	r2, r2 &gt;&gt; #10		@ max = 0x00007fff
++		mul	r0, r2, r0		@ max = 2^32-1
++		mov.a	r0, r0 &gt;&gt; #6
++		cmoveq	pc, lr
++
++/*
++ * loops = r0 * HZ * loops_per_jiffy / 1000000
++ *
++ * Oh, if only we had a cycle counter...
++ */
++
++@ Delay routine
++ENTRY(__delay)
++		sub.a	r0, r0, #2
++		bua	__delay
++		mov	pc, lr
++ENDPROC(__udelay)
++ENDPROC(__const_udelay)
++ENDPROC(__delay)
+diff --git a/arch/unicore32/lib/findbit.S b/arch/unicore32/lib/findbit.S
+new file mode 100644
+index 000000000000..c360ce905d8b
+--- /dev/null
++++ b/arch/unicore32/lib/findbit.S
+@@ -0,0 +1,98 @@
++/*
++ * linux/arch/unicore32/lib/findbit.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/linkage.h&gt;
++#include &lt;asm/assembler.h&gt;
++                .text
++
++/*
++ * Purpose  : Find a 'zero' bit
++ * Prototype: int find_first_zero_bit(void *addr, unsigned int maxbit);
++ */
++__uc32_find_first_zero_bit:
++		cxor.a	r1, #0
++		beq	3f
++		mov	r2, #0
++1:		ldb	r3, [r0+], r2 &gt;&gt; #3
++		xor.a	r3, r3, #0xff		@ invert bits
++		bne	.L_found		@ any now set - found zero bit
++		add	r2, r2, #8		@ next bit pointer
++2:		csub.a	r2, r1			@ any more?
++		bub	1b
++3:		mov	r0, r1			@ no free bits
++		mov	pc, lr
++
++/*
++ * Purpose  : Find next 'zero' bit
++ * Prototype: int find_next_zero_bit
++ *		(void *addr, unsigned int maxbit, int offset)
++ */
++ENTRY(__uc32_find_next_zero_bit)
++		cxor.a	r1, #0
++		beq	3b
++		and.a	ip, r2, #7
++		beq	1b			@ If new byte, goto old routine
++		ldb	r3, [r0+], r2 &gt;&gt; #3
++		xor	r3, r3, #0xff		@ now looking for a 1 bit
++		mov.a	r3, r3 &gt;&gt; ip		@ shift off unused bits
++		bne	.L_found
++		or	r2, r2, #7		@ if zero, then no bits here
++		add	r2, r2, #1		@ align bit pointer
++		b	2b			@ loop for next bit
++ENDPROC(__uc32_find_next_zero_bit)
++
++/*
++ * Purpose  : Find a 'one' bit
++ * Prototype: int find_first_bit
++ *		(const unsigned long *addr, unsigned int maxbit);
++ */
++__uc32_find_first_bit:
++		cxor.a	r1, #0
++		beq	3f
++		mov	r2, #0
++1:		ldb	r3, [r0+], r2 &gt;&gt; #3
++		mov.a	r3, r3
++		bne	.L_found		@ any now set - found zero bit
++		add	r2, r2, #8		@ next bit pointer
++2:		csub.a	r2, r1			@ any more?
++		bub	1b
++3:		mov	r0, r1			@ no free bits
++		mov	pc, lr
++
++/*
++ * Purpose  : Find next 'one' bit
++ * Prototype: int find_next_zero_bit
++ *		(void *addr, unsigned int maxbit, int offset)
++ */
++ENTRY(__uc32_find_next_bit)
++		cxor.a	r1, #0
++		beq	3b
++		and.a	ip, r2, #7
++		beq	1b			@ If new byte, goto old routine
++		ldb	r3, [r0+], r2 &gt;&gt; #3
++		mov.a	r3, r3 &gt;&gt; ip		@ shift off unused bits
++		bne	.L_found
++		or	r2, r2, #7		@ if zero, then no bits here
++		add	r2, r2, #1		@ align bit pointer
++		b	2b			@ loop for next bit
++ENDPROC(__uc32_find_next_bit)
++
++/*
++ * One or more bits in the LSB of r3 are assumed to be set.
++ */
++.L_found:
++		rsub	r1, r3, #0
++		and	r3, r3, r1
++		cntlz	r3, r3
++		rsub	r3, r3, #31
++		add	r0, r2, r3
++		mov	pc, lr
++</pre><hr><pre>commit 77c93b2f2388b974253af4149aa025b4751f92ad
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Feb 26 18:49:26 2011 +0800
+
+    unicore32 additional architecture files: low-level lib: uaccess
+    
+    This patch implements low-level uaccess libraries.
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Acked-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/include/asm/uaccess.h b/arch/unicore32/include/asm/uaccess.h
+new file mode 100644
+index 000000000000..2acda503a6d9
+--- /dev/null
++++ b/arch/unicore32/include/asm/uaccess.h
+@@ -0,0 +1,47 @@
++/*
++ * linux/arch/unicore32/include/asm/uaccess.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#ifndef __UNICORE_UACCESS_H__
++#define __UNICORE_UACCESS_H__
++
++#include &lt;linux/thread_info.h&gt;
++#include &lt;linux/errno.h&gt;
++
++#include &lt;asm/memory.h&gt;
++#include &lt;asm/system.h&gt;
++
++#define __copy_from_user	__copy_from_user
++#define __copy_to_user		__copy_to_user
++#define __strncpy_from_user	__strncpy_from_user
++#define __strnlen_user		__strnlen_user
++#define __clear_user		__clear_user
++
++#define __kernel_ok		(segment_eq(get_fs(), KERNEL_DS))
++#define __user_ok(addr, size)	(((size) &lt;= TASK_SIZE)			\
++				&amp;&amp; ((addr) &lt;= TASK_SIZE - (size)))
++#define __access_ok(addr, size)	(__kernel_ok || __user_ok((addr), (size)))
++
++extern unsigned long __must_check
++__copy_from_user(void *to, const void __user *from, unsigned long n);
++extern unsigned long __must_check
++__copy_to_user(void __user *to, const void *from, unsigned long n);
++extern unsigned long __must_check
++__clear_user(void __user *addr, unsigned long n);
++extern unsigned long __must_check
++__strncpy_from_user(char *to, const char __user *from, unsigned long count);
++extern unsigned long
++__strnlen_user(const char __user *s, long n);
++
++#include &lt;asm-generic/uaccess.h&gt;
++
++extern int fixup_exception(struct pt_regs *regs);
++
++#endif /* __UNICORE_UACCESS_H__ */
+diff --git a/arch/unicore32/lib/clear_user.S b/arch/unicore32/lib/clear_user.S
+new file mode 100644
+index 000000000000..20047f7224fd
+--- /dev/null
++++ b/arch/unicore32/lib/clear_user.S
+@@ -0,0 +1,57 @@
++/*
++ * linux/arch/unicore32/lib/clear_user.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/linkage.h&gt;
++#include &lt;asm/assembler.h&gt;
++
++		.text
++
++/* Prototype: int __clear_user(void *addr, size_t sz)
++ * Purpose  : clear some user memory
++ * Params   : addr - user memory address to clear
++ *          : sz   - number of bytes to clear
++ * Returns  : number of bytes NOT cleared
++ */
++WEAK(__clear_user)
++		stm.w	(lr), [sp-]
++		stm.w	(r1), [sp-]
++		mov	r2, #0
++		csub.a	r1, #4
++		bsl	2f
++		and.a	ip, r0, #3
++		beq	1f
++		csub.a	ip, #2
++		strusr	r2, r0, 1
++		strusr	r2, r0, 1, el
++		strusr	r2, r0, 1, sl
++		rsub	ip, ip, #4
++		sub	r1, r1, ip		@  7  6  5  4  3  2  1
++1:		sub.a	r1, r1, #8		@ -1 -2 -3 -4 -5 -6 -7
++		strusr	r2, r0, 4, ns, rept=2
++		bns	1b
++		add.a	r1, r1, #4		@  3  2  1  0 -1 -2 -3
++		strusr	r2, r0, 4, ns
++2:		cand.a	r1, #2			@ 1x 1x 0x 0x 1x 1x 0x
++		strusr	r2, r0, 1, ne, rept=2
++		cand.a	r1, #1			@ x1 x0 x1 x0 x1 x0 x1
++		beq	3f
++USER(		stb.u	r2, [r0])
++3:		mov	r0, #0
++		ldm.w	(r1), [sp]+
++		ldm.w	(pc), [sp]+
++ENDPROC(__clear_user)
++
++		.pushsection .fixup,"ax"
++		.align	0
++9001:		ldm.w	(r0), [sp]+
++		ldm.w	(pc), [sp]+
++		.popsection
++
+diff --git a/arch/unicore32/lib/copy_from_user.S b/arch/unicore32/lib/copy_from_user.S
+new file mode 100644
+index 000000000000..ab0767ea5dbd
+--- /dev/null
++++ b/arch/unicore32/lib/copy_from_user.S
+@@ -0,0 +1,108 @@
++/*
++ * linux/arch/unicore32/lib/copy_from_user.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include &lt;linux/linkage.h&gt;
++#include &lt;asm/assembler.h&gt;
++
++/*
++ * Prototype:
++ *
++ *	size_t __copy_from_user(void *to, const void *from, size_t n)
++ *
++ * Purpose:
++ *
++ *	copy a block to kernel memory from user memory
++ *
++ * Params:
++ *
++ *	to = kernel memory
++ *	from = user memory
++ *	n = number of bytes to copy
++ *
++ * Return value:
++ *
++ *	Number of bytes NOT copied.
++ */
++
++	.macro ldr1w ptr reg abort
++	ldrusr	\reg, \ptr, 4, abort=\abort
++	.endm
++
++	.macro ldr4w ptr reg1 reg2 reg3 reg4 abort
++100:	ldm.w	(\reg1, \reg2, \reg3, \reg4), [\ptr]+
++	.pushsection __ex_table, "a"
++	.align	3
++	.long 100b, \abort
++	.popsection
++	.endm
++
++	.macro ldr8w ptr reg1 reg2 reg3 reg4 reg5 reg6 reg7 reg8 abort
++100:	ldm.w (\reg1, \reg2, \reg3, \reg4, \reg5, \reg6, \reg7, \reg8), [\ptr]+
++	.pushsection __ex_table, "a"
++	.align	3
++	.long 100b, \abort
++	.popsection
++	.endm
++
++	.macro ldr1b ptr reg cond=al abort
++	ldrusr	\reg, \ptr, 1, \cond, abort=\abort
++	.endm
++
++	.macro str1w ptr reg abort
++	stw.w \reg, [\ptr]+, #4
++	.endm
++
++	.macro str8w ptr reg1 reg2 reg3 reg4 reg5 reg6 reg7 reg8 abort
++	stm.w (\reg1, \reg2, \reg3, \reg4, \reg5, \reg6, \reg7, \reg8), [\ptr]+
++	.endm
++
++	.macro str1b ptr reg cond=al abort
++	.ifnc	\cond, al
++	b\cond	201f
++	b	202f
++	.endif
++201:	stb.w \reg, [\ptr]+, #1
++202:
++	.endm
++
++	.macro enter
++	mov	r3, #0
++	stm.w	(r0, r2, r3), [sp-]
++	.endm
++
++	.macro exit
++	add	sp, sp, #8
++	ldm.w	(r0), [sp]+
++	mov	pc, lr
++	.endm
++
++	.text
++
++ENTRY(__copy_from_user)
++
++#include "copy_template.S"
++
++ENDPROC(__copy_from_user)
++
++	.pushsection .fixup,"ax"
++	.align 0
++	copy_abort_preamble
++	ldm.w	(r1, r2), [sp]+
++	sub	r3, r0, r1
++	rsub	r2, r3, r2
++	stw	r2, [sp]
++	mov	r1, #0
++	b.l	memset
++	ldw.w	r0, [sp]+, #4
++	copy_abort_end
++	.popsection
++
+diff --git a/arch/unicore32/lib/copy_page.S b/arch/unicore32/lib/copy_page.S
+new file mode 100644
+index 000000000000..3a448d755ade
+--- /dev/null
++++ b/arch/unicore32/lib/copy_page.S
+@@ -0,0 +1,39 @@
++/*
++ * linux/arch/unicore32/lib/copy_page.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ *  ASM optimised string functions
++ */
++#include &lt;linux/linkage.h&gt;
++#include &lt;asm/assembler.h&gt;
++#include &lt;generated/asm-offsets.h&gt;
++#include &lt;asm/cache.h&gt;
++
++#define COPY_COUNT (PAGE_SZ/256)
++
++		.text
++		.align	5
++/*
++ * UniCore optimised copy_page routine
++ */
++ENTRY(copy_page)
++		stm.w	(r17 - r19, lr), [sp-]
++		mov	r17, r0
++		mov	r18, r1
++		mov	r19, #COPY_COUNT
++1:
++	.rept	4
++		ldm.w	(r0 - r15), [r18]+
++		stm.w	(r0 - r15), [r17]+
++	.endr
++		sub.a	r19, r19, #1
++		bne	1b
++		ldm.w	(r17 - r19, pc), [sp]+
++ENDPROC(copy_page)
+diff --git a/arch/unicore32/lib/copy_template.S b/arch/unicore32/lib/copy_template.S
+new file mode 100644
+index 000000000000..524287fc0120
+--- /dev/null
++++ b/arch/unicore32/lib/copy_template.S
+@@ -0,0 +1,214 @@
++/*
++ * linux/arch/unicore32/lib/copy_template.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++/*
++ * Theory of operation
++ * -------------------
++ *
++ * This file provides the core code for a forward memory copy used in
++ * the implementation of memcopy(), copy_to_user() and copy_from_user().
++ *
++ * The including file must define the following accessor macros
++ * according to the need of the given function:
++ *
++ * ldr1w ptr reg abort
++ *
++ *	This loads one word from 'ptr', stores it in 'reg' and increments
++ *	'ptr' to the next word. The 'abort' argument is used for fixup tables.
++ *
++ * ldr4w ptr reg1 reg2 reg3 reg4 abort
++ * ldr8w ptr, reg1 reg2 reg3 reg4 reg5 reg6 reg7 reg8 abort
++ *
++ *	This loads four or eight words starting from 'ptr', stores them
++ *	in provided registers and increments 'ptr' past those words.
++ *	The'abort' argument is used for fixup tables.
++ *
++ * ldr1b ptr reg cond abort
++ *
++ *	Similar to ldr1w, but it loads a byte and increments 'ptr' one byte.
++ *	It also must apply the condition code if provided, otherwise the
++ *	"al" condition is assumed by default.
++ *
++ * str1w ptr reg abort
++ * str8w ptr reg1 reg2 reg3 reg4 reg5 reg6 reg7 reg8 abort
++ * str1b ptr reg cond abort
++ *
++ *	Same as their ldr* counterparts, but data is stored to 'ptr' location
++ *	rather than being loaded.
++ *
++ * enter
++ *
++ *	Preserve the provided registers on the stack plus any additional
++ *	data as needed by the implementation including this code. Called
++ *	upon code entry.
++ *
++ * exit
++ *
++ *	Restore registers with the values previously saved with the
++ *	'preserv' macro. Called upon code termination.
++ */
++
++
++		enter
++
++		sub.a	r2, r2, #4
++		bsl	8f
++		and.a	ip, r0, #3
++		bne	9f
++		and.a	ip, r1, #3
++		bne	10f
++
++1:		sub.a	r2, r2, #(28)
++		stm.w	(r5 - r8), [sp-]
++		bsl	5f
++
++3:
++4:		ldr8w	r1, r3, r4, r5, r6, r7, r8, r10, r11, abort=20f
++		sub.a	r2, r2, #32
++		str8w	r0, r3, r4, r5, r6, r7, r8, r10, r11, abort=20f
++		beg	3b
++
++5:		and.a	ip, r2, #28
++		rsub	ip, ip, #32
++		beq	7f
++		add	pc, pc, ip		@ C is always clear here
++		nop
++
++		ldr1w	r1, r3, abort=20f
++		ldr1w	r1, r4, abort=20f
++		ldr1w	r1, r5, abort=20f
++		ldr1w	r1, r6, abort=20f
++		ldr1w	r1, r7, abort=20f
++		ldr1w	r1, r8, abort=20f
++		ldr1w	r1, r11, abort=20f
++
++		add	pc, pc, ip
++		nop
++
++		str1w	r0, r3, abort=20f
++		str1w	r0, r4, abort=20f
++		str1w	r0, r5, abort=20f
++		str1w	r0, r6, abort=20f
++		str1w	r0, r7, abort=20f
++		str1w	r0, r8, abort=20f
++		str1w	r0, r11, abort=20f
++
++7:		ldm.w	(r5 - r8), [sp]+
++
++8:		mov.a	r2, r2 &lt;&lt; #31
++		ldr1b	r1, r3, ne, abort=21f
++		ldr1b	r1, r4, ea, abort=21f
++		ldr1b	r1, r10, ea, abort=21f
++		str1b	r0, r3, ne, abort=21f
++		str1b	r0, r4, ea, abort=21f
++		str1b	r0, r10, ea, abort=21f
++
++		exit
++
++9:		rsub	ip, ip, #4
++		csub.a	ip, #2
++		ldr1b	r1, r3, sg, abort=21f
++		ldr1b	r1, r4, eg, abort=21f
++		ldr1b	r1, r11, abort=21f
++		str1b	r0, r3, sg, abort=21f
++		str1b	r0, r4, eg, abort=21f
++		sub.a	r2, r2, ip
++		str1b	r0, r11, abort=21f
++		bsl	8b
++		and.a	ip, r1, #3
++		beq	1b
++
++10:		andn	r1, r1, #3
++		csub.a	ip, #2
++		ldr1w	r1, r11, abort=21f
++		beq	17f
++		bsg	18f
++
++
++		.macro	forward_copy_shift a b
++
++		sub.a	r2, r2, #28
++		bsl	14f
++
++11:		stm.w	(r5 - r9), [sp-]
++
++12:
++		ldr4w	r1, r4, r5, r6, r7, abort=19f
++		mov	r3, r11 pull #\a
++		sub.a	r2, r2, #32
++		ldr4w	r1, r8, r9, r10, r11, abort=19f
++		or	r3, r3, r4 push #\b
++		mov	r4, r4 pull #\a
++		or	r4, r4, r5 push #\b
++		mov	r5, r5 pull #\a
++		or	r5, r5, r6 push #\b
++		mov	r6, r6 pull #\a
++		or	r6, r6, r7 push #\b
++		mov	r7, r7 pull #\a
++		or	r7, r7, r8 push #\b
++		mov	r8, r8 pull #\a
++		or	r8, r8, r9 push #\b
++		mov	r9, r9 pull #\a
++		or	r9, r9, r10 push #\b
++		mov	r10, r10 pull #\a
++		or	r10, r10, r11 push #\b
++		str8w	r0, r3, r4, r5, r6, r7, r8, r9, r10, , abort=19f
++		beg	12b
++
++		ldm.w	(r5 - r9), [sp]+
++
++14:		and.a	ip, r2, #28
++		beq	16f
++
++15:		mov	r3, r11 pull #\a
++		ldr1w	r1, r11, abort=21f
++		sub.a	ip, ip, #4
++		or	r3, r3, r11 push #\b
++		str1w	r0, r3, abort=21f
++		bsg	15b
++
++16:		sub	r1, r1, #(\b / 8)
++		b	8b
++
++		.endm
++
++
++		forward_copy_shift	a=8	b=24
++
++17:		forward_copy_shift	a=16	b=16
++
++18:		forward_copy_shift	a=24	b=8
++
++
++/*
++ * Abort preamble and completion macros.
++ * If a fixup handler is required then those macros must surround it.
++ * It is assumed that the fixup code will handle the private part of
++ * the exit macro.
++ */
++
++	.macro	copy_abort_preamble
++19:	ldm.w	(r5 - r9), [sp]+
++	b	21f
++299:	.word	0			@ store lr
++					@ to avoid function call in fixup
++20:	ldm.w	(r5 - r8), [sp]+
++21:
++	adr	r1, 299b
++	stw	lr, [r1]
++	.endm
++
++	.macro	copy_abort_end
++	adr	lr, 299b
++	ldw	pc, [lr]
++	.endm
++
+diff --git a/arch/unicore32/lib/copy_to_user.S b/arch/unicore32/lib/copy_to_user.S
+new file mode 100644
+index 000000000000..6e22151c840d
+--- /dev/null
++++ b/arch/unicore32/lib/copy_to_user.S
+@@ -0,0 +1,96 @@
++/*
++ * linux/arch/unicore32/lib/copy_to_user.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include &lt;linux/linkage.h&gt;
++#include &lt;asm/assembler.h&gt;
++
++/*
++ * Prototype:
++ *
++ *	size_t __copy_to_user(void *to, const void *from, size_t n)
++ *
++ * Purpose:
++ *
++ *	copy a block to user memory from kernel memory
++ *
++ * Params:
++ *
++ *	to = user memory
++ *	from = kernel memory
++ *	n = number of bytes to copy
++ *
++ * Return value:
++ *
++ *	Number of bytes NOT copied.
++ */
++
++	.macro ldr1w ptr reg abort
++	ldw.w \reg, [\ptr]+, #4
++	.endm
++
++	.macro ldr4w ptr reg1 reg2 reg3 reg4 abort
++	ldm.w	(\reg1, \reg2, \reg3, \reg4), [\ptr]+
++	.endm
++
++	.macro ldr8w ptr reg1 reg2 reg3 reg4 reg5 reg6 reg7 reg8 abort
++	ldm.w (\reg1, \reg2, \reg3, \reg4, \reg5, \reg6, \reg7, \reg8), [\ptr]+
++	.endm
++
++	.macro ldr1b ptr reg cond=al abort
++	notcond	\cond, .+8
++	ldb.w \reg, [\ptr]+, #1
++	.endm
++
++	.macro str1w ptr reg abort
++	strusr	\reg, \ptr, 4, abort=\abort
++	.endm
++
++	.macro str8w ptr reg1 reg2 reg3 reg4 reg5 reg6 reg7 reg8 abort
++100:	stm.w (\reg1, \reg2, \reg3, \reg4, \reg5, \reg6, \reg7, \reg8), [\ptr]+
++
++	.pushsection __ex_table, "a"
++	.long 100b, \abort
++	.popsection
++	.endm
++
++	.macro str1b ptr reg cond=al abort
++	strusr	\reg, \ptr, 1, \cond, abort=\abort
++	.endm
++
++	.macro enter
++	mov	r3, #0
++	stm.w	(r0, r2, r3), [sp-]
++	.endm
++
++	.macro exit
++	add	sp, sp, #8
++	ldm.w	(r0), [sp]+
++	mov	pc, lr
++	.endm
++
++	.text
++
++WEAK(__copy_to_user)
++
++#include "copy_template.S"
++
++ENDPROC(__copy_to_user)
++
++	.pushsection .fixup,"ax"
++	.align 0
++	copy_abort_preamble
++	ldm.w	(r1, r2, r3), [sp]+
++	sub	r0, r0, r1
++	rsub	r0, r0, r2
++	copy_abort_end
++	.popsection
++
+diff --git a/arch/unicore32/lib/strncpy_from_user.S b/arch/unicore32/lib/strncpy_from_user.S
+new file mode 100644
+index 000000000000..ff6c304d5c7e
+--- /dev/null
++++ b/arch/unicore32/lib/strncpy_from_user.S
+@@ -0,0 +1,45 @@
++/*
++ * linux/arch/unicore32/lib/strncpy_from_user.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/linkage.h&gt;
++#include &lt;asm/assembler.h&gt;
++#include &lt;asm/errno.h&gt;
++
++	.text
++	.align	5
++
++/*
++ * Copy a string from user space to kernel space.
++ *  r0 = dst, r1 = src, r2 = byte length
++ * returns the number of characters copied (strlen of copied string),
++ *  -EFAULT on exception, or "len" if we fill the whole buffer
++ */
++ENTRY(__strncpy_from_user)
++	mov	ip, r1
++1:	sub.a	r2, r2, #1
++	ldrusr	r3, r1, 1, ns
++	bfs	2f
++	stb.w	r3, [r0]+, #1
++	cxor.a	r3, #0
++	bne	1b
++	sub	r1, r1, #1	@ take NUL character out of count
++2:	sub	r0, r1, ip
++	mov	pc, lr
++ENDPROC(__strncpy_from_user)
++
++	.pushsection .fixup,"ax"
++	.align	0
++9001:	mov	r3, #0
++	stb	r3, [r0+], #0	@ null terminate
++	mov	r0, #-EFAULT
++	mov	pc, lr
++	.popsection
++
+diff --git a/arch/unicore32/lib/strnlen_user.S b/arch/unicore32/lib/strnlen_user.S
+new file mode 100644
+index 000000000000..75863030f21d
+--- /dev/null
++++ b/arch/unicore32/lib/strnlen_user.S
+@@ -0,0 +1,42 @@
++/*
++ * linux/arch/unicore32/lib/strnlen_user.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/linkage.h&gt;
++#include &lt;asm/assembler.h&gt;
++#include &lt;asm/errno.h&gt;
++
++	.text
++	.align	5
++
++/* Prototype: unsigned long __strnlen_user(const char *str, long n)
++ * Purpose  : get length of a string in user memory
++ * Params   : str - address of string in user memory
++ * Returns  : length of string *including terminator*
++ *	      or zero on exception, or n + 1 if too long
++ */
++ENTRY(__strnlen_user)
++	mov	r2, r0
++1:
++	ldrusr	r3, r0, 1
++	cxor.a	r3, #0
++	beq	2f
++	sub.a	r1, r1, #1
++	bne	1b
++	add	r0, r0, #1
++2:	sub	r0, r0, r2
++	mov	pc, lr
++ENDPROC(__strnlen_user)
++
++	.pushsection .fixup,"ax"
++	.align	0
++9001:	mov	r0, #0
++	mov	pc, lr
++	.popsection</pre><hr><pre>commit 28bab059a23aac6bb129b307410e5b63e132a290
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Jan 15 18:22:19 2011 +0800
+
+    unicore32 additional architecture files: low-level lib: ocd debug
+    
+    This patch implements low-level debug libraries with On-Chip-Debugger hardware support.
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Acked-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/include/mach/ocd.h b/arch/unicore32/include/mach/ocd.h
+new file mode 100644
+index 000000000000..189fd71bfa34
+--- /dev/null
++++ b/arch/unicore32/include/mach/ocd.h
+@@ -0,0 +1,36 @@
++/*
++ * linux/arch/unicore32/include/mach/ocd.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef __MACH_PUV3_OCD_H__
++#define __MACH_PUV3_OCD_H__
++
++#if defined(CONFIG_DEBUG_OCD)
++static inline void ocd_putc(unsigned int c)
++{
++	int status, i = 0x2000000;
++
++	do {
++		if (--i &lt; 0)
++			return;
++
++		asm volatile ("movc %0, p1.c0, #0" : "=r" (status));
++	} while (status &amp; 2);
++
++	asm("movc p1.c1, %0, #1" : : "r" (c));
++}
++
++#define putc(ch)	ocd_putc(ch)
++#else
++#define putc(ch)
++#endif
++
++#endif
+diff --git a/arch/unicore32/kernel/debug-macro.S b/arch/unicore32/kernel/debug-macro.S
+new file mode 100644
+index 000000000000..2711d6d87d8e
+--- /dev/null
++++ b/arch/unicore32/kernel/debug-macro.S
+@@ -0,0 +1,89 @@
++/*
++ * linux/arch/unicore32/kernel/debug-macro.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ * Debugging macro include header
++ */
++#include &lt;generated/asm-offsets.h&gt;
++#include &lt;mach/hardware.h&gt;
++
++		.macro	put_word_ocd, rd, rx=r16
++1001:		movc		\rx, p1.c0, #0
++		cand.a	\rx, #2
++		bne	1001b
++		movc		p1.c1, \rd, #1
++		.endm
++
++#ifdef CONFIG_DEBUG_OCD
++		/* debug using UniCore On-Chip-Debugger */
++		.macro	addruart, rx
++		.endm
++
++		.macro	senduart, rd, rx
++		put_word_ocd	\rd, \rx
++		.endm
++
++		.macro	busyuart, rd, rx
++		.endm
++
++		.macro	waituart, rd, rx
++		.endm
++#else
++#define UART_CLK_DEFAULT        3686400 * 20
++	/* Uartclk = MCLK/ 2, The MCLK on my board is 3686400 * 40  */
++#define BAUD_RATE_DEFAULT	115200
++	/* The baud rate of the serial port */
++
++#define UART_DIVISOR_DEFAULT	(UART_CLK_DEFAULT \
++				/ (16 * BAUD_RATE_DEFAULT) - 1)
++
++		.macro	addruart,rx
++		mrc	p0, #0, \rx, c1, c0
++		tst	\rx, #1			@ MMU enabled?
++		moveq	\rx, #0xee000000	@ physical base address
++		movne	\rx, #0x6e000000	@ virtual address
++
++		@ We probe for the active serial port here
++		@ However, now we assume UART0 is active:	epip4d
++		@ We assume r1 and r2 can be clobbered.
++
++		movl 	r2, #UART_DIVISOR_DEFAULT
++		mov 	r1, #0x80
++		str	r1, [\rx, #UART_LCR_OFFSET]
++		and	r1, r2, #0xff00
++		mov	r1, r1, lsr #8
++		str	r1, [\rx, #UART_DLH_OFFSET]
++		and	r1, r2, #0xff
++		str	r1, [\rx, #UART_DLL_OFFSET]
++		mov 	r1, #0x7
++		str	r1, [\rx, #UART_FCR_OFFSET]
++		mov 	r1, #0x3
++		str	r1, [\rx, #UART_LCR_OFFSET]
++		mov 	r1, #0x0
++		str	r1, [\rx, #UART_IER_OFFSET]
++		.endm
++
++		.macro	senduart,rd,rx
++		str	\rd, [\rx, #UART_THR_OFFSET]
++		.endm
++
++		.macro	waituart,rd,rx
++1001:		ldr	\rd, [\rx, #UART_LSR_OFFSET]
++		tst	\rd, #UART_LSR_THRE
++		beq	1001b
++		.endm
++
++		.macro	busyuart,rd,rx
++1001:		ldr	\rd, [\rx, #UART_LSR_OFFSET]
++		tst	\rd, #UART_LSR_TEMT
++		bne	1001b
++		.endm
++#endif
++
+diff --git a/arch/unicore32/kernel/debug.S b/arch/unicore32/kernel/debug.S
+new file mode 100644
+index 000000000000..029fd12f6ab0
+--- /dev/null
++++ b/arch/unicore32/kernel/debug.S
+@@ -0,0 +1,85 @@
++/*
++ * linux/arch/unicore32/kernel/debug.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ *  32-bit debugging code
++ */
++#include &lt;linux/linkage.h&gt;
++#include &lt;asm/assembler.h&gt;
++
++		.text
++
++/*
++ * Some debugging routines (useful if you've got MM problems and
++ * printk isn't working).  For DEBUGGING ONLY!!!  Do not leave
++ * references to these in a production kernel!
++ */
++#include "debug-macro.S"
++
++/*
++ * Useful debugging routines
++ */
++ENTRY(printhex8)
++		mov	r1, #8
++		b	printhex
++ENDPROC(printhex8)
++
++ENTRY(printhex4)
++		mov	r1, #4
++		b	printhex
++ENDPROC(printhex4)
++
++ENTRY(printhex2)
++		mov	r1, #2
++printhex:	adr	r2, hexbuf
++		add	r3, r2, r1
++		mov	r1, #0
++		stb	r1, [r3]
++1:		and	r1, r0, #15
++		mov	r0, r0 &gt;&gt; #4
++		csub.a	r1, #10
++		beg	2f
++		add	r1, r1, #'0' - 'a' + 10
++2:		add	r1, r1, #'a' - 10
++		stb.w	r1, [r3+], #-1
++		cxor.a	r3, r2
++		bne	1b
++		mov	r0, r2
++		b	printascii
++ENDPROC(printhex2)
++
++		.ltorg
++
++ENTRY(printascii)
++		addruart r3
++		b	2f
++1:		waituart r2, r3
++		senduart r1, r3
++		busyuart r2, r3
++		cxor.a	r1, #'\n'
++		cmoveq	r1, #'\r'
++		beq	1b
++2:		cxor.a	r0, #0
++		beq	3f
++		ldb.w	r1, [r0]+, #1
++		cxor.a	r1, #0
++		bne	1b
++3:		mov	pc, lr
++ENDPROC(printascii)
++
++ENTRY(printch)
++		addruart r3
++		mov	r1, r0
++		mov	r0, #0
++		b	1b
++ENDPROC(printch)
++
++hexbuf:		.space 16
++
+diff --git a/arch/unicore32/kernel/early_printk.c b/arch/unicore32/kernel/early_printk.c
+new file mode 100644
+index 000000000000..3922255f1fa8
+--- /dev/null
++++ b/arch/unicore32/kernel/early_printk.c
+@@ -0,0 +1,59 @@
++/*
++ * linux/arch/unicore32/kernel/early_printk.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/console.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/string.h&gt;
++#include &lt;mach/ocd.h&gt;
++
++/* On-Chip-Debugger functions */
++
++static void early_ocd_write(struct console *con, const char *s, unsigned n)
++{
++	while (*s &amp;&amp; n-- &gt; 0) {
++		if (*s == '\n')
++			ocd_putc((int)'\r');
++		ocd_putc((int)*s);
++		s++;
++	}
++}
++
++static struct console early_ocd_console = {
++	.name =		"earlyocd",
++	.write =	early_ocd_write,
++	.flags =	CON_PRINTBUFFER,
++	.index =	-1,
++};
++
++/* Direct interface for emergencies */
++static struct console *early_console = &amp;early_ocd_console;
++
++static int __initdata keep_early;
++
++static int __init setup_early_printk(char *buf)
++{
++	if (!buf)
++		return 0;
++
++	if (strstr(buf, "keep"))
++		keep_early = 1;
++
++	if (!strncmp(buf, "ocd", 3))
++		early_console = &amp;early_ocd_console;
++
++	if (keep_early)
++		early_console-&gt;flags &amp;= ~CON_BOOT;
++	else
++		early_console-&gt;flags |= CON_BOOT;
++	register_console(early_console);
++	return 0;
++}
++early_param("earlyprintk", setup_early_printk);</pre><hr><pre>commit 6dea1ba1c82013c108d235ec32c6d8bd9ff6b48d
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Jan 15 18:21:56 2011 +0800
+
+    unicore32 additional architecture files: ptrace handling
+    
+    This patch adds ptrace support.
+    
+    Changed from previous version:
+        1. disable arch_has_single_step and remove single-step instruction handler
+        2. add 'Ross Biro 1/23/92' contributor information
+        3. clean unused codes
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Acked-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/include/asm/ptrace.h b/arch/unicore32/include/asm/ptrace.h
+new file mode 100644
+index 000000000000..b9caf9b0997b
+--- /dev/null
++++ b/arch/unicore32/include/asm/ptrace.h
+@@ -0,0 +1,133 @@
++/*
++ * linux/arch/unicore32/include/asm/ptrace.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#ifndef __UNICORE_PTRACE_H__
++#define __UNICORE_PTRACE_H__
++
++#define PTRACE_GET_THREAD_AREA	22
++
++/*
++ * PSR bits
++ */
++#define USER_MODE	0x00000010
++#define REAL_MODE	0x00000011
++#define INTR_MODE	0x00000012
++#define PRIV_MODE	0x00000013
++#define ABRT_MODE	0x00000017
++#define EXTN_MODE	0x0000001b
++#define SUSR_MODE	0x0000001f
++#define MODE_MASK	0x0000001f
++#define PSR_R_BIT	0x00000040
++#define PSR_I_BIT	0x00000080
++#define PSR_V_BIT	0x10000000
++#define PSR_C_BIT	0x20000000
++#define PSR_Z_BIT	0x40000000
++#define PSR_S_BIT	0x80000000
++
++/*
++ * Groups of PSR bits
++ */
++#define PSR_f		0xff000000	/* Flags		*/
++#define PSR_c		0x000000ff	/* Control		*/
++
++#ifndef __ASSEMBLY__
++
++/*
++ * This struct defines the way the registers are stored on the
++ * stack during a system call.  Note that sizeof(struct pt_regs)
++ * has to be a multiple of 8.
++ */
++struct pt_regs {
++	unsigned long uregs[34];
++};
++
++#define UCreg_asr		uregs[32]
++#define UCreg_pc		uregs[31]
++#define UCreg_lr		uregs[30]
++#define UCreg_sp		uregs[29]
++#define UCreg_ip		uregs[28]
++#define UCreg_fp		uregs[27]
++#define UCreg_26		uregs[26]
++#define UCreg_25		uregs[25]
++#define UCreg_24		uregs[24]
++#define UCreg_23		uregs[23]
++#define UCreg_22		uregs[22]
++#define UCreg_21		uregs[21]
++#define UCreg_20		uregs[20]
++#define UCreg_19		uregs[19]
++#define UCreg_18		uregs[18]
++#define UCreg_17		uregs[17]
++#define UCreg_16		uregs[16]
++#define UCreg_15		uregs[15]
++#define UCreg_14		uregs[14]
++#define UCreg_13		uregs[13]
++#define UCreg_12		uregs[12]
++#define UCreg_11		uregs[11]
++#define UCreg_10		uregs[10]
++#define UCreg_09		uregs[9]
++#define UCreg_08		uregs[8]
++#define UCreg_07		uregs[7]
++#define UCreg_06		uregs[6]
++#define UCreg_05		uregs[5]
++#define UCreg_04		uregs[4]
++#define UCreg_03		uregs[3]
++#define UCreg_02		uregs[2]
++#define UCreg_01		uregs[1]
++#define UCreg_00		uregs[0]
++#define UCreg_ORIG_00		uregs[33]
++
++#ifdef __KERNEL__
++
++#define user_mode(regs)	\
++	(processor_mode(regs) == USER_MODE)
++
++#define processor_mode(regs) \
++	((regs)-&gt;UCreg_asr &amp; MODE_MASK)
++
++#define interrupts_enabled(regs) \
++	(!((regs)-&gt;UCreg_asr &amp; PSR_I_BIT))
++
++#define fast_interrupts_enabled(regs) \
++	(!((regs)-&gt;UCreg_asr &amp; PSR_R_BIT))
++
++/* Are the current registers suitable for user mode?
++ * (used to maintain security in signal handlers)
++ */
++static inline int valid_user_regs(struct pt_regs *regs)
++{
++	unsigned long mode = regs-&gt;UCreg_asr &amp; MODE_MASK;
++
++	/*
++	 * Always clear the R (REAL) bits
++	 */
++	regs-&gt;UCreg_asr &amp;= ~(PSR_R_BIT);
++
++	if ((regs-&gt;UCreg_asr &amp; PSR_I_BIT) == 0) {
++		if (mode == USER_MODE)
++			return 1;
++	}
++
++	/*
++	 * Force ASR to something logical...
++	 */
++	regs-&gt;UCreg_asr &amp;= PSR_f | USER_MODE;
++
++	return 0;
++}
++
++#define instruction_pointer(regs)	((regs)-&gt;UCreg_pc)
++
++#endif /* __KERNEL__ */
++
++#endif /* __ASSEMBLY__ */
++
++#endif
++
+diff --git a/arch/unicore32/kernel/ptrace.c b/arch/unicore32/kernel/ptrace.c
+new file mode 100644
+index 000000000000..9f07c08da050
+--- /dev/null
++++ b/arch/unicore32/kernel/ptrace.c
+@@ -0,0 +1,149 @@
++/*
++ * linux/arch/unicore32/kernel/ptrace.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * By Ross Biro 1/23/92
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/ptrace.h&gt;
++#include &lt;linux/signal.h&gt;
++#include &lt;linux/uaccess.h&gt;
++
++/*
++ * this routine will get a word off of the processes privileged stack.
++ * the offset is how far from the base addr as stored in the THREAD.
++ * this routine assumes that all the privileged stacks are in our
++ * data space.
++ */
++static inline long get_user_reg(struct task_struct *task, int offset)
++{
++	return task_pt_regs(task)-&gt;uregs[offset];
++}
++
++/*
++ * this routine will put a word on the processes privileged stack.
++ * the offset is how far from the base addr as stored in the THREAD.
++ * this routine assumes that all the privileged stacks are in our
++ * data space.
++ */
++static inline int
++put_user_reg(struct task_struct *task, int offset, long data)
++{
++	struct pt_regs newregs, *regs = task_pt_regs(task);
++	int ret = -EINVAL;
++
++	newregs = *regs;
++	newregs.uregs[offset] = data;
++
++	if (valid_user_regs(&amp;newregs)) {
++		regs-&gt;uregs[offset] = data;
++		ret = 0;
++	}
++
++	return ret;
++}
++
++/*
++ * Called by kernel/ptrace.c when detaching..
++ */
++void ptrace_disable(struct task_struct *child)
++{
++}
++
++/*
++ * We actually access the pt_regs stored on the kernel stack.
++ */
++static int ptrace_read_user(struct task_struct *tsk, unsigned long off,
++			    unsigned long __user *ret)
++{
++	unsigned long tmp;
++
++	tmp = 0;
++	if (off &lt; sizeof(struct pt_regs))
++		tmp = get_user_reg(tsk, off &gt;&gt; 2);
++
++	return put_user(tmp, ret);
++}
++
++/*
++ * We actually access the pt_regs stored on the kernel stack.
++ */
++static int ptrace_write_user(struct task_struct *tsk, unsigned long off,
++			     unsigned long val)
++{
++	if (off &gt;= sizeof(struct pt_regs))
++		return 0;
++
++	return put_user_reg(tsk, off &gt;&gt; 2, val);
++}
++
++long arch_ptrace(struct task_struct *child, long request,
++		 unsigned long addr, unsigned long data)
++{
++	int ret;
++	unsigned long __user *datap = (unsigned long __user *) data;
++
++	switch (request) {
++	case PTRACE_PEEKUSR:
++		ret = ptrace_read_user(child, addr, datap);
++		break;
++
++	case PTRACE_POKEUSR:
++		ret = ptrace_write_user(child, addr, data);
++		break;
++
++	case PTRACE_GET_THREAD_AREA:
++		ret = put_user(task_pt_regs(child)-&gt;UCreg_16,
++			       datap);
++		break;
++
++	default:
++		ret = ptrace_request(child, request, addr, data);
++		break;
++	}
++
++	return ret;
++}
++
++asmlinkage int syscall_trace(int why, struct pt_regs *regs, int scno)
++{
++	unsigned long ip;
++
++	if (!test_thread_flag(TIF_SYSCALL_TRACE))
++		return scno;
++	if (!(current-&gt;ptrace &amp; PT_PTRACED))
++		return scno;
++
++	/*
++	 * Save IP.  IP is used to denote syscall entry/exit:
++	 *  IP = 0 -&gt; entry, = 1 -&gt; exit
++	 */
++	ip = regs-&gt;UCreg_ip;
++	regs-&gt;UCreg_ip = why;
++
++	current_thread_info()-&gt;syscall = scno;
++
++	/* the 0x80 provides a way for the tracing parent to distinguish
++	   between a syscall stop and SIGTRAP delivery */
++	ptrace_notify(SIGTRAP | ((current-&gt;ptrace &amp; PT_TRACESYSGOOD)
++				 ? 0x80 : 0));
++	/*
++	 * this isn't the same as continuing with a signal, but it will do
++	 * for normal use.  strace only continues with a signal if the
++	 * stopping signal is not SIGTRAP.  -brl
++	 */
++	if (current-&gt;exit_code) {
++		send_sig(current-&gt;exit_code, current, 1);
++		current-&gt;exit_code = 0;
++	}
++	regs-&gt;UCreg_ip = ip;
++
++	return current_thread_info()-&gt;syscall;
++}</pre><hr><pre>commit d9bc15794d122cb7bdc9a069d22f3d3166dd31d4
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Jan 15 18:21:31 2011 +0800
+
+    unicore32 additional architecture files: float point handling
+    
+    This patch implements support for float point unit, which using UniCore-F64 FPU hardware
+    in UniCore32 ISA.
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Acked-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/include/asm/fpstate.h b/arch/unicore32/include/asm/fpstate.h
+new file mode 100644
+index 000000000000..ba97fac6220d
+--- /dev/null
++++ b/arch/unicore32/include/asm/fpstate.h
+@@ -0,0 +1,26 @@
++/*
++ * linux/arch/unicore32/include/asm/fpstate.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef __UNICORE_FPSTATE_H__
++#define __UNICORE_FPSTATE_H__
++
++#ifndef __ASSEMBLY__
++
++#define FP_REGS_NUMBER		33
++
++struct fp_state {
++	unsigned int regs[FP_REGS_NUMBER];
++} __attribute__((aligned(8)));
++
++#endif
++
++#endif
+diff --git a/arch/unicore32/include/asm/fpu-ucf64.h b/arch/unicore32/include/asm/fpu-ucf64.h
+new file mode 100644
+index 000000000000..16c1457882ee
+--- /dev/null
++++ b/arch/unicore32/include/asm/fpu-ucf64.h
+@@ -0,0 +1,53 @@
++/*
++ * linux/arch/unicore32/include/asm/fpu-ucf64.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#define FPSCR			s31
++
++/* FPSCR bits */
++#define FPSCR_DEFAULT_NAN	(1&lt;&lt;25)
++
++#define FPSCR_CMPINSTR_BIT	(1&lt;&lt;31)
++
++#define FPSCR_CON		(1&lt;&lt;29)
++#define FPSCR_TRAP		(1&lt;&lt;27)
++
++/* RND mode */
++#define FPSCR_ROUND_NEAREST	(0&lt;&lt;0)
++#define FPSCR_ROUND_PLUSINF	(2&lt;&lt;0)
++#define FPSCR_ROUND_MINUSINF	(3&lt;&lt;0)
++#define FPSCR_ROUND_TOZERO	(1&lt;&lt;0)
++#define FPSCR_RMODE_BIT		(0)
++#define FPSCR_RMODE_MASK	(7 &lt;&lt; FPSCR_RMODE_BIT)
++
++/* trap enable */
++#define FPSCR_IOE		(1&lt;&lt;16)
++#define FPSCR_OFE		(1&lt;&lt;14)
++#define FPSCR_UFE		(1&lt;&lt;13)
++#define FPSCR_IXE		(1&lt;&lt;12)
++#define FPSCR_HIE		(1&lt;&lt;11)
++#define FPSCR_NDE		(1&lt;&lt;10)	/* non denomal */
++
++/* flags */
++#define FPSCR_IDC		(1&lt;&lt;24)
++#define FPSCR_HIC		(1&lt;&lt;23)
++#define FPSCR_IXC		(1&lt;&lt;22)
++#define FPSCR_OFC		(1&lt;&lt;21)
++#define FPSCR_UFC		(1&lt;&lt;20)
++#define FPSCR_IOC		(1&lt;&lt;19)
++
++/* stick bits */
++#define FPSCR_IOS		(1&lt;&lt;9)
++#define FPSCR_OFS		(1&lt;&lt;7)
++#define FPSCR_UFS		(1&lt;&lt;6)
++#define FPSCR_IXS		(1&lt;&lt;5)
++#define FPSCR_HIS		(1&lt;&lt;4)
++#define FPSCR_NDS		(1&lt;&lt;3)	/*non denomal */
+diff --git a/arch/unicore32/kernel/fpu-ucf64.c b/arch/unicore32/kernel/fpu-ucf64.c
+new file mode 100644
+index 000000000000..282a60ac82ba
+--- /dev/null
++++ b/arch/unicore32/kernel/fpu-ucf64.c
+@@ -0,0 +1,126 @@
++/*
++ * linux/arch/unicore32/kernel/fpu-ucf64.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/module.h&gt;
++#include &lt;linux/types.h&gt;
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/signal.h&gt;
++#include &lt;linux/sched.h&gt;
++#include &lt;linux/init.h&gt;
++
++#include &lt;asm/fpu-ucf64.h&gt;
++
++/*
++ * A special flag to tell the normalisation code not to normalise.
++ */
++#define F64_NAN_FLAG	0x100
++
++/*
++ * A bit pattern used to indicate the initial (unset) value of the
++ * exception mask, in case nothing handles an instruction.  This
++ * doesn't include the NAN flag, which get masked out before
++ * we check for an error.
++ */
++#define F64_EXCEPTION_ERROR	((u32)-1 &amp; ~F64_NAN_FLAG)
++
++/*
++ * Since we aren't building with -mfpu=f64, we need to code
++ * these instructions using their MRC/MCR equivalents.
++ */
++#define f64reg(_f64_) #_f64_
++
++#define cff(_f64_) ({			\
++	u32 __v;			\
++	asm("cff %0, " f64reg(_f64_) "@ fmrx	%0, " #_f64_	\
++	    : "=r" (__v) : : "cc");	\
++	__v;				\
++	})
++
++#define ctf(_f64_, _var_)		\
++	asm("ctf %0, " f64reg(_f64_) "@ fmxr	" #_f64_ ", %0"	\
++	   : : "r" (_var_) : "cc")
++
++/*
++ * Raise a SIGFPE for the current process.
++ * sicode describes the signal being raised.
++ */
++void ucf64_raise_sigfpe(unsigned int sicode, struct pt_regs *regs)
++{
++	siginfo_t info;
++
++	memset(&amp;info, 0, sizeof(info));
++
++	info.si_signo = SIGFPE;
++	info.si_code = sicode;
++	info.si_addr = (void __user *)(instruction_pointer(regs) - 4);
++
++	/*
++	 * This is the same as NWFPE, because it's not clear what
++	 * this is used for
++	 */
++	current-&gt;thread.error_code = 0;
++	current-&gt;thread.trap_no = 6;
++
++	send_sig_info(SIGFPE, &amp;info, current);
++}
++
++/*
++ * Handle exceptions of UniCore-F64.
++ */
++void ucf64_exchandler(u32 inst, u32 fpexc, struct pt_regs *regs)
++{
++	u32 tmp = fpexc;
++	u32 exc = F64_EXCEPTION_ERROR &amp; fpexc;
++
++	pr_debug("UniCore-F64: instruction %08x fpscr %08x\n",
++			inst, fpexc);
++
++	if (exc &amp; FPSCR_CMPINSTR_BIT) {
++		if (exc &amp; FPSCR_CON)
++			tmp |= FPSCR_CON;
++		else
++			tmp &amp;= ~(FPSCR_CON);
++		exc &amp;= ~(FPSCR_CMPINSTR_BIT | FPSCR_CON);
++	} else {
++		pr_debug(KERN_ERR "UniCore-F64 Error: unhandled exceptions\n");
++		pr_debug(KERN_ERR "UniCore-F64 FPSCR 0x%08x INST 0x%08x\n",
++				cff(FPSCR), inst);
++
++		ucf64_raise_sigfpe(0, regs);
++		return;
++	}
++
++	/*
++	 * Update the FPSCR with the additional exception flags.
++	 * Comparison instructions always return at least one of
++	 * these flags set.
++	 */
++	tmp &amp;= ~(FPSCR_TRAP | FPSCR_IOS | FPSCR_OFS | FPSCR_UFS |
++			FPSCR_IXS | FPSCR_HIS | FPSCR_IOC | FPSCR_OFC |
++			FPSCR_UFC | FPSCR_IXC | FPSCR_HIC);
++
++	tmp |= exc;
++	ctf(FPSCR, tmp);
++}
++
++/*
++ * F64 support code initialisation.
++ */
++static int __init ucf64_init(void)
++{
++	ctf(FPSCR, 0x0);     /* FPSCR_UFE | FPSCR_NDE perhaps better */
++
++	printk(KERN_INFO "Enable UniCore-F64 support.\n");
++
++	return 0;
++}
++
++late_initcall(ucf64_init);</pre><hr><pre>commit 64909882862e9bb88aa6177e3f92056f5601b3e3
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Feb 26 20:23:59 2011 +0800
+
+    unicore32 additional architecture files: pm related files
+    
+    This patch adds pm related files, including hibernate and sleep supports.
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+    Acked-by: Arnd Bergmann &lt;arnd@arndb.de&gt;
+
+diff --git a/arch/unicore32/include/asm/suspend.h b/arch/unicore32/include/asm/suspend.h
+new file mode 100644
+index 000000000000..88a9c0f32b21
+--- /dev/null
++++ b/arch/unicore32/include/asm/suspend.h
+@@ -0,0 +1,30 @@
++/*
++ * linux/arch/unicore32/include/asm/suspend.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef __UNICORE_SUSPEND_H__
++#define __UNICORE_SUSPEND_H__
++
++#ifndef __ASSEMBLY__
++static inline int arch_prepare_suspend(void) { return 0; }
++
++#include &lt;asm/ptrace.h&gt;
++
++struct swsusp_arch_regs {
++	struct cpu_context_save	cpu_context;	/* cpu context */
++#ifdef CONFIG_UNICORE_FPU_F64
++	struct fp_state		fpstate __attribute__((aligned(8)));
++#endif
++};
++#endif
++
++#endif /* __UNICORE_SUSPEND_H__ */
++
+diff --git a/arch/unicore32/include/mach/pm.h b/arch/unicore32/include/mach/pm.h
+new file mode 100644
+index 000000000000..4dcd34ae194c
+--- /dev/null
++++ b/arch/unicore32/include/mach/pm.h
+@@ -0,0 +1,43 @@
++/*
++ * linux/arch/unicore/include/mach/pm.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#ifndef __PUV3_PM_H__
++#define __PUV3_PM_H__
++
++#include &lt;linux/suspend.h&gt;
++
++struct puv3_cpu_pm_fns {
++	int	save_count;
++	void	(*save)(unsigned long *);
++	void	(*restore)(unsigned long *);
++	int	(*valid)(suspend_state_t state);
++	void	(*enter)(suspend_state_t state);
++	int	(*prepare)(void);
++	void	(*finish)(void);
++};
++
++extern struct puv3_cpu_pm_fns *puv3_cpu_pm_fns;
++
++/* sleep.S */
++extern void puv3_cpu_suspend(unsigned int);
++
++extern void puv3_cpu_resume(void);
++
++extern int puv3_pm_enter(suspend_state_t state);
++
++/* Defined in hibernate_asm.S */
++extern int restore_image(pgd_t *resume_pg_dir, struct pbe *restore_pblist);
++
++/* References to section boundaries */
++extern const void __nosave_begin, __nosave_end;
++
++extern struct pbe *restore_pblist;
++#endif
+diff --git a/arch/unicore32/kernel/clock.c b/arch/unicore32/kernel/clock.c
+new file mode 100644
+index 000000000000..80323db581fd
+--- /dev/null
++++ b/arch/unicore32/kernel/clock.c
+@@ -0,0 +1,388 @@
++/*
++ * linux/arch/unicore32/kernel/clock.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/module.h&gt;
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/device.h&gt;
++#include &lt;linux/list.h&gt;
++#include &lt;linux/errno.h&gt;
++#include &lt;linux/err.h&gt;
++#include &lt;linux/string.h&gt;
++#include &lt;linux/clk.h&gt;
++#include &lt;linux/mutex.h&gt;
++#include &lt;linux/delay.h&gt;
++
++#include &lt;mach/hardware.h&gt;
++
++/*
++ * Very simple clock implementation
++ */
++struct clk {
++	struct list_head	node;
++	unsigned long		rate;
++	const char		*name;
++};
++
++static struct clk clk_ost_clk = {
++	.name		= "OST_CLK",
++	.rate		= CLOCK_TICK_RATE,
++};
++
++static struct clk clk_mclk_clk = {
++	.name		= "MAIN_CLK",
++};
++
++static struct clk clk_bclk32_clk = {
++	.name		= "BUS32_CLK",
++};
++
++static struct clk clk_ddr_clk = {
++	.name		= "DDR_CLK",
++};
++
++static struct clk clk_vga_clk = {
++	.name		= "VGA_CLK",
++};
++
++static LIST_HEAD(clocks);
++static DEFINE_MUTEX(clocks_mutex);
++
++struct clk *clk_get(struct device *dev, const char *id)
++{
++	struct clk *p, *clk = ERR_PTR(-ENOENT);
++
++	mutex_lock(&amp;clocks_mutex);
++	list_for_each_entry(p, &amp;clocks, node) {
++		if (strcmp(id, p-&gt;name) == 0) {
++			clk = p;
++			break;
++		}
++	}
++	mutex_unlock(&amp;clocks_mutex);
++
++	return clk;
++}
++EXPORT_SYMBOL(clk_get);
++
++void clk_put(struct clk *clk)
++{
++}
++EXPORT_SYMBOL(clk_put);
++
++int clk_enable(struct clk *clk)
++{
++	return 0;
++}
++EXPORT_SYMBOL(clk_enable);
++
++void clk_disable(struct clk *clk)
++{
++}
++EXPORT_SYMBOL(clk_disable);
++
++unsigned long clk_get_rate(struct clk *clk)
++{
++	return clk-&gt;rate;
++}
++EXPORT_SYMBOL(clk_get_rate);
++
++struct {
++	unsigned long rate;
++	unsigned long cfg;
++	unsigned long div;
++} vga_clk_table[] = {
++	{.rate =  25175000, .cfg = 0x00002001, .div = 0x9},
++	{.rate =  31500000, .cfg = 0x00002001, .div = 0x7},
++	{.rate =  40000000, .cfg = 0x00003801, .div = 0x9},
++	{.rate =  49500000, .cfg = 0x00003801, .div = 0x7},
++	{.rate =  65000000, .cfg = 0x00002c01, .div = 0x4},
++	{.rate =  78750000, .cfg = 0x00002400, .div = 0x7},
++	{.rate = 108000000, .cfg = 0x00002c01, .div = 0x2},
++	{.rate = 106500000, .cfg = 0x00003c01, .div = 0x3},
++	{.rate =  50650000, .cfg = 0x00106400, .div = 0x9},
++	{.rate =  61500000, .cfg = 0x00106400, .div = 0xa},
++	{.rate =  85500000, .cfg = 0x00002800, .div = 0x6},
++};
++
++struct {
++	unsigned long mrate;
++	unsigned long prate;
++} mclk_clk_table[] = {
++	{.mrate = 500000000, .prate = 0x00109801},
++	{.mrate = 525000000, .prate = 0x00104C00},
++	{.mrate = 550000000, .prate = 0x00105000},
++	{.mrate = 575000000, .prate = 0x00105400},
++	{.mrate = 600000000, .prate = 0x00105800},
++	{.mrate = 625000000, .prate = 0x00105C00},
++	{.mrate = 650000000, .prate = 0x00106000},
++	{.mrate = 675000000, .prate = 0x00106400},
++	{.mrate = 700000000, .prate = 0x00106800},
++	{.mrate = 725000000, .prate = 0x00106C00},
++	{.mrate = 750000000, .prate = 0x00107000},
++	{.mrate = 775000000, .prate = 0x00107400},
++	{.mrate = 800000000, .prate = 0x00107800},
++};
++
++int clk_set_rate(struct clk *clk, unsigned long rate)
++{
++	if (clk == &amp;clk_vga_clk) {
++		unsigned long pll_vgacfg, pll_vgadiv;
++		int ret, i;
++
++		/* lookup vga_clk_table */
++		ret = -EINVAL;
++		for (i = 0; i &lt; ARRAY_SIZE(vga_clk_table); i++) {
++			if (rate == vga_clk_table[i].rate) {
++				pll_vgacfg = vga_clk_table[i].cfg;
++				pll_vgadiv = vga_clk_table[i].div;
++				ret = 0;
++				break;
++			}
++		}
++
++		if (ret)
++			return ret;
++
++		if (PM_PLLVGACFG == pll_vgacfg)
++			return 0;
++
++		/* set pll vga cfg reg. */
++		PM_PLLVGACFG = pll_vgacfg;
++
++		PM_PMCR = PM_PMCR_CFBVGA;
++		while ((PM_PLLDFCDONE &amp; PM_PLLDFCDONE_VGADFC)
++				!= PM_PLLDFCDONE_VGADFC)
++			udelay(100); /* about 1ms */
++
++		/* set div cfg reg. */
++		PM_PCGR |= PM_PCGR_VGACLK;
++
++		PM_DIVCFG = (PM_DIVCFG &amp; ~PM_DIVCFG_VGACLK_MASK)
++				| PM_DIVCFG_VGACLK(pll_vgadiv);
++
++		PM_SWRESET |= PM_SWRESET_VGADIV;
++		while ((PM_SWRESET &amp; PM_SWRESET_VGADIV) == PM_SWRESET_VGADIV)
++			udelay(100); /* 65536 bclk32, about 320us */
++
++		PM_PCGR &amp;= ~PM_PCGR_VGACLK;
++	}
++#ifdef CONFIG_CPU_FREQ
++	if (clk == &amp;clk_mclk_clk) {
++		u32 pll_rate, divstatus = PM_DIVSTATUS;
++		int ret, i;
++
++		/* lookup mclk_clk_table */
++		ret = -EINVAL;
++		for (i = 0; i &lt; ARRAY_SIZE(mclk_clk_table); i++) {
++			if (rate == mclk_clk_table[i].mrate) {
++				pll_rate = mclk_clk_table[i].prate;
++				clk_mclk_clk.rate = mclk_clk_table[i].mrate;
++				ret = 0;
++				break;
++			}
++		}
++
++		if (ret)
++			return ret;
++
++		if (clk_mclk_clk.rate)
++			clk_bclk32_clk.rate = clk_mclk_clk.rate
++				/ (((divstatus &amp; 0x0000f000) &gt;&gt; 12) + 1);
++
++		/* set pll sys cfg reg. */
++		PM_PLLSYSCFG = pll_rate;
++
++		PM_PMCR = PM_PMCR_CFBSYS;
++		while ((PM_PLLDFCDONE &amp; PM_PLLDFCDONE_SYSDFC)
++				!= PM_PLLDFCDONE_SYSDFC)
++			udelay(100);
++			/* about 1ms */
++	}
++#endif
++	return 0;
++}
++EXPORT_SYMBOL(clk_set_rate);
++
++int clk_register(struct clk *clk)
++{
++	mutex_lock(&amp;clocks_mutex);
++	list_add(&amp;clk-&gt;node, &amp;clocks);
++	mutex_unlock(&amp;clocks_mutex);
++	printk(KERN_DEFAULT "PKUnity PM: %s %lu.%02luM\n", clk-&gt;name,
++		(clk-&gt;rate)/1000000, (clk-&gt;rate)/10000 % 100);
++	return 0;
++}
++EXPORT_SYMBOL(clk_register);
++
++void clk_unregister(struct clk *clk)
++{
++	mutex_lock(&amp;clocks_mutex);
++	list_del(&amp;clk-&gt;node);
++	mutex_unlock(&amp;clocks_mutex);
++}
++EXPORT_SYMBOL(clk_unregister);
++
++struct {
++	unsigned long prate;
++	unsigned long rate;
++} pllrate_table[] = {
++	{.prate = 0x00002001, .rate = 250000000},
++	{.prate = 0x00104801, .rate = 250000000},
++	{.prate = 0x00104C01, .rate = 262500000},
++	{.prate = 0x00002401, .rate = 275000000},
++	{.prate = 0x00105001, .rate = 275000000},
++	{.prate = 0x00105401, .rate = 287500000},
++	{.prate = 0x00002801, .rate = 300000000},
++	{.prate = 0x00105801, .rate = 300000000},
++	{.prate = 0x00105C01, .rate = 312500000},
++	{.prate = 0x00002C01, .rate = 325000000},
++	{.prate = 0x00106001, .rate = 325000000},
++	{.prate = 0x00106401, .rate = 337500000},
++	{.prate = 0x00003001, .rate = 350000000},
++	{.prate = 0x00106801, .rate = 350000000},
++	{.prate = 0x00106C01, .rate = 362500000},
++	{.prate = 0x00003401, .rate = 375000000},
++	{.prate = 0x00107001, .rate = 375000000},
++	{.prate = 0x00107401, .rate = 387500000},
++	{.prate = 0x00003801, .rate = 400000000},
++	{.prate = 0x00107801, .rate = 400000000},
++	{.prate = 0x00107C01, .rate = 412500000},
++	{.prate = 0x00003C01, .rate = 425000000},
++	{.prate = 0x00108001, .rate = 425000000},
++	{.prate = 0x00108401, .rate = 437500000},
++	{.prate = 0x00004001, .rate = 450000000},
++	{.prate = 0x00108801, .rate = 450000000},
++	{.prate = 0x00108C01, .rate = 462500000},
++	{.prate = 0x00004401, .rate = 475000000},
++	{.prate = 0x00109001, .rate = 475000000},
++	{.prate = 0x00109401, .rate = 487500000},
++	{.prate = 0x00004801, .rate = 500000000},
++	{.prate = 0x00109801, .rate = 500000000},
++	{.prate = 0x00104C00, .rate = 525000000},
++	{.prate = 0x00002400, .rate = 550000000},
++	{.prate = 0x00105000, .rate = 550000000},
++	{.prate = 0x00105400, .rate = 575000000},
++	{.prate = 0x00002800, .rate = 600000000},
++	{.prate = 0x00105800, .rate = 600000000},
++	{.prate = 0x00105C00, .rate = 625000000},
++	{.prate = 0x00002C00, .rate = 650000000},
++	{.prate = 0x00106000, .rate = 650000000},
++	{.prate = 0x00106400, .rate = 675000000},
++	{.prate = 0x00003000, .rate = 700000000},
++	{.prate = 0x00106800, .rate = 700000000},
++	{.prate = 0x00106C00, .rate = 725000000},
++	{.prate = 0x00003400, .rate = 750000000},
++	{.prate = 0x00107000, .rate = 750000000},
++	{.prate = 0x00107400, .rate = 775000000},
++	{.prate = 0x00003800, .rate = 800000000},
++	{.prate = 0x00107800, .rate = 800000000},
++	{.prate = 0x00107C00, .rate = 825000000},
++	{.prate = 0x00003C00, .rate = 850000000},
++	{.prate = 0x00108000, .rate = 850000000},
++	{.prate = 0x00108400, .rate = 875000000},
++	{.prate = 0x00004000, .rate = 900000000},
++	{.prate = 0x00108800, .rate = 900000000},
++	{.prate = 0x00108C00, .rate = 925000000},
++	{.prate = 0x00004400, .rate = 950000000},
++	{.prate = 0x00109000, .rate = 950000000},
++	{.prate = 0x00109400, .rate = 975000000},
++	{.prate = 0x00004800, .rate = 1000000000},
++	{.prate = 0x00109800, .rate = 1000000000},
++};
++
++struct {
++	unsigned long prate;
++	unsigned long drate;
++} pddr_table[] = {
++	{.prate = 0x00100800, .drate = 44236800},
++	{.prate = 0x00100C00, .drate = 66355200},
++	{.prate = 0x00101000, .drate = 88473600},
++	{.prate = 0x00101400, .drate = 110592000},
++	{.prate = 0x00101800, .drate = 132710400},
++	{.prate = 0x00101C01, .drate = 154828800},
++	{.prate = 0x00102001, .drate = 176947200},
++	{.prate = 0x00102401, .drate = 199065600},
++	{.prate = 0x00102801, .drate = 221184000},
++	{.prate = 0x00102C01, .drate = 243302400},
++	{.prate = 0x00103001, .drate = 265420800},
++	{.prate = 0x00103401, .drate = 287539200},
++	{.prate = 0x00103801, .drate = 309657600},
++	{.prate = 0x00103C01, .drate = 331776000},
++	{.prate = 0x00104001, .drate = 353894400},
++};
++
++static int __init clk_init(void)
++{
++#ifdef CONFIG_PUV3_PM
++	u32 pllrate, divstatus = PM_DIVSTATUS;
++	u32 pcgr_val = PM_PCGR;
++	int i;
++
++	pcgr_val |= PM_PCGR_BCLKMME | PM_PCGR_BCLKH264E | PM_PCGR_BCLKH264D
++			| PM_PCGR_HECLK | PM_PCGR_HDCLK;
++	PM_PCGR = pcgr_val;
++
++	pllrate = PM_PLLSYSSTATUS;
++
++	/* lookup pmclk_table */
++	clk_mclk_clk.rate = 0;
++	for (i = 0; i &lt; ARRAY_SIZE(pllrate_table); i++) {
++		if (pllrate == pllrate_table[i].prate) {
++			clk_mclk_clk.rate = pllrate_table[i].rate;
++			break;
++		}
++	}
++
++	if (clk_mclk_clk.rate)
++		clk_bclk32_clk.rate = clk_mclk_clk.rate /
++			(((divstatus &amp; 0x0000f000) &gt;&gt; 12) + 1);
++
++	pllrate = PM_PLLDDRSTATUS;
++
++	/* lookup pddr_table */
++	clk_ddr_clk.rate = 0;
++	for (i = 0; i &lt; ARRAY_SIZE(pddr_table); i++) {
++		if (pllrate == pddr_table[i].prate) {
++			clk_ddr_clk.rate = pddr_table[i].drate;
++			break;
++		}
++	}
++
++	pllrate = PM_PLLVGASTATUS;
++
++	/* lookup pvga_table */
++	clk_vga_clk.rate = 0;
++	for (i = 0; i &lt; ARRAY_SIZE(pllrate_table); i++) {
++		if (pllrate == pllrate_table[i].prate) {
++			clk_vga_clk.rate = pllrate_table[i].rate;
++			break;
++		}
++	}
++
++	if (clk_vga_clk.rate)
++		clk_vga_clk.rate = clk_vga_clk.rate /
++			(((divstatus &amp; 0x00f00000) &gt;&gt; 20) + 1);
++
++	clk_register(&amp;clk_vga_clk);
++#endif
++#ifdef CONFIG_ARCH_FPGA
++	clk_ddr_clk.rate = 33000000;
++	clk_mclk_clk.rate = 33000000;
++	clk_bclk32_clk.rate = 33000000;
++#endif
++	clk_register(&amp;clk_ddr_clk);
++	clk_register(&amp;clk_mclk_clk);
++	clk_register(&amp;clk_bclk32_clk);
++	clk_register(&amp;clk_ost_clk);
++	return 0;
++}
++core_initcall(clk_init);
+diff --git a/arch/unicore32/kernel/cpu-ucv2.c b/arch/unicore32/kernel/cpu-ucv2.c
+new file mode 100644
+index 000000000000..4a99f62584c7
+--- /dev/null
++++ b/arch/unicore32/kernel/cpu-ucv2.c
+@@ -0,0 +1,93 @@
++/*
++ * linux/arch/unicore32/kernel/cpu-ucv2.c: clock scaling for the UniCore-II
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/types.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/clk.h&gt;
++#include &lt;linux/cpufreq.h&gt;
++
++#include &lt;mach/hardware.h&gt;
++
++static struct cpufreq_driver ucv2_driver;
++
++/* make sure that only the "userspace" governor is run
++ * -- anything else wouldn't make sense on this platform, anyway.
++ */
++int ucv2_verify_speed(struct cpufreq_policy *policy)
++{
++	if (policy-&gt;cpu)
++		return -EINVAL;
++
++	cpufreq_verify_within_limits(policy,
++			policy-&gt;cpuinfo.min_freq, policy-&gt;cpuinfo.max_freq);
++
++	return 0;
++}
++
++static unsigned int ucv2_getspeed(unsigned int cpu)
++{
++	struct clk *mclk = clk_get(NULL, "MAIN_CLK");
++
++	if (cpu)
++		return 0;
++	return clk_get_rate(mclk)/1000;
++}
++
++static int ucv2_target(struct cpufreq_policy *policy,
++			 unsigned int target_freq,
++			 unsigned int relation)
++{
++	unsigned int cur = ucv2_getspeed(0);
++	struct cpufreq_freqs freqs;
++	struct clk *mclk = clk_get(NULL, "MAIN_CLK");
++
++	cpufreq_notify_transition(&amp;freqs, CPUFREQ_PRECHANGE);
++
++	if (!clk_set_rate(mclk, target_freq * 1000)) {
++		freqs.old = cur;
++		freqs.new = target_freq;
++		freqs.cpu = 0;
++	}
++
++	cpufreq_notify_transition(&amp;freqs, CPUFREQ_POSTCHANGE);
++
++	return 0;
++}
++
++static int __init ucv2_cpu_init(struct cpufreq_policy *policy)
++{
++	if (policy-&gt;cpu != 0)
++		return -EINVAL;
++	policy-&gt;cur = ucv2_getspeed(0);
++	policy-&gt;min = policy-&gt;cpuinfo.min_freq = 250000;
++	policy-&gt;max = policy-&gt;cpuinfo.max_freq = 1000000;
++	policy-&gt;cpuinfo.transition_latency = CPUFREQ_ETERNAL;
++	return 0;
++}
++
++static struct cpufreq_driver ucv2_driver = {
++	.flags		= CPUFREQ_STICKY,
++	.verify		= ucv2_verify_speed,
++	.target		= ucv2_target,
++	.get		= ucv2_getspeed,
++	.init		= ucv2_cpu_init,
++	.name		= "UniCore-II",
++};
++
++static int __init ucv2_cpufreq_init(void)
++{
++	return cpufreq_register_driver(&amp;ucv2_driver);
++}
++
++arch_initcall(ucv2_cpufreq_init);
+diff --git a/arch/unicore32/kernel/hibernate.c b/arch/unicore32/kernel/hibernate.c
+new file mode 100644
+index 000000000000..7d0f0b7983a0
+--- /dev/null
++++ b/arch/unicore32/kernel/hibernate.c
+@@ -0,0 +1,160 @@
++/*
++ *  linux/arch/unicore32/kernel/hibernate.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include &lt;linux/gfp.h&gt;
++#include &lt;linux/suspend.h&gt;
++#include &lt;linux/bootmem.h&gt;
++
++#include &lt;asm/system.h&gt;
++#include &lt;asm/page.h&gt;
++#include &lt;asm/pgtable.h&gt;
++#include &lt;asm/pgalloc.h&gt;
++#include &lt;asm/suspend.h&gt;
++
++#include "mach/pm.h"
++
++/* Pointer to the temporary resume page tables */
++pgd_t *resume_pg_dir;
++
++struct swsusp_arch_regs swsusp_arch_regs_cpu0;
++
++/*
++ * Create a middle page table on a resume-safe page and put a pointer to it in
++ * the given global directory entry.  This only returns the gd entry
++ * in non-PAE compilation mode, since the middle layer is folded.
++ */
++static pmd_t *resume_one_md_table_init(pgd_t *pgd)
++{
++	pud_t *pud;
++	pmd_t *pmd_table;
++
++	pud = pud_offset(pgd, 0);
++	pmd_table = pmd_offset(pud, 0);
++
++	return pmd_table;
++}
++
++/*
++ * Create a page table on a resume-safe page and place a pointer to it in
++ * a middle page directory entry.
++ */
++static pte_t *resume_one_page_table_init(pmd_t *pmd)
++{
++	if (pmd_none(*pmd)) {
++		pte_t *page_table = (pte_t *)get_safe_page(GFP_ATOMIC);
++		if (!page_table)
++			return NULL;
++
++		set_pmd(pmd, __pmd(__pa(page_table) | _PAGE_KERNEL_TABLE));
++
++		BUG_ON(page_table != pte_offset_kernel(pmd, 0));
++
++		return page_table;
++	}
++
++	return pte_offset_kernel(pmd, 0);
++}
++
++/*
++ * This maps the physical memory to kernel virtual address space, a total
++ * of max_low_pfn pages, by creating page tables starting from address
++ * PAGE_OFFSET.  The page tables are allocated out of resume-safe pages.
++ */
++static int resume_physical_mapping_init(pgd_t *pgd_base)
++{
++	unsigned long pfn;
++	pgd_t *pgd;
++	pmd_t *pmd;
++	pte_t *pte;
++	int pgd_idx, pmd_idx;
++
++	pgd_idx = pgd_index(PAGE_OFFSET);
++	pgd = pgd_base + pgd_idx;
++	pfn = 0;
++
++	for (; pgd_idx &lt; PTRS_PER_PGD; pgd++, pgd_idx++) {
++		pmd = resume_one_md_table_init(pgd);
++		if (!pmd)
++			return -ENOMEM;
++
++		if (pfn &gt;= max_low_pfn)
++			continue;
++
++		for (pmd_idx = 0; pmd_idx &lt; PTRS_PER_PMD; pmd++, pmd_idx++) {
++			pte_t *max_pte;
++
++			if (pfn &gt;= max_low_pfn)
++				break;
++
++			/* Map with normal page tables.
++			 * NOTE: We can mark everything as executable here
++			 */
++			pte = resume_one_page_table_init(pmd);
++			if (!pte)
++				return -ENOMEM;
++
++			max_pte = pte + PTRS_PER_PTE;
++			for (; pte &lt; max_pte; pte++, pfn++) {
++				if (pfn &gt;= max_low_pfn)
++					break;
++
++				set_pte(pte, pfn_pte(pfn, PAGE_KERNEL_EXEC));
++			}
++		}
++	}
++
++	return 0;
++}
++
++static inline void resume_init_first_level_page_table(pgd_t *pg_dir)
++{
++}
++
++int swsusp_arch_resume(void)
++{
++	int error;
++
++	resume_pg_dir = (pgd_t *)get_safe_page(GFP_ATOMIC);
++	if (!resume_pg_dir)
++		return -ENOMEM;
++
++	resume_init_first_level_page_table(resume_pg_dir);
++	error = resume_physical_mapping_init(resume_pg_dir);
++	if (error)
++		return error;
++
++	/* We have got enough memory and from now on we cannot recover */
++	restore_image(resume_pg_dir, restore_pblist);
++	return 0;
++}
++
++/*
++ *	pfn_is_nosave - check if given pfn is in the 'nosave' section
++ */
++
++int pfn_is_nosave(unsigned long pfn)
++{
++	unsigned long begin_pfn = __pa(&amp;__nosave_begin) &gt;&gt; PAGE_SHIFT;
++	unsigned long end_pfn = PAGE_ALIGN(__pa(&amp;__nosave_end)) &gt;&gt; PAGE_SHIFT;
++
++	return (pfn &gt;= begin_pfn) &amp;&amp; (pfn &lt; end_pfn);
++}
++
++void save_processor_state(void)
++{
++}
++
++void restore_processor_state(void)
++{
++	local_flush_tlb_all();
++}
+diff --git a/arch/unicore32/kernel/hibernate_asm.S b/arch/unicore32/kernel/hibernate_asm.S
+new file mode 100644
+index 000000000000..cc3c65253c8c
+--- /dev/null
++++ b/arch/unicore32/kernel/hibernate_asm.S
+@@ -0,0 +1,117 @@
++/*
++ * linux/arch/unicore32/kernel/hibernate_asm.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include &lt;linux/sys.h&gt;
++#include &lt;linux/errno.h&gt;
++#include &lt;linux/linkage.h&gt;
++#include &lt;generated/asm-offsets.h&gt;
++#include &lt;asm/page.h&gt;
++#include &lt;asm/pgtable.h&gt;
++#include &lt;asm/assembler.h&gt;
++
++@ restore_image(pgd_t *resume_pg_dir, struct pbe *restore_pblist)
++@ r0: resume_pg_dir
++@ r1: restore_pblist
++@ copy restore_pblist pages
++@ restore registers from swsusp_arch_regs_cpu0
++@
++ENTRY(restore_image)
++	sub	r0, r0, #PAGE_OFFSET
++	mov	r5, #0
++	movc	p0.c6, r5, #6	@invalidate ITLB &amp; DTLB
++	movc	p0.c2, r0, #0
++	nop
++	nop
++	nop
++	nop
++	nop
++	nop
++	nop
++
++	.p2align 4,,7
++101:
++	csub.a	r1, #0
++	beq	109f
++
++	ldw	r6, [r1+], #PBE_ADDRESS
++	ldw	r7, [r1+], #PBE_ORIN_ADDRESS
++
++	movl	ip, #128
++102:	ldm.w	(r8 - r15), [r6]+
++	stm.w	(r8 - r15), [r7]+
++	sub.a	ip, ip, #1
++	bne	102b
++
++	ldw	r1, [r1+], #PBE_NEXT
++	b	101b
++
++	.p2align 4,,7
++109:
++	/* go back to the original page tables */
++	ldw	r0, =swapper_pg_dir
++	sub	r0, r0, #PAGE_OFFSET
++	mov	r5, #0
++	movc	p0.c6, r5, #6
++	movc	p0.c2, r0, #0
++	nop
++	nop
++	nop
++	nop
++	nop
++	nop
++	nop
++
++#ifdef	CONFIG_UNICORE_FPU_F64
++	ldw	ip, 1f
++	add	ip, ip, #SWSUSP_FPSTATE
++	lfm.w	(f0  - f7 ), [ip]+
++	lfm.w	(f8  - f15), [ip]+
++	lfm.w	(f16 - f23), [ip]+
++	lfm.w	(f24 - f31), [ip]+
++	ldw	r4, [ip]
++	ctf	r4, s31
++#endif
++	mov	r0, #0x0
++	ldw	ip, 1f
++	add	ip, ip, #SWSUSP_CPU
++	ldm.w	(r4 - r15), [ip]+
++	ldm	(r16 - r27, sp, pc), [ip]+	@ Load all regs saved previously
++
++	.align	2
++1:	.long	swsusp_arch_regs_cpu0
++
++
++@ swsusp_arch_suspend()
++@ - prepare pc for resume, return from function without swsusp_save on resume
++@ - save registers in swsusp_arch_regs_cpu0
++@ - call swsusp_save write suspend image
++
++ENTRY(swsusp_arch_suspend)
++	ldw	ip, 1f
++	add	ip, ip, #SWSUSP_CPU
++	stm.w	(r4 - r15), [ip]+
++	stm.w	(r16 - r27, sp, lr), [ip]+
++
++#ifdef	CONFIG_UNICORE_FPU_F64
++	ldw	ip, 1f
++	add	ip, ip, #SWSUSP_FPSTATE
++	sfm.w	(f0  - f7 ), [ip]+
++	sfm.w	(f8  - f15), [ip]+
++	sfm.w	(f16 - f23), [ip]+
++	sfm.w	(f24 - f31), [ip]+
++	cff	r4, s31
++	stw	r4, [ip]
++#endif
++	b	swsusp_save			@ no return
++
++1:	.long	swsusp_arch_regs_cpu0
+diff --git a/arch/unicore32/kernel/pm.c b/arch/unicore32/kernel/pm.c
+new file mode 100644
+index 000000000000..784bc2db3b28
+--- /dev/null
++++ b/arch/unicore32/kernel/pm.c
+@@ -0,0 +1,123 @@
++/*
++ * linux/arch/unicore32/kernel/pm.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/init.h&gt;
++#include &lt;linux/module.h&gt;
++#include &lt;linux/suspend.h&gt;
++#include &lt;linux/errno.h&gt;
++#include &lt;linux/slab.h&gt;
++#include &lt;linux/io.h&gt;
++
++#include &lt;mach/hardware.h&gt;
++#include &lt;mach/pm.h&gt;
++
++#include "setup.h"
++
++struct puv3_cpu_pm_fns *puv3_cpu_pm_fns;
++static unsigned long *sleep_save;
++
++int puv3_pm_enter(suspend_state_t state)
++{
++	unsigned long sleep_save_checksum = 0, checksum = 0;
++	int i;
++
++	/* skip registers saving for standby */
++	if (state != PM_SUSPEND_STANDBY) {
++		puv3_cpu_pm_fns-&gt;save(sleep_save);
++		/* before sleeping, calculate and save a checksum */
++		for (i = 0; i &lt; puv3_cpu_pm_fns-&gt;save_count - 1; i++)
++			sleep_save_checksum += sleep_save[i];
++	}
++
++	/* *** go zzz *** */
++	puv3_cpu_pm_fns-&gt;enter(state);
++	cpu_init();
++#ifdef CONFIG_INPUT_KEYBOARD
++	puv3_ps2_init();
++#endif
++#ifdef CONFIG_PCI
++	pci_puv3_preinit();
++#endif
++	if (state != PM_SUSPEND_STANDBY) {
++		/* after sleeping, validate the checksum */
++		for (i = 0; i &lt; puv3_cpu_pm_fns-&gt;save_count - 1; i++)
++			checksum += sleep_save[i];
++
++		/* if invalid, display message and wait for a hardware reset */
++		if (checksum != sleep_save_checksum) {
++			while (1)
++				puv3_cpu_pm_fns-&gt;enter(state);
++		}
++		puv3_cpu_pm_fns-&gt;restore(sleep_save);
++	}
++
++	pr_debug("*** made it back from resume\n");
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(puv3_pm_enter);
++
++unsigned long sleep_phys_sp(void *sp)
++{
++	return virt_to_phys(sp);
++}
++
++static int puv3_pm_valid(suspend_state_t state)
++{
++	if (puv3_cpu_pm_fns)
++		return puv3_cpu_pm_fns-&gt;valid(state);
++
++	return -EINVAL;
++}
++
++static int puv3_pm_prepare(void)
++{
++	int ret = 0;
++
++	if (puv3_cpu_pm_fns &amp;&amp; puv3_cpu_pm_fns-&gt;prepare)
++		ret = puv3_cpu_pm_fns-&gt;prepare();
++
++	return ret;
++}
++
++static void puv3_pm_finish(void)
++{
++	if (puv3_cpu_pm_fns &amp;&amp; puv3_cpu_pm_fns-&gt;finish)
++		puv3_cpu_pm_fns-&gt;finish();
++}
++
++static struct platform_suspend_ops puv3_pm_ops = {
++	.valid		= puv3_pm_valid,
++	.enter		= puv3_pm_enter,
++	.prepare	= puv3_pm_prepare,
++	.finish		= puv3_pm_finish,
++};
++
++static int __init puv3_pm_init(void)
++{
++	if (!puv3_cpu_pm_fns) {
++		printk(KERN_ERR "no valid puv3_cpu_pm_fns defined\n");
++		return -EINVAL;
++	}
++
++	sleep_save = kmalloc(puv3_cpu_pm_fns-&gt;save_count
++				* sizeof(unsigned long), GFP_KERNEL);
++	if (!sleep_save) {
++		printk(KERN_ERR "failed to alloc memory for pm save\n");
++		return -ENOMEM;
++	}
++
++	suspend_set_ops(&amp;puv3_pm_ops);
++	return 0;
++}
++
++device_initcall(puv3_pm_init);
+diff --git a/arch/unicore32/kernel/sleep.S b/arch/unicore32/kernel/sleep.S
+new file mode 100644
+index 000000000000..f7c3fc87f7fe
+--- /dev/null
++++ b/arch/unicore32/kernel/sleep.S
+@@ -0,0 +1,202 @@
++/*
++ * linux/arch/unicore32/kernel/sleep.S
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include &lt;linux/linkage.h&gt;
++#include &lt;asm/assembler.h&gt;
++#include &lt;mach/hardware.h&gt;
++
++		.text
++
++pkunity_cpu_save_cp:
++
++	@ get coprocessor registers
++
++	movc	r3, p0.c7, #0			@ PID
++	movc	r4, p0.c2, #0			@ translation table base addr
++	movc	r5, p0.c1, #0			@ control reg
++
++
++	@ store them plus current virtual stack ptr on stack
++	mov	r6, sp
++	stm.w	(r3 - r6), [sp-]
++
++	mov	pc, lr
++
++pkunity_cpu_save_sp:
++	@ preserve phys address of stack
++	mov	r0, sp
++	stw.w	lr, [sp+], #-4
++	b.l	sleep_phys_sp
++	ldw	r1, =sleep_save_sp
++	stw	r0, [r1]
++	ldw.w	pc, [sp]+, #4
++
++/*
++ * puv3_cpu_suspend()
++ *
++ * Forces CPU into sleep state.
++ *
++ * r0 = value for PWRMODE M field for desired sleep state
++ */
++
++ENTRY(puv3_cpu_suspend)
++	stm.w	(r16 - r27, lr), [sp-]		@ save registers on stack
++	stm.w	(r4 - r15), [sp-]		@ save registers on stack
++
++#ifdef	CONFIG_UNICORE_FPU_F64
++	sfm.w	(f0  - f7 ), [sp-]
++	sfm.w	(f8  - f15), [sp-]
++	sfm.w	(f16 - f23), [sp-]
++	sfm.w	(f24 - f31), [sp-]
++	cff	r4, s31
++	stm.w	(r4), [sp-]
++#endif
++	b.l	pkunity_cpu_save_cp
++
++	b.l	pkunity_cpu_save_sp
++
++	@ clean data cache
++	mov	r1, #0
++	movc	p0.c5, r1, #14
++	nop
++	nop
++	nop
++	nop
++
++
++
++	@ DDR2 BaseAddr
++	ldw	r0, =io_p2v(PKUNITY_DDR2CTRL_BASE)
++
++	@ PM BaseAddr
++	ldw	r1, =io_p2v(PKUNITY_PM_BASE)
++
++	@ set PLL_SYS_CFG reg, 275
++	movl	r6, #0x00002401
++	stw	r6, [r1+], #0x18
++	@ set PLL_DDR_CFG reg, 66MHz
++	movl	r6, #0x00100c00
++	stw	r6, [r1+], #0x1c
++
++	@ set wake up source
++	movl	r8, #0x800001ff		@ epip4d
++	stw	r8, [r1+], #0xc
++
++	@ set PGSR
++	movl	r5, #0x40000
++	stw	r5, [r1+], #0x10
++
++	@ prepare DDR2 refresh settings
++	ldw	r5, [r0+], #0x24
++	or	r5, r5, #0x00000001
++
++	@ prepare PMCR for PLL changing
++	movl	r6, #0xc
++
++	@ prepare for closing PLL
++	movl	r7, #0x1
++
++	@ prepare sleep mode
++	mov	r8, #0x1
++
++@	movl	r0, 0x11111111
++@	put_word_ocd r0
++	b	pkunity_cpu_do_suspend
++
++	.ltorg
++	.align	5
++pkunity_cpu_do_suspend:
++	b	101f
++	@ put DDR2 into self-refresh
++100:	stw	r5, [r0+], #0x24
++	@ change PLL
++	stw	r6, [r1]
++	b	1f
++
++	.ltorg
++	.align	5
++101:	b	102f
++	@ wait for PLL changing complete
++1:	ldw	r6, [r1+], #0x44
++	csub.a	r6, #0x1
++	bne	1b
++	b	2f
++
++	.ltorg
++	.align	5
++102:	b	100b
++	@ close PLL
++2:	stw	r7, [r1+], #0x4
++	@ enter sleep mode
++	stw	r8, [r1]
++3:	b	3b
++
++
++
++
++/*
++ * puv3_cpu_resume()
++ *
++ * entry point from bootloader into kernel during resume
++ *
++ * Note: Yes, part of the following code is located into the .data section.
++ *       This is to allow sleep_save_sp to be accessed with a relative load
++ *       while we can't rely on any MMU translation.  We could have put
++ *       sleep_save_sp in the .text section as well, but some setups might
++ *       insist on it to be truly read-only.
++ */
++
++	.data
++	.align 5
++ENTRY(puv3_cpu_resume)
++@	movl	r0, 0x20202020
++@	put_word_ocd r0
++
++	ldw	r0, sleep_save_sp		@ stack phys addr
++	ldw	r2, =resume_after_mmu		@ its absolute virtual address
++	ldm	(r3 - r6), [r0]+		@ CP regs + virt stack ptr
++	mov	sp, r6				@ CP regs + virt stack ptr
++
++	mov	r1, #0
++	movc	p0.c6, r1, #6			@ invalidate I &amp; D TLBs
++	movc	p0.c5, r1, #28			@ invalidate I &amp; D caches, BTB
++
++	movc	p0.c7, r3, #0			@ PID
++	movc	p0.c2, r4, #0			@ translation table base addr
++	movc	p0.c1, r5, #0			@ control reg, turn on mmu
++	nop
++	jump	r2
++	nop
++	nop
++	nop
++	nop
++	nop
++
++sleep_save_sp:
++	.word	0				@ preserve stack phys ptr here
++
++	.text
++resume_after_mmu:
++@	movl	r0, 0x30303030
++@	put_word_ocd r0
++
++#ifdef	CONFIG_UNICORE_FPU_F64
++	lfm.w	(f0  - f7 ), [sp]+
++	lfm.w	(f8  - f15), [sp]+
++	lfm.w	(f16 - f23), [sp]+
++	lfm.w	(f24 - f31), [sp]+
++	ldm.w	(r4), [sp]+
++	ctf	r4, s31
++#endif
++	ldm.w	(r4 - r15), [sp]+		@ restore registers from stack
++	ldm.w	(r16 - r27, pc), [sp]+		@ return to caller</pre><hr><pre>commit f864d2f8304e6be90b4c4e4ac615edc6fcefd4c1
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Jan 15 18:20:01 2011 +0800
+
+    unicore32 core architecture: signals handling
+    
+    This patch implements signals.
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+
+diff --git a/arch/unicore32/include/asm/sigcontext.h b/arch/unicore32/include/asm/sigcontext.h
+new file mode 100644
+index 000000000000..6a2d7671c052
+--- /dev/null
++++ b/arch/unicore32/include/asm/sigcontext.h
+@@ -0,0 +1,29 @@
++/*
++ * linux/arch/unicore32/include/asm/sigcontext.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#ifndef __UNICORE_SIGCONTEXT_H__
++#define __UNICORE_SIGCONTEXT_H__
++
++#include &lt;asm/ptrace.h&gt;
++/*
++ * Signal context structure - contains all info to do with the state
++ * before the signal handler was invoked.  Note: only add new entries
++ * to the end of the structure.
++ */
++struct sigcontext {
++	unsigned long trap_no;
++	unsigned long error_code;
++	unsigned long oldmask;
++	unsigned long fault_address;
++	struct pt_regs regs;
++};
++
++#endif
+diff --git a/arch/unicore32/kernel/signal.c b/arch/unicore32/kernel/signal.c
+new file mode 100644
+index 000000000000..b163fca56789
+--- /dev/null
++++ b/arch/unicore32/kernel/signal.c
+@@ -0,0 +1,494 @@
++/*
++ * linux/arch/unicore32/kernel/signal.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/errno.h&gt;
++#include &lt;linux/signal.h&gt;
++#include &lt;linux/personality.h&gt;
++#include &lt;linux/freezer.h&gt;
++#include &lt;linux/uaccess.h&gt;
++#include &lt;linux/tracehook.h&gt;
++#include &lt;linux/elf.h&gt;
++#include &lt;linux/unistd.h&gt;
++
++#include &lt;asm/cacheflush.h&gt;
++#include &lt;asm/ucontext.h&gt;
++
++#define _BLOCKABLE (~(sigmask(SIGKILL) | sigmask(SIGSTOP)))
++
++/*
++ * For UniCore syscalls, we encode the syscall number into the instruction.
++ */
++#define SWI_SYS_SIGRETURN	(0xff000000) /* error number for new abi */
++#define SWI_SYS_RT_SIGRETURN	(0xff000000 | (__NR_rt_sigreturn))
++#define SWI_SYS_RESTART		(0xff000000 | (__NR_restart_syscall))
++
++#define KERN_SIGRETURN_CODE	(KUSER_VECPAGE_BASE + 0x00000500)
++#define KERN_RESTART_CODE	(KERN_SIGRETURN_CODE + sizeof(sigreturn_codes))
++
++const unsigned long sigreturn_codes[3] = {
++	SWI_SYS_SIGRETURN, SWI_SYS_RT_SIGRETURN,
++};
++
++const unsigned long syscall_restart_code[2] = {
++	SWI_SYS_RESTART,	/* swi	__NR_restart_syscall */
++	0x69efc004,		/* ldr	pc, [sp], #4 */
++};
++
++/*
++ * Do a signal return; undo the signal stack.  These are aligned to 64-bit.
++ */
++struct sigframe {
++	struct ucontext uc;
++	unsigned long retcode[2];
++};
++
++struct rt_sigframe {
++	struct siginfo info;
++	struct sigframe sig;
++};
++
++static int restore_sigframe(struct pt_regs *regs, struct sigframe __user *sf)
++{
++	sigset_t set;
++	int err;
++
++	err = __copy_from_user(&amp;set, &amp;sf-&gt;uc.uc_sigmask, sizeof(set));
++	if (err == 0) {
++		sigdelsetmask(&amp;set, ~_BLOCKABLE);
++		spin_lock_irq(&amp;current-&gt;sighand-&gt;siglock);
++		current-&gt;blocked = set;
++		recalc_sigpending();
++		spin_unlock_irq(&amp;current-&gt;sighand-&gt;siglock);
++	}
++
++	err |= __get_user(regs-&gt;UCreg_00, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_00);
++	err |= __get_user(regs-&gt;UCreg_01, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_01);
++	err |= __get_user(regs-&gt;UCreg_02, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_02);
++	err |= __get_user(regs-&gt;UCreg_03, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_03);
++	err |= __get_user(regs-&gt;UCreg_04, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_04);
++	err |= __get_user(regs-&gt;UCreg_05, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_05);
++	err |= __get_user(regs-&gt;UCreg_06, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_06);
++	err |= __get_user(regs-&gt;UCreg_07, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_07);
++	err |= __get_user(regs-&gt;UCreg_08, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_08);
++	err |= __get_user(regs-&gt;UCreg_09, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_09);
++	err |= __get_user(regs-&gt;UCreg_10, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_10);
++	err |= __get_user(regs-&gt;UCreg_11, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_11);
++	err |= __get_user(regs-&gt;UCreg_12, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_12);
++	err |= __get_user(regs-&gt;UCreg_13, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_13);
++	err |= __get_user(regs-&gt;UCreg_14, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_14);
++	err |= __get_user(regs-&gt;UCreg_15, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_15);
++	err |= __get_user(regs-&gt;UCreg_16, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_16);
++	err |= __get_user(regs-&gt;UCreg_17, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_17);
++	err |= __get_user(regs-&gt;UCreg_18, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_18);
++	err |= __get_user(regs-&gt;UCreg_19, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_19);
++	err |= __get_user(regs-&gt;UCreg_20, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_20);
++	err |= __get_user(regs-&gt;UCreg_21, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_21);
++	err |= __get_user(regs-&gt;UCreg_22, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_22);
++	err |= __get_user(regs-&gt;UCreg_23, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_23);
++	err |= __get_user(regs-&gt;UCreg_24, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_24);
++	err |= __get_user(regs-&gt;UCreg_25, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_25);
++	err |= __get_user(regs-&gt;UCreg_26, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_26);
++	err |= __get_user(regs-&gt;UCreg_fp, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_fp);
++	err |= __get_user(regs-&gt;UCreg_ip, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_ip);
++	err |= __get_user(regs-&gt;UCreg_sp, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_sp);
++	err |= __get_user(regs-&gt;UCreg_lr, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_lr);
++	err |= __get_user(regs-&gt;UCreg_pc, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_pc);
++	err |= __get_user(regs-&gt;UCreg_asr, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_asr);
++
++	err |= !valid_user_regs(regs);
++
++	return err;
++}
++
++asmlinkage int __sys_rt_sigreturn(struct pt_regs *regs)
++{
++	struct rt_sigframe __user *frame;
++
++	/* Always make any pending restarted system calls return -EINTR */
++	current_thread_info()-&gt;restart_block.fn = do_no_restart_syscall;
++
++	/*
++	 * Since we stacked the signal on a 64-bit boundary,
++	 * then 'sp' should be word aligned here.  If it's
++	 * not, then the user is trying to mess with us.
++	 */
++	if (regs-&gt;UCreg_sp &amp; 7)
++		goto badframe;
++
++	frame = (struct rt_sigframe __user *)regs-&gt;UCreg_sp;
++
++	if (!access_ok(VERIFY_READ, frame, sizeof(*frame)))
++		goto badframe;
++
++	if (restore_sigframe(regs, &amp;frame-&gt;sig))
++		goto badframe;
++
++	if (do_sigaltstack(&amp;frame-&gt;sig.uc.uc_stack, NULL, regs-&gt;UCreg_sp)
++			== -EFAULT)
++		goto badframe;
++
++	return regs-&gt;UCreg_00;
++
++badframe:
++	force_sig(SIGSEGV, current);
++	return 0;
++}
++
++static int setup_sigframe(struct sigframe __user *sf, struct pt_regs *regs,
++		sigset_t *set)
++{
++	int err = 0;
++
++	err |= __put_user(regs-&gt;UCreg_00, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_00);
++	err |= __put_user(regs-&gt;UCreg_01, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_01);
++	err |= __put_user(regs-&gt;UCreg_02, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_02);
++	err |= __put_user(regs-&gt;UCreg_03, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_03);
++	err |= __put_user(regs-&gt;UCreg_04, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_04);
++	err |= __put_user(regs-&gt;UCreg_05, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_05);
++	err |= __put_user(regs-&gt;UCreg_06, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_06);
++	err |= __put_user(regs-&gt;UCreg_07, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_07);
++	err |= __put_user(regs-&gt;UCreg_08, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_08);
++	err |= __put_user(regs-&gt;UCreg_09, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_09);
++	err |= __put_user(regs-&gt;UCreg_10, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_10);
++	err |= __put_user(regs-&gt;UCreg_11, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_11);
++	err |= __put_user(regs-&gt;UCreg_12, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_12);
++	err |= __put_user(regs-&gt;UCreg_13, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_13);
++	err |= __put_user(regs-&gt;UCreg_14, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_14);
++	err |= __put_user(regs-&gt;UCreg_15, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_15);
++	err |= __put_user(regs-&gt;UCreg_16, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_16);
++	err |= __put_user(regs-&gt;UCreg_17, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_17);
++	err |= __put_user(regs-&gt;UCreg_18, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_18);
++	err |= __put_user(regs-&gt;UCreg_19, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_19);
++	err |= __put_user(regs-&gt;UCreg_20, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_20);
++	err |= __put_user(regs-&gt;UCreg_21, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_21);
++	err |= __put_user(regs-&gt;UCreg_22, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_22);
++	err |= __put_user(regs-&gt;UCreg_23, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_23);
++	err |= __put_user(regs-&gt;UCreg_24, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_24);
++	err |= __put_user(regs-&gt;UCreg_25, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_25);
++	err |= __put_user(regs-&gt;UCreg_26, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_26);
++	err |= __put_user(regs-&gt;UCreg_fp, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_fp);
++	err |= __put_user(regs-&gt;UCreg_ip, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_ip);
++	err |= __put_user(regs-&gt;UCreg_sp, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_sp);
++	err |= __put_user(regs-&gt;UCreg_lr, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_lr);
++	err |= __put_user(regs-&gt;UCreg_pc, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_pc);
++	err |= __put_user(regs-&gt;UCreg_asr, &amp;sf-&gt;uc.uc_mcontext.regs.UCreg_asr);
++
++	err |= __put_user(current-&gt;thread.trap_no,
++			&amp;sf-&gt;uc.uc_mcontext.trap_no);
++	err |= __put_user(current-&gt;thread.error_code,
++			&amp;sf-&gt;uc.uc_mcontext.error_code);
++	err |= __put_user(current-&gt;thread.address,
++			&amp;sf-&gt;uc.uc_mcontext.fault_address);
++	err |= __put_user(set-&gt;sig[0], &amp;sf-&gt;uc.uc_mcontext.oldmask);
++
++	err |= __copy_to_user(&amp;sf-&gt;uc.uc_sigmask, set, sizeof(*set));
++
++	return err;
++}
++
++static inline void __user *get_sigframe(struct k_sigaction *ka,
++		struct pt_regs *regs, int framesize)
++{
++	unsigned long sp = regs-&gt;UCreg_sp;
++	void __user *frame;
++
++	/*
++	 * This is the X/Open sanctioned signal stack switching.
++	 */
++	if ((ka-&gt;sa.sa_flags &amp; SA_ONSTACK) &amp;&amp; !sas_ss_flags(sp))
++		sp = current-&gt;sas_ss_sp + current-&gt;sas_ss_size;
++
++	/*
++	 * ATPCS B01 mandates 8-byte alignment
++	 */
++	frame = (void __user *)((sp - framesize) &amp; ~7);
++
++	/*
++	 * Check that we can actually write to the signal frame.
++	 */
++	if (!access_ok(VERIFY_WRITE, frame, framesize))
++		frame = NULL;
++
++	return frame;
++}
++
++static int setup_return(struct pt_regs *regs, struct k_sigaction *ka,
++	     unsigned long __user *rc, void __user *frame, int usig)
++{
++	unsigned long handler = (unsigned long)ka-&gt;sa.sa_handler;
++	unsigned long retcode;
++	unsigned long asr = regs-&gt;UCreg_asr &amp; ~PSR_f;
++
++	unsigned int idx = 0;
++
++	if (ka-&gt;sa.sa_flags &amp; SA_SIGINFO)
++		idx += 1;
++
++	if (__put_user(sigreturn_codes[idx],   rc) ||
++	    __put_user(sigreturn_codes[idx+1], rc+1))
++		return 1;
++
++	retcode = KERN_SIGRETURN_CODE + (idx &lt;&lt; 2);
++
++	regs-&gt;UCreg_00 = usig;
++	regs-&gt;UCreg_sp = (unsigned long)frame;
++	regs-&gt;UCreg_lr = retcode;
++	regs-&gt;UCreg_pc = handler;
++	regs-&gt;UCreg_asr = asr;
++
++	return 0;
++}
++
++static int setup_frame(int usig, struct k_sigaction *ka,
++		sigset_t *set, struct pt_regs *regs)
++{
++	struct sigframe __user *frame = get_sigframe(ka, regs, sizeof(*frame));
++	int err = 0;
++
++	if (!frame)
++		return 1;
++
++	/*
++	 * Set uc.uc_flags to a value which sc.trap_no would never have.
++	 */
++	err |= __put_user(0x5ac3c35a, &amp;frame-&gt;uc.uc_flags);
++
++	err |= setup_sigframe(frame, regs, set);
++	if (err == 0)
++		err |= setup_return(regs, ka, frame-&gt;retcode, frame, usig);
++
++	return err;
++}
++
++static int setup_rt_frame(int usig, struct k_sigaction *ka, siginfo_t *info,
++	       sigset_t *set, struct pt_regs *regs)
++{
++	struct rt_sigframe __user *frame =
++			get_sigframe(ka, regs, sizeof(*frame));
++	stack_t stack;
++	int err = 0;
++
++	if (!frame)
++		return 1;
++
++	err |= copy_siginfo_to_user(&amp;frame-&gt;info, info);
++
++	err |= __put_user(0, &amp;frame-&gt;sig.uc.uc_flags);
++	err |= __put_user(NULL, &amp;frame-&gt;sig.uc.uc_link);
++
++	memset(&amp;stack, 0, sizeof(stack));
++	stack.ss_sp = (void __user *)current-&gt;sas_ss_sp;
++	stack.ss_flags = sas_ss_flags(regs-&gt;UCreg_sp);
++	stack.ss_size = current-&gt;sas_ss_size;
++	err |= __copy_to_user(&amp;frame-&gt;sig.uc.uc_stack, &amp;stack, sizeof(stack));
++
++	err |= setup_sigframe(&amp;frame-&gt;sig, regs, set);
++	if (err == 0)
++		err |= setup_return(regs, ka, frame-&gt;sig.retcode, frame, usig);
++
++	if (err == 0) {
++		/*
++		 * For realtime signals we must also set the second and third
++		 * arguments for the signal handler.
++		 */
++		regs-&gt;UCreg_01 = (unsigned long)&amp;frame-&gt;info;
++		regs-&gt;UCreg_02 = (unsigned long)&amp;frame-&gt;sig.uc;
++	}
++
++	return err;
++}
++
++static inline void setup_syscall_restart(struct pt_regs *regs)
++{
++	regs-&gt;UCreg_00 = regs-&gt;UCreg_ORIG_00;
++	regs-&gt;UCreg_pc -= 4;
++}
++
++/*
++ * OK, we're invoking a handler
++ */
++static int handle_signal(unsigned long sig, struct k_sigaction *ka,
++	      siginfo_t *info, sigset_t *oldset,
++	      struct pt_regs *regs, int syscall)
++{
++	struct thread_info *thread = current_thread_info();
++	struct task_struct *tsk = current;
++	int usig = sig;
++	int ret;
++
++	/*
++	 * If we were from a system call, check for system call restarting...
++	 */
++	if (syscall) {
++		switch (regs-&gt;UCreg_00) {
++		case -ERESTART_RESTARTBLOCK:
++		case -ERESTARTNOHAND:
++			regs-&gt;UCreg_00 = -EINTR;
++			break;
++		case -ERESTARTSYS:
++			if (!(ka-&gt;sa.sa_flags &amp; SA_RESTART)) {
++				regs-&gt;UCreg_00 = -EINTR;
++				break;
++			}
++			/* fallthrough */
++		case -ERESTARTNOINTR:
++			setup_syscall_restart(regs);
++		}
++	}
++
++	/*
++	 * translate the signal
++	 */
++	if (usig &lt; 32 &amp;&amp; thread-&gt;exec_domain
++			&amp;&amp; thread-&gt;exec_domain-&gt;signal_invmap)
++		usig = thread-&gt;exec_domain-&gt;signal_invmap[usig];
++
++	/*
++	 * Set up the stack frame
++	 */
++	if (ka-&gt;sa.sa_flags &amp; SA_SIGINFO)
++		ret = setup_rt_frame(usig, ka, info, oldset, regs);
++	else
++		ret = setup_frame(usig, ka, oldset, regs);
++
++	/*
++	 * Check that the resulting registers are actually sane.
++	 */
++	ret |= !valid_user_regs(regs);
++
++	if (ret != 0) {
++		force_sigsegv(sig, tsk);
++		return ret;
++	}
++
++	/*
++	 * Block the signal if we were successful.
++	 */
++	spin_lock_irq(&amp;tsk-&gt;sighand-&gt;siglock);
++	sigorsets(&amp;tsk-&gt;blocked, &amp;tsk-&gt;blocked,
++		  &amp;ka-&gt;sa.sa_mask);
++	if (!(ka-&gt;sa.sa_flags &amp; SA_NODEFER))
++		sigaddset(&amp;tsk-&gt;blocked, sig);
++	recalc_sigpending();
++	spin_unlock_irq(&amp;tsk-&gt;sighand-&gt;siglock);
++
++	return 0;
++}
++
++/*
++ * Note that 'init' is a special process: it doesn't get signals it doesn't
++ * want to handle. Thus you cannot kill init even with a SIGKILL even by
++ * mistake.
++ *
++ * Note that we go through the signals twice: once to check the signals that
++ * the kernel can handle, and then we build all the user-level signal handling
++ * stack-frames in one go after that.
++ */
++static void do_signal(struct pt_regs *regs, int syscall)
++{
++	struct k_sigaction ka;
++	siginfo_t info;
++	int signr;
++
++	/*
++	 * We want the common case to go fast, which
++	 * is why we may in certain cases get here from
++	 * kernel mode. Just return without doing anything
++	 * if so.
++	 */
++	if (!user_mode(regs))
++		return;
++
++	if (try_to_freeze())
++		goto no_signal;
++
++	signr = get_signal_to_deliver(&amp;info, &amp;ka, regs, NULL);
++	if (signr &gt; 0) {
++		sigset_t *oldset;
++
++		if (test_thread_flag(TIF_RESTORE_SIGMASK))
++			oldset = &amp;current-&gt;saved_sigmask;
++		else
++			oldset = &amp;current-&gt;blocked;
++		if (handle_signal(signr, &amp;ka, &amp;info, oldset, regs, syscall)
++				== 0) {
++			/*
++			 * A signal was successfully delivered; the saved
++			 * sigmask will have been stored in the signal frame,
++			 * and will be restored by sigreturn, so we can simply
++			 * clear the TIF_RESTORE_SIGMASK flag.
++			 */
++			if (test_thread_flag(TIF_RESTORE_SIGMASK))
++				clear_thread_flag(TIF_RESTORE_SIGMASK);
++		}
++		return;
++	}
++
++ no_signal:
++	/*
++	 * No signal to deliver to the process - restart the syscall.
++	 */
++	if (syscall) {
++		if (regs-&gt;UCreg_00 == -ERESTART_RESTARTBLOCK) {
++				u32 __user *usp;
++
++				regs-&gt;UCreg_sp -= 4;
++				usp = (u32 __user *)regs-&gt;UCreg_sp;
++
++				if (put_user(regs-&gt;UCreg_pc, usp) == 0) {
++					regs-&gt;UCreg_pc = KERN_RESTART_CODE;
++				} else {
++					regs-&gt;UCreg_sp += 4;
++					force_sigsegv(0, current);
++				}
++		}
++		if (regs-&gt;UCreg_00 == -ERESTARTNOHAND ||
++		    regs-&gt;UCreg_00 == -ERESTARTSYS ||
++		    regs-&gt;UCreg_00 == -ERESTARTNOINTR) {
++			setup_syscall_restart(regs);
++		}
++
++		/* If there's no signal to deliver, we just put the saved
++		 * sigmask back.
++		 */
++		if (test_thread_flag(TIF_RESTORE_SIGMASK)) {
++			clear_thread_flag(TIF_RESTORE_SIGMASK);
++			sigprocmask(SIG_SETMASK, &amp;current-&gt;saved_sigmask, NULL);
++		}
++	}
++}
++
++asmlinkage void do_notify_resume(struct pt_regs *regs,
++		unsigned int thread_flags, int syscall)
++{
++	if (thread_flags &amp; _TIF_SIGPENDING)
++		do_signal(regs, syscall);
++
++	if (thread_flags &amp; _TIF_NOTIFY_RESUME) {
++		clear_thread_flag(TIF_NOTIFY_RESUME);
++		tracehook_notify_resume(regs);
++		if (current-&gt;replacement_session_keyring)
++			key_replace_session_keyring();
++	}
++}
++
++/*
++ * Copy signal return handlers into the vector page, and
++ * set sigreturn to be a pointer to these.
++ */
++void __init early_signal_init(void)
++{
++	memcpy((void *)kuser_vecpage_to_vectors(KERN_SIGRETURN_CODE),
++			sigreturn_codes, sizeof(sigreturn_codes));
++	memcpy((void *)kuser_vecpage_to_vectors(KERN_RESTART_CODE),
++			syscall_restart_code, sizeof(syscall_restart_code));
++	/* Need not to flush icache, since early_trap_init will do it last. */
++}</pre><hr><pre>commit 752bcb4d02ccfd5e7a8d810424154169b4cca8ae
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Jan 15 18:19:35 2011 +0800
+
+    unicore32 core architecture: interrupts ang gpio handling
+    
+    This patch implements interrupts and gpio handling.
+    UniCore32 has 9 gpio interrupt sources.
+    And gpio device operations are also here.
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+
+diff --git a/arch/unicore32/include/asm/gpio.h b/arch/unicore32/include/asm/gpio.h
+new file mode 100644
+index 000000000000..3aaa41e9e413
+--- /dev/null
++++ b/arch/unicore32/include/asm/gpio.h
+@@ -0,0 +1,103 @@
++/*
++ * linux/arch/unicore32/include/asm/gpio.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef __UNICORE_GPIO_H__
++#define __UNICORE_GPIO_H__
++
++#include &lt;asm/irq.h&gt;
++#include &lt;mach/hardware.h&gt;
++#include &lt;asm-generic/gpio.h&gt;
++
++#define GPI_OTP_INT             0
++#define GPI_PCI_INTA            1
++#define GPI_PCI_INTB            2
++#define GPI_PCI_INTC            3
++#define GPI_PCI_INTD            4
++#define GPI_BAT_DET             5
++#define GPI_SD_CD               6
++#define GPI_SOFF_REQ            7
++#define GPI_SD_WP               8
++#define GPI_LCD_CASE_OFF        9
++#define GPO_WIFI_EN             10
++#define GPO_HDD_LED             11
++#define GPO_VGA_EN              12
++#define GPO_LCD_EN              13
++#define GPO_LED_DATA            14
++#define GPO_LED_CLK             15
++#define GPO_CAM_PWR_EN          16
++#define GPO_LCD_VCC_EN          17
++#define GPO_SOFT_OFF            18
++#define GPO_BT_EN               19
++#define GPO_FAN_ON              20
++#define GPO_SPKR                21
++#define GPO_SET_V1              23
++#define GPO_SET_V2              24
++#define GPO_CPU_HEALTH          25
++#define GPO_LAN_SEL             26
++
++#ifdef CONFIG_PUV3_NB0916
++#define GPI_BTN_TOUCH		14
++#define GPIO_IN			0x000043ff /* 1 for input */
++#define GPIO_OUT		0x0fffbc00 /* 1 for output */
++#endif	/* CONFIG_PUV3_NB0916 */
++
++#ifdef CONFIG_PUV3_SMW0919
++#define GPIO_IN			0x000003ff /* 1 for input */
++#define GPIO_OUT		0x0ffffc00 /* 1 for output */
++#endif  /* CONFIG_PUV3_SMW0919 */
++
++#ifdef CONFIG_PUV3_DB0913
++#define GPIO_IN			0x000001df /* 1 for input */
++#define GPIO_OUT		0x03fee800 /* 1 for output */
++#endif  /* CONFIG_PUV3_DB0913 */
++
++#define GPIO_DIR                (~((GPIO_IN) | 0xf0000000))
++				/* 0 input, 1 output */
++
++static inline int gpio_get_value(unsigned gpio)
++{
++	if (__builtin_constant_p(gpio) &amp;&amp; (gpio &lt;= GPIO_MAX))
++		return GPIO_GPLR &amp; GPIO_GPIO(gpio);
++	else
++		return __gpio_get_value(gpio);
++}
++
++static inline void gpio_set_value(unsigned gpio, int value)
++{
++	if (__builtin_constant_p(gpio) &amp;&amp; (gpio &lt;= GPIO_MAX))
++		if (value)
++			GPIO_GPSR = GPIO_GPIO(gpio);
++		else
++			GPIO_GPCR = GPIO_GPIO(gpio);
++	else
++		__gpio_set_value(gpio, value);
++}
++
++#define gpio_cansleep	__gpio_cansleep
++
++static inline unsigned gpio_to_irq(unsigned gpio)
++{
++	if ((gpio &lt; IRQ_GPIOHIGH) &amp;&amp; (FIELD(1, 1, gpio) &amp; GPIO_GPIR))
++		return IRQ_GPIOLOW0 + gpio;
++	else
++		return IRQ_GPIO0 + gpio;
++}
++
++static inline unsigned irq_to_gpio(unsigned irq)
++{
++	if (irq &lt; IRQ_GPIOHIGH)
++		return irq - IRQ_GPIOLOW0;
++	else
++		return irq - IRQ_GPIO0;
++}
++
++#endif /* __UNICORE_GPIO_H__ */
+diff --git a/arch/unicore32/include/asm/irq.h b/arch/unicore32/include/asm/irq.h
+new file mode 100644
+index 000000000000..ade8bb87111d
+--- /dev/null
++++ b/arch/unicore32/include/asm/irq.h
+@@ -0,0 +1,107 @@
++/*
++ * linux/arch/unicore32/include/asm/irq.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#ifndef __UNICORE_IRQ_H__
++#define __UNICORE_IRQ_H__
++
++#include &lt;asm-generic/irq.h&gt;
++
++#define	IRQ_GPIOLOW0		0x00
++#define	IRQ_GPIOLOW1		0x01
++#define	IRQ_GPIOLOW2		0x02
++#define	IRQ_GPIOLOW3		0x03
++#define	IRQ_GPIOLOW4		0x04
++#define	IRQ_GPIOLOW5		0x05
++#define	IRQ_GPIOLOW6		0x06
++#define	IRQ_GPIOLOW7		0x07
++#define IRQ_GPIOHIGH		0x08
++#define IRQ_USB			0x09
++#define IRQ_SDC			0x0a
++#define IRQ_AC97		0x0b
++#define IRQ_SATA		0x0c
++#define IRQ_MME			0x0d
++#define IRQ_PCI_BRIDGE		0x0e
++#define	IRQ_DDR			0x0f
++#define	IRQ_SPI			0x10
++#define	IRQ_UNIGFX		0x11
++#define	IRQ_I2C			0x11
++#define	IRQ_UART1		0x12
++#define	IRQ_UART0		0x13
++#define IRQ_UMAL		0x14
++#define IRQ_NAND		0x15
++#define IRQ_PS2_KBD		0x16
++#define IRQ_PS2_AUX		0x17
++#define IRQ_DMA			0x18
++#define IRQ_DMAERR		0x19
++#define	IRQ_TIMER0		0x1a
++#define	IRQ_TIMER1		0x1b
++#define	IRQ_TIMER2		0x1c
++#define	IRQ_TIMER3		0x1d
++#define	IRQ_RTC			0x1e
++#define	IRQ_RTCAlarm		0x1f
++
++#define	IRQ_GPIO0		0x20
++#define	IRQ_GPIO1		0x21
++#define	IRQ_GPIO2		0x22
++#define	IRQ_GPIO3		0x23
++#define	IRQ_GPIO4		0x24
++#define	IRQ_GPIO5		0x25
++#define	IRQ_GPIO6		0x26
++#define	IRQ_GPIO7		0x27
++#define IRQ_GPIO8		0x28
++#define IRQ_GPIO9		0x29
++#define IRQ_GPIO10		0x2a
++#define IRQ_GPIO11		0x2b
++#define IRQ_GPIO12		0x2c
++#define IRQ_GPIO13		0x2d
++#define IRQ_GPIO14		0x2e
++#define IRQ_GPIO15		0x2f
++#define IRQ_GPIO16		0x30
++#define IRQ_GPIO17		0x31
++#define IRQ_GPIO18		0x32
++#define IRQ_GPIO19		0x33
++#define IRQ_GPIO20		0x34
++#define IRQ_GPIO21		0x35
++#define IRQ_GPIO22		0x36
++#define IRQ_GPIO23		0x37
++#define IRQ_GPIO24		0x38
++#define IRQ_GPIO25		0x39
++#define IRQ_GPIO26		0x3a
++#define IRQ_GPIO27		0x3b
++
++#ifdef CONFIG_ARCH_FPGA
++#define IRQ_PCIINTA             IRQ_GPIOLOW2
++#define IRQ_PCIINTB             IRQ_GPIOLOW1
++#define IRQ_PCIINTC             IRQ_GPIOLOW0
++#define IRQ_PCIINTD             IRQ_GPIOLOW6
++#endif
++
++#if defined(CONFIG_PUV3_DB0913) || defined(CONFIG_PUV3_NB0916)	\
++	|| defined(CONFIG_PUV3_SMW0919)
++#define IRQ_PCIINTA             IRQ_GPIOLOW1
++#define IRQ_PCIINTB             IRQ_GPIOLOW2
++#define IRQ_PCIINTC             IRQ_GPIOLOW3
++#define IRQ_PCIINTD             IRQ_GPIOLOW4
++#endif
++
++#define IRQ_SD_CD               IRQ_GPIO6 /* falling or rising trigger */
++
++#ifndef __ASSEMBLY__
++struct irqaction;
++struct pt_regs;
++extern void migrate_irqs(void);
++
++extern void asm_do_IRQ(unsigned int, struct pt_regs *);
++
++#endif
++
++#endif
++
+diff --git a/arch/unicore32/include/asm/irqflags.h b/arch/unicore32/include/asm/irqflags.h
+new file mode 100644
+index 000000000000..6d8a28dfdbae
+--- /dev/null
++++ b/arch/unicore32/include/asm/irqflags.h
+@@ -0,0 +1,53 @@
++/*
++ * linux/arch/unicore32/include/asm/irqflags.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#ifndef __UNICORE_IRQFLAGS_H__
++#define __UNICORE_IRQFLAGS_H__
++
++#ifdef __KERNEL__
++
++#include &lt;asm/ptrace.h&gt;
++
++#define ARCH_IRQ_DISABLED	(PRIV_MODE | PSR_I_BIT)
++#define ARCH_IRQ_ENABLED	(PRIV_MODE)
++
++/*
++ * Save the current interrupt enable state.
++ */
++static inline unsigned long arch_local_save_flags(void)
++{
++	unsigned long temp;
++
++	asm volatile("mov %0, asr" : "=r" (temp) : : "memory", "cc");
++
++	return temp &amp; PSR_c;
++}
++
++/*
++ * restore saved IRQ state
++ */
++static inline void arch_local_irq_restore(unsigned long flags)
++{
++	unsigned long temp;
++
++	asm volatile(
++		"mov	%0, asr\n"
++		"mov.a	asr, %1\n"
++		"mov.f	asr, %0"
++		: "=&amp;r" (temp)
++		: "r" (flags)
++		: "memory", "cc");
++}
++
++#include &lt;asm-generic/irqflags.h&gt;
++
++#endif
++#endif
+diff --git a/arch/unicore32/kernel/gpio.c b/arch/unicore32/kernel/gpio.c
+new file mode 100644
+index 000000000000..4cb28308bb5f
+--- /dev/null
++++ b/arch/unicore32/kernel/gpio.c
+@@ -0,0 +1,122 @@
++/*
++ * linux/arch/unicore32/kernel/gpio.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++/* in FPGA, no GPIO support */
++
++#include &lt;linux/init.h&gt;
++#include &lt;linux/module.h&gt;
++#include &lt;linux/gpio.h&gt;
++#include &lt;mach/hardware.h&gt;
++
++#ifdef CONFIG_LEDS
++#include &lt;linux/leds.h&gt;
++#include &lt;linux/platform_device.h&gt;
++
++static const struct gpio_led puv3_gpio_leds[] = {
++	{ .name = "cpuhealth", .gpio = GPO_CPU_HEALTH, .active_low = 0,
++		.default_trigger = "heartbeat",	},
++	{ .name = "hdd_led", .gpio = GPO_HDD_LED, .active_low = 1,
++		.default_trigger = "ide-disk", },
++};
++
++static const struct gpio_led_platform_data puv3_gpio_led_data = {
++	.num_leds =	ARRAY_SIZE(puv3_gpio_leds),
++	.leds =		(void *) puv3_gpio_leds,
++};
++
++static struct platform_device puv3_gpio_gpio_leds = {
++	.name =		"leds-gpio",
++	.id =		-1,
++	.dev = {
++		.platform_data = (void *) &amp;puv3_gpio_led_data,
++	}
++};
++
++static int __init puv3_gpio_leds_init(void)
++{
++	platform_device_register(&amp;puv3_gpio_gpio_leds);
++	return 0;
++}
++
++device_initcall(puv3_gpio_leds_init);
++#endif
++
++static int puv3_gpio_get(struct gpio_chip *chip, unsigned offset)
++{
++	return GPIO_GPLR &amp; GPIO_GPIO(offset);
++}
++
++static void puv3_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
++{
++	if (value)
++		GPIO_GPSR = GPIO_GPIO(offset);
++	else
++		GPIO_GPCR = GPIO_GPIO(offset);
++}
++
++static int puv3_direction_input(struct gpio_chip *chip, unsigned offset)
++{
++	unsigned long flags;
++
++	local_irq_save(flags);
++	GPIO_GPDR &amp;= ~GPIO_GPIO(offset);
++	local_irq_restore(flags);
++	return 0;
++}
++
++static int puv3_direction_output(struct gpio_chip *chip, unsigned offset,
++		int value)
++{
++	unsigned long flags;
++
++	local_irq_save(flags);
++	puv3_gpio_set(chip, offset, value);
++	GPIO_GPDR |= GPIO_GPIO(offset);
++	local_irq_restore(flags);
++	return 0;
++}
++
++static struct gpio_chip puv3_gpio_chip = {
++	.label			= "gpio",
++	.direction_input	= puv3_direction_input,
++	.direction_output	= puv3_direction_output,
++	.set			= puv3_gpio_set,
++	.get			= puv3_gpio_get,
++	.base			= 0,
++	.ngpio			= GPIO_MAX + 1,
++};
++
++void __init puv3_init_gpio(void)
++{
++	GPIO_GPDR = GPIO_DIR;
++#if	defined(CONFIG_PUV3_NB0916) || defined(CONFIG_PUV3_SMW0919)	\
++	|| defined(CONFIG_PUV3_DB0913)
++	gpio_set_value(GPO_WIFI_EN, 1);
++	gpio_set_value(GPO_HDD_LED, 1);
++	gpio_set_value(GPO_VGA_EN, 1);
++	gpio_set_value(GPO_LCD_EN, 1);
++	gpio_set_value(GPO_CAM_PWR_EN, 0);
++	gpio_set_value(GPO_LCD_VCC_EN, 1);
++	gpio_set_value(GPO_SOFT_OFF, 1);
++	gpio_set_value(GPO_BT_EN, 1);
++	gpio_set_value(GPO_FAN_ON, 0);
++	gpio_set_value(GPO_SPKR, 0);
++	gpio_set_value(GPO_CPU_HEALTH, 1);
++	gpio_set_value(GPO_LAN_SEL, 1);
++/*
++ * DO NOT modify the GPO_SET_V1 and GPO_SET_V2 in kernel
++ *	gpio_set_value(GPO_SET_V1, 1);
++ *	gpio_set_value(GPO_SET_V2, 1);
++ */
++#endif
++	gpiochip_add(&amp;puv3_gpio_chip);
++}
+diff --git a/arch/unicore32/kernel/irq.c b/arch/unicore32/kernel/irq.c
+new file mode 100644
+index 000000000000..7c211f597833
+--- /dev/null
++++ b/arch/unicore32/kernel/irq.c
+@@ -0,0 +1,426 @@
++/*
++ * linux/arch/unicore32/kernel/irq.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/kernel_stat.h&gt;
++#include &lt;linux/module.h&gt;
++#include &lt;linux/signal.h&gt;
++#include &lt;linux/ioport.h&gt;
++#include &lt;linux/interrupt.h&gt;
++#include &lt;linux/irq.h&gt;
++#include &lt;linux/random.h&gt;
++#include &lt;linux/smp.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/seq_file.h&gt;
++#include &lt;linux/errno.h&gt;
++#include &lt;linux/list.h&gt;
++#include &lt;linux/kallsyms.h&gt;
++#include &lt;linux/proc_fs.h&gt;
++#include &lt;linux/sysdev.h&gt;
++#include &lt;linux/gpio.h&gt;
++
++#include &lt;asm/system.h&gt;
++#include &lt;mach/hardware.h&gt;
++
++#include "setup.h"
++
++/*
++ * PKUnity GPIO edge detection for IRQs:
++ * IRQs are generated on Falling-Edge, Rising-Edge, or both.
++ * Use this instead of directly setting GRER/GFER.
++ */
++static int GPIO_IRQ_rising_edge;
++static int GPIO_IRQ_falling_edge;
++static int GPIO_IRQ_mask = 0;
++
++#define GPIO_MASK(irq)		(1 &lt;&lt; (irq - IRQ_GPIO0))
++
++static int puv3_gpio_type(unsigned int irq, unsigned int type)
++{
++	unsigned int mask;
++
++	if (irq &lt; IRQ_GPIOHIGH)
++		mask = 1 &lt;&lt; irq;
++	else
++		mask = GPIO_MASK(irq);
++
++	if (type == IRQ_TYPE_PROBE) {
++		if ((GPIO_IRQ_rising_edge | GPIO_IRQ_falling_edge) &amp; mask)
++			return 0;
++		type = IRQ_TYPE_EDGE_RISING | IRQ_TYPE_EDGE_FALLING;
++	}
++
++	if (type &amp; IRQ_TYPE_EDGE_RISING)
++		GPIO_IRQ_rising_edge |= mask;
++	else
++		GPIO_IRQ_rising_edge &amp;= ~mask;
++	if (type &amp; IRQ_TYPE_EDGE_FALLING)
++		GPIO_IRQ_falling_edge |= mask;
++	else
++		GPIO_IRQ_falling_edge &amp;= ~mask;
++
++	GPIO_GRER = GPIO_IRQ_rising_edge &amp; GPIO_IRQ_mask;
++	GPIO_GFER = GPIO_IRQ_falling_edge &amp; GPIO_IRQ_mask;
++
++	return 0;
++}
++
++/*
++ * GPIO IRQs must be acknowledged.  This is for IRQs from 0 to 7.
++ */
++static void puv3_low_gpio_ack(unsigned int irq)
++{
++	GPIO_GEDR = (1 &lt;&lt; irq);
++}
++
++static void puv3_low_gpio_mask(unsigned int irq)
++{
++	INTC_ICMR &amp;= ~(1 &lt;&lt; irq);
++}
++
++static void puv3_low_gpio_unmask(unsigned int irq)
++{
++	INTC_ICMR |= 1 &lt;&lt; irq;
++}
++
++static int puv3_low_gpio_wake(unsigned int irq, unsigned int on)
++{
++	if (on)
++		PM_PWER |= 1 &lt;&lt; irq;
++	else
++		PM_PWER &amp;= ~(1 &lt;&lt; irq);
++	return 0;
++}
++
++static struct irq_chip puv3_low_gpio_chip = {
++	.name		= "GPIO-low",
++	.ack		= puv3_low_gpio_ack,
++	.mask		= puv3_low_gpio_mask,
++	.unmask		= puv3_low_gpio_unmask,
++	.set_type	= puv3_gpio_type,
++	.set_wake	= puv3_low_gpio_wake,
++};
++
++/*
++ * IRQ8 (GPIO0 through 27) handler.  We enter here with the
++ * irq_controller_lock held, and IRQs disabled.  Decode the IRQ
++ * and call the handler.
++ */
++static void
++puv3_gpio_handler(unsigned int irq, struct irq_desc *desc)
++{
++	unsigned int mask;
++
++	mask = GPIO_GEDR;
++	do {
++		/*
++		 * clear down all currently active IRQ sources.
++		 * We will be processing them all.
++		 */
++		GPIO_GEDR = mask;
++
++		irq = IRQ_GPIO0;
++		do {
++			if (mask &amp; 1)
++				generic_handle_irq(irq);
++			mask &gt;&gt;= 1;
++			irq++;
++		} while (mask);
++		mask = GPIO_GEDR;
++	} while (mask);
++}
++
++/*
++ * GPIO0-27 edge IRQs need to be handled specially.
++ * In addition, the IRQs are all collected up into one bit in the
++ * interrupt controller registers.
++ */
++static void puv3_high_gpio_ack(unsigned int irq)
++{
++	unsigned int mask = GPIO_MASK(irq);
++
++	GPIO_GEDR = mask;
++}
++
++static void puv3_high_gpio_mask(unsigned int irq)
++{
++	unsigned int mask = GPIO_MASK(irq);
++
++	GPIO_IRQ_mask &amp;= ~mask;
++
++	GPIO_GRER &amp;= ~mask;
++	GPIO_GFER &amp;= ~mask;
++}
++
++static void puv3_high_gpio_unmask(unsigned int irq)
++{
++	unsigned int mask = GPIO_MASK(irq);
++
++	GPIO_IRQ_mask |= mask;
++
++	GPIO_GRER = GPIO_IRQ_rising_edge &amp; GPIO_IRQ_mask;
++	GPIO_GFER = GPIO_IRQ_falling_edge &amp; GPIO_IRQ_mask;
++}
++
++static int puv3_high_gpio_wake(unsigned int irq, unsigned int on)
++{
++	if (on)
++		PM_PWER |= PM_PWER_GPIOHIGH;
++	else
++		PM_PWER &amp;= ~PM_PWER_GPIOHIGH;
++	return 0;
++}
++
++static struct irq_chip puv3_high_gpio_chip = {
++	.name		= "GPIO-high",
++	.ack		= puv3_high_gpio_ack,
++	.mask		= puv3_high_gpio_mask,
++	.unmask		= puv3_high_gpio_unmask,
++	.set_type	= puv3_gpio_type,
++	.set_wake	= puv3_high_gpio_wake,
++};
++
++/*
++ * We don't need to ACK IRQs on the PKUnity unless they're GPIOs
++ * this is for internal IRQs i.e. from 8 to 31.
++ */
++static void puv3_mask_irq(unsigned int irq)
++{
++	INTC_ICMR &amp;= ~(1 &lt;&lt; irq);
++}
++
++static void puv3_unmask_irq(unsigned int irq)
++{
++	INTC_ICMR |= (1 &lt;&lt; irq);
++}
++
++/*
++ * Apart form GPIOs, only the RTC alarm can be a wakeup event.
++ */
++static int puv3_set_wake(unsigned int irq, unsigned int on)
++{
++	if (irq == IRQ_RTCAlarm) {
++		if (on)
++			PM_PWER |= PM_PWER_RTC;
++		else
++			PM_PWER &amp;= ~PM_PWER_RTC;
++		return 0;
++	}
++	return -EINVAL;
++}
++
++static struct irq_chip puv3_normal_chip = {
++	.name		= "PKUnity-v3",
++	.ack		= puv3_mask_irq,
++	.mask		= puv3_mask_irq,
++	.unmask		= puv3_unmask_irq,
++	.set_wake	= puv3_set_wake,
++};
++
++static struct resource irq_resource = {
++	.name	= "irqs",
++	.start	= PKUNITY_INTC_BASE,
++	.end	= PKUNITY_INTC_BASE + 0xFFFFF,
++};
++
++static struct puv3_irq_state {
++	unsigned int	saved;
++	unsigned int	icmr;
++	unsigned int	iclr;
++	unsigned int	iccr;
++} puv3_irq_state;
++
++static int puv3_irq_suspend(struct sys_device *dev, pm_message_t state)
++{
++	struct puv3_irq_state *st = &amp;puv3_irq_state;
++
++	st-&gt;saved = 1;
++	st-&gt;icmr = INTC_ICMR;
++	st-&gt;iclr = INTC_ICLR;
++	st-&gt;iccr = INTC_ICCR;
++
++	/*
++	 * Disable all GPIO-based interrupts.
++	 */
++	INTC_ICMR &amp;= ~(0x1ff);
++
++	/*
++	 * Set the appropriate edges for wakeup.
++	 */
++	GPIO_GRER = PM_PWER &amp; GPIO_IRQ_rising_edge;
++	GPIO_GFER = PM_PWER &amp; GPIO_IRQ_falling_edge;
++
++	/*
++	 * Clear any pending GPIO interrupts.
++	 */
++	GPIO_GEDR = GPIO_GEDR;
++
++	return 0;
++}
++
++static int puv3_irq_resume(struct sys_device *dev)
++{
++	struct puv3_irq_state *st = &amp;puv3_irq_state;
++
++	if (st-&gt;saved) {
++		INTC_ICCR = st-&gt;iccr;
++		INTC_ICLR = st-&gt;iclr;
++
++		GPIO_GRER = GPIO_IRQ_rising_edge &amp; GPIO_IRQ_mask;
++		GPIO_GFER = GPIO_IRQ_falling_edge &amp; GPIO_IRQ_mask;
++
++		INTC_ICMR = st-&gt;icmr;
++	}
++	return 0;
++}
++
++static struct sysdev_class puv3_irq_sysclass = {
++	.name		= "pkunity-irq",
++	.suspend	= puv3_irq_suspend,
++	.resume		= puv3_irq_resume,
++};
++
++static struct sys_device puv3_irq_device = {
++	.id		= 0,
++	.cls		= &amp;puv3_irq_sysclass,
++};
++
++static int __init puv3_irq_init_devicefs(void)
++{
++	sysdev_class_register(&amp;puv3_irq_sysclass);
++	return sysdev_register(&amp;puv3_irq_device);
++}
++
++device_initcall(puv3_irq_init_devicefs);
++
++void __init init_IRQ(void)
++{
++	unsigned int irq;
++
++	request_resource(&amp;iomem_resource, &amp;irq_resource);
++
++	/* disable all IRQs */
++	INTC_ICMR = 0;
++
++	/* all IRQs are IRQ, not REAL */
++	INTC_ICLR = 0;
++
++	/* clear all GPIO edge detects */
++	GPIO_GPIR = FMASK(8, 0) &amp; ~FIELD(1, 1, GPI_SOFF_REQ);
++	GPIO_GFER = 0;
++	GPIO_GRER = 0;
++	GPIO_GEDR = 0x0FFFFFFF;
++
++	INTC_ICCR = 1;
++
++	for (irq = 0; irq &lt; IRQ_GPIOHIGH; irq++) {
++		set_irq_chip(irq, &amp;puv3_low_gpio_chip);
++		set_irq_handler(irq, handle_edge_irq);
++		irq_modify_status(irq,
++			IRQ_NOREQUEST | IRQ_NOPROBE | IRQ_NOAUTOEN,
++			0);
++	}
++
++	for (irq = IRQ_GPIOHIGH + 1; irq &lt; IRQ_GPIO0; irq++) {
++		set_irq_chip(irq, &amp;puv3_normal_chip);
++		set_irq_handler(irq, handle_level_irq);
++		irq_modify_status(irq,
++			IRQ_NOREQUEST | IRQ_NOAUTOEN,
++			IRQ_NOPROBE);
++	}
++
++	for (irq = IRQ_GPIO0; irq &lt;= IRQ_GPIO27; irq++) {
++		set_irq_chip(irq, &amp;puv3_high_gpio_chip);
++		set_irq_handler(irq, handle_edge_irq);
++		irq_modify_status(irq,
++			IRQ_NOREQUEST | IRQ_NOPROBE | IRQ_NOAUTOEN,
++			0);
++	}
++
++	/*
++	 * Install handler for GPIO 0-27 edge detect interrupts
++	 */
++	set_irq_chip(IRQ_GPIOHIGH, &amp;puv3_normal_chip);
++	set_irq_chained_handler(IRQ_GPIOHIGH, puv3_gpio_handler);
++
++#ifdef CONFIG_PUV3_GPIO
++	puv3_init_gpio();
++#endif
++}
++
++int show_interrupts(struct seq_file *p, void *v)
++{
++	int i = *(loff_t *) v, cpu;
++	struct irq_desc *desc;
++	struct irqaction *action;
++	unsigned long flags;
++
++	if (i == 0) {
++		char cpuname[12];
++
++		seq_printf(p, "    ");
++		for_each_present_cpu(cpu) {
++			sprintf(cpuname, "CPU%d", cpu);
++			seq_printf(p, " %10s", cpuname);
++		}
++		seq_putc(p, '\n');
++	}
++
++	if (i &lt; nr_irqs) {
++		desc = irq_to_desc(i);
++		raw_spin_lock_irqsave(&amp;desc-&gt;lock, flags);
++		action = desc-&gt;action;
++		if (!action)
++			goto unlock;
++
++		seq_printf(p, "%3d: ", i);
++		for_each_present_cpu(cpu)
++			seq_printf(p, "%10u ", kstat_irqs_cpu(i, cpu));
++		seq_printf(p, " %10s", desc-&gt;chip-&gt;name ? : "-");
++		seq_printf(p, "  %s", action-&gt;name);
++		for (action = action-&gt;next; action; action = action-&gt;next)
++			seq_printf(p, ", %s", action-&gt;name);
++
++		seq_putc(p, '\n');
++unlock:
++		raw_spin_unlock_irqrestore(&amp;desc-&gt;lock, flags);
++	} else if (i == nr_irqs) {
++		seq_printf(p, "Error in interrupt!\n");
++	}
++	return 0;
++}
++
++/*
++ * do_IRQ handles all hardware IRQ's.  Decoded IRQs should not
++ * come via this function.  Instead, they should provide their
++ * own 'handler'
++ */
++asmlinkage void asm_do_IRQ(unsigned int irq, struct pt_regs *regs)
++{
++	struct pt_regs *old_regs = set_irq_regs(regs);
++
++	irq_enter();
++
++	/*
++	 * Some hardware gives randomly wrong interrupts.  Rather
++	 * than crashing, do something sensible.
++	 */
++	if (unlikely(irq &gt;= nr_irqs)) {
++		if (printk_ratelimit())
++			printk(KERN_WARNING "Bad IRQ%u\n", irq);
++		ack_bad_irq(irq);
++	} else {
++		generic_handle_irq(irq);
++	}
++
++	irq_exit();
++	set_irq_regs(old_regs);
++}
++</pre><hr><pre>commit 02b2ee16cc31df2b23d6f6c68a597d947f6c10e8
+Author: GuanXuetao &lt;gxt@mprc.pku.edu.cn&gt;
+Date:   Sat Jan 15 18:19:03 2011 +0800
+
+    unicore32 core architecture: timer and time handling
+    
+    This patch implements timer and time.
+    RTC and PWM device drivers are also here.
+    
+    Signed-off-by: Guan Xuetao &lt;gxt@mprc.pku.edu.cn&gt;
+
+diff --git a/arch/unicore32/include/asm/timex.h b/arch/unicore32/include/asm/timex.h
+new file mode 100644
+index 000000000000..faf16ba46544
+--- /dev/null
++++ b/arch/unicore32/include/asm/timex.h
+@@ -0,0 +1,34 @@
++/*
++ * linux/arch/unicore32/include/asm/timex.h
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ * Copyright (C) 2001-2010 GUAN Xue-tao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef __UNICORE_TIMEX_H__
++#define __UNICORE_TIMEX_H__
++
++#ifdef	CONFIG_ARCH_FPGA
++
++/* in FPGA, APB clock is 33M, and OST clock is 32K, */
++/* so, 1M is selected for timer interrupt correctly */
++#define	CLOCK_TICK_RATE		(32*1024)
++
++#endif
++
++#if defined(CONFIG_PUV3_DB0913)		\
++	|| defined(CONFIG_PUV3_NB0916)	\
++	|| defined(CONFIG_PUV3_SMW0919)
++
++#define  CLOCK_TICK_RATE         (14318000)
++
++#endif
++
++#include &lt;asm-generic/timex.h&gt;
++
++#endif
+diff --git a/arch/unicore32/kernel/pwm.c b/arch/unicore32/kernel/pwm.c
+new file mode 100644
+index 000000000000..4615d51e3ba6
+--- /dev/null
++++ b/arch/unicore32/kernel/pwm.c
+@@ -0,0 +1,263 @@
++/*
++ * linux/arch/unicore32/kernel/pwm.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include &lt;linux/module.h&gt;
++#include &lt;linux/kernel.h&gt;
++#include &lt;linux/platform_device.h&gt;
++#include &lt;linux/slab.h&gt;
++#include &lt;linux/err.h&gt;
++#include &lt;linux/clk.h&gt;
++#include &lt;linux/io.h&gt;
++#include &lt;linux/pwm.h&gt;
++
++#include &lt;asm/div64.h&gt;
++#include &lt;mach/hardware.h&gt;
++
++struct pwm_device {
++	struct list_head	node;
++	struct platform_device *pdev;
++
++	const char	*label;
++	struct clk	*clk;
++	int		clk_enabled;
++
++	unsigned int	use_count;
++	unsigned int	pwm_id;
++};
++
++/*
++ * period_ns = 10^9 * (PRESCALE + 1) * (PV + 1) / PWM_CLK_RATE
++ * duty_ns   = 10^9 * (PRESCALE + 1) * DC / PWM_CLK_RATE
++ */
++int pwm_config(struct pwm_device *pwm, int duty_ns, int period_ns)
++{
++	unsigned long long c;
++	unsigned long period_cycles, prescale, pv, dc;
++
++	if (pwm == NULL || period_ns == 0 || duty_ns &gt; period_ns)
++		return -EINVAL;
++
++	c = clk_get_rate(pwm-&gt;clk);
++	c = c * period_ns;
++	do_div(c, 1000000000);
++	period_cycles = c;
++
++	if (period_cycles &lt; 1)
++		period_cycles = 1;
++	prescale = (period_cycles - 1) / 1024;
++	pv = period_cycles / (prescale + 1) - 1;
++
++	if (prescale &gt; 63)
++		return -EINVAL;
++
++	if (duty_ns == period_ns)
++		dc = OST_PWMDCCR_FDCYCLE;
++	else
++		dc = (pv + 1) * duty_ns / period_ns;
++
++	/* NOTE: the clock to PWM has to be enabled first
++	 * before writing to the registers
++	 */
++	clk_enable(pwm-&gt;clk);
++	OST_PWMPWCR = prescale;
++	OST_PWMDCCR = pv - dc;
++	OST_PWMPCR  = pv;
++	clk_disable(pwm-&gt;clk);
++
++	return 0;
++}
++EXPORT_SYMBOL(pwm_config);
++
++int pwm_enable(struct pwm_device *pwm)
++{
++	int rc = 0;
++
++	if (!pwm-&gt;clk_enabled) {
++		rc = clk_enable(pwm-&gt;clk);
++		if (!rc)
++			pwm-&gt;clk_enabled = 1;
++	}
++	return rc;
++}
++EXPORT_SYMBOL(pwm_enable);
++
++void pwm_disable(struct pwm_device *pwm)
++{
++	if (pwm-&gt;clk_enabled) {
++		clk_disable(pwm-&gt;clk);
++		pwm-&gt;clk_enabled = 0;
++	}
++}
++EXPORT_SYMBOL(pwm_disable);
++
++static DEFINE_MUTEX(pwm_lock);
++static LIST_HEAD(pwm_list);
++
++struct pwm_device *pwm_request(int pwm_id, const char *label)
++{
++	struct pwm_device *pwm;
++	int found = 0;
++
++	mutex_lock(&amp;pwm_lock);
++
++	list_for_each_entry(pwm, &amp;pwm_list, node) {
++		if (pwm-&gt;pwm_id == pwm_id) {
++			found = 1;
++			break;
++		}
++	}
++
++	if (found) {
++		if (pwm-&gt;use_count == 0) {
++			pwm-&gt;use_count++;
++			pwm-&gt;label = label;
++		} else
++			pwm = ERR_PTR(-EBUSY);
++	} else
++		pwm = ERR_PTR(-ENOENT);
++
++	mutex_unlock(&amp;pwm_lock);
++	return pwm;
++}
++EXPORT_SYMBOL(pwm_request);
++
++void pwm_free(struct pwm_device *pwm)
++{
++	mutex_lock(&amp;pwm_lock);
++
++	if (pwm-&gt;use_count) {
++		pwm-&gt;use_count--;
++		pwm-&gt;label = NULL;
++	} else
++		pr_warning("PWM device already freed\n");
++
++	mutex_unlock(&amp;pwm_lock);
++}
++EXPORT_SYMBOL(pwm_free);
++
++static inline void __add_pwm(struct pwm_device *pwm)
++{
++	mutex_lock(&amp;pwm_lock);
++	list_add_tail(&amp;pwm-&gt;node, &amp;pwm_list);
++	mutex_unlock(&amp;pwm_lock);
++}
++
++static struct pwm_device *pwm_probe(struct platform_device *pdev,
++		unsigned int pwm_id, struct pwm_device *parent_pwm)
++{
++	struct pwm_device *pwm;
++	struct resource *r;
++	int ret = 0;
++
++	pwm = kzalloc(sizeof(struct pwm_device), GFP_KERNEL);
++	if (pwm == NULL) {
++		dev_err(&amp;pdev-&gt;dev, "failed to allocate memory\n");
++		return ERR_PTR(-ENOMEM);
++	}
++
++	pwm-&gt;clk = clk_get(NULL, "OST_CLK");
++	if (IS_ERR(pwm-&gt;clk)) {
++		ret = PTR_ERR(pwm-&gt;clk);
++		goto err_free;
++	}
++	pwm-&gt;clk_enabled = 0;
++
++	pwm-&gt;use_count = 0;
++	pwm-&gt;pwm_id = pwm_id;
++	pwm-&gt;pdev = pdev;
++
++	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (r == NULL) {
++		dev_err(&amp;pdev-&gt;dev, "no memory resource defined\n");
++		ret = -ENODEV;
++		goto err_free_clk;
++	}
++
++	r = request_mem_region(r-&gt;start, resource_size(r), pdev-&gt;name);
++	if (r == NULL) {
++		dev_err(&amp;pdev-&gt;dev, "failed to request memory resource\n");
++		ret = -EBUSY;
++		goto err_free_clk;
++	}
++
++	__add_pwm(pwm);
++	platform_set_drvdata(pdev, pwm);
++	return pwm;
++
++err_free_clk:
++	clk_put(pwm-&gt;clk);
++err_free:
++	kfree(pwm);
++	return ERR_PTR(ret);
++}
++
++static int __devinit puv3_pwm_probe(struct platform_device *pdev)
++{
++	struct pwm_device *pwm = pwm_probe(pdev, pdev-&gt;id, NULL);
++
++	if (IS_ERR(pwm))
++		return PTR_ERR(pwm);
++
++	return 0;
++}
++
++static int __devexit pwm_remove(struct platform_device *pdev)
++{
++	struct pwm_device *pwm;
++	struct resource *r;
++
++	pwm = platform_get_drvdata(pdev);
++	if (pwm == NULL)
++		return -ENODEV;
++
++	mutex_lock(&amp;pwm_lock);
++	list_del(&amp;pwm-&gt;node);
++	mutex_unlock(&amp;pwm_lock);
++
++	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	release_mem_region(r-&gt;start, resource_size(r));
++
++	clk_put(pwm-&gt;clk);
++	kfree(pwm);
++	return 0;
++}
++
++static struct platform_driver puv3_pwm_driver = {
++	.driver		= {
++		.name	= "PKUnity-v3-PWM",
++	},
++	.probe		= puv3_pwm_probe,
++	.remove		= __devexit_p(pwm_remove),
++};
++
++static int __init pwm_init(void)
++{
++	int ret = 0;
++
++	ret = platform_driver_register(&amp;puv3_pwm_driver);
++	if (ret) {
++		printk(KERN_ERR "failed to register puv3_pwm_driver\n");
++		return ret;
++	}
++
++	return ret;
++}
++arch_initcall(pwm_init);
++
++static void __exit pwm_exit(void)
++{
++	platform_driver_unregister(&amp;puv3_pwm_driver);
++}
++module_exit(pwm_exit);
++
++MODULE_LICENSE("GPL v2");
+diff --git a/arch/unicore32/kernel/rtc.c b/arch/unicore32/kernel/rtc.c
+new file mode 100644
+index 000000000000..5e4db4158589
+--- /dev/null
++++ b/arch/unicore32/kernel/rtc.c
+@@ -0,0 +1,380 @@
++/*
++ * linux/arch/unicore32/kernel/rtc.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include &lt;linux/module.h&gt;
++#include &lt;linux/fs.h&gt;
++#include &lt;linux/string.h&gt;
++#include &lt;linux/init.h&gt;
++#include &lt;linux/platform_device.h&gt;
++#include &lt;linux/interrupt.h&gt;
++#include &lt;linux/rtc.h&gt;
++#include &lt;linux/bcd.h&gt;
++#include &lt;linux/clk.h&gt;
++#include &lt;linux/log2.h&gt;
++#include &lt;linux/slab.h&gt;
++#include &lt;linux/uaccess.h&gt;
++#include &lt;linux/io.h&gt;
++
++#include &lt;asm/irq.h&gt;
++#include &lt;mach/hardware.h&gt;
++
++static struct resource *puv3_rtc_mem;
++
++static int puv3_rtc_alarmno = IRQ_RTCAlarm;
++static int puv3_rtc_tickno  = IRQ_RTC;
++
++static DEFINE_SPINLOCK(puv3_rtc_pie_lock);
++
++/* IRQ Handlers */
++
++static irqreturn_t puv3_rtc_alarmirq(int irq, void *id)
++{
++	struct rtc_device *rdev = id;
++
++	RTC_RTSR |= RTC_RTSR_AL;
++	rtc_update_irq(rdev, 1, RTC_AF | RTC_IRQF);
++	return IRQ_HANDLED;
++}
++
++static irqreturn_t puv3_rtc_tickirq(int irq, void *id)
++{
++	struct rtc_device *rdev = id;
++
++	RTC_RTSR |= RTC_RTSR_HZ;
++	rtc_update_irq(rdev, 1, RTC_PF | RTC_IRQF);
++	return IRQ_HANDLED;
++}
++
++/* Update control registers */
++static void puv3_rtc_setaie(int to)
++{
++	unsigned int tmp;
++
++	pr_debug("%s: aie=%d\n", __func__, to);
++
++	tmp = RTC_RTSR &amp; ~RTC_RTSR_ALE;
++
++	if (to)
++		tmp |= RTC_RTSR_ALE;
++
++	RTC_RTSR = tmp;
++}
++
++static int puv3_rtc_setpie(struct device *dev, int enabled)
++{
++	unsigned int tmp;
++
++	pr_debug("%s: pie=%d\n", __func__, enabled);
++
++	spin_lock_irq(&amp;puv3_rtc_pie_lock);
++	tmp = RTC_RTSR &amp; ~RTC_RTSR_HZE;
++
++	if (enabled)
++		tmp |= RTC_RTSR_HZE;
++
++	RTC_RTSR = tmp;
++	spin_unlock_irq(&amp;puv3_rtc_pie_lock);
++
++	return 0;
++}
++
++static int puv3_rtc_setfreq(struct device *dev, int freq)
++{
++	return 0;
++}
++
++/* Time read/write */
++
++static int puv3_rtc_gettime(struct device *dev, struct rtc_time *rtc_tm)
++{
++	rtc_time_to_tm(RTC_RCNR, rtc_tm);
++
++	pr_debug("read time %02x.%02x.%02x %02x/%02x/%02x\n",
++		 rtc_tm-&gt;tm_year, rtc_tm-&gt;tm_mon, rtc_tm-&gt;tm_mday,
++		 rtc_tm-&gt;tm_hour, rtc_tm-&gt;tm_min, rtc_tm-&gt;tm_sec);
++
++	return 0;
++}
++
++static int puv3_rtc_settime(struct device *dev, struct rtc_time *tm)
++{
++	unsigned long rtc_count = 0;
++
++	pr_debug("set time %02d.%02d.%02d %02d/%02d/%02d\n",
++		 tm-&gt;tm_year, tm-&gt;tm_mon, tm-&gt;tm_mday,
++		 tm-&gt;tm_hour, tm-&gt;tm_min, tm-&gt;tm_sec);
++
++	rtc_tm_to_time(tm, &amp;rtc_count);
++	RTC_RCNR = rtc_count;
++
++	return 0;
++}
++
++static int puv3_rtc_getalarm(struct device *dev, struct rtc_wkalrm *alrm)
++{
++	struct rtc_time *alm_tm = &amp;alrm-&gt;time;
++
++	rtc_time_to_tm(RTC_RTAR, alm_tm);
++
++	alrm-&gt;enabled = RTC_RTSR &amp; RTC_RTSR_ALE;
++
++	pr_debug("read alarm %02x %02x.%02x.%02x %02x/%02x/%02x\n",
++		 alrm-&gt;enabled,
++		 alm_tm-&gt;tm_year, alm_tm-&gt;tm_mon, alm_tm-&gt;tm_mday,
++		 alm_tm-&gt;tm_hour, alm_tm-&gt;tm_min, alm_tm-&gt;tm_sec);
++
++	return 0;
++}
++
++static int puv3_rtc_setalarm(struct device *dev, struct rtc_wkalrm *alrm)
++{
++	struct rtc_time *tm = &amp;alrm-&gt;time;
++	unsigned long rtcalarm_count = 0;
++
++	pr_debug("puv3_rtc_setalarm: %d, %02x/%02x/%02x %02x.%02x.%02x\n",
++		 alrm-&gt;enabled,
++		 tm-&gt;tm_mday &amp; 0xff, tm-&gt;tm_mon &amp; 0xff, tm-&gt;tm_year &amp; 0xff,
++		 tm-&gt;tm_hour &amp; 0xff, tm-&gt;tm_min &amp; 0xff, tm-&gt;tm_sec);
++
++	rtc_tm_to_time(tm, &amp;rtcalarm_count);
++	RTC_RTAR = rtcalarm_count;
++
++	puv3_rtc_setaie(alrm-&gt;enabled);
++
++	if (alrm-&gt;enabled)
++		enable_irq_wake(puv3_rtc_alarmno);
++	else
++		disable_irq_wake(puv3_rtc_alarmno);
++
++	return 0;
++}
++
++static int puv3_rtc_proc(struct device *dev, struct seq_file *seq)
++{
++	seq_printf(seq, "periodic_IRQ\t: %s\n",
++		     (RTC_RTSR &amp; RTC_RTSR_HZE) ? "yes" : "no");
++	return 0;
++}
++
++static int puv3_rtc_open(struct device *dev)
++{
++	struct platform_device *pdev = to_platform_device(dev);
++	struct rtc_device *rtc_dev = platform_get_drvdata(pdev);
++	int ret;
++
++	ret = request_irq(puv3_rtc_alarmno, puv3_rtc_alarmirq,
++			  IRQF_DISABLED,  "pkunity-rtc alarm", rtc_dev);
++
++	if (ret) {
++		dev_err(dev, "IRQ%d error %d\n", puv3_rtc_alarmno, ret);
++		return ret;
++	}
++
++	ret = request_irq(puv3_rtc_tickno, puv3_rtc_tickirq,
++			  IRQF_DISABLED,  "pkunity-rtc tick", rtc_dev);
++
++	if (ret) {
++		dev_err(dev, "IRQ%d error %d\n", puv3_rtc_tickno, ret);
++		goto tick_err;
++	}
++
++	return ret;
++
++ tick_err:
++	free_irq(puv3_rtc_alarmno, rtc_dev);
++	return ret;
++}
++
++static void puv3_rtc_release(struct device *dev)
++{
++	struct platform_device *pdev = to_platform_device(dev);
++	struct rtc_device *rtc_dev = platform_get_drvdata(pdev);
++
++	/* do not clear AIE here, it may be needed for wake */
++
++	puv3_rtc_setpie(dev, 0);
++	free_irq(puv3_rtc_alarmno, rtc_dev);
++	free_irq(puv3_rtc_tickno, rtc_dev);
++}
++
++static const struct rtc_class_ops puv3_rtcops = {
++	.open		= puv3_rtc_open,
++	.release	= puv3_rtc_release,
++	.read_time	= puv3_rtc_gettime,
++	.set_time	= puv3_rtc_settime,
++	.read_alarm	= puv3_rtc_getalarm,
++	.set_alarm	= puv3_rtc_setalarm,
++	.irq_set_freq	= puv3_rtc_setfreq,
++	.irq_set_state	= puv3_rtc_setpie,
++	.proc	        = puv3_rtc_proc,
++};
++
++static void puv3_rtc_enable(struct platform_device *pdev, int en)
++{
++	if (!en) {
++		RTC_RTSR &amp;= ~RTC_RTSR_HZE;
++	} else {
++		/* re-enable the device, and check it is ok */
++
++		if ((RTC_RTSR &amp; RTC_RTSR_HZE) == 0) {
++			dev_info(&amp;pdev-&gt;dev, "rtc disabled, re-enabling\n");
++			RTC_RTSR |= RTC_RTSR_HZE;
++		}
++	}
++}
++
++static int puv3_rtc_remove(struct platform_device *dev)
++{
++	struct rtc_device *rtc = platform_get_drvdata(dev);
++
++	platform_set_drvdata(dev, NULL);
++	rtc_device_unregister(rtc);
++
++	puv3_rtc_setpie(&amp;dev-&gt;dev, 0);
++	puv3_rtc_setaie(0);
++
++	release_resource(puv3_rtc_mem);
++	kfree(puv3_rtc_mem);
++
++	return 0;
++}
++
++static int puv3_rtc_probe(struct platform_device *pdev)
++{
++	struct rtc_device *rtc;
++	struct resource *res;
++	int ret;
++
++	pr_debug("%s: probe=%p\n", __func__, pdev);
++
++	/* find the IRQs */
++
++	puv3_rtc_tickno = platform_get_irq(pdev, 1);
++	if (puv3_rtc_tickno &lt; 0) {
++		dev_err(&amp;pdev-&gt;dev, "no irq for rtc tick\n");
++		return -ENOENT;
++	}
++
++	puv3_rtc_alarmno = platform_get_irq(pdev, 0);
++	if (puv3_rtc_alarmno &lt; 0) {
++		dev_err(&amp;pdev-&gt;dev, "no irq for alarm\n");
++		return -ENOENT;
++	}
++
++	pr_debug("PKUnity_rtc: tick irq %d, alarm irq %d\n",
++		 puv3_rtc_tickno, puv3_rtc_alarmno);
++
++	/* get the memory region */
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (res == NULL) {
++		dev_err(&amp;pdev-&gt;dev, "failed to get memory region resource\n");
++		return -ENOENT;
++	}
++
++	puv3_rtc_mem = request_mem_region(res-&gt;start,
++					 res-&gt;end-res-&gt;start+1,
++					 pdev-&gt;name);
++
++	if (puv3_rtc_mem == NULL) {
++		dev_err(&amp;pdev-&gt;dev, "failed to reserve memory region\n");
++		ret = -ENOENT;
++		goto err_nores;
++	}
++
++	puv3_rtc_enable(pdev, 1);
++
++	puv3_rtc_setfreq(&amp;pdev-&gt;dev, 1);
++
++	/* register RTC and exit */
++
++	rtc = rtc_device_register("pkunity", &amp;pdev-&gt;dev, &amp;puv3_rtcops,
++				  THIS_MODULE);
++
++	if (IS_ERR(rtc)) {
++		dev_err(&amp;pdev-&gt;dev, "cannot attach rtc\n");
++		ret = PTR_ERR(rtc);
++		goto err_nortc;
++	}
++
++	/* platform setup code should have handled this; sigh */
++	if (!device_can_wakeup(&amp;pdev-&gt;dev))
++		device_init_wakeup(&amp;pdev-&gt;dev, 1);
++
++	platform_set_drvdata(pdev, rtc);
++	return 0;
++
++ err_nortc:
++	puv3_rtc_enable(pdev, 0);
++	release_resource(puv3_rtc_mem);
++
++ err_nores:
++	return ret;
++}
++
++#ifdef CONFIG_PM
++
++/* RTC Power management control */
++
++static int ticnt_save;
++
++static int puv3_rtc_suspend(struct platform_device *pdev, pm_message_t state)
++{
++	/* save RTAR for anyone using periodic interrupts */
++	ticnt_save = RTC_RTAR;
++	puv3_rtc_enable(pdev, 0);
++	return 0;
++}
++
++static int puv3_rtc_resume(struct platform_device *pdev)
++{
++	puv3_rtc_enable(pdev, 1);
++	RTC_RTAR = ticnt_save;
++	return 0;
++}
++#else
++#define puv3_rtc_suspend NULL
++#define puv3_rtc_resume  NULL
++#endif
++
++static struct platform_driver puv3_rtcdrv = {
++	.probe		= puv3_rtc_probe,
++	.remove		= __devexit_p(puv3_rtc_remove),
++	.suspend	= puv3_rtc_suspend,
++	.resume		= puv3_rtc_resume,
++	.driver		= {
++		.name	= "PKUnity-v3-RTC",
++		.owner	= THIS_MODULE,
++	}
++};
++
++static char __initdata banner[] = "PKUnity-v3 RTC, (c) 2009 PKUnity Co.\n";
++
++static int __init puv3_rtc_init(void)
++{
++	printk(banner);
++	return platform_driver_register(&amp;puv3_rtcdrv);
++}
++
++static void __exit puv3_rtc_exit(void)
++{
++	platform_driver_unregister(&amp;puv3_rtcdrv);
++}
++
++module_init(puv3_rtc_init);
++module_exit(puv3_rtc_exit);
++
++MODULE_DESCRIPTION("RTC Driver for the PKUnity v3 chip");
++MODULE_AUTHOR("Hu Dongliang");
++MODULE_LICENSE("GPL v2");
++
+diff --git a/arch/unicore32/kernel/time.c b/arch/unicore32/kernel/time.c
+new file mode 100644
+index 000000000000..8090d763a606
+--- /dev/null
++++ b/arch/unicore32/kernel/time.c
+@@ -0,0 +1,148 @@
++/*
++ * linux/arch/unicore32/kernel/time.c
++ *
++ * Code specific to PKUnity SoC and UniCore ISA
++ *
++ *	Maintained by GUAN Xue-tao &lt;gxt@mprc.pku.edu.cn&gt;
++ *	Copyright (C) 2001-2010 Guan Xuetao
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++#include &lt;linux/init.h&gt;
++#include &lt;linux/errno.h&gt;
++#include &lt;linux/interrupt.h&gt;
++#include &lt;linux/irq.h&gt;
++#include &lt;linux/timex.h&gt;
++#include &lt;linux/clockchips.h&gt;
++
++#include &lt;mach/hardware.h&gt;
++
++#define MIN_OSCR_DELTA 2
++
++static irqreturn_t puv3_ost0_interrupt(int irq, void *dev_id)
++{
++	struct clock_event_device *c = dev_id;
++
++	/* Disarm the compare/match, signal the event. */
++	OST_OIER &amp;= ~OST_OIER_E0;
++	OST_OSSR &amp;= ~OST_OSSR_M0;
++	c-&gt;event_handler(c);
++
++	return IRQ_HANDLED;
++}
++
++static int
++puv3_osmr0_set_next_event(unsigned long delta, struct clock_event_device *c)
++{
++	unsigned long next, oscr;
++
++	OST_OIER |= OST_OIER_E0;
++	next = OST_OSCR + delta;
++	OST_OSMR0 = next;
++	oscr = OST_OSCR;
++
++	return (signed)(next - oscr) &lt;= MIN_OSCR_DELTA ? -ETIME : 0;
++}
++
++static void
++puv3_osmr0_set_mode(enum clock_event_mode mode, struct clock_event_device *c)
++{
++	switch (mode) {
++	case CLOCK_EVT_MODE_ONESHOT:
++	case CLOCK_EVT_MODE_UNUSED:
++	case CLOCK_EVT_MODE_SHUTDOWN:
++		OST_OIER &amp;= ~OST_OIER_E0;
++		OST_OSSR &amp;= ~OST_OSSR_M0;
++		break;
++
++	case CLOCK_EVT_MODE_RESUME:
++	case CLOCK_EVT_MODE_PERIODIC:
++		break;
++	}
++}
++
++static struct clock_event_device ckevt_puv3_osmr0 = {
++	.name		= "osmr0",
++	.features	= CLOCK_EVT_FEAT_ONESHOT,
++#ifdef CONFIG_ARCH_FPGA
++	.shift		= 18, /* correct shift val: 16, but warn_on_slowpath */
++#else
++	.shift          = 30,
++#endif
++	.rating		= 200,
++	.set_next_event	= puv3_osmr0_set_next_event,
++	.set_mode	= puv3_osmr0_set_mode,
++};
++
++static cycle_t puv3_read_oscr(struct clocksource *cs)
++{
++	return OST_OSCR;
++}
++
++static struct clocksource cksrc_puv3_oscr = {
++	.name		= "oscr",
++	.rating		= 200,
++	.read		= puv3_read_oscr,
++	.mask		= CLOCKSOURCE_MASK(32),
++	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
++};
++
++static struct irqaction puv3_timer_irq = {
++	.name		= "ost0",
++	.flags		= IRQF_DISABLED | IRQF_TIMER | IRQF_IRQPOLL,
++	.handler	= puv3_ost0_interrupt,
++	.dev_id		= &amp;ckevt_puv3_osmr0,
++};
++
++void __init time_init(void)
++{
++	OST_OIER = 0;		/* disable any timer interrupts */
++	OST_OSSR = 0;		/* clear status on all timers */
++
++	ckevt_puv3_osmr0.mult =
++		div_sc(CLOCK_TICK_RATE, NSEC_PER_SEC, ckevt_puv3_osmr0.shift);
++	ckevt_puv3_osmr0.max_delta_ns =
++		clockevent_delta2ns(0x7fffffff, &amp;ckevt_puv3_osmr0);
++	ckevt_puv3_osmr0.min_delta_ns =
++		clockevent_delta2ns(MIN_OSCR_DELTA * 2, &amp;ckevt_puv3_osmr0) + 1;
++	ckevt_puv3_osmr0.cpumask = cpumask_of(0);
++
++	setup_irq(IRQ_TIMER0, &amp;puv3_timer_irq);
++
++	clocksource_register_hz(&amp;cksrc_puv3_oscr, CLOCK_TICK_RATE);
++	clockevents_register_device(&amp;ckevt_puv3_osmr0);
++}
++
++#ifdef CONFIG_PM
++unsigned long osmr[4], oier;
++
++void puv3_timer_suspend(void)
++{
++	osmr[0] = OST_OSMR0;
++	osmr[1] = OST_OSMR1;
++	osmr[2] = OST_OSMR2;
++	osmr[3] = OST_OSMR3;
++	oier = OST_OIER;
++}
++
++void puv3_timer_resume(void)
++{
++	OST_OSSR = 0;
++	OST_OSMR0 = osmr[0];
++	OST_OSMR1 = osmr[1];
++	OST_OSMR2 = osmr[2];
++	OST_OSMR3 = osmr[3];
++	OST_OIER = oier;
++
++	/*
++	 * OSMR0 is the system timer: make sure OSCR is sufficiently behind
++	 */
++	OST_OSCR = OST_OSMR0 - LATCH;
++}
++#else
++void puv3_timer_suspend(void) { };
++void puv3_timer_resume(void) { };
++#endif
++</pre>
+    <div class="pagination">
+        <a href='11_7.html'>&lt;&lt;Prev</a><a href='11.html'>1</a><a href='11_2.html'>2</a><a href='11_3.html'>3</a><a href='11_4.html'>4</a><a href='11_5.html'>5</a><a href='11_6.html'>6</a><a href='11_7.html'>7</a><span>[8]</span><a href='11_9.html'>9</a><a href='11_10.html'>10</a><a href='11_9.html'>Next&gt;&gt;</a>
+    <div>
+</body>

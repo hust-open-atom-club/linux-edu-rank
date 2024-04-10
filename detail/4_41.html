@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_40.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><span>[41]</span><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_42.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 6fa02839bf9412e18e773d04e96182b4cd0b5d57
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Nov 12 16:05:03 2007 -0500
+
+    nfsd4: recheck for secure ports in fh_verify
+    
+    As with commit 7fc90ec93a5eb71f4b08403baf5ba7176b3ec6b1 ("knfsd: nfsd:
+    call nfsd_setuser() on fh_compose(), fix nfsd4 permissions problem")
+    this is a case where we need to redo a security check in fh_verify()
+    even though the filehandle already has an associated dentry--if the
+    filehandle was created by fh_compose() in an earlier operation of the
+    nfsv4 compound, then we may not have done these checks yet.
+    
+    Without this fix it is possible, for example, to traverse from an export
+    without the secure ports requirement to one with it in a single
+    compound, and bypass the secure port check on the new export.
+    
+    While we're here, fix up some minor style problems and change a printk()
+    to a dprintk(), to make it harder for random unprivileged users to spam
+    the logs.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Reviewed-By: NeilBrown &lt;neilb@suse.de&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/nfsfh.c b/fs/nfsd/nfsfh.c
+index 4f712e970584..468f17a78441 100644
+--- a/fs/nfsd/nfsfh.c
++++ b/fs/nfsd/nfsfh.c
+@@ -95,6 +95,22 @@ nfsd_mode_check(struct svc_rqst *rqstp, umode_t mode, int type)
+ 	return 0;
+ }
+ 
++static __be32 nfsd_setuser_and_check_port(struct svc_rqst *rqstp,
++					  struct svc_export *exp)
++{
++	/* Check if the request originated from a secure port. */
++	if (!rqstp-&gt;rq_secure &amp;&amp; EX_SECURE(exp)) {
++		char buf[RPC_MAX_ADDRBUFLEN];
++		dprintk(KERN_WARNING
++		       "nfsd: request from insecure port %s!\n",
++		       svc_print_addr(rqstp, buf, sizeof(buf)));
++		return nfserr_perm;
++	}
++
++	/* Set user creds for this exportpoint */
++	return nfserrno(nfsd_setuser(rqstp, exp));
++}
++
+ /*
+  * Perform sanity checks on the dentry in a client's file handle.
+  *
+@@ -167,18 +183,7 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 			goto out;
+ 		}
+ 
+-		/* Check if the request originated from a secure port. */
+-		error = nfserr_perm;
+-		if (!rqstp-&gt;rq_secure &amp;&amp; EX_SECURE(exp)) {
+-			char buf[RPC_MAX_ADDRBUFLEN];
+-			printk(KERN_WARNING
+-			       "nfsd: request from insecure port %s!\n",
+-			       svc_print_addr(rqstp, buf, sizeof(buf)));
+-			goto out;
+-		}
+-
+-		/* Set user creds for this exportpoint */
+-		error = nfserrno(nfsd_setuser(rqstp, exp));
++		error = nfsd_setuser_and_check_port(rqstp, exp);
+ 		if (error)
+ 			goto out;
+ 
+@@ -227,18 +232,22 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 		fhp-&gt;fh_export = exp;
+ 		nfsd_nr_verified++;
+ 	} else {
+-		/* just rechecking permissions
+-		 * (e.g. nfsproc_create calls fh_verify, then nfsd_create does as well)
++		/*
++		 * just rechecking permissions
++		 * (e.g. nfsproc_create calls fh_verify, then nfsd_create
++		 * does as well)
+ 		 */
+ 		dprintk("nfsd: fh_verify - just checking\n");
+ 		dentry = fhp-&gt;fh_dentry;
+ 		exp = fhp-&gt;fh_export;
+-		/* Set user creds for this exportpoint; necessary even
++		/*
++		 * Set user creds for this exportpoint; necessary even
+ 		 * in the "just checking" case because this may be a
+ 		 * filehandle that was created by fh_compose, and that
+ 		 * is about to be used in another nfsv4 compound
+-		 * operation */
+-		error = nfserrno(nfsd_setuser(rqstp, exp));
++		 * operation.
++		 */
++		error = nfsd_setuser_and_check_port(rqstp, exp);
+ 		if (error)
+ 			goto out;
+ 	}</pre><hr><pre>commit ac8587dcb58e40dd336d99d60f852041e06cc3dd
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Nov 12 16:05:02 2007 -0500
+
+    knfsd: fix spurious EINVAL errors on first access of new filesystem
+    
+    The v2/v3 acl code in nfsd is translating any return from fh_verify() to
+    nfserr_inval.  This is particularly unfortunate in the case of an
+    nfserr_dropit return, which is an internal error meant to indicate to
+    callers that this request has been deferred and should just be dropped
+    pending the results of an upcall to mountd.
+    
+    Thanks to Roland &lt;devzero@web.de&gt; for bug report and data collection.
+    
+    Cc: Roland &lt;devzero@web.de&gt;
+    Acked-by: Andreas Gruenbacher &lt;agruen@suse.de&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Reviewed-By: NeilBrown &lt;neilb@suse.de&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/nfs2acl.c b/fs/nfsd/nfs2acl.c
+index b61742885011..0e5fa11e6b44 100644
+--- a/fs/nfsd/nfs2acl.c
++++ b/fs/nfsd/nfs2acl.c
+@@ -41,7 +41,7 @@ static __be32 nfsacld_proc_getacl(struct svc_rqst * rqstp,
+ 
+ 	fh = fh_copy(&amp;resp-&gt;fh, &amp;argp-&gt;fh);
+ 	if ((nfserr = fh_verify(rqstp, &amp;resp-&gt;fh, 0, MAY_NOP)))
+-		RETURN_STATUS(nfserr_inval);
++		RETURN_STATUS(nfserr);
+ 
+ 	if (argp-&gt;mask &amp; ~(NFS_ACL|NFS_ACLCNT|NFS_DFACL|NFS_DFACLCNT))
+ 		RETURN_STATUS(nfserr_inval);
+diff --git a/fs/nfsd/nfs3acl.c b/fs/nfsd/nfs3acl.c
+index 3e3f2de82c36..b647f2f872dc 100644
+--- a/fs/nfsd/nfs3acl.c
++++ b/fs/nfsd/nfs3acl.c
+@@ -37,7 +37,7 @@ static __be32 nfsd3_proc_getacl(struct svc_rqst * rqstp,
+ 
+ 	fh = fh_copy(&amp;resp-&gt;fh, &amp;argp-&gt;fh);
+ 	if ((nfserr = fh_verify(rqstp, &amp;resp-&gt;fh, 0, MAY_NOP)))
+-		RETURN_STATUS(nfserr_inval);
++		RETURN_STATUS(nfserr);
+ 
+ 	if (argp-&gt;mask &amp; ~(NFS_ACL|NFS_ACLCNT|NFS_DFACL|NFS_DFACLCNT))
+ 		RETURN_STATUS(nfserr_inval);</pre><hr><pre>commit 97855b49b6bac0bd25f16b017883634d13591d00
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Oct 30 11:20:02 2007 -0400
+
+    locks: fix possible infinite loop in posix deadlock detection
+    
+    It's currently possible to send posix_locks_deadlock() into an infinite
+    loop (under the BKL).
+    
+    For now, fix this just by bailing out after a few iterations.  We may
+    want to fix this in a way that better clarifies the semantics of
+    deadlock detection.  But that will take more time, and this minimal fix
+    is probably adequate for any realistic scenario, and is simple enough to
+    be appropriate for applying to stable kernels now.
+    
+    Thanks to George Davis for reporting the problem.
+    
+    Cc: "George G. Davis" &lt;gdavis@mvista.com&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Acked-by: Alan Cox &lt;alan@redhat.com&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/locks.c b/fs/locks.c
+index 0127a2846819..8b8388eca05e 100644
+--- a/fs/locks.c
++++ b/fs/locks.c
+@@ -696,17 +696,28 @@ EXPORT_SYMBOL(posix_test_lock);
+  * Note: the above assumption may not be true when handling lock requests
+  * from a broken NFS client. But broken NFS clients have a lot more to
+  * worry about than proper deadlock detection anyway... --okir
++ *
++ * However, the failure of this assumption (also possible in the case of
++ * multiple tasks sharing the same open file table) also means there's no
++ * guarantee that the loop below will terminate.  As a hack, we give up
++ * after a few iterations.
+  */
++
++#define MAX_DEADLK_ITERATIONS 10
++
+ static int posix_locks_deadlock(struct file_lock *caller_fl,
+ 				struct file_lock *block_fl)
+ {
+ 	struct file_lock *fl;
++	int i = 0;
+ 
+ next_task:
+ 	if (posix_same_owner(caller_fl, block_fl))
+ 		return 1;
+ 	list_for_each_entry(fl, &amp;blocked_list, fl_link) {
+ 		if (posix_same_owner(fl, block_fl)) {
++			if (i++ &gt; MAX_DEADLK_ITERATIONS)
++				return 0;
+ 			fl = fl-&gt;fl_next;
+ 			block_fl = fl;
+ 			goto next_task;</pre><hr><pre>commit bc2a3f86f46569fb091792867ce67c9ab24dfd0f
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Oct 29 14:37:18 2007 -0700
+
+    sunrpc: fix rpc debugging
+    
+    Commit baa3a2a0d24ebcf1c451bec8e5bee3d3467f4cbb ("sysctl: remove broken
+    sunrpc debug binary sysctls"), by removing initialization of the
+    ctl_name field, broke this conditional, preventing the display of
+    rpc_tasks that you previously got when turning on rpc debugging.
+    
+    [akpm@linux-foundation.org: coding-style fixes]
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Acked-by: "Eric W. Biederman" &lt;ebiederm@xmission.com&gt;
+    Cc: "David S. Miller" &lt;davem@davemloft.net&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/net/sunrpc/sysctl.c b/net/sunrpc/sysctl.c
+index 864b541bbf51..2be714e9b382 100644
+--- a/net/sunrpc/sysctl.c
++++ b/net/sunrpc/sysctl.c
+@@ -87,9 +87,8 @@ proc_dodebug(ctl_table *table, int write, struct file *file,
+ 			left--, s++;
+ 		*(unsigned int *) table-&gt;data = value;
+ 		/* Display the RPC tasks on writing to rpc_debug */
+-		if (table-&gt;ctl_name == CTL_RPCDEBUG) {
++		if (strcmp(table-&gt;procname, "rpc_debug") == 0)
+ 			rpc_show_tasks();
+-		}
+ 	} else {
+ 		if (!access_ok(VERIFY_WRITE, buffer, left))
+ 			return -EFAULT;</pre><hr><pre>commit 521c2a43b2e72dd5c9ab1b1ae7f894ba8a58779d
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Oct 30 01:07:15 2007 -0700
+
+    [SUNRPC]: fix rpc debugging
+    
+    Commit baa3a2a0d24ebcf1c451bec8e5bee3d3467f4cbb, by removing initialization
+    of the ctl_name field, broke this conditional, preventing the display of
+    rpc_tasks that you previously got when turning on rpc debugging.
+    
+    [akpm@linux-foundation.org: coding-style fixes]
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Acked-by: "Eric W. Biederman" &lt;ebiederm@xmission.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/sunrpc/sysctl.c b/net/sunrpc/sysctl.c
+index 864b541bbf51..2be714e9b382 100644
+--- a/net/sunrpc/sysctl.c
++++ b/net/sunrpc/sysctl.c
+@@ -87,9 +87,8 @@ proc_dodebug(ctl_table *table, int write, struct file *file,
+ 			left--, s++;
+ 		*(unsigned int *) table-&gt;data = value;
+ 		/* Display the RPC tasks on writing to rpc_debug */
+-		if (table-&gt;ctl_name == CTL_RPCDEBUG) {
++		if (strcmp(table-&gt;procname, "rpc_debug") == 0)
+ 			rpc_show_tasks();
+-		}
+ 	} else {
+ 		if (!access_ok(VERIFY_WRITE, buffer, left))
+ 			return -EFAULT;</pre><hr><pre>commit 321bcf92163038e2b96fd3bf9bc29f755c81d9ef
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Oct 21 16:41:38 2007 -0700
+
+    dcache: don't expose uninitialized memory in /proc/&lt;pid&gt;/fd/&lt;fd&gt;
+    
+    Well, it's not especially important that target-&gt;d_iname get the contents
+    of dentry-&gt;d_iname, but it's important that it get initialized with
+    *something*, otherwise we're just exposing some random piece of memory to
+    anyone who reads the link at /proc/&lt;pid&gt;/fd/&lt;fd&gt; for the deleted file, when
+    it's still held open by someone.
+    
+    I've run a test program that copies a short (&lt;36 character) name ontop of a
+    long (&gt;=36 character) name and see that the first time I run it, without
+    this patch, I get unpredicatable results out of /proc/&lt;pid&gt;/fd/&lt;fd&gt;.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Al Viro &lt;viro@zeniv.linux.org.uk&gt;
+    Cc: Christoph Hellwig &lt;hch@lst.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/dcache.c b/fs/dcache.c
+index 2bb3f7ac683b..d9ca1e5ceb92 100644
+--- a/fs/dcache.c
++++ b/fs/dcache.c
+@@ -1479,6 +1479,8 @@ static void switch_names(struct dentry *dentry, struct dentry *target)
+ 			 * dentry:internal, target:external.  Steal target's
+ 			 * storage and make target internal.
+ 			 */
++			memcpy(target-&gt;d_iname, dentry-&gt;d_name.name,
++					dentry-&gt;d_name.len + 1);
+ 			dentry-&gt;d_name.name = target-&gt;d_name.name;
+ 			target-&gt;d_name.name = target-&gt;d_iname;
+ 		}</pre><hr><pre>commit 5e7fc436426b1f9e106f511a049de91c82ec2c53
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Oct 2 14:18:12 2007 -0400
+
+    nfsd: remove IS_ISMNDLCK macro
+    
+    This macro is only used in one place; in this place it seems simpler to
+    put open-code it and move the comment to where it's used.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 9152f87eea18..085ded6f6d3a 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -61,12 +61,6 @@
+ #define NFSDDBG_FACILITY		NFSDDBG_FILEOP
+ 
+ 
+-/* We must ignore files (but only files) which might have mandatory
+- * locks on them because there is no way to know if the accesser has
+- * the lock.
+- */
+-#define IS_ISMNDLK(i)	(S_ISREG((i)-&gt;i_mode) &amp;&amp; mandatory_lock(i))
+-
+ /*
+  * This is a cache of readahead params that help us choose the proper
+  * readahead strategy. Initially, we set all readahead parameters to 0
+@@ -680,7 +674,12 @@ nfsd_open(struct svc_rqst *rqstp, struct svc_fh *fhp, int type,
+ 	err = nfserr_perm;
+ 	if (IS_APPEND(inode) &amp;&amp; (access &amp; MAY_WRITE))
+ 		goto out;
+-	if (IS_ISMNDLK(inode))
++	/*
++	 * We must ignore files (but only files) which might have mandatory
++	 * locks on them because there is no way to know if the accesser has
++	 * the lock.
++	 */
++	if (S_ISREG((inode)-&gt;i_mode) &amp;&amp; mandatory_lock(inode))
+ 		goto out;
+ 
+ 	if (!inode-&gt;i_fop)</pre><hr><pre>commit 98257af5a2ad0c5b502ebd07094d9fd8ce87acef
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sun Sep 30 22:18:55 2007 -0400
+
+    Documentation: move locks.txt in filesystems/
+    
+    This documentation (about file locking) belongs in filesystems/.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/Documentation/00-INDEX b/Documentation/00-INDEX
+index 910473cb1c1c..cc10ce7dc339 100644
+--- a/Documentation/00-INDEX
++++ b/Documentation/00-INDEX
+@@ -230,8 +230,6 @@ local_ops.txt
+ 	- semantics and behavior of local atomic operations.
+ lockdep-design.txt
+ 	- documentation on the runtime locking correctness validator.
+-locks.txt
+-	- info on file locking implementations, flock() vs. fcntl(), etc.
+ logo.gif
+ 	- full colour GIF image of Linux logo (penguin - Tux).
+ logo.txt
+diff --git a/Documentation/filesystems/00-INDEX b/Documentation/filesystems/00-INDEX
+index e801076812a4..599593a17067 100644
+--- a/Documentation/filesystems/00-INDEX
++++ b/Documentation/filesystems/00-INDEX
+@@ -52,6 +52,8 @@ isofs.txt
+ 	- info and mount options for the ISO 9660 (CDROM) filesystem.
+ jfs.txt
+ 	- info and mount options for the JFS filesystem.
++locks.txt
++	- info on file locking implementations, flock() vs. fcntl(), etc.
+ mandatory-locking.txt
+ 	- info on the Linux implementation of Sys V mandatory file locking.
+ ncpfs.txt
+diff --git a/Documentation/locks.txt b/Documentation/filesystems/locks.txt
+similarity index 100%
+rename from Documentation/locks.txt
+rename to Documentation/filesystems/locks.txt</pre><hr><pre>commit 9efa68ed079af97f4e9477eadef567ffe64f7afc
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Sep 25 11:57:19 2007 -0400
+
+    locks: add warning about mandatory locking races
+    
+    The mandatory file locking implementation has long-standing races that
+    probably render it useless.  I know of no plans to fix them.  Till we
+    do, we should at least warn people.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/Documentation/filesystems/mandatory-locking.txt b/Documentation/filesystems/mandatory-locking.txt
+index bc449d49eee5..0979d1d2ca8b 100644
+--- a/Documentation/filesystems/mandatory-locking.txt
++++ b/Documentation/filesystems/mandatory-locking.txt
+@@ -3,7 +3,26 @@
+ 		Andy Walker &lt;andy@lysaker.kvaerner.no&gt;
+ 
+ 			   15 April 1996
+-
++		     (Updated September 2007)
++
++0. Why you should avoid mandatory locking
++-----------------------------------------
++
++The Linux implementation is prey to a number of difficult-to-fix race
++conditions which in practice make it not dependable:
++
++	- The write system call checks for a mandatory lock only once
++	  at its start.  It is therefore possible for a lock request to
++	  be granted after this check but before the data is modified.
++	  A process may then see file data change even while a mandatory
++	  lock was held.
++	- Similarly, an exclusive lock may be granted on a file after
++	  the kernel has decided to proceed with a read, but before the
++	  read has actually completed, and the reading process may see
++	  the file data in a state which should not have been visible
++	  to it.
++	- Similar races make the claimed mutual exclusion between lock
++	  and mmap similarly unreliable.
+ 
+ 1. What is  mandatory locking?
+ ------------------------------</pre><hr><pre>commit 4f3b19ca41fbe572e3d44caf516c215b286fe2a6
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Mon Sep 24 18:52:09 2007 -0400
+
+    Documentation: move mandatory locking documentation to filesystems/
+    
+    Shouldn't this mandatory-locking documentation be in the
+    Documentation/filesystems directory?
+    
+    Give it a more descriptive name while we're at it, and update 00-INDEX
+    with a more inclusive description of Documentation/filesystems (which
+    has already talked about more than just individual filesystems).
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Acked-by: Randy Dunlap &lt;randy.dunlap@oracle.com&gt;
+
+diff --git a/Documentation/00-INDEX b/Documentation/00-INDEX
+index 43e89b1537d9..910473cb1c1c 100644
+--- a/Documentation/00-INDEX
++++ b/Documentation/00-INDEX
+@@ -145,7 +145,7 @@ fb/
+ feature-removal-schedule.txt
+ 	- list of files and features that are going to be removed.
+ filesystems/
+-	- directory with info on the various filesystems that Linux supports.
++	- info on the vfs and the various filesystems that Linux supports.
+ firmware_class/
+ 	- request_firmware() hotplug interface info.
+ floppy.txt
+@@ -240,8 +240,6 @@ m68k/
+ 	- directory with info about Linux on Motorola 68k architecture.
+ magic-number.txt
+ 	- list of magic numbers used to mark/protect kernel data structures.
+-mandatory.txt
+-	- info on the Linux implementation of Sys V mandatory file locking.
+ mca.txt
+ 	- info on supporting Micro Channel Architecture (e.g. PS/2) systems.
+ md.txt
+diff --git a/Documentation/filesystems/00-INDEX b/Documentation/filesystems/00-INDEX
+index 59db1bca7027..e801076812a4 100644
+--- a/Documentation/filesystems/00-INDEX
++++ b/Documentation/filesystems/00-INDEX
+@@ -52,6 +52,8 @@ isofs.txt
+ 	- info and mount options for the ISO 9660 (CDROM) filesystem.
+ jfs.txt
+ 	- info and mount options for the JFS filesystem.
++mandatory-locking.txt
++	- info on the Linux implementation of Sys V mandatory file locking.
+ ncpfs.txt
+ 	- info on Novell Netware(tm) filesystem using NCP protocol.
+ ntfs.txt
+diff --git a/Documentation/mandatory.txt b/Documentation/filesystems/mandatory-locking.txt
+similarity index 100%
+rename from Documentation/mandatory.txt
+rename to Documentation/filesystems/mandatory-locking.txt
+diff --git a/Documentation/locks.txt b/Documentation/locks.txt
+index e3b402ef33bd..fab857accbd6 100644
+--- a/Documentation/locks.txt
++++ b/Documentation/locks.txt
+@@ -53,11 +53,11 @@ fcntl(), with all the problems that implies.
+ 1.3 Mandatory Locking As A Mount Option
+ ---------------------------------------
+ 
+-Mandatory locking, as described in 'Documentation/mandatory.txt' was prior
+-to this release a general configuration option that was valid for all
+-mounted filesystems. This had a number of inherent dangers, not the least
+-of which was the ability to freeze an NFS server by asking it to read a
+-file for which a mandatory lock existed.
++Mandatory locking, as described in 'Documentation/filesystems/mandatory.txt'
++was prior to this release a general configuration option that was valid for
++all mounted filesystems.  This had a number of inherent dangers, not the
++least of which was the ability to freeze an NFS server by asking it to read
++a file for which a mandatory lock existed.
+ 
+ From this release of the kernel, mandatory locking can be turned on and off
+ on a per-filesystem basis, using the mount options 'mand' and 'nomand'.</pre>
+    <div class="pagination">
+        <a href='4_40.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><span>[41]</span><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_42.html'>Next&gt;&gt;</a>
+    <div>
+</body>

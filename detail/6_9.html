@@ -1,0 +1,1460 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6_8.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><span>[9]</span><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_10.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit ce51c817008450ef4188471db31639d42d37a5e1
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Sun Jul 23 15:58:20 2023 +0800
+
+    scsi: iscsi: Add strlen() check in iscsi_if_set{_host}_param()
+    
+    The functions iscsi_if_set_param() and iscsi_if_set_host_param() convert an
+    nlattr payload to type char* and then call C string handling functions like
+    sscanf and kstrdup:
+    
+      char *data = (char*)ev + sizeof(*ev);
+      ...
+      sscanf(data, "%d", &amp;value);
+    
+    However, since the nlattr is provided by the user-space program and the
+    nlmsg skb is allocated with GFP_KERNEL instead of GFP_ZERO flag (see
+    netlink_alloc_large_skb() in netlink_sendmsg()), dirty data on the heap can
+    lead to an OOB access for those string handling functions.
+    
+    By investigating how the bug is introduced, we find it is really
+    interesting as the old version parsing code starting from commit
+    fd7255f51a13 ("[SCSI] iscsi: add sysfs attrs for uspace sync up") treated
+    the nlattr as integer bytes instead of string and had length check in
+    iscsi_copy_param():
+    
+      if (ev-&gt;u.set_param.len != sizeof(uint32_t))
+        BUG();
+    
+    But, since the commit a54a52caad4b ("[SCSI] iscsi: fixup set/get param
+    functions"), the code treated the nlattr as C string while forgetting to
+    add any strlen checks(), opening the possibility of an OOB access.
+    
+    Fix the potential OOB by adding the strlen() check before accessing the
+    buf. If the data passes this check, all low-level set_param handlers can
+    safely treat this buf as legal C string.
+    
+    Fixes: fd7255f51a13 ("[SCSI] iscsi: add sysfs attrs for uspace sync up")
+    Fixes: 1d9bf13a9cf9 ("[SCSI] iscsi class: add iscsi host set param event")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230723075820.3713119-1-linma@zju.edu.cn
+    Reviewed-by: Chris Leech &lt;cleech@redhat.com&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index 62b24f1c0232..3075b2ddf7a6 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -3030,6 +3030,10 @@ iscsi_if_set_param(struct iscsi_transport *transport, struct iscsi_uevent *ev, u
+ 	if (!conn || !session)
+ 		return -EINVAL;
+ 
++	/* data will be regarded as NULL-ended string, do length check */
++	if (strlen(data) &gt; ev-&gt;u.set_param.len)
++		return -EINVAL;
++
+ 	switch (ev-&gt;u.set_param.param) {
+ 	case ISCSI_PARAM_SESS_RECOVERY_TMO:
+ 		sscanf(data, "%d", &amp;value);
+@@ -3203,6 +3207,10 @@ iscsi_set_host_param(struct iscsi_transport *transport,
+ 		return -ENODEV;
+ 	}
+ 
++	/* see similar check in iscsi_if_set_param() */
++	if (strlen(data) &gt; ev-&gt;u.set_host_param.len)
++		return -EINVAL;
++
+ 	err = transport-&gt;set_host_param(shost, ev-&gt;u.set_host_param.param,
+ 					data, ev-&gt;u.set_host_param.len);
+ 	scsi_host_put(shost);</pre><hr><pre>commit 971dfcb74a800047952f5288512b9c7ddedb050a
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Tue Jul 25 10:45:29 2023 +0800
+
+    scsi: iscsi: Add length check for nlattr payload
+    
+    The current NETLINK_ISCSI netlink parsing loop checks every nlmsg to make
+    sure the length is bigger than sizeof(struct iscsi_uevent) and then calls
+    iscsi_if_recv_msg().
+    
+      nlh = nlmsg_hdr(skb);
+      if (nlh-&gt;nlmsg_len &lt; sizeof(*nlh) + sizeof(*ev) ||
+        skb-&gt;len &lt; nlh-&gt;nlmsg_len) {
+        break;
+      }
+      ...
+      err = iscsi_if_recv_msg(skb, nlh, &amp;group);
+    
+    Hence, in iscsi_if_recv_msg() the nlmsg_data can be safely converted to
+    iscsi_uevent as the length is already checked.
+    
+    However, in other cases the length of nlattr payload is not checked before
+    the payload is converted to other data structures. One example is
+    iscsi_set_path() which converts the payload to type iscsi_path without any
+    checks:
+    
+      params = (struct iscsi_path *)((char *)ev + sizeof(*ev));
+    
+    Whereas iscsi_if_transport_conn() correctly checks the pdu_len:
+    
+      pdu_len = nlh-&gt;nlmsg_len - sizeof(*nlh) - sizeof(*ev);
+      if ((ev-&gt;u.send_pdu.hdr_size &gt; pdu_len) ..
+        err = -EINVAL;
+    
+    To sum up, some code paths called in iscsi_if_recv_msg() do not check the
+    length of the data (see below picture) and directly convert the data to
+    another data structure. This could result in an out-of-bound reads and heap
+    dirty data leakage.
+    
+                 _________  nlmsg_len(nlh) _______________
+                /                                         \
+    +----------+--------------+---------------------------+
+    | nlmsghdr | iscsi_uevent |          data              |
+    +----------+--------------+---------------------------+
+                              \                          /
+                             iscsi_uevent-&gt;u.set_param.len
+    
+    Fix the issue by adding the length check before accessing it. To clean up
+    the code, an additional parameter named rlen is added. The rlen is
+    calculated at the beginning of iscsi_if_recv_msg() which avoids duplicated
+    calculation.
+    
+    Fixes: ac20c7bf070d ("[SCSI] iscsi_transport: Added Ping support")
+    Fixes: 43514774ff40 ("[SCSI] iscsi class: Add new NETLINK_ISCSI messages for cnic/bnx2i driver.")
+    Fixes: 1d9bf13a9cf9 ("[SCSI] iscsi class: add iscsi host set param event")
+    Fixes: 01cb225dad8d ("[SCSI] iscsi: add target discvery event to transport class")
+    Fixes: 264faaaa1254 ("[SCSI] iscsi: add transport end point callbacks")
+    Fixes: fd7255f51a13 ("[SCSI] iscsi: add sysfs attrs for uspace sync up")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230725024529.428311-1-linma@zju.edu.cn
+    Reviewed-by: Chris Leech &lt;cleech@redhat.com&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_iscsi.c b/drivers/scsi/scsi_transport_iscsi.c
+index e527ece12453..62b24f1c0232 100644
+--- a/drivers/scsi/scsi_transport_iscsi.c
++++ b/drivers/scsi/scsi_transport_iscsi.c
+@@ -3014,14 +3014,15 @@ iscsi_if_destroy_conn(struct iscsi_transport *transport, struct iscsi_uevent *ev
+ }
+ 
+ static int
+-iscsi_if_set_param(struct iscsi_transport *transport, struct iscsi_uevent *ev)
++iscsi_if_set_param(struct iscsi_transport *transport, struct iscsi_uevent *ev, u32 rlen)
+ {
+ 	char *data = (char*)ev + sizeof(*ev);
+ 	struct iscsi_cls_conn *conn;
+ 	struct iscsi_cls_session *session;
+ 	int err = 0, value = 0, state;
+ 
+-	if (ev-&gt;u.set_param.len &gt; PAGE_SIZE)
++	if (ev-&gt;u.set_param.len &gt; rlen ||
++	    ev-&gt;u.set_param.len &gt; PAGE_SIZE)
+ 		return -EINVAL;
+ 
+ 	session = iscsi_session_lookup(ev-&gt;u.set_param.sid);
+@@ -3118,7 +3119,7 @@ static int iscsi_if_ep_disconnect(struct iscsi_transport *transport,
+ 
+ static int
+ iscsi_if_transport_ep(struct iscsi_transport *transport,
+-		      struct iscsi_uevent *ev, int msg_type)
++		      struct iscsi_uevent *ev, int msg_type, u32 rlen)
+ {
+ 	struct iscsi_endpoint *ep;
+ 	int rc = 0;
+@@ -3126,7 +3127,10 @@ iscsi_if_transport_ep(struct iscsi_transport *transport,
+ 	switch (msg_type) {
+ 	case ISCSI_UEVENT_TRANSPORT_EP_CONNECT_THROUGH_HOST:
+ 	case ISCSI_UEVENT_TRANSPORT_EP_CONNECT:
+-		rc = iscsi_if_ep_connect(transport, ev, msg_type);
++		if (rlen &lt; sizeof(struct sockaddr))
++			rc = -EINVAL;
++		else
++			rc = iscsi_if_ep_connect(transport, ev, msg_type);
+ 		break;
+ 	case ISCSI_UEVENT_TRANSPORT_EP_POLL:
+ 		if (!transport-&gt;ep_poll)
+@@ -3150,12 +3154,15 @@ iscsi_if_transport_ep(struct iscsi_transport *transport,
+ 
+ static int
+ iscsi_tgt_dscvr(struct iscsi_transport *transport,
+-		struct iscsi_uevent *ev)
++		struct iscsi_uevent *ev, u32 rlen)
+ {
+ 	struct Scsi_Host *shost;
+ 	struct sockaddr *dst_addr;
+ 	int err;
+ 
++	if (rlen &lt; sizeof(*dst_addr))
++		return -EINVAL;
++
+ 	if (!transport-&gt;tgt_dscvr)
+ 		return -EINVAL;
+ 
+@@ -3176,7 +3183,7 @@ iscsi_tgt_dscvr(struct iscsi_transport *transport,
+ 
+ static int
+ iscsi_set_host_param(struct iscsi_transport *transport,
+-		     struct iscsi_uevent *ev)
++		     struct iscsi_uevent *ev, u32 rlen)
+ {
+ 	char *data = (char*)ev + sizeof(*ev);
+ 	struct Scsi_Host *shost;
+@@ -3185,7 +3192,8 @@ iscsi_set_host_param(struct iscsi_transport *transport,
+ 	if (!transport-&gt;set_host_param)
+ 		return -ENOSYS;
+ 
+-	if (ev-&gt;u.set_host_param.len &gt; PAGE_SIZE)
++	if (ev-&gt;u.set_host_param.len &gt; rlen ||
++	    ev-&gt;u.set_host_param.len &gt; PAGE_SIZE)
+ 		return -EINVAL;
+ 
+ 	shost = scsi_host_lookup(ev-&gt;u.set_host_param.host_no);
+@@ -3202,12 +3210,15 @@ iscsi_set_host_param(struct iscsi_transport *transport,
+ }
+ 
+ static int
+-iscsi_set_path(struct iscsi_transport *transport, struct iscsi_uevent *ev)
++iscsi_set_path(struct iscsi_transport *transport, struct iscsi_uevent *ev, u32 rlen)
+ {
+ 	struct Scsi_Host *shost;
+ 	struct iscsi_path *params;
+ 	int err;
+ 
++	if (rlen &lt; sizeof(*params))
++		return -EINVAL;
++
+ 	if (!transport-&gt;set_path)
+ 		return -ENOSYS;
+ 
+@@ -3267,12 +3278,15 @@ iscsi_set_iface_params(struct iscsi_transport *transport,
+ }
+ 
+ static int
+-iscsi_send_ping(struct iscsi_transport *transport, struct iscsi_uevent *ev)
++iscsi_send_ping(struct iscsi_transport *transport, struct iscsi_uevent *ev, u32 rlen)
+ {
+ 	struct Scsi_Host *shost;
+ 	struct sockaddr *dst_addr;
+ 	int err;
+ 
++	if (rlen &lt; sizeof(*dst_addr))
++		return -EINVAL;
++
+ 	if (!transport-&gt;send_ping)
+ 		return -ENOSYS;
+ 
+@@ -3770,13 +3784,12 @@ iscsi_get_host_stats(struct iscsi_transport *transport, struct nlmsghdr *nlh)
+ }
+ 
+ static int iscsi_if_transport_conn(struct iscsi_transport *transport,
+-				   struct nlmsghdr *nlh)
++				   struct nlmsghdr *nlh, u32 pdu_len)
+ {
+ 	struct iscsi_uevent *ev = nlmsg_data(nlh);
+ 	struct iscsi_cls_session *session;
+ 	struct iscsi_cls_conn *conn = NULL;
+ 	struct iscsi_endpoint *ep;
+-	uint32_t pdu_len;
+ 	int err = 0;
+ 
+ 	switch (nlh-&gt;nlmsg_type) {
+@@ -3861,8 +3874,6 @@ static int iscsi_if_transport_conn(struct iscsi_transport *transport,
+ 
+ 		break;
+ 	case ISCSI_UEVENT_SEND_PDU:
+-		pdu_len = nlh-&gt;nlmsg_len - sizeof(*nlh) - sizeof(*ev);
+-
+ 		if ((ev-&gt;u.send_pdu.hdr_size &gt; pdu_len) ||
+ 		    (ev-&gt;u.send_pdu.data_size &gt; (pdu_len - ev-&gt;u.send_pdu.hdr_size))) {
+ 			err = -EINVAL;
+@@ -3892,6 +3903,7 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, uint32_t *group)
+ 	struct iscsi_internal *priv;
+ 	struct iscsi_cls_session *session;
+ 	struct iscsi_endpoint *ep = NULL;
++	u32 rlen;
+ 
+ 	if (!netlink_capable(skb, CAP_SYS_ADMIN))
+ 		return -EPERM;
+@@ -3911,6 +3923,13 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, uint32_t *group)
+ 
+ 	portid = NETLINK_CB(skb).portid;
+ 
++	/*
++	 * Even though the remaining payload may not be regarded as nlattr,
++	 * (like address or something else), calculate the remaining length
++	 * here to ease following length checks.
++	 */
++	rlen = nlmsg_attrlen(nlh, sizeof(*ev));
++
+ 	switch (nlh-&gt;nlmsg_type) {
+ 	case ISCSI_UEVENT_CREATE_SESSION:
+ 		err = iscsi_if_create_session(priv, ep, ev,
+@@ -3967,7 +3986,7 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, uint32_t *group)
+ 			err = -EINVAL;
+ 		break;
+ 	case ISCSI_UEVENT_SET_PARAM:
+-		err = iscsi_if_set_param(transport, ev);
++		err = iscsi_if_set_param(transport, ev, rlen);
+ 		break;
+ 	case ISCSI_UEVENT_CREATE_CONN:
+ 	case ISCSI_UEVENT_DESTROY_CONN:
+@@ -3975,7 +3994,7 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, uint32_t *group)
+ 	case ISCSI_UEVENT_START_CONN:
+ 	case ISCSI_UEVENT_BIND_CONN:
+ 	case ISCSI_UEVENT_SEND_PDU:
+-		err = iscsi_if_transport_conn(transport, nlh);
++		err = iscsi_if_transport_conn(transport, nlh, rlen);
+ 		break;
+ 	case ISCSI_UEVENT_GET_STATS:
+ 		err = iscsi_if_get_stats(transport, nlh);
+@@ -3984,23 +4003,22 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, uint32_t *group)
+ 	case ISCSI_UEVENT_TRANSPORT_EP_POLL:
+ 	case ISCSI_UEVENT_TRANSPORT_EP_DISCONNECT:
+ 	case ISCSI_UEVENT_TRANSPORT_EP_CONNECT_THROUGH_HOST:
+-		err = iscsi_if_transport_ep(transport, ev, nlh-&gt;nlmsg_type);
++		err = iscsi_if_transport_ep(transport, ev, nlh-&gt;nlmsg_type, rlen);
+ 		break;
+ 	case ISCSI_UEVENT_TGT_DSCVR:
+-		err = iscsi_tgt_dscvr(transport, ev);
++		err = iscsi_tgt_dscvr(transport, ev, rlen);
+ 		break;
+ 	case ISCSI_UEVENT_SET_HOST_PARAM:
+-		err = iscsi_set_host_param(transport, ev);
++		err = iscsi_set_host_param(transport, ev, rlen);
+ 		break;
+ 	case ISCSI_UEVENT_PATH_UPDATE:
+-		err = iscsi_set_path(transport, ev);
++		err = iscsi_set_path(transport, ev, rlen);
+ 		break;
+ 	case ISCSI_UEVENT_SET_IFACE_PARAMS:
+-		err = iscsi_set_iface_params(transport, ev,
+-					     nlmsg_attrlen(nlh, sizeof(*ev)));
++		err = iscsi_set_iface_params(transport, ev, rlen);
+ 		break;
+ 	case ISCSI_UEVENT_PING:
+-		err = iscsi_send_ping(transport, ev);
++		err = iscsi_send_ping(transport, ev, rlen);
+ 		break;
+ 	case ISCSI_UEVENT_GET_CHAP:
+ 		err = iscsi_get_chap(transport, nlh);
+@@ -4009,13 +4027,10 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, uint32_t *group)
+ 		err = iscsi_delete_chap(transport, ev);
+ 		break;
+ 	case ISCSI_UEVENT_SET_FLASHNODE_PARAMS:
+-		err = iscsi_set_flashnode_param(transport, ev,
+-						nlmsg_attrlen(nlh,
+-							      sizeof(*ev)));
++		err = iscsi_set_flashnode_param(transport, ev, rlen);
+ 		break;
+ 	case ISCSI_UEVENT_NEW_FLASHNODE:
+-		err = iscsi_new_flashnode(transport, ev,
+-					  nlmsg_attrlen(nlh, sizeof(*ev)));
++		err = iscsi_new_flashnode(transport, ev, rlen);
+ 		break;
+ 	case ISCSI_UEVENT_DEL_FLASHNODE:
+ 		err = iscsi_del_flashnode(transport, ev);
+@@ -4030,8 +4045,7 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, uint32_t *group)
+ 		err = iscsi_logout_flashnode_sid(transport, ev);
+ 		break;
+ 	case ISCSI_UEVENT_SET_CHAP:
+-		err = iscsi_set_chap(transport, ev,
+-				     nlmsg_attrlen(nlh, sizeof(*ev)));
++		err = iscsi_set_chap(transport, ev, rlen);
+ 		break;
+ 	case ISCSI_UEVENT_GET_HOST_STATS:
+ 		err = iscsi_get_host_stats(transport, nlh);</pre><hr><pre>commit 30c45b5361d39b4b793780ffac5538090b9e2eb1
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Mon Jul 3 19:08:42 2023 +0800
+
+    net/sched: act_pedit: Add size check for TCA_PEDIT_PARMS_EX
+    
+    The attribute TCA_PEDIT_PARMS_EX is not be included in pedit_policy and
+    one malicious user could fake a TCA_PEDIT_PARMS_EX whose length is
+    smaller than the intended sizeof(struct tc_pedit). Hence, the
+    dereference in tcf_pedit_init() could access dirty heap data.
+    
+    static int tcf_pedit_init(...)
+    {
+      // ...
+      pattr = tb[TCA_PEDIT_PARMS]; // TCA_PEDIT_PARMS is included
+      if (!pattr)
+        pattr = tb[TCA_PEDIT_PARMS_EX]; // but this is not
+    
+      // ...
+      parm = nla_data(pattr);
+    
+      index = parm-&gt;index; // parm is able to be smaller than 4 bytes
+                           // and this dereference gets dirty skb_buff
+                           // data created in netlink_sendmsg
+    }
+    
+    This commit adds TCA_PEDIT_PARMS_EX length in pedit_policy which avoid
+    the above case, just like the TCA_PEDIT_PARMS.
+    
+    Fixes: 71d0ed7079df ("net/act_pedit: Support using offset relative to the conventional network headers")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Pedro Tammela &lt;pctammela@mojatatu.com&gt;
+    Link: https://lore.kernel.org/r/20230703110842.590282-1-linma@zju.edu.cn
+    Signed-off-by: Paolo Abeni &lt;pabeni@redhat.com&gt;
+
+diff --git a/net/sched/act_pedit.c b/net/sched/act_pedit.c
+index b562fc2bb5b1..1ef8fcfa9997 100644
+--- a/net/sched/act_pedit.c
++++ b/net/sched/act_pedit.c
+@@ -29,6 +29,7 @@ static struct tc_action_ops act_pedit_ops;
+ 
+ static const struct nla_policy pedit_policy[TCA_PEDIT_MAX + 1] = {
+ 	[TCA_PEDIT_PARMS]	= { .len = sizeof(struct tc_pedit) },
++	[TCA_PEDIT_PARMS_EX]	= { .len = sizeof(struct tc_pedit) },
+ 	[TCA_PEDIT_KEYS_EX]   = { .type = NLA_NESTED },
+ };
+ </pre><hr><pre>commit d1e0e61d617ba17aa516db707aa871387566bbf7
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Fri Jun 30 16:19:11 2023 +0800
+
+    net: xfrm: Amend XFRMA_SEC_CTX nla_policy structure
+    
+    According to all consumers code of attrs[XFRMA_SEC_CTX], like
+    
+    * verify_sec_ctx_len(), convert to xfrm_user_sec_ctx*
+    * xfrm_state_construct(), call security_xfrm_state_alloc whose prototype
+    is int security_xfrm_state_alloc(.., struct xfrm_user_sec_ctx *sec_ctx);
+    * copy_from_user_sec_ctx(), convert to xfrm_user_sec_ctx *
+    ...
+    
+    It seems that the expected parsing result for XFRMA_SEC_CTX should be
+    structure xfrm_user_sec_ctx, and the current xfrm_sec_ctx is confusing
+    and misleading (Luckily, they happen to have same size 8 bytes).
+    
+    This commit amend the policy structure to xfrm_user_sec_ctx to avoid
+    ambiguity.
+    
+    Fixes: cf5cb79f6946 ("[XFRM] netlink: Establish an attribute policy")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Signed-off-by: Steffen Klassert &lt;steffen.klassert@secunet.com&gt;
+
+diff --git a/net/xfrm/xfrm_compat.c b/net/xfrm/xfrm_compat.c
+index 8cbf45a8bcdc..655fe4ff8621 100644
+--- a/net/xfrm/xfrm_compat.c
++++ b/net/xfrm/xfrm_compat.c
+@@ -108,7 +108,7 @@ static const struct nla_policy compat_policy[XFRMA_MAX+1] = {
+ 	[XFRMA_ALG_COMP]	= { .len = sizeof(struct xfrm_algo) },
+ 	[XFRMA_ENCAP]		= { .len = sizeof(struct xfrm_encap_tmpl) },
+ 	[XFRMA_TMPL]		= { .len = sizeof(struct xfrm_user_tmpl) },
+-	[XFRMA_SEC_CTX]		= { .len = sizeof(struct xfrm_sec_ctx) },
++	[XFRMA_SEC_CTX]		= { .len = sizeof(struct xfrm_user_sec_ctx) },
+ 	[XFRMA_LTIME_VAL]	= { .len = sizeof(struct xfrm_lifetime_cur) },
+ 	[XFRMA_REPLAY_VAL]	= { .len = sizeof(struct xfrm_replay_state) },
+ 	[XFRMA_REPLAY_THRESH]	= { .type = NLA_U32 },
+diff --git a/net/xfrm/xfrm_user.c b/net/xfrm/xfrm_user.c
+index 7c91deadc36e..fdc0c17122b6 100644
+--- a/net/xfrm/xfrm_user.c
++++ b/net/xfrm/xfrm_user.c
+@@ -3024,7 +3024,7 @@ const struct nla_policy xfrma_policy[XFRMA_MAX+1] = {
+ 	[XFRMA_ALG_COMP]	= { .len = sizeof(struct xfrm_algo) },
+ 	[XFRMA_ENCAP]		= { .len = sizeof(struct xfrm_encap_tmpl) },
+ 	[XFRMA_TMPL]		= { .len = sizeof(struct xfrm_user_tmpl) },
+-	[XFRMA_SEC_CTX]		= { .len = sizeof(struct xfrm_sec_ctx) },
++	[XFRMA_SEC_CTX]		= { .len = sizeof(struct xfrm_user_sec_ctx) },
+ 	[XFRMA_LTIME_VAL]	= { .len = sizeof(struct xfrm_lifetime_cur) },
+ 	[XFRMA_REPLAY_VAL]	= { .len = sizeof(struct xfrm_replay_state) },
+ 	[XFRMA_REPLAY_THRESH]	= { .type = NLA_U32 },</pre><hr><pre>commit 75065a8929069bc93181848818e23f147a73f83a
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Tue Jun 27 11:39:54 2023 +0800
+
+    net: af_key: fix sadb_x_filter validation
+    
+    When running xfrm_state_walk_init(), the xfrm_address_filter being used
+    is okay to have a splen/dplen that equals to sizeof(xfrm_address_t)&lt;&lt;3.
+    This commit replaces &gt;= to &gt; to make sure the boundary checking is
+    correct.
+    
+    Fixes: 37bd22420f85 ("af_key: pfkey_dump needs parameter validation")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Signed-off-by: Steffen Klassert &lt;steffen.klassert@secunet.com&gt;
+
+diff --git a/net/key/af_key.c b/net/key/af_key.c
+index ede3c6a60353..b4ea4cf9fad4 100644
+--- a/net/key/af_key.c
++++ b/net/key/af_key.c
+@@ -1848,9 +1848,9 @@ static int pfkey_dump(struct sock *sk, struct sk_buff *skb, const struct sadb_ms
+ 	if (ext_hdrs[SADB_X_EXT_FILTER - 1]) {
+ 		struct sadb_x_filter *xfilter = ext_hdrs[SADB_X_EXT_FILTER - 1];
+ 
+-		if ((xfilter-&gt;sadb_x_filter_splen &gt;=
++		if ((xfilter-&gt;sadb_x_filter_splen &gt;
+ 			(sizeof(xfrm_address_t) &lt;&lt; 3)) ||
+-		    (xfilter-&gt;sadb_x_filter_dplen &gt;=
++		    (xfilter-&gt;sadb_x_filter_dplen &gt;
+ 			(sizeof(xfrm_address_t) &lt;&lt; 3))) {
+ 			mutex_unlock(&amp;pfk-&gt;dump_lock);
+ 			return -EINVAL;</pre><hr><pre>commit dfa73c17d55b921e1d4e154976de35317e43a93a
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Tue Jun 27 11:31:38 2023 +0800
+
+    net: xfrm: Fix xfrm_address_filter OOB read
+    
+    We found below OOB crash:
+    
+    [   44.211730] ==================================================================
+    [   44.212045] BUG: KASAN: slab-out-of-bounds in memcmp+0x8b/0xb0
+    [   44.212045] Read of size 8 at addr ffff88800870f320 by task poc.xfrm/97
+    [   44.212045]
+    [   44.212045] CPU: 0 PID: 97 Comm: poc.xfrm Not tainted 6.4.0-rc7-00072-gdad9774deaf1-dirty #4
+    [   44.212045] Call Trace:
+    [   44.212045]  &lt;TASK&gt;
+    [   44.212045]  dump_stack_lvl+0x37/0x50
+    [   44.212045]  print_report+0xcc/0x620
+    [   44.212045]  ? __virt_addr_valid+0xf3/0x170
+    [   44.212045]  ? memcmp+0x8b/0xb0
+    [   44.212045]  kasan_report+0xb2/0xe0
+    [   44.212045]  ? memcmp+0x8b/0xb0
+    [   44.212045]  kasan_check_range+0x39/0x1c0
+    [   44.212045]  memcmp+0x8b/0xb0
+    [   44.212045]  xfrm_state_walk+0x21c/0x420
+    [   44.212045]  ? __pfx_dump_one_state+0x10/0x10
+    [   44.212045]  xfrm_dump_sa+0x1e2/0x290
+    [   44.212045]  ? __pfx_xfrm_dump_sa+0x10/0x10
+    [   44.212045]  ? __kernel_text_address+0xd/0x40
+    [   44.212045]  ? kasan_unpoison+0x27/0x60
+    [   44.212045]  ? mutex_lock+0x60/0xe0
+    [   44.212045]  ? __pfx_mutex_lock+0x10/0x10
+    [   44.212045]  ? kasan_save_stack+0x22/0x50
+    [   44.212045]  netlink_dump+0x322/0x6c0
+    [   44.212045]  ? __pfx_netlink_dump+0x10/0x10
+    [   44.212045]  ? mutex_unlock+0x7f/0xd0
+    [   44.212045]  ? __pfx_mutex_unlock+0x10/0x10
+    [   44.212045]  __netlink_dump_start+0x353/0x430
+    [   44.212045]  xfrm_user_rcv_msg+0x3a4/0x410
+    [   44.212045]  ? __pfx__raw_spin_lock_irqsave+0x10/0x10
+    [   44.212045]  ? __pfx_xfrm_user_rcv_msg+0x10/0x10
+    [   44.212045]  ? __pfx_xfrm_dump_sa+0x10/0x10
+    [   44.212045]  ? __pfx_xfrm_dump_sa_done+0x10/0x10
+    [   44.212045]  ? __stack_depot_save+0x382/0x4e0
+    [   44.212045]  ? filter_irq_stacks+0x1c/0x70
+    [   44.212045]  ? kasan_save_stack+0x32/0x50
+    [   44.212045]  ? kasan_save_stack+0x22/0x50
+    [   44.212045]  ? kasan_set_track+0x25/0x30
+    [   44.212045]  ? __kasan_slab_alloc+0x59/0x70
+    [   44.212045]  ? kmem_cache_alloc_node+0xf7/0x260
+    [   44.212045]  ? kmalloc_reserve+0xab/0x120
+    [   44.212045]  ? __alloc_skb+0xcf/0x210
+    [   44.212045]  ? netlink_sendmsg+0x509/0x700
+    [   44.212045]  ? sock_sendmsg+0xde/0xe0
+    [   44.212045]  ? __sys_sendto+0x18d/0x230
+    [   44.212045]  ? __x64_sys_sendto+0x71/0x90
+    [   44.212045]  ? do_syscall_64+0x3f/0x90
+    [   44.212045]  ? entry_SYSCALL_64_after_hwframe+0x72/0xdc
+    [   44.212045]  ? netlink_sendmsg+0x509/0x700
+    [   44.212045]  ? sock_sendmsg+0xde/0xe0
+    [   44.212045]  ? __sys_sendto+0x18d/0x230
+    [   44.212045]  ? __x64_sys_sendto+0x71/0x90
+    [   44.212045]  ? do_syscall_64+0x3f/0x90
+    [   44.212045]  ? entry_SYSCALL_64_after_hwframe+0x72/0xdc
+    [   44.212045]  ? kasan_save_stack+0x22/0x50
+    [   44.212045]  ? kasan_set_track+0x25/0x30
+    [   44.212045]  ? kasan_save_free_info+0x2e/0x50
+    [   44.212045]  ? __kasan_slab_free+0x10a/0x190
+    [   44.212045]  ? kmem_cache_free+0x9c/0x340
+    [   44.212045]  ? netlink_recvmsg+0x23c/0x660
+    [   44.212045]  ? sock_recvmsg+0xeb/0xf0
+    [   44.212045]  ? __sys_recvfrom+0x13c/0x1f0
+    [   44.212045]  ? __x64_sys_recvfrom+0x71/0x90
+    [   44.212045]  ? do_syscall_64+0x3f/0x90
+    [   44.212045]  ? entry_SYSCALL_64_after_hwframe+0x72/0xdc
+    [   44.212045]  ? copyout+0x3e/0x50
+    [   44.212045]  netlink_rcv_skb+0xd6/0x210
+    [   44.212045]  ? __pfx_xfrm_user_rcv_msg+0x10/0x10
+    [   44.212045]  ? __pfx_netlink_rcv_skb+0x10/0x10
+    [   44.212045]  ? __pfx_sock_has_perm+0x10/0x10
+    [   44.212045]  ? mutex_lock+0x8d/0xe0
+    [   44.212045]  ? __pfx_mutex_lock+0x10/0x10
+    [   44.212045]  xfrm_netlink_rcv+0x44/0x50
+    [   44.212045]  netlink_unicast+0x36f/0x4c0
+    [   44.212045]  ? __pfx_netlink_unicast+0x10/0x10
+    [   44.212045]  ? netlink_recvmsg+0x500/0x660
+    [   44.212045]  netlink_sendmsg+0x3b7/0x700
+    [   44.212045]  ? __pfx_netlink_sendmsg+0x10/0x10
+    [   44.212045]  ? __pfx_netlink_sendmsg+0x10/0x10
+    [   44.212045]  sock_sendmsg+0xde/0xe0
+    [   44.212045]  __sys_sendto+0x18d/0x230
+    [   44.212045]  ? __pfx___sys_sendto+0x10/0x10
+    [   44.212045]  ? rcu_core+0x44a/0xe10
+    [   44.212045]  ? __rseq_handle_notify_resume+0x45b/0x740
+    [   44.212045]  ? _raw_spin_lock_irq+0x81/0xe0
+    [   44.212045]  ? __pfx___rseq_handle_notify_resume+0x10/0x10
+    [   44.212045]  ? __pfx_restore_fpregs_from_fpstate+0x10/0x10
+    [   44.212045]  ? __pfx_blkcg_maybe_throttle_current+0x10/0x10
+    [   44.212045]  ? __pfx_task_work_run+0x10/0x10
+    [   44.212045]  __x64_sys_sendto+0x71/0x90
+    [   44.212045]  do_syscall_64+0x3f/0x90
+    [   44.212045]  entry_SYSCALL_64_after_hwframe+0x72/0xdc
+    [   44.212045] RIP: 0033:0x44b7da
+    [   44.212045] RSP: 002b:00007ffdc8838548 EFLAGS: 00000246 ORIG_RAX: 000000000000002c
+    [   44.212045] RAX: ffffffffffffffda RBX: 00007ffdc8839978 RCX: 000000000044b7da
+    [   44.212045] RDX: 0000000000000038 RSI: 00007ffdc8838770 RDI: 0000000000000003
+    [   44.212045] RBP: 00007ffdc88385b0 R08: 00007ffdc883858c R09: 000000000000000c
+    [   44.212045] R10: 0000000000000000 R11: 0000000000000246 R12: 0000000000000001
+    [   44.212045] R13: 00007ffdc8839968 R14: 00000000004c37d0 R15: 0000000000000001
+    [   44.212045]  &lt;/TASK&gt;
+    [   44.212045]
+    [   44.212045] Allocated by task 97:
+    [   44.212045]  kasan_save_stack+0x22/0x50
+    [   44.212045]  kasan_set_track+0x25/0x30
+    [   44.212045]  __kasan_kmalloc+0x7f/0x90
+    [   44.212045]  __kmalloc_node_track_caller+0x5b/0x140
+    [   44.212045]  kmemdup+0x21/0x50
+    [   44.212045]  xfrm_dump_sa+0x17d/0x290
+    [   44.212045]  netlink_dump+0x322/0x6c0
+    [   44.212045]  __netlink_dump_start+0x353/0x430
+    [   44.212045]  xfrm_user_rcv_msg+0x3a4/0x410
+    [   44.212045]  netlink_rcv_skb+0xd6/0x210
+    [   44.212045]  xfrm_netlink_rcv+0x44/0x50
+    [   44.212045]  netlink_unicast+0x36f/0x4c0
+    [   44.212045]  netlink_sendmsg+0x3b7/0x700
+    [   44.212045]  sock_sendmsg+0xde/0xe0
+    [   44.212045]  __sys_sendto+0x18d/0x230
+    [   44.212045]  __x64_sys_sendto+0x71/0x90
+    [   44.212045]  do_syscall_64+0x3f/0x90
+    [   44.212045]  entry_SYSCALL_64_after_hwframe+0x72/0xdc
+    [   44.212045]
+    [   44.212045] The buggy address belongs to the object at ffff88800870f300
+    [   44.212045]  which belongs to the cache kmalloc-64 of size 64
+    [   44.212045] The buggy address is located 32 bytes inside of
+    [   44.212045]  allocated 36-byte region [ffff88800870f300, ffff88800870f324)
+    [   44.212045]
+    [   44.212045] The buggy address belongs to the physical page:
+    [   44.212045] page:00000000e4de16ee refcount:1 mapcount:0 mapping:000000000 ...
+    [   44.212045] flags: 0x100000000000200(slab|node=0|zone=1)
+    [   44.212045] page_type: 0xffffffff()
+    [   44.212045] raw: 0100000000000200 ffff888004c41640 dead000000000122 0000000000000000
+    [   44.212045] raw: 0000000000000000 0000000080200020 00000001ffffffff 0000000000000000
+    [   44.212045] page dumped because: kasan: bad access detected
+    [   44.212045]
+    [   44.212045] Memory state around the buggy address:
+    [   44.212045]  ffff88800870f200: fa fb fb fb fb fb fb fb fc fc fc fc fc fc fc fc
+    [   44.212045]  ffff88800870f280: 00 00 00 00 00 fc fc fc fc fc fc fc fc fc fc fc
+    [   44.212045] &gt;ffff88800870f300: 00 00 00 00 04 fc fc fc fc fc fc fc fc fc fc fc
+    [   44.212045]                                ^
+    [   44.212045]  ffff88800870f380: fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc
+    [   44.212045]  ffff88800870f400: fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc
+    [   44.212045] ==================================================================
+    
+    By investigating the code, we find the root cause of this OOB is the lack
+    of checks in xfrm_dump_sa(). The buggy code allows a malicious user to pass
+    arbitrary value of filter-&gt;splen/dplen. Hence, with crafted xfrm states,
+    the attacker can achieve 8 bytes heap OOB read, which causes info leak.
+    
+      if (attrs[XFRMA_ADDRESS_FILTER]) {
+        filter = kmemdup(nla_data(attrs[XFRMA_ADDRESS_FILTER]),
+            sizeof(*filter), GFP_KERNEL);
+        if (filter == NULL)
+          return -ENOMEM;
+        // NO MORE CHECKS HERE !!!
+      }
+    
+    This patch fixes the OOB by adding necessary boundary checks, just like
+    the code in pfkey_dump() function.
+    
+    Fixes: d3623099d350 ("ipsec: add support of limited SA dump")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Signed-off-by: Steffen Klassert &lt;steffen.klassert@secunet.com&gt;
+
+diff --git a/net/xfrm/xfrm_user.c b/net/xfrm/xfrm_user.c
+index c34a2a06ca94..7c91deadc36e 100644
+--- a/net/xfrm/xfrm_user.c
++++ b/net/xfrm/xfrm_user.c
+@@ -1267,6 +1267,15 @@ static int xfrm_dump_sa(struct sk_buff *skb, struct netlink_callback *cb)
+ 					 sizeof(*filter), GFP_KERNEL);
+ 			if (filter == NULL)
+ 				return -ENOMEM;
++
++			/* see addr_match(), (prefix length &gt;&gt; 5) &lt;&lt; 2
++			 * will be used to compare xfrm_address_t
++			 */
++			if (filter-&gt;splen &gt; (sizeof(xfrm_address_t) &lt;&lt; 3) ||
++			    filter-&gt;dplen &gt; (sizeof(xfrm_address_t) &lt;&lt; 3)) {
++				kfree(filter);
++				return -EINVAL;
++			}
+ 		}
+ 
+ 		if (attrs[XFRMA_PROTO])</pre><hr><pre>commit 6709d4b7bc2e079241fdef15d1160581c5261c10
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Sun Jun 25 17:10:07 2023 +0800
+
+    net: nfc: Fix use-after-free caused by nfc_llcp_find_local
+    
+    This commit fixes several use-after-free that caused by function
+    nfc_llcp_find_local(). For example, one UAF can happen when below buggy
+    time window occurs.
+    
+    // nfc_genl_llc_get_params   | // nfc_unregister_device
+                                 |
+    dev = nfc_get_device(idx);   | device_lock(...)
+    if (!dev)                    | dev-&gt;shutting_down = true;
+        return -ENODEV;          | device_unlock(...);
+                                 |
+    device_lock(...);            |   // nfc_llcp_unregister_device
+                                 |   nfc_llcp_find_local()
+    nfc_llcp_find_local(...);    |
+                                 |   local_cleanup()
+    if (!local) {                |
+        rc = -ENODEV;            |     // nfc_llcp_local_put
+        goto exit;               |     kref_put(.., local_release)
+    }                            |
+                                 |       // local_release
+                                 |       list_del(&amp;local-&gt;list)
+      // nfc_genl_send_params    |       kfree()
+      local-&gt;dev-&gt;idx !!!UAF!!!  |
+                                 |
+    
+    and the crash trace for the one of the discussed UAF like:
+    
+    BUG: KASAN: slab-use-after-free in nfc_genl_llc_get_params+0x72f/0x780  net/nfc/netlink.c:1045
+    Read of size 8 at addr ffff888105b0e410 by task 20114
+    
+    Call Trace:
+     &lt;TASK&gt;
+     __dump_stack  lib/dump_stack.c:88 [inline]
+     dump_stack_lvl+0x72/0xa0  lib/dump_stack.c:106
+     print_address_description  mm/kasan/report.c:319 [inline]
+     print_report+0xcc/0x620  mm/kasan/report.c:430
+     kasan_report+0xb2/0xe0  mm/kasan/report.c:536
+     nfc_genl_send_params  net/nfc/netlink.c:999 [inline]
+     nfc_genl_llc_get_params+0x72f/0x780  net/nfc/netlink.c:1045
+     genl_family_rcv_msg_doit.isra.0+0x1ee/0x2e0  net/netlink/genetlink.c:968
+     genl_family_rcv_msg  net/netlink/genetlink.c:1048 [inline]
+     genl_rcv_msg+0x503/0x7d0  net/netlink/genetlink.c:1065
+     netlink_rcv_skb+0x161/0x430  net/netlink/af_netlink.c:2548
+     genl_rcv+0x28/0x40  net/netlink/genetlink.c:1076
+     netlink_unicast_kernel  net/netlink/af_netlink.c:1339 [inline]
+     netlink_unicast+0x644/0x900  net/netlink/af_netlink.c:1365
+     netlink_sendmsg+0x934/0xe70  net/netlink/af_netlink.c:1913
+     sock_sendmsg_nosec  net/socket.c:724 [inline]
+     sock_sendmsg+0x1b6/0x200  net/socket.c:747
+     ____sys_sendmsg+0x6e9/0x890  net/socket.c:2501
+     ___sys_sendmsg+0x110/0x1b0  net/socket.c:2555
+     __sys_sendmsg+0xf7/0x1d0  net/socket.c:2584
+     do_syscall_x64  arch/x86/entry/common.c:50 [inline]
+     do_syscall_64+0x3f/0x90  arch/x86/entry/common.c:80
+     entry_SYSCALL_64_after_hwframe+0x72/0xdc
+    RIP: 0033:0x7f34640a2389
+    RSP: 002b:00007f3463415168 EFLAGS: 00000246 ORIG_RAX: 000000000000002e
+    RAX: ffffffffffffffda RBX: 00007f34641c1f80 RCX: 00007f34640a2389
+    RDX: 0000000000000000 RSI: 0000000020000240 RDI: 0000000000000006
+    RBP: 00007f34640ed493 R08: 0000000000000000 R09: 0000000000000000
+    R10: 0000000000000000 R11: 0000000000000246 R12: 0000000000000000
+    R13: 00007ffe38449ecf R14: 00007f3463415300 R15: 0000000000022000
+     &lt;/TASK&gt;
+    
+    Allocated by task 20116:
+     kasan_save_stack+0x22/0x50  mm/kasan/common.c:45
+     kasan_set_track+0x25/0x30  mm/kasan/common.c:52
+     ____kasan_kmalloc  mm/kasan/common.c:374 [inline]
+     __kasan_kmalloc+0x7f/0x90  mm/kasan/common.c:383
+     kmalloc  include/linux/slab.h:580 [inline]
+     kzalloc  include/linux/slab.h:720 [inline]
+     nfc_llcp_register_device+0x49/0xa40  net/nfc/llcp_core.c:1567
+     nfc_register_device+0x61/0x260  net/nfc/core.c:1124
+     nci_register_device+0x776/0xb20  net/nfc/nci/core.c:1257
+     virtual_ncidev_open+0x147/0x230  drivers/nfc/virtual_ncidev.c:148
+     misc_open+0x379/0x4a0  drivers/char/misc.c:165
+     chrdev_open+0x26c/0x780  fs/char_dev.c:414
+     do_dentry_open+0x6c4/0x12a0  fs/open.c:920
+     do_open  fs/namei.c:3560 [inline]
+     path_openat+0x24fe/0x37e0  fs/namei.c:3715
+     do_filp_open+0x1ba/0x410  fs/namei.c:3742
+     do_sys_openat2+0x171/0x4c0  fs/open.c:1356
+     do_sys_open  fs/open.c:1372 [inline]
+     __do_sys_openat  fs/open.c:1388 [inline]
+     __se_sys_openat  fs/open.c:1383 [inline]
+     __x64_sys_openat+0x143/0x200  fs/open.c:1383
+     do_syscall_x64  arch/x86/entry/common.c:50 [inline]
+     do_syscall_64+0x3f/0x90  arch/x86/entry/common.c:80
+     entry_SYSCALL_64_after_hwframe+0x72/0xdc
+    
+    Freed by task 20115:
+     kasan_save_stack+0x22/0x50  mm/kasan/common.c:45
+     kasan_set_track+0x25/0x30  mm/kasan/common.c:52
+     kasan_save_free_info+0x2e/0x50  mm/kasan/generic.c:521
+     ____kasan_slab_free  mm/kasan/common.c:236 [inline]
+     ____kasan_slab_free  mm/kasan/common.c:200 [inline]
+     __kasan_slab_free+0x10a/0x190  mm/kasan/common.c:244
+     kasan_slab_free  include/linux/kasan.h:162 [inline]
+     slab_free_hook  mm/slub.c:1781 [inline]
+     slab_free_freelist_hook  mm/slub.c:1807 [inline]
+     slab_free  mm/slub.c:3787 [inline]
+     __kmem_cache_free+0x7a/0x190  mm/slub.c:3800
+     local_release  net/nfc/llcp_core.c:174 [inline]
+     kref_put  include/linux/kref.h:65 [inline]
+     nfc_llcp_local_put  net/nfc/llcp_core.c:182 [inline]
+     nfc_llcp_local_put  net/nfc/llcp_core.c:177 [inline]
+     nfc_llcp_unregister_device+0x206/0x290  net/nfc/llcp_core.c:1620
+     nfc_unregister_device+0x160/0x1d0  net/nfc/core.c:1179
+     virtual_ncidev_close+0x52/0xa0  drivers/nfc/virtual_ncidev.c:163
+     __fput+0x252/0xa20  fs/file_table.c:321
+     task_work_run+0x174/0x270  kernel/task_work.c:179
+     resume_user_mode_work  include/linux/resume_user_mode.h:49 [inline]
+     exit_to_user_mode_loop  kernel/entry/common.c:171 [inline]
+     exit_to_user_mode_prepare+0x108/0x110  kernel/entry/common.c:204
+     __syscall_exit_to_user_mode_work  kernel/entry/common.c:286 [inline]
+     syscall_exit_to_user_mode+0x21/0x50  kernel/entry/common.c:297
+     do_syscall_64+0x4c/0x90  arch/x86/entry/common.c:86
+     entry_SYSCALL_64_after_hwframe+0x72/0xdc
+    
+    Last potentially related work creation:
+     kasan_save_stack+0x22/0x50  mm/kasan/common.c:45
+     __kasan_record_aux_stack+0x95/0xb0  mm/kasan/generic.c:491
+     kvfree_call_rcu+0x29/0xa80  kernel/rcu/tree.c:3328
+     drop_sysctl_table+0x3be/0x4e0  fs/proc/proc_sysctl.c:1735
+     unregister_sysctl_table.part.0+0x9c/0x190  fs/proc/proc_sysctl.c:1773
+     unregister_sysctl_table+0x24/0x30  fs/proc/proc_sysctl.c:1753
+     neigh_sysctl_unregister+0x5f/0x80  net/core/neighbour.c:3895
+     addrconf_notify+0x140/0x17b0  net/ipv6/addrconf.c:3684
+     notifier_call_chain+0xbe/0x210  kernel/notifier.c:87
+     call_netdevice_notifiers_info+0xb5/0x150  net/core/dev.c:1937
+     call_netdevice_notifiers_extack  net/core/dev.c:1975 [inline]
+     call_netdevice_notifiers  net/core/dev.c:1989 [inline]
+     dev_change_name+0x3c3/0x870  net/core/dev.c:1211
+     dev_ifsioc+0x800/0xf70  net/core/dev_ioctl.c:376
+     dev_ioctl+0x3d9/0xf80  net/core/dev_ioctl.c:542
+     sock_do_ioctl+0x160/0x260  net/socket.c:1213
+     sock_ioctl+0x3f9/0x670  net/socket.c:1316
+     vfs_ioctl  fs/ioctl.c:51 [inline]
+     __do_sys_ioctl  fs/ioctl.c:870 [inline]
+     __se_sys_ioctl  fs/ioctl.c:856 [inline]
+     __x64_sys_ioctl+0x19e/0x210  fs/ioctl.c:856
+     do_syscall_x64  arch/x86/entry/common.c:50 [inline]
+     do_syscall_64+0x3f/0x90  arch/x86/entry/common.c:80
+     entry_SYSCALL_64_after_hwframe+0x72/0xdc
+    
+    The buggy address belongs to the object at ffff888105b0e400
+     which belongs to the cache kmalloc-1k of size 1024
+    The buggy address is located 16 bytes inside of
+     freed 1024-byte region [ffff888105b0e400, ffff888105b0e800)
+    
+    The buggy address belongs to the physical page:
+    head:ffffea000416c200 order:3 entire_mapcount:0 nr_pages_mapped:0 pincount:0
+    flags: 0x200000000010200(slab|head|node=0|zone=2)
+    raw: 0200000000010200 ffff8881000430c0 ffffea00044c7010 ffffea0004510e10
+    raw: 0000000000000000 00000000000a000a 00000001ffffffff 0000000000000000
+    page dumped because: kasan: bad access detected
+    
+    Memory state around the buggy address:
+     ffff888105b0e300: fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc
+     ffff888105b0e380: fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc
+    &gt;ffff888105b0e400: fa fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+                             ^
+     ffff888105b0e480: fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+     ffff888105b0e500: fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+    
+    In summary, this patch solves those use-after-free by
+    
+    1. Re-implement the nfc_llcp_find_local(). The current version does not
+    grab the reference when getting the local from the linked list.  For
+    example, the llcp_sock_bind() gets the reference like below:
+    
+    // llcp_sock_bind()
+    
+        local = nfc_llcp_find_local(dev); // A
+        ..... \
+               | raceable
+        ..... /
+        llcp_sock-&gt;local = nfc_llcp_local_get(local); // B
+    
+    There is an apparent race window that one can  drop the reference
+    and free the local object fetched in (A) before (B) gets the reference.
+    
+    2. Some callers of the nfc_llcp_find_local() do not grab the reference
+    at all. For example, the nfc_genl_llc_{{get/set}_params/sdreq} functions.
+    We add the nfc_llcp_local_put() for them. Moreover, we add the necessary
+    error handling function to put the reference.
+    
+    3. Add the nfc_llcp_remove_local() helper. The local object is removed
+    from the linked list in local_release() when all reference is gone. This
+    patch removes it when nfc_llcp_unregister_device() is called.
+    
+    Therefore, every caller of nfc_llcp_find_local() will get a reference
+    even when the nfc_llcp_unregister_device() is called. This promises no
+    use-after-free for the local object is ever possible.
+    
+    Fixes: 52feb444a903 ("NFC: Extend netlink interface for LTO, RW, and MIUX parameters support")
+    Fixes: c7aa12252f51 ("NFC: Take a reference on the LLCP local pointer when creating a socket")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Simon Horman &lt;simon.horman@corigine.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/nfc/llcp.h b/net/nfc/llcp.h
+index c1d9be636933..d8345ed57c95 100644
+--- a/net/nfc/llcp.h
++++ b/net/nfc/llcp.h
+@@ -201,7 +201,6 @@ void nfc_llcp_sock_link(struct llcp_sock_list *l, struct sock *s);
+ void nfc_llcp_sock_unlink(struct llcp_sock_list *l, struct sock *s);
+ void nfc_llcp_socket_remote_param_init(struct nfc_llcp_sock *sock);
+ struct nfc_llcp_local *nfc_llcp_find_local(struct nfc_dev *dev);
+-struct nfc_llcp_local *nfc_llcp_local_get(struct nfc_llcp_local *local);
+ int nfc_llcp_local_put(struct nfc_llcp_local *local);
+ u8 nfc_llcp_get_sdp_ssap(struct nfc_llcp_local *local,
+ 			 struct nfc_llcp_sock *sock);
+diff --git a/net/nfc/llcp_commands.c b/net/nfc/llcp_commands.c
+index 41e3a20c8935..5d2d4bc26ef9 100644
+--- a/net/nfc/llcp_commands.c
++++ b/net/nfc/llcp_commands.c
+@@ -359,6 +359,7 @@ int nfc_llcp_send_symm(struct nfc_dev *dev)
+ 	struct sk_buff *skb;
+ 	struct nfc_llcp_local *local;
+ 	u16 size = 0;
++	int err;
+ 
+ 	local = nfc_llcp_find_local(dev);
+ 	if (local == NULL)
+@@ -368,8 +369,10 @@ int nfc_llcp_send_symm(struct nfc_dev *dev)
+ 	size += dev-&gt;tx_headroom + dev-&gt;tx_tailroom + NFC_HEADER_SIZE;
+ 
+ 	skb = alloc_skb(size, GFP_KERNEL);
+-	if (skb == NULL)
+-		return -ENOMEM;
++	if (skb == NULL) {
++		err = -ENOMEM;
++		goto out;
++	}
+ 
+ 	skb_reserve(skb, dev-&gt;tx_headroom + NFC_HEADER_SIZE);
+ 
+@@ -379,8 +382,11 @@ int nfc_llcp_send_symm(struct nfc_dev *dev)
+ 
+ 	nfc_llcp_send_to_raw_sock(local, skb, NFC_DIRECTION_TX);
+ 
+-	return nfc_data_exchange(dev, local-&gt;target_idx, skb,
++	err = nfc_data_exchange(dev, local-&gt;target_idx, skb,
+ 				 nfc_llcp_recv, local);
++out:
++	nfc_llcp_local_put(local);
++	return err;
+ }
+ 
+ int nfc_llcp_send_connect(struct nfc_llcp_sock *sock)
+diff --git a/net/nfc/llcp_core.c b/net/nfc/llcp_core.c
+index a27e1842b2a0..f60e424e0607 100644
+--- a/net/nfc/llcp_core.c
++++ b/net/nfc/llcp_core.c
+@@ -17,6 +17,8 @@
+ static u8 llcp_magic[3] = {0x46, 0x66, 0x6d};
+ 
+ static LIST_HEAD(llcp_devices);
++/* Protects llcp_devices list */
++static DEFINE_SPINLOCK(llcp_devices_lock);
+ 
+ static void nfc_llcp_rx_skb(struct nfc_llcp_local *local, struct sk_buff *skb);
+ 
+@@ -141,7 +143,7 @@ static void nfc_llcp_socket_release(struct nfc_llcp_local *local, bool device,
+ 	write_unlock(&amp;local-&gt;raw_sockets.lock);
+ }
+ 
+-struct nfc_llcp_local *nfc_llcp_local_get(struct nfc_llcp_local *local)
++static struct nfc_llcp_local *nfc_llcp_local_get(struct nfc_llcp_local *local)
+ {
+ 	kref_get(&amp;local-&gt;ref);
+ 
+@@ -169,7 +171,6 @@ static void local_release(struct kref *ref)
+ 
+ 	local = container_of(ref, struct nfc_llcp_local, ref);
+ 
+-	list_del(&amp;local-&gt;list);
+ 	local_cleanup(local);
+ 	kfree(local);
+ }
+@@ -282,12 +283,33 @@ static void nfc_llcp_sdreq_timer(struct timer_list *t)
+ struct nfc_llcp_local *nfc_llcp_find_local(struct nfc_dev *dev)
+ {
+ 	struct nfc_llcp_local *local;
++	struct nfc_llcp_local *res = NULL;
+ 
++	spin_lock(&amp;llcp_devices_lock);
+ 	list_for_each_entry(local, &amp;llcp_devices, list)
+-		if (local-&gt;dev == dev)
++		if (local-&gt;dev == dev) {
++			res = nfc_llcp_local_get(local);
++			break;
++		}
++	spin_unlock(&amp;llcp_devices_lock);
++
++	return res;
++}
++
++static struct nfc_llcp_local *nfc_llcp_remove_local(struct nfc_dev *dev)
++{
++	struct nfc_llcp_local *local, *tmp;
++
++	spin_lock(&amp;llcp_devices_lock);
++	list_for_each_entry_safe(local, tmp, &amp;llcp_devices, list)
++		if (local-&gt;dev == dev) {
++			list_del(&amp;local-&gt;list);
++			spin_unlock(&amp;llcp_devices_lock);
+ 			return local;
++		}
++	spin_unlock(&amp;llcp_devices_lock);
+ 
+-	pr_debug("No device found\n");
++	pr_warn("Shutting down device not found\n");
+ 
+ 	return NULL;
+ }
+@@ -608,12 +630,15 @@ u8 *nfc_llcp_general_bytes(struct nfc_dev *dev, size_t *general_bytes_len)
+ 
+ 	*general_bytes_len = local-&gt;gb_len;
+ 
++	nfc_llcp_local_put(local);
++
+ 	return local-&gt;gb;
+ }
+ 
+ int nfc_llcp_set_remote_gb(struct nfc_dev *dev, const u8 *gb, u8 gb_len)
+ {
+ 	struct nfc_llcp_local *local;
++	int err;
+ 
+ 	if (gb_len &lt; 3 || gb_len &gt; NFC_MAX_GT_LEN)
+ 		return -EINVAL;
+@@ -630,12 +655,16 @@ int nfc_llcp_set_remote_gb(struct nfc_dev *dev, const u8 *gb, u8 gb_len)
+ 
+ 	if (memcmp(local-&gt;remote_gb, llcp_magic, 3)) {
+ 		pr_err("MAC does not support LLCP\n");
+-		return -EINVAL;
++		err = -EINVAL;
++		goto out;
+ 	}
+ 
+-	return nfc_llcp_parse_gb_tlv(local,
++	err = nfc_llcp_parse_gb_tlv(local,
+ 				     &amp;local-&gt;remote_gb[3],
+ 				     local-&gt;remote_gb_len - 3);
++out:
++	nfc_llcp_local_put(local);
++	return err;
+ }
+ 
+ static u8 nfc_llcp_dsap(const struct sk_buff *pdu)
+@@ -1517,6 +1546,8 @@ int nfc_llcp_data_received(struct nfc_dev *dev, struct sk_buff *skb)
+ 
+ 	__nfc_llcp_recv(local, skb);
+ 
++	nfc_llcp_local_put(local);
++
+ 	return 0;
+ }
+ 
+@@ -1533,6 +1564,8 @@ void nfc_llcp_mac_is_down(struct nfc_dev *dev)
+ 
+ 	/* Close and purge all existing sockets */
+ 	nfc_llcp_socket_release(local, true, 0);
++
++	nfc_llcp_local_put(local);
+ }
+ 
+ void nfc_llcp_mac_is_up(struct nfc_dev *dev, u32 target_idx,
+@@ -1558,6 +1591,8 @@ void nfc_llcp_mac_is_up(struct nfc_dev *dev, u32 target_idx,
+ 		mod_timer(&amp;local-&gt;link_timer,
+ 			  jiffies + msecs_to_jiffies(local-&gt;remote_lto));
+ 	}
++
++	nfc_llcp_local_put(local);
+ }
+ 
+ int nfc_llcp_register_device(struct nfc_dev *ndev)
+@@ -1608,7 +1643,7 @@ int nfc_llcp_register_device(struct nfc_dev *ndev)
+ 
+ void nfc_llcp_unregister_device(struct nfc_dev *dev)
+ {
+-	struct nfc_llcp_local *local = nfc_llcp_find_local(dev);
++	struct nfc_llcp_local *local = nfc_llcp_remove_local(dev);
+ 
+ 	if (local == NULL) {
+ 		pr_debug("No such device\n");
+diff --git a/net/nfc/llcp_sock.c b/net/nfc/llcp_sock.c
+index 77642d18a3b4..645677f84dba 100644
+--- a/net/nfc/llcp_sock.c
++++ b/net/nfc/llcp_sock.c
+@@ -99,7 +99,7 @@ static int llcp_sock_bind(struct socket *sock, struct sockaddr *addr, int alen)
+ 	}
+ 
+ 	llcp_sock-&gt;dev = dev;
+-	llcp_sock-&gt;local = nfc_llcp_local_get(local);
++	llcp_sock-&gt;local = local;
+ 	llcp_sock-&gt;nfc_protocol = llcp_addr.nfc_protocol;
+ 	llcp_sock-&gt;service_name_len = min_t(unsigned int,
+ 					    llcp_addr.service_name_len,
+@@ -186,7 +186,7 @@ static int llcp_raw_sock_bind(struct socket *sock, struct sockaddr *addr,
+ 	}
+ 
+ 	llcp_sock-&gt;dev = dev;
+-	llcp_sock-&gt;local = nfc_llcp_local_get(local);
++	llcp_sock-&gt;local = local;
+ 	llcp_sock-&gt;nfc_protocol = llcp_addr.nfc_protocol;
+ 
+ 	nfc_llcp_sock_link(&amp;local-&gt;raw_sockets, sk);
+@@ -696,22 +696,22 @@ static int llcp_sock_connect(struct socket *sock, struct sockaddr *_addr,
+ 	if (dev-&gt;dep_link_up == false) {
+ 		ret = -ENOLINK;
+ 		device_unlock(&amp;dev-&gt;dev);
+-		goto put_dev;
++		goto sock_llcp_put_local;
+ 	}
+ 	device_unlock(&amp;dev-&gt;dev);
+ 
+ 	if (local-&gt;rf_mode == NFC_RF_INITIATOR &amp;&amp;
+ 	    addr-&gt;target_idx != local-&gt;target_idx) {
+ 		ret = -ENOLINK;
+-		goto put_dev;
++		goto sock_llcp_put_local;
+ 	}
+ 
+ 	llcp_sock-&gt;dev = dev;
+-	llcp_sock-&gt;local = nfc_llcp_local_get(local);
++	llcp_sock-&gt;local = local;
+ 	llcp_sock-&gt;ssap = nfc_llcp_get_local_ssap(local);
+ 	if (llcp_sock-&gt;ssap == LLCP_SAP_MAX) {
+ 		ret = -ENOMEM;
+-		goto sock_llcp_put_local;
++		goto sock_llcp_nullify;
+ 	}
+ 
+ 	llcp_sock-&gt;reserved_ssap = llcp_sock-&gt;ssap;
+@@ -757,11 +757,13 @@ static int llcp_sock_connect(struct socket *sock, struct sockaddr *_addr,
+ sock_llcp_release:
+ 	nfc_llcp_put_ssap(local, llcp_sock-&gt;ssap);
+ 
+-sock_llcp_put_local:
+-	nfc_llcp_local_put(llcp_sock-&gt;local);
++sock_llcp_nullify:
+ 	llcp_sock-&gt;local = NULL;
+ 	llcp_sock-&gt;dev = NULL;
+ 
++sock_llcp_put_local:
++	nfc_llcp_local_put(local);
++
+ put_dev:
+ 	nfc_put_device(dev);
+ 
+diff --git a/net/nfc/netlink.c b/net/nfc/netlink.c
+index b9264e730fd9..e9ac6a6f934e 100644
+--- a/net/nfc/netlink.c
++++ b/net/nfc/netlink.c
+@@ -1039,11 +1039,14 @@ static int nfc_genl_llc_get_params(struct sk_buff *skb, struct genl_info *info)
+ 	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
+ 	if (!msg) {
+ 		rc = -ENOMEM;
+-		goto exit;
++		goto put_local;
+ 	}
+ 
+ 	rc = nfc_genl_send_params(msg, local, info-&gt;snd_portid, info-&gt;snd_seq);
+ 
++put_local:
++	nfc_llcp_local_put(local);
++
+ exit:
+ 	device_unlock(&amp;dev-&gt;dev);
+ 
+@@ -1105,7 +1108,7 @@ static int nfc_genl_llc_set_params(struct sk_buff *skb, struct genl_info *info)
+ 	if (info-&gt;attrs[NFC_ATTR_LLC_PARAM_LTO]) {
+ 		if (dev-&gt;dep_link_up) {
+ 			rc = -EINPROGRESS;
+-			goto exit;
++			goto put_local;
+ 		}
+ 
+ 		local-&gt;lto = nla_get_u8(info-&gt;attrs[NFC_ATTR_LLC_PARAM_LTO]);
+@@ -1117,6 +1120,9 @@ static int nfc_genl_llc_set_params(struct sk_buff *skb, struct genl_info *info)
+ 	if (info-&gt;attrs[NFC_ATTR_LLC_PARAM_MIUX])
+ 		local-&gt;miux = cpu_to_be16(miux);
+ 
++put_local:
++	nfc_llcp_local_put(local);
++
+ exit:
+ 	device_unlock(&amp;dev-&gt;dev);
+ 
+@@ -1172,7 +1178,7 @@ static int nfc_genl_llc_sdreq(struct sk_buff *skb, struct genl_info *info)
+ 
+ 		if (rc != 0) {
+ 			rc = -EINVAL;
+-			goto exit;
++			goto put_local;
+ 		}
+ 
+ 		if (!sdp_attrs[NFC_SDP_ATTR_URI])
+@@ -1191,7 +1197,7 @@ static int nfc_genl_llc_sdreq(struct sk_buff *skb, struct genl_info *info)
+ 		sdreq = nfc_llcp_build_sdreq_tlv(tid, uri, uri_len);
+ 		if (sdreq == NULL) {
+ 			rc = -ENOMEM;
+-			goto exit;
++			goto put_local;
+ 		}
+ 
+ 		tlvs_len += sdreq-&gt;tlv_len;
+@@ -1201,10 +1207,14 @@ static int nfc_genl_llc_sdreq(struct sk_buff *skb, struct genl_info *info)
+ 
+ 	if (hlist_empty(&amp;sdreq_list)) {
+ 		rc = -EINVAL;
+-		goto exit;
++		goto put_local;
+ 	}
+ 
+ 	rc = nfc_llcp_send_snl_sdreq(local, &amp;sdreq_list, tlvs_len);
++
++put_local:
++	nfc_llcp_local_put(local);
++
+ exit:
+ 	device_unlock(&amp;dev-&gt;dev);
+ 
+diff --git a/net/nfc/nfc.h b/net/nfc/nfc.h
+index de2ec66d7e83..0b1e6466f4fb 100644
+--- a/net/nfc/nfc.h
++++ b/net/nfc/nfc.h
+@@ -52,6 +52,7 @@ int nfc_llcp_set_remote_gb(struct nfc_dev *dev, const u8 *gb, u8 gb_len);
+ u8 *nfc_llcp_general_bytes(struct nfc_dev *dev, size_t *general_bytes_len);
+ int nfc_llcp_data_received(struct nfc_dev *dev, struct sk_buff *skb);
+ struct nfc_llcp_local *nfc_llcp_find_local(struct nfc_dev *dev);
++int nfc_llcp_local_put(struct nfc_llcp_local *local);
+ int __init nfc_llcp_init(void);
+ void nfc_llcp_exit(void);
+ void nfc_llcp_free_sdp_tlv(struct nfc_llcp_sdp_tlv *sdp);</pre><hr><pre>commit f60ce8a48b97eb970bfbec1f26c914b9017c4a46
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Thu Jun 15 23:22:40 2023 +0800
+
+    net: mctp: remove redundant RTN_UNICAST check
+    
+    Current mctp_newroute() contains two exactly same check against
+    rtm-&gt;rtm_type
+    
+    static int mctp_newroute(...)
+    {
+    ...
+        if (rtm-&gt;rtm_type != RTN_UNICAST) { // (1)
+            NL_SET_ERR_MSG(extack, "rtm_type must be RTN_UNICAST");
+            return -EINVAL;
+        }
+    ...
+        if (rtm-&gt;rtm_type != RTN_UNICAST) // (2)
+            return -EINVAL;
+    ...
+    }
+    
+    This commits removes the (2) check as it is redundant.
+    
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Pavan Chebbi &lt;pavan.chebbi@broadcom.com&gt;
+    Acked-by: Jeremy Kerr &lt;jk@codeconstruct.com.au&gt;
+    Link: https://lore.kernel.org/r/20230615152240.1749428-1-linma@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/mctp/route.c b/net/mctp/route.c
+index f51a05ec7162..ab62fe447038 100644
+--- a/net/mctp/route.c
++++ b/net/mctp/route.c
+@@ -1249,9 +1249,6 @@ static int mctp_newroute(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 			mtu = nla_get_u32(tbx[RTAX_MTU]);
+ 	}
+ 
+-	if (rtm-&gt;rtm_type != RTN_UNICAST)
+-		return -EINVAL;
+-
+ 	rc = mctp_route_add(mdev, daddr_start, rtm-&gt;rtm_dst_len, mtu,
+ 			    rtm-&gt;rtm_type);
+ 	return rc;</pre><hr><pre>commit 44194cb1b6045dea33ae9a0d54fb7e7cd93a2e09
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Wed Jun 14 20:06:04 2023 +0800
+
+    net: tipc: resize nlattr array to correct size
+    
+    According to nla_parse_nested_deprecated(), the tb[] is supposed to the
+    destination array with maxtype+1 elements. In current
+    tipc_nl_media_get() and __tipc_nl_media_set(), a larger array is used
+    which is unnecessary. This patch resize them to a proper size.
+    
+    Fixes: 1e55417d8fc6 ("tipc: add media set to new netlink api")
+    Fixes: 46f15c6794fb ("tipc: add media get/dump to new netlink api")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Florian Westphal &lt;fw@strlen.de&gt;
+    Reviewed-by: Tung Nguyen &lt;tung.q.nguyen@dektech.com.au&gt;
+    Link: https://lore.kernel.org/r/20230614120604.1196377-1-linma@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/tipc/bearer.c b/net/tipc/bearer.c
+index 53881406e200..cdcd2731860b 100644
+--- a/net/tipc/bearer.c
++++ b/net/tipc/bearer.c
+@@ -1258,7 +1258,7 @@ int tipc_nl_media_get(struct sk_buff *skb, struct genl_info *info)
+ 	struct tipc_nl_msg msg;
+ 	struct tipc_media *media;
+ 	struct sk_buff *rep;
+-	struct nlattr *attrs[TIPC_NLA_BEARER_MAX + 1];
++	struct nlattr *attrs[TIPC_NLA_MEDIA_MAX + 1];
+ 
+ 	if (!info-&gt;attrs[TIPC_NLA_MEDIA])
+ 		return -EINVAL;
+@@ -1307,7 +1307,7 @@ int __tipc_nl_media_set(struct sk_buff *skb, struct genl_info *info)
+ 	int err;
+ 	char *name;
+ 	struct tipc_media *m;
+-	struct nlattr *attrs[TIPC_NLA_BEARER_MAX + 1];
++	struct nlattr *attrs[TIPC_NLA_MEDIA_MAX + 1];
+ 
+ 	if (!info-&gt;attrs[TIPC_NLA_MEDIA])
+ 		return -EINVAL;</pre><hr><pre>commit 361b6889ae636926cdff517add240c3c8e24593a
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Wed Jun 14 09:52:49 2023 +0800
+
+    net/handshake: remove fput() that causes use-after-free
+    
+    A reference underflow is found in TLS handshake subsystem that causes a
+    direct use-after-free. Part of the crash log is like below:
+    
+    [    2.022114] ------------[ cut here ]------------
+    [    2.022193] refcount_t: underflow; use-after-free.
+    [    2.022288] WARNING: CPU: 0 PID: 60 at lib/refcount.c:28 refcount_warn_saturate+0xbe/0x110
+    [    2.022432] Modules linked in:
+    [    2.022848] RIP: 0010:refcount_warn_saturate+0xbe/0x110
+    [    2.023231] RSP: 0018:ffffc900001bfe18 EFLAGS: 00000286
+    [    2.023325] RAX: 0000000000000000 RBX: 0000000000000007 RCX: 00000000ffffdfff
+    [    2.023438] RDX: 0000000000000000 RSI: 00000000ffffffea RDI: 0000000000000001
+    [    2.023555] RBP: ffff888004c20098 R08: ffffffff82b392c8 R09: 00000000ffffdfff
+    [    2.023693] R10: ffffffff82a592e0 R11: ffffffff82b092e0 R12: ffff888004c200d8
+    [    2.023813] R13: 0000000000000000 R14: ffff888004c20000 R15: ffffc90000013ca8
+    [    2.023930] FS:  0000000000000000(0000) GS:ffff88807dc00000(0000) knlGS:0000000000000000
+    [    2.024062] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+    [    2.024161] CR2: ffff888003601000 CR3: 0000000002a2e000 CR4: 00000000000006f0
+    [    2.024275] Call Trace:
+    [    2.024322]  &lt;TASK&gt;
+    [    2.024367]  ? __warn+0x7f/0x130
+    [    2.024430]  ? refcount_warn_saturate+0xbe/0x110
+    [    2.024513]  ? report_bug+0x199/0x1b0
+    [    2.024585]  ? handle_bug+0x3c/0x70
+    [    2.024676]  ? exc_invalid_op+0x18/0x70
+    [    2.024750]  ? asm_exc_invalid_op+0x1a/0x20
+    [    2.024830]  ? refcount_warn_saturate+0xbe/0x110
+    [    2.024916]  ? refcount_warn_saturate+0xbe/0x110
+    [    2.024998]  __tcp_close+0x2f4/0x3d0
+    [    2.025065]  ? __pfx_kunit_generic_run_threadfn_adapter+0x10/0x10
+    [    2.025168]  tcp_close+0x1f/0x70
+    [    2.025231]  inet_release+0x33/0x60
+    [    2.025297]  sock_release+0x1f/0x80
+    [    2.025361]  handshake_req_cancel_test2+0x100/0x2d0
+    [    2.025457]  kunit_try_run_case+0x4c/0xa0
+    [    2.025532]  kunit_generic_run_threadfn_adapter+0x15/0x20
+    [    2.025644]  kthread+0xe1/0x110
+    [    2.025708]  ? __pfx_kthread+0x10/0x10
+    [    2.025780]  ret_from_fork+0x2c/0x50
+    
+    One can enable CONFIG_NET_HANDSHAKE_KUNIT_TEST config to reproduce above
+    crash.
+    
+    The root cause of this bug is that the commit 1ce77c998f04
+    ("net/handshake: Unpin sock-&gt;file if a handshake is cancelled") adds one
+    additional fput() function. That patch claims that the fput() is used to
+    enable sock-&gt;file to be freed even when user space never calls DONE.
+    
+    However, it seems that the intended DONE routine will never give an
+    additional fput() of ths sock-&gt;file. The existing two of them are just
+    used to balance the reference added in sockfd_lookup().
+    
+    This patch revert the mentioned commit to avoid the use-after-free. The
+    patched kernel could successfully pass the KUNIT test and boot to shell.
+    
+    [    0.733613]     # Subtest: Handshake API tests
+    [    0.734029]     1..11
+    [    0.734255]         KTAP version 1
+    [    0.734542]         # Subtest: req_alloc API fuzzing
+    [    0.736104]         ok 1 handshake_req_alloc NULL proto
+    [    0.736114]         ok 2 handshake_req_alloc CLASS_NONE
+    [    0.736559]         ok 3 handshake_req_alloc CLASS_MAX
+    [    0.737020]         ok 4 handshake_req_alloc no callbacks
+    [    0.737488]         ok 5 handshake_req_alloc no done callback
+    [    0.737988]         ok 6 handshake_req_alloc excessive privsize
+    [    0.738529]         ok 7 handshake_req_alloc all good
+    [    0.739036]     # req_alloc API fuzzing: pass:7 fail:0 skip:0 total:7
+    [    0.739444]     ok 1 req_alloc API fuzzing
+    [    0.740065]     ok 2 req_submit NULL req arg
+    [    0.740436]     ok 3 req_submit NULL sock arg
+    [    0.740834]     ok 4 req_submit NULL sock-&gt;file
+    [    0.741236]     ok 5 req_lookup works
+    [    0.741621]     ok 6 req_submit max pending
+    [    0.741974]     ok 7 req_submit multiple
+    [    0.742382]     ok 8 req_cancel before accept
+    [    0.742764]     ok 9 req_cancel after accept
+    [    0.743151]     ok 10 req_cancel after done
+    [    0.743510]     ok 11 req_destroy works
+    [    0.743882] # Handshake API tests: pass:11 fail:0 skip:0 total:11
+    [    0.744205] # Totals: pass:17 fail:0 skip:0 total:17
+    
+    Acked-by: Chuck Lever &lt;chuck.lever@oracle.com&gt;
+    Fixes: 1ce77c998f04 ("net/handshake: Unpin sock-&gt;file if a handshake is cancelled")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230613083204.633896-1-linma@zju.edu.cn
+    Link: https://lore.kernel.org/r/20230614015249.987448-1-linma@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/handshake/handshake.h b/net/handshake/handshake.h
+index 8aeaadca844f..4dac965c99df 100644
+--- a/net/handshake/handshake.h
++++ b/net/handshake/handshake.h
+@@ -31,7 +31,6 @@ struct handshake_req {
+ 	struct list_head		hr_list;
+ 	struct rhash_head		hr_rhash;
+ 	unsigned long			hr_flags;
+-	struct file			*hr_file;
+ 	const struct handshake_proto	*hr_proto;
+ 	struct sock			*hr_sk;
+ 	void				(*hr_odestruct)(struct sock *sk);
+diff --git a/net/handshake/request.c b/net/handshake/request.c
+index d78d41abb3d9..94d5cef3e048 100644
+--- a/net/handshake/request.c
++++ b/net/handshake/request.c
+@@ -239,7 +239,6 @@ int handshake_req_submit(struct socket *sock, struct handshake_req *req,
+ 	}
+ 	req-&gt;hr_odestruct = req-&gt;hr_sk-&gt;sk_destruct;
+ 	req-&gt;hr_sk-&gt;sk_destruct = handshake_sk_destruct;
+-	req-&gt;hr_file = sock-&gt;file;
+ 
+ 	ret = -EOPNOTSUPP;
+ 	net = sock_net(req-&gt;hr_sk);
+@@ -335,9 +334,6 @@ bool handshake_req_cancel(struct sock *sk)
+ 		return false;
+ 	}
+ 
+-	/* Request accepted and waiting for DONE */
+-	fput(req-&gt;hr_file);
+-
+ out_true:
+ 	trace_handshake_cancel(net, req, sk);
+ </pre>
+    <div class="pagination">
+        <a href='6_8.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><span>[9]</span><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_10.html'>Next&gt;&gt;</a>
+    <div>
+</body>

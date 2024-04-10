@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Carnegie Mellon University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Carnegie Mellon University</h1>
+    <div class="pagination">
+        <a href='14_7.html'>&lt;&lt;Prev</a><a href='14.html'>1</a><a href='14_2.html'>2</a><a href='14_3.html'>3</a><a href='14_4.html'>4</a><a href='14_5.html'>5</a><a href='14_6.html'>6</a><a href='14_7.html'>7</a><span>[8]</span>
+    </div>
+    <hr>
+    <pre>commit 69ac59647e66c1b53fb98fe8b6d0f2099cffad60
+Author: Chaskiel Grundman &lt;cg2v@andrew.cmu.edu&gt;
+Date:   Fri Sep 9 13:01:54 2005 -0700
+
+    [PATCH] alpha: process_reloc_for_got confuses r_offset and r_addend
+    
+    arch/alpha/kernel/module.c:process_reloc_for_got(), which figures out how big
+    the .got section for a module should be, appears to be confusing r_offset (the
+    file offset that the relocation needs to be applied to) with r_addend (the
+    offset of the relocation's actual target address from the address of the
+    relocation's symbol).  Because of this, one .got entry is allocated for each
+    relocation instead of one each unique symbol/addend.
+    
+    In the module I am working with, this causes the .got section to be almost 10
+    times larger than it needs to be (75544 bytes instead of 7608 bytes).  As the
+    .got is accessed with global-pointer-relative instructions, it needs to be
+    within the 64k gp "zone", and a 75544 byte .got clearly does not fit.  The
+    result of this is that relocation overflows are detected during module load
+    and the load is aborted.
+    
+    Change struct got_entry/process_reloc_for_got to fix this.
+    
+    Acked-by: Richard Henderson &lt;rth@twiddle.net&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/arch/alpha/kernel/module.c b/arch/alpha/kernel/module.c
+index fc271e316a38..aac6d4b22f7a 100644
+--- a/arch/alpha/kernel/module.c
++++ b/arch/alpha/kernel/module.c
+@@ -47,7 +47,7 @@ module_free(struct module *mod, void *module_region)
+ 
+ struct got_entry {
+ 	struct got_entry *next;
+-	Elf64_Addr r_offset;
++	Elf64_Sxword r_addend;
+ 	int got_offset;
+ };
+ 
+@@ -57,14 +57,14 @@ process_reloc_for_got(Elf64_Rela *rela,
+ {
+ 	unsigned long r_sym = ELF64_R_SYM (rela-&gt;r_info);
+ 	unsigned long r_type = ELF64_R_TYPE (rela-&gt;r_info);
+-	Elf64_Addr r_offset = rela-&gt;r_offset;
++	Elf64_Sxword r_addend = rela-&gt;r_addend;
+ 	struct got_entry *g;
+ 
+ 	if (r_type != R_ALPHA_LITERAL)
+ 		return;
+ 
+ 	for (g = chains + r_sym; g ; g = g-&gt;next)
+-		if (g-&gt;r_offset == r_offset) {
++		if (g-&gt;r_addend == r_addend) {
+ 			if (g-&gt;got_offset == 0) {
+ 				g-&gt;got_offset = *poffset;
+ 				*poffset += 8;
+@@ -74,7 +74,7 @@ process_reloc_for_got(Elf64_Rela *rela,
+ 
+ 	g = kmalloc (sizeof (*g), GFP_KERNEL);
+ 	g-&gt;next = chains[r_sym].next;
+-	g-&gt;r_offset = r_offset;
++	g-&gt;r_addend = r_addend;
+ 	g-&gt;got_offset = *poffset;
+ 	*poffset += 8;
+ 	chains[r_sym].next = g;</pre><hr><pre>commit 3e66d0138c05d9792f458b96581afdb314bc66d6
+Author: Christopher R. Baker &lt;cbaker@rec.ri.cmu.edu&gt;
+Date:   Sat Mar 8 11:00:20 2014 -0500
+
+    can: populate netdev::dev_id for udev discrimination
+    
+    My objective is to be able to totally discriminate CAN ports on multi-port
+    cards via udev so as to rename them to semantically interesting/unique names
+    for my system (e.g., "ecuCAN" and "auxCAN" instead of "can0" and "can1").
+    
+    The following patch assigns the dev_id field to match the channel number on all
+    multi-channel devices. I can only test my two-port Peak PCI card, but it works
+    as expected: ATTRS{dev_id} now expresses the port number and my udev rules now
+    unambiguously pick out and rename my individual CAN ports.
+    
+    Signed-off-by: Christopher R. Baker &lt;cbaker@rec.ri.cmu.edu&gt;
+    Tested-by: Oliver Hartkopp &lt;socketcan@hartkopp.net&gt; [PEAK PCAN-USB pro and EMS PCMCIA]
+    Signed-off-by: Marc Kleine-Budde &lt;mkl@pengutronix.de&gt;
+
+diff --git a/drivers/net/can/sja1000/ems_pci.c b/drivers/net/can/sja1000/ems_pci.c
+index d790b874ca79..fd13dbf07d9c 100644
+--- a/drivers/net/can/sja1000/ems_pci.c
++++ b/drivers/net/can/sja1000/ems_pci.c
+@@ -323,6 +323,7 @@ static int ems_pci_add_card(struct pci_dev *pdev,
+ 			priv-&gt;cdr = EMS_PCI_CDR;
+ 
+ 			SET_NETDEV_DEV(dev, &amp;pdev-&gt;dev);
++			dev-&gt;dev_id = i;
+ 
+ 			if (card-&gt;version == 1)
+ 				/* reset int flag of pita */
+diff --git a/drivers/net/can/sja1000/ems_pcmcia.c b/drivers/net/can/sja1000/ems_pcmcia.c
+index 9e535f2ef52b..381de998d2f1 100644
+--- a/drivers/net/can/sja1000/ems_pcmcia.c
++++ b/drivers/net/can/sja1000/ems_pcmcia.c
+@@ -211,6 +211,7 @@ static int ems_pcmcia_add_card(struct pcmcia_device *pdev, unsigned long base)
+ 		priv = netdev_priv(dev);
+ 		priv-&gt;priv = card;
+ 		SET_NETDEV_DEV(dev, &amp;pdev-&gt;dev);
++		dev-&gt;dev_id = i;
+ 
+ 		priv-&gt;irq_flags = IRQF_SHARED;
+ 		dev-&gt;irq = pdev-&gt;irq;
+diff --git a/drivers/net/can/sja1000/kvaser_pci.c b/drivers/net/can/sja1000/kvaser_pci.c
+index c96eb14699d5..23b8e1324e25 100644
+--- a/drivers/net/can/sja1000/kvaser_pci.c
++++ b/drivers/net/can/sja1000/kvaser_pci.c
+@@ -270,6 +270,7 @@ static int kvaser_pci_add_chan(struct pci_dev *pdev, int channel,
+ 		 priv-&gt;reg_base, board-&gt;conf_addr, dev-&gt;irq);
+ 
+ 	SET_NETDEV_DEV(dev, &amp;pdev-&gt;dev);
++	dev-&gt;dev_id = channel;
+ 
+ 	/* Register SJA1000 device */
+ 	err = register_sja1000dev(dev);
+diff --git a/drivers/net/can/sja1000/peak_pci.c b/drivers/net/can/sja1000/peak_pci.c
+index 065ca49eb45e..c540e3d12e3d 100644
+--- a/drivers/net/can/sja1000/peak_pci.c
++++ b/drivers/net/can/sja1000/peak_pci.c
+@@ -642,6 +642,7 @@ static int peak_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 		icr |= chan-&gt;icr_mask;
+ 
+ 		SET_NETDEV_DEV(dev, &amp;pdev-&gt;dev);
++		dev-&gt;dev_id = i;
+ 
+ 		/* Create chain of SJA1000 devices */
+ 		chan-&gt;prev_dev = pci_get_drvdata(pdev);
+diff --git a/drivers/net/can/sja1000/peak_pcmcia.c b/drivers/net/can/sja1000/peak_pcmcia.c
+index f7ad754dd2aa..dd56133cc461 100644
+--- a/drivers/net/can/sja1000/peak_pcmcia.c
++++ b/drivers/net/can/sja1000/peak_pcmcia.c
+@@ -550,6 +550,7 @@ static int pcan_add_channels(struct pcan_pccard *card)
+ 		priv = netdev_priv(netdev);
+ 		priv-&gt;priv = card;
+ 		SET_NETDEV_DEV(netdev, &amp;pdev-&gt;dev);
++		netdev-&gt;dev_id = i;
+ 
+ 		priv-&gt;irq_flags = IRQF_SHARED;
+ 		netdev-&gt;irq = pdev-&gt;irq;
+diff --git a/drivers/net/can/sja1000/plx_pci.c b/drivers/net/can/sja1000/plx_pci.c
+index fbb61a0d901f..ec39b7cb2287 100644
+--- a/drivers/net/can/sja1000/plx_pci.c
++++ b/drivers/net/can/sja1000/plx_pci.c
+@@ -587,6 +587,7 @@ static int plx_pci_add_card(struct pci_dev *pdev,
+ 			priv-&gt;cdr = ci-&gt;cdr;
+ 
+ 			SET_NETDEV_DEV(dev, &amp;pdev-&gt;dev);
++			dev-&gt;dev_id = i;
+ 
+ 			/* Register SJA1000 device */
+ 			err = register_sja1000dev(dev);
+diff --git a/drivers/net/can/softing/softing_main.c b/drivers/net/can/softing/softing_main.c
+index 3766bd90f3ed..7d8c8f3672dd 100644
+--- a/drivers/net/can/softing/softing_main.c
++++ b/drivers/net/can/softing/softing_main.c
+@@ -833,6 +833,7 @@ static int softing_pdev_probe(struct platform_device *pdev)
+ 			ret = -ENOMEM;
+ 			goto netdev_failed;
+ 		}
++		netdev-&gt;dev_id = j;
+ 		priv = netdev_priv(card-&gt;net[j]);
+ 		priv-&gt;index = j;
+ 		ret = softing_netdev_register(netdev);
+diff --git a/drivers/net/can/usb/esd_usb2.c b/drivers/net/can/usb/esd_usb2.c
+index 1f8ce91adbd3..b7c9e8b11460 100644
+--- a/drivers/net/can/usb/esd_usb2.c
++++ b/drivers/net/can/usb/esd_usb2.c
+@@ -1025,6 +1025,7 @@ static int esd_usb2_probe_one_net(struct usb_interface *intf, int index)
+ 	netdev-&gt;netdev_ops = &amp;esd_usb2_netdev_ops;
+ 
+ 	SET_NETDEV_DEV(netdev, &amp;intf-&gt;dev);
++	netdev-&gt;dev_id = index;
+ 
+ 	err = register_candev(netdev);
+ 	if (err) {
+diff --git a/drivers/net/can/usb/kvaser_usb.c b/drivers/net/can/usb/kvaser_usb.c
+index ea596b53a5ae..4ca46edc061d 100644
+--- a/drivers/net/can/usb/kvaser_usb.c
++++ b/drivers/net/can/usb/kvaser_usb.c
+@@ -1530,6 +1530,7 @@ static int kvaser_usb_init_one(struct usb_interface *intf,
+ 	netdev-&gt;netdev_ops = &amp;kvaser_usb_netdev_ops;
+ 
+ 	SET_NETDEV_DEV(netdev, &amp;intf-&gt;dev);
++	netdev-&gt;dev_id = channel;
+ 
+ 	dev-&gt;nets[channel] = priv;
+ 
+diff --git a/drivers/net/can/usb/peak_usb/pcan_usb_core.c b/drivers/net/can/usb/peak_usb/pcan_usb_core.c
+index 93e4a55a6c23..644e6ab8a489 100644
+--- a/drivers/net/can/usb/peak_usb/pcan_usb_core.c
++++ b/drivers/net/can/usb/peak_usb/pcan_usb_core.c
+@@ -770,6 +770,7 @@ static int peak_usb_create_dev(struct peak_usb_adapter *peak_usb_adapter,
+ 	usb_set_intfdata(intf, dev);
+ 
+ 	SET_NETDEV_DEV(netdev, &amp;intf-&gt;dev);
++	netdev-&gt;dev_id = ctrl_idx;
+ 
+ 	err = register_candev(netdev);
+ 	if (err) {</pre><hr><pre>commit a14848275b04f3193b9d9e9c745a4fae37f11f2f
+Author: Justin Carlson &lt;justinca@qatar.cmu.edu&gt;
+Date:   Sun Sep 24 11:52:12 2006 +0300
+
+    USB: add SeaLevel 2106 SeaLINK support to ftdi_sio
+    
+    We have a couple of these USB-Serial converters around; they're slightly
+    different from the 2104 models in that they can handle 500Kb/sec over RS422.
+    The existing ftdi driver seems to work just fine if we add in the
+    appropriate IDs.
+    
+    Patch is against 2.6.17.6, but should apply cleanly to pretty much
+    anything recent.
+    
+    From: Justin Carlson &lt;justinca@qatar.cmu.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@suse.de&gt;
+
+diff --git a/drivers/usb/serial/ftdi_sio.c b/drivers/usb/serial/ftdi_sio.c
+index b94d1bdb174e..e774a27c6c98 100644
+--- a/drivers/usb/serial/ftdi_sio.c
++++ b/drivers/usb/serial/ftdi_sio.c
+@@ -344,6 +344,7 @@ static struct usb_device_id id_table_combined [] = {
+ 	{ USB_DEVICE(SEALEVEL_VID, SEALEVEL_2102_PID) },
+ 	{ USB_DEVICE(SEALEVEL_VID, SEALEVEL_2103_PID) },
+ 	{ USB_DEVICE(SEALEVEL_VID, SEALEVEL_2104_PID) },
++	{ USB_DEVICE(SEALEVEL_VID, SEALEVEL_2106_PID) },
+ 	{ USB_DEVICE(SEALEVEL_VID, SEALEVEL_2201_1_PID) },
+ 	{ USB_DEVICE(SEALEVEL_VID, SEALEVEL_2201_2_PID) },
+ 	{ USB_DEVICE(SEALEVEL_VID, SEALEVEL_2202_1_PID) },
+diff --git a/drivers/usb/serial/ftdi_sio.h b/drivers/usb/serial/ftdi_sio.h
+index 5bada7fa28e9..f0edb87d2dd5 100644
+--- a/drivers/usb/serial/ftdi_sio.h
++++ b/drivers/usb/serial/ftdi_sio.h
+@@ -111,6 +111,7 @@
+ #define SEALEVEL_2102_PID	0x2102	/* SeaLINK+485 (2102) */
+ #define SEALEVEL_2103_PID	0x2103	/* SeaLINK+232I (2103) */
+ #define SEALEVEL_2104_PID	0x2104	/* SeaLINK+485I (2104) */
++#define SEALEVEL_2106_PID	0x9020	/* SeaLINK+422 (2106) */
+ #define SEALEVEL_2201_1_PID	0x2211	/* SeaPORT+2/232 (2201) Port 1 */
+ #define SEALEVEL_2201_2_PID	0x2221	/* SeaPORT+2/232 (2201) Port 2 */
+ #define SEALEVEL_2202_1_PID	0x2212	/* SeaPORT+2/485 (2202) Port 1 */</pre>
+    <div class="pagination">
+        <a href='14_7.html'>&lt;&lt;Prev</a><a href='14.html'>1</a><a href='14_2.html'>2</a><a href='14_3.html'>3</a><a href='14_4.html'>4</a><a href='14_5.html'>5</a><a href='14_6.html'>6</a><a href='14_7.html'>7</a><span>[8]</span>
+    <div>
+</body>

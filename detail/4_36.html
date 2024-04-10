@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_35.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><span>[36]</span><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_37.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit f8512ad0da16cbe156f3a7627971cdf0b39c4138
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Wed Mar 19 11:24:39 2008 -0400
+
+    nfs: don't ignore return value from nfs_pageio_add_request
+    
+    Ignoring the return value from nfs_pageio_add_request can cause deadlocks.
+    
+    In read path:
+      call nfs_pageio_add_request from readpage_async_filler
+      assume at this point that there are requests already in desc, that
+        can't be merged with the current request.
+      so nfs_pageio_doio is fired up to clear out desc.
+      assume something goes wrong in setting up the io, so desc-&gt;pg_error is set.
+      This causes nfs_pageio_add_request to return 0, *WITHOUT* adding the original
+        request.
+      BUT, since return code is ignored, readpage_async_filler assumes it has
+        been added, and does nothing further, leaving page locked.
+      do_generic_mapping_read will eventually call lock_page, resulting in deadlock
+    
+    In write path:
+      page is marked dirty by generic_perform_write
+      nfs_writepages is called
+      call nfs_pageio_add_request from nfs_page_async_flush
+      assume at this point that there are requests already in desc, that
+        can't be merged with the current request.
+      so nfs_pageio_doio is fired up to clear out desc.
+      assume something goes wrong in setting up the io, so desc-&gt;pg_error is set.
+      This causes nfs_page_async_flush to return 0, *WITHOUT* adding the original
+        request, yet marking the request as locked (PG_BUSY) and in writeback,
+        clearing dirty marks.
+      The next time a write is done to the page, deadlock will result as
+        nfs_write_end calls nfs_update_request
+    
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/read.c b/fs/nfs/read.c
+index 3d7d9631e125..5a70be589bbe 100644
+--- a/fs/nfs/read.c
++++ b/fs/nfs/read.c
+@@ -533,7 +533,10 @@ readpage_async_filler(void *data, struct page *page)
+ 
+ 	if (len &lt; PAGE_CACHE_SIZE)
+ 		zero_user_segment(page, len, PAGE_CACHE_SIZE);
+-	nfs_pageio_add_request(desc-&gt;pgio, new);
++	if (!nfs_pageio_add_request(desc-&gt;pgio, new)) {
++		error = desc-&gt;pgio-&gt;pg_error;
++		goto out_unlock;
++	}
+ 	return 0;
+ out_error:
+ 	error = PTR_ERR(new);
+diff --git a/fs/nfs/write.c b/fs/nfs/write.c
+index 80c61fdb2720..bed63416a55b 100644
+--- a/fs/nfs/write.c
++++ b/fs/nfs/write.c
+@@ -39,6 +39,7 @@ static struct nfs_page * nfs_update_request(struct nfs_open_context*,
+ 					    unsigned int, unsigned int);
+ static void nfs_pageio_init_write(struct nfs_pageio_descriptor *desc,
+ 				  struct inode *inode, int ioflags);
++static void nfs_redirty_request(struct nfs_page *req);
+ static const struct rpc_call_ops nfs_write_partial_ops;
+ static const struct rpc_call_ops nfs_write_full_ops;
+ static const struct rpc_call_ops nfs_commit_ops;
+@@ -288,7 +289,12 @@ static int nfs_page_async_flush(struct nfs_pageio_descriptor *pgio,
+ 		BUG();
+ 	}
+ 	spin_unlock(&amp;inode-&gt;i_lock);
+-	nfs_pageio_add_request(pgio, req);
++	if (!nfs_pageio_add_request(pgio, req)) {
++		nfs_redirty_request(req);
++		nfs_end_page_writeback(page);
++		nfs_clear_page_tag_locked(req);
++		return pgio-&gt;pg_error;
++	}
+ 	return 0;
+ }
+ </pre><hr><pre>commit b663c6fd98c9cf586279db03cec3257c413efd00
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri Mar 14 19:37:11 2008 -0400
+
+    nfsd: fix oops on access from high-numbered ports
+    
+    This bug was always here, but before my commit 6fa02839bf9412e18e77
+    ("recheck for secure ports in fh_verify"), it could only be triggered by
+    failure of a kmalloc().  After that commit it could be triggered by a
+    client making a request from a non-reserved port for access to an export
+    marked "secure".  (Exports are "secure" by default.)
+    
+    The result is a struct svc_export with a reference count one too low,
+    resulting in likely oopses next time the export is accessed.
+    
+    The reference counting here is not straightforward; a later patch will
+    clean up fh_verify().
+    
+    Thanks to Lukas Hejtmanek for the bug report and followup.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Lukas Hejtmanek &lt;xhejtman@ics.muni.cz&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/fs/nfsd/nfsfh.c b/fs/nfsd/nfsfh.c
+index 1eb771d79cca..3e6b3f41ee1f 100644
+--- a/fs/nfsd/nfsfh.c
++++ b/fs/nfsd/nfsfh.c
+@@ -232,6 +232,7 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 		fhp-&gt;fh_dentry = dentry;
+ 		fhp-&gt;fh_export = exp;
+ 		nfsd_nr_verified++;
++		cache_get(&amp;exp-&gt;h);
+ 	} else {
+ 		/*
+ 		 * just rechecking permissions
+@@ -241,6 +242,7 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 		dprintk("nfsd: fh_verify - just checking\n");
+ 		dentry = fhp-&gt;fh_dentry;
+ 		exp = fhp-&gt;fh_export;
++		cache_get(&amp;exp-&gt;h);
+ 		/*
+ 		 * Set user creds for this exportpoint; necessary even
+ 		 * in the "just checking" case because this may be a
+@@ -252,8 +254,6 @@ fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, int type, int access)
+ 		if (error)
+ 			goto out;
+ 	}
+-	cache_get(&amp;exp-&gt;h);
+-
+ 
+ 	error = nfsd_mode_check(rqstp, dentry-&gt;d_inode-&gt;i_mode, type);
+ 	if (error)</pre><hr><pre>commit 2f42b5d043ee271d1e5d30ecd77186b6c4d4e534
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Thu Mar 13 15:26:30 2008 +0200
+
+    NFS: fix encode_fsinfo_maxsz
+    
+    The previous value was not taking into account space for bitmap array size.
+    
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/nfs/nfs4xdr.c b/fs/nfs/nfs4xdr.c
+index db1ed9c46ede..37421dd4805d 100644
+--- a/fs/nfs/nfs4xdr.c
++++ b/fs/nfs/nfs4xdr.c
+@@ -110,7 +110,7 @@ static int nfs4_stat_to_errno(int);
+ #define decode_savefh_maxsz     (op_decode_hdr_maxsz)
+ #define encode_restorefh_maxsz  (op_encode_hdr_maxsz)
+ #define decode_restorefh_maxsz  (op_decode_hdr_maxsz)
+-#define encode_fsinfo_maxsz	(op_encode_hdr_maxsz + 2)
++#define encode_fsinfo_maxsz	(encode_getattr_maxsz)
+ #define decode_fsinfo_maxsz	(op_decode_hdr_maxsz + 11)
+ #define encode_renew_maxsz	(op_encode_hdr_maxsz + 3)
+ #define decode_renew_maxsz	(op_decode_hdr_maxsz)</pre><hr><pre>commit 8d042218b075de3cdbe066198515b3521553746e
+Author: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+Date:   Wed Feb 13 16:47:06 2008 -0500
+
+    NFS: add missing spkm3 strings to mount option parser
+    
+    This patch adds previous missing spkm3 string values that are needed
+    to parse mount options in the kernel.
+
+diff --git a/fs/nfs/super.c b/fs/nfs/super.c
+index 7f4505f6ac6f..1fb381843650 100644
+--- a/fs/nfs/super.c
++++ b/fs/nfs/super.c
+@@ -190,6 +190,10 @@ static match_table_t nfs_secflavor_tokens = {
+ 	{ Opt_sec_lkeyi, "lkeyi" },
+ 	{ Opt_sec_lkeyp, "lkeyp" },
+ 
++	{ Opt_sec_spkm, "spkm3" },
++	{ Opt_sec_spkmi, "spkm3i" },
++	{ Opt_sec_spkmp, "spkm3p" },
++
+ 	{ Opt_sec_err, NULL }
+ };
+ </pre><hr><pre>commit df24d9a6a9014010513d6af1105f4de05c504a4b
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Feb 13 15:03:20 2008 -0800
+
+    Documentation: prune redundant SubmitChecklist items
+    
+    Kernel style is mentioned twice, and the git apply trick is a bit redundant
+    given the checkpatch.pl recommendation (which also checks for bad
+    whitespace).
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: "Randy.Dunlap" &lt;rdunlap@xenotime.net&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/Documentation/SubmitChecklist b/Documentation/SubmitChecklist
+index 34e06d2f194f..da10e0714241 100644
+--- a/Documentation/SubmitChecklist
++++ b/Documentation/SubmitChecklist
+@@ -20,7 +20,11 @@ kernel patches.
+ 4: ppc64 is a good architecture for cross-compilation checking because it
+    tends to use `unsigned long' for 64-bit quantities.
+ 
+-5: Matches kernel coding style(!)
++5: Check your patch for general style as detailed in
++   Documentation/CodingStyle.  Check for trivial violations with the
++   patch style checker prior to submission (scripts/checkpatch.pl).
++   You should be able to justify all violations that remain in
++   your patch.
+ 
+ 6: Any new or modified CONFIG options don't muck up the config menu.
+ 
+@@ -79,13 +83,3 @@ kernel patches.
+ 23: Tested after it has been merged into the -mm patchset to make sure
+     that it still works with all of the other queued patches and various
+     changes in the VM, VFS, and other subsystems.
+-
+-24: Avoid whitespace damage such as indenting with spaces or whitespace
+-    at the end of lines.  You can test this by feeding the patch to
+-    "git apply --check --whitespace=error-all"
+-
+-25: Check your patch for general style as detailed in
+-    Documentation/CodingStyle.  Check for trivial violations with the
+-    patch style checker prior to submission (scripts/checkpatch.pl).
+-    You should be able to justify all violations that remain in
+-    your patch.</pre><hr><pre>commit fbb7878c1a2ee40a1e983bf20f3dd3a80255dcf2
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Feb 7 23:10:21 2008 -0500
+
+    nfsd: clean up svc_reserve_auth()
+    
+    This is a void function attempting to return the return value from
+    another void function, which seems harmless but extremely weird, and
+    apparently makes some compilers complain.
+    
+    While we're there, clean up a little (e.g. the switch statement had a
+    minor style problem and seemed overkill as long as there's only one
+    case).
+    
+    Thanks to Trond for noticing this.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/include/linux/sunrpc/svc.h b/include/linux/sunrpc/svc.h
+index 64c771056187..64c97552964a 100644
+--- a/include/linux/sunrpc/svc.h
++++ b/include/linux/sunrpc/svc.h
+@@ -409,16 +409,13 @@ char *		   svc_print_addr(struct svc_rqst *, char *, size_t);
+  * for all cases without actually generating the checksum, so we just use a
+  * static value.
+  */
+-static inline void
+-svc_reserve_auth(struct svc_rqst *rqstp, int space)
++static inline void svc_reserve_auth(struct svc_rqst *rqstp, int space)
+ {
+-	int			added_space = 0;
++	int added_space = 0;
+ 
+-	switch(rqstp-&gt;rq_authop-&gt;flavour) {
+-		case RPC_AUTH_GSS:
+-			added_space = RPC_MAX_AUTH_SIZE;
+-	}
+-	return svc_reserve(rqstp, space + added_space);
++	if (rqstp-&gt;rq_authop-&gt;flavour)
++		added_space = RPC_MAX_AUTH_SIZE;
++	svc_reserve(rqstp, space + added_space);
+ }
+ 
+ #endif /* SUNRPC_SVC_H */</pre><hr><pre>commit 3ab32df72bfa7bee9126cc5b1abc037aef124f15
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Feb 7 00:13:40 2008 -0800
+
+    REPORTING-BUGS: cc the mailing list too
+    
+    People should also cc relevant mailing lists when reporting bugs.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Acked-by: Randy Dunlap &lt;randy.dunlap@oracle.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/REPORTING-BUGS b/REPORTING-BUGS
+index ac02e42a2627..ab0c56630a8c 100644
+--- a/REPORTING-BUGS
++++ b/REPORTING-BUGS
+@@ -10,11 +10,12 @@ bug report. This explains what you should do with the "Oops" information
+ to make it useful to the recipient.
+ 
+       Send the output to the maintainer of the kernel area that seems to
+-be involved with the problem. Don't worry too much about getting the
+-wrong person. If you are unsure send it to the person responsible for the
+-code relevant to what you were doing. If it occurs repeatably try and
+-describe how to recreate it. That is worth even more than the oops itself.
+-The list of maintainers is in the MAINTAINERS file in this directory.
++be involved with the problem, and cc the relevant mailing list. Don't
++worry too much about getting the wrong person. If you are unsure send it
++to the person responsible for the code relevant to what you were doing.
++If it occurs repeatably try and describe how to recreate it. That is
++worth even more than the oops itself.  The list of maintainers and
++mailing lists is in the MAINTAINERS file in this directory.
+ 
+       If it is a security bug, please copy the Security Contact listed
+ in the MAINTAINERS file.  They can help coordinate bugfix and disclosure.</pre><hr><pre>commit 9b8eae7248dad42091204f83ed3448e661456af1
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Feb 7 00:13:37 2008 -0800
+
+    Documentation: create new scheduler/ subdirectory
+    
+    The top-level Documentation/ directory is unmanageably large, so we
+    should take any obvious opportunities to move stuff into subdirectories.
+    These sched-*.txt files seem an obvious easy case.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Ingo Molnar &lt;mingo@elte.hu&gt;
+    Acked-by: Randy Dunlap &lt;randy.dunlap@oracle.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/Documentation/00-INDEX b/Documentation/00-INDEX
+index 4d4dde447fe7..d273b557a934 100644
+--- a/Documentation/00-INDEX
++++ b/Documentation/00-INDEX
+@@ -332,20 +332,8 @@ rtc.txt
+ 	- notes on how to use the Real Time Clock (aka CMOS clock) driver.
+ s390/
+ 	- directory with info on using Linux on the IBM S390.
+-sched-arch.txt
+-	- CPU Scheduler implementation hints for architecture specific code.
+-sched-coding.txt
+-	- reference for various scheduler-related methods in the O(1) scheduler.
+-sched-design.txt
+-	- goals, design and implementation of the Linux O(1) scheduler.
+-sched-design-CFS.txt
+-	- goals, design and implementation of the Complete Fair Scheduler.
+-sched-domains.txt
+-	- information on scheduling domains.
+-sched-nice-design.txt
+-	- How and why the scheduler's nice levels are implemented.
+-sched-stats.txt
+-	- information on schedstats (Linux Scheduler Statistics).
++scheduler/
++	- directory with info on the scheduler.
+ scsi/
+ 	- directory with info on Linux scsi support.
+ serial/
+diff --git a/Documentation/ABI/testing/sysfs-kernel-uids b/Documentation/ABI/testing/sysfs-kernel-uids
+index 648d65dbc0e7..28f14695a852 100644
+--- a/Documentation/ABI/testing/sysfs-kernel-uids
++++ b/Documentation/ABI/testing/sysfs-kernel-uids
+@@ -11,4 +11,4 @@ Description:
+ 		example would be, if User A has shares = 1024 and user
+ 		B has shares = 2048, User B will get twice the CPU
+ 		bandwidth user A will. For more details refer
+-		Documentation/sched-design-CFS.txt
++		Documentation/scheduler/sched-design-CFS.txt
+diff --git a/Documentation/scheduler/00-INDEX b/Documentation/scheduler/00-INDEX
+new file mode 100644
+index 000000000000..b5f5ca069b2d
+--- /dev/null
++++ b/Documentation/scheduler/00-INDEX
+@@ -0,0 +1,16 @@
++00-INDEX
++	- this file.
++sched-arch.txt
++	- CPU Scheduler implementation hints for architecture specific code.
++sched-coding.txt
++	- reference for various scheduler-related methods in the O(1) scheduler.
++sched-design.txt
++	- goals, design and implementation of the Linux O(1) scheduler.
++sched-design-CFS.txt
++	- goals, design and implementation of the Complete Fair Scheduler.
++sched-domains.txt
++	- information on scheduling domains.
++sched-nice-design.txt
++	- How and why the scheduler's nice levels are implemented.
++sched-stats.txt
++	- information on schedstats (Linux Scheduler Statistics).
+diff --git a/Documentation/sched-arch.txt b/Documentation/scheduler/sched-arch.txt
+similarity index 100%
+rename from Documentation/sched-arch.txt
+rename to Documentation/scheduler/sched-arch.txt
+diff --git a/Documentation/sched-coding.txt b/Documentation/scheduler/sched-coding.txt
+similarity index 100%
+rename from Documentation/sched-coding.txt
+rename to Documentation/scheduler/sched-coding.txt
+diff --git a/Documentation/sched-design-CFS.txt b/Documentation/scheduler/sched-design-CFS.txt
+similarity index 100%
+rename from Documentation/sched-design-CFS.txt
+rename to Documentation/scheduler/sched-design-CFS.txt
+diff --git a/Documentation/sched-design.txt b/Documentation/scheduler/sched-design.txt
+similarity index 100%
+rename from Documentation/sched-design.txt
+rename to Documentation/scheduler/sched-design.txt
+diff --git a/Documentation/sched-domains.txt b/Documentation/scheduler/sched-domains.txt
+similarity index 100%
+rename from Documentation/sched-domains.txt
+rename to Documentation/scheduler/sched-domains.txt
+diff --git a/Documentation/sched-nice-design.txt b/Documentation/scheduler/sched-nice-design.txt
+similarity index 100%
+rename from Documentation/sched-nice-design.txt
+rename to Documentation/scheduler/sched-nice-design.txt
+diff --git a/Documentation/sched-stats.txt b/Documentation/scheduler/sched-stats.txt
+similarity index 100%
+rename from Documentation/sched-stats.txt
+rename to Documentation/scheduler/sched-stats.txt</pre><hr><pre>commit d3cf91d0e201962a6367191e5926f5b0920b0339
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Feb 7 00:13:35 2008 -0800
+
+    Documentation: move sharedsubtrees.txt to filesystems/
+    
+    This documentation is also vfs-related.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Acked-by: Randy Dunlap &lt;randy.dunlap@oracle.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/Documentation/00-INDEX b/Documentation/00-INDEX
+index bb5e21034209..4d4dde447fe7 100644
+--- a/Documentation/00-INDEX
++++ b/Documentation/00-INDEX
+@@ -358,8 +358,6 @@ sgi-visws.txt
+ 	- short blurb on the SGI Visual Workstations.
+ sh/
+ 	- directory with info on porting Linux to a new architecture.
+-sharedsubtree.txt
+-	- a description of shared subtrees for namespaces.
+ smart-config.txt
+ 	- description of the Smart Config makefile feature.
+ sony-laptop.txt
+diff --git a/Documentation/filesystems/00-INDEX b/Documentation/filesystems/00-INDEX
+index 632fe3f376eb..e68021c08fbd 100644
+--- a/Documentation/filesystems/00-INDEX
++++ b/Documentation/filesystems/00-INDEX
+@@ -82,6 +82,8 @@ relay.txt
+ 	- info on relay, for efficient streaming from kernel to user space.
+ romfs.txt
+ 	- description of the ROMFS filesystem.
++sharedsubtree.txt
++	- a description of shared subtrees for namespaces.
+ smbfs.txt
+ 	- info on using filesystems with the SMB protocol (Win 3.11 and NT).
+ spufs.txt
+diff --git a/Documentation/sharedsubtree.txt b/Documentation/filesystems/sharedsubtree.txt
+similarity index 100%
+rename from Documentation/sharedsubtree.txt
+rename to Documentation/filesystems/sharedsubtree.txt</pre><hr><pre>commit e9b1a4d160f68397d29183ce76af1cc774508aba
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Feb 7 00:13:35 2008 -0800
+
+    Documentation: move dnotify.txt to filesystems/
+    
+    I'm inclined to think dnotify belongs in filesystems/.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Acked-by: Randy Dunlap &lt;randy.dunlap@oracle.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/Documentation/00-INDEX b/Documentation/00-INDEX
+index c1067e48b529..bb5e21034209 100644
+--- a/Documentation/00-INDEX
++++ b/Documentation/00-INDEX
+@@ -126,8 +126,6 @@ devices.txt
+ 	- plain ASCII listing of all the nodes in /dev/ with major minor #'s.
+ digiepca.txt
+ 	- info on Digi Intl. {PC,PCI,EISA}Xx and Xem series cards.
+-dnotify.txt
+-	- info about directory notification in Linux.
+ dontdiff
+ 	- file containing a list of files that should never be diff'ed.
+ driver-model/
+diff --git a/Documentation/filesystems/00-INDEX b/Documentation/filesystems/00-INDEX
+index 1de155e2dc36..632fe3f376eb 100644
+--- a/Documentation/filesystems/00-INDEX
++++ b/Documentation/filesystems/00-INDEX
+@@ -32,6 +32,8 @@ directory-locking
+ 	- info about the locking scheme used for directory operations.
+ dlmfs.txt
+ 	- info on the userspace interface to the OCFS2 DLM.
++dnotify.txt
++	- info about directory notification in Linux.
+ ecryptfs.txt
+ 	- docs on eCryptfs: stacked cryptographic filesystem for Linux.
+ ext2.txt
+diff --git a/Documentation/dnotify.txt b/Documentation/filesystems/dnotify.txt
+similarity index 99%
+rename from Documentation/dnotify.txt
+rename to Documentation/filesystems/dnotify.txt
+index 6984fca6002a..9f5d338ddbb8 100644
+--- a/Documentation/dnotify.txt
++++ b/Documentation/filesystems/dnotify.txt
+@@ -69,24 +69,24 @@ Example
+ 	#include &lt;signal.h&gt;
+ 	#include &lt;stdio.h&gt;
+ 	#include &lt;unistd.h&gt;
+-	
++
+ 	static volatile int event_fd;
+-	
++
+ 	static void handler(int sig, siginfo_t *si, void *data)
+ 	{
+ 		event_fd = si-&gt;si_fd;
+ 	}
+-	
++
+ 	int main(void)
+ 	{
+ 		struct sigaction act;
+ 		int fd;
+-		
++
+ 		act.sa_sigaction = handler;
+ 		sigemptyset(&amp;act.sa_mask);
+ 		act.sa_flags = SA_SIGINFO;
+ 		sigaction(SIGRTMIN + 1, &amp;act, NULL);
+-		
++
+ 		fd = open(".", O_RDONLY);
+ 		fcntl(fd, F_SETSIG, SIGRTMIN + 1);
+ 		fcntl(fd, F_NOTIFY, DN_MODIFY|DN_CREATE|DN_MULTISHOT);</pre>
+    <div class="pagination">
+        <a href='4_35.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><span>[36]</span><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_37.html'>Next&gt;&gt;</a>
+    <div>
+</body>

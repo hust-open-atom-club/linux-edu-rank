@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Minnesota</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Minnesota</h1>
+    <div class="pagination">
+        <a href='7_28.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><a href='7_28.html'>28</a><span>[29]</span><a href='7_30.html'>30</a><a href='7_30.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit dc487321b1e6ab27f545fd8826ce3f76b01b63c2
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Mon Apr 30 17:56:10 2018 -0500
+
+    staging: lustre: llite: fix potential missing-check bug when copying lumv
+    
+    In ll_dir_ioctl(), the object lumv3 is firstly copied from the user space
+    using Its address, i.e., lumv1 = &amp;lumv3. If the lmm_magic field of lumv3 is
+    LOV_USER_MAGIC_V3, lumv3 will be modified by the second copy from the user
+    space. The second copy is necessary, because the two versions (i.e.,
+    lov_user_md_v1 and lov_user_md_v3) have different data formats and lengths.
+    However, given that the user data resides in the user space, a malicious
+    user-space process can race to change the data between the two copies. By
+    doing so, the attacker can provide a data with an inconsistent version,
+    e.g., v1 version + v3 data. This can lead to logical errors in the
+    following execution in ll_dir_setstripe(), which performs different actions
+    according to the version specified by the field lmm_magic.
+    
+    This patch rechecks the version field lmm_magic in the second copy.  If the
+    version is not as expected, i.e., LOV_USER_MAGIC_V3, an error code will be
+    returned: -EINVAL.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Reviewed-by: Andreas Dilger &lt;andreas.dilger@intel.com&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/lustre/lustre/llite/dir.c b/drivers/staging/lustre/lustre/llite/dir.c
+index d10d27268323..80d44ca9516a 100644
+--- a/drivers/staging/lustre/lustre/llite/dir.c
++++ b/drivers/staging/lustre/lustre/llite/dir.c
+@@ -1185,6 +1185,8 @@ static long ll_dir_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ 		if (lumv1-&gt;lmm_magic == LOV_USER_MAGIC_V3) {
+ 			if (copy_from_user(&amp;lumv3, lumv3p, sizeof(lumv3)))
+ 				return -EFAULT;
++			if (lumv3.lmm_magic != LOV_USER_MAGIC_V3)
++				return -EINVAL;
+ 		}
+ 
+ 		if (is_root_inode(inode))</pre><hr><pre>commit d656fe49e33df48ee6bc19e871f5862f49895c9e
+Author: Wenwen Wang &lt;wang6495@umn.edu&gt;
+Date:   Mon Apr 30 12:31:13 2018 -0500
+
+    ethtool: fix a potential missing-check bug
+    
+    In ethtool_get_rxnfc(), the object "info" is firstly copied from
+    user-space. If the FLOW_RSS flag is set in the member field flow_type of
+    "info" (and cmd is ETHTOOL_GRXFH), info needs to be copied again from
+    user-space because FLOW_RSS is newer and has new definition, as mentioned
+    in the comment. However, given that the user data resides in user-space, a
+    malicious user can race to change the data after the first copy. By doing
+    so, the user can inject inconsistent data. For example, in the second
+    copy, the FLOW_RSS flag could be cleared in the field flow_type of "info".
+    In the following execution, "info" will be used in the function
+    ops-&gt;get_rxnfc(). Such inconsistent data can potentially lead to unexpected
+    information leakage since ops-&gt;get_rxnfc() will prepare various types of
+    data according to flow_type, and the prepared data will be eventually
+    copied to user-space. This inconsistent data may also cause undefined
+    behaviors based on how ops-&gt;get_rxnfc() is implemented.
+    
+    This patch simply re-verifies the flow_type field of "info" after the
+    second copy. If the value is not as expected, an error code will be
+    returned.
+    
+    Signed-off-by: Wenwen Wang &lt;wang6495@umn.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/core/ethtool.c b/net/core/ethtool.c
+index 03416e6dd5d7..ba02f0dfe85c 100644
+--- a/net/core/ethtool.c
++++ b/net/core/ethtool.c
+@@ -1032,6 +1032,11 @@ static noinline_for_stack int ethtool_get_rxnfc(struct net_device *dev,
+ 		info_size = sizeof(info);
+ 		if (copy_from_user(&amp;info, useraddr, info_size))
+ 			return -EFAULT;
++		/* Since malicious users may modify the original data,
++		 * we need to check whether FLOW_RSS is still requested.
++		 */
++		if (!(info.flow_type &amp; FLOW_RSS))
++			return -EINVAL;
+ 	}
+ 
+ 	if (info.cmd == ETHTOOL_GRXCLSRLALL) {</pre><hr><pre>commit 23779fbc99302dddab7f056ae47c3463169cbb64
+Author: Alireza Haghdoost &lt;alireza@cs.umn.edu&gt;
+Date:   Wed Oct 23 17:08:16 2013 +0100
+
+    block: Enable sysfs nomerge control for I/O requests in the plug list
+    
+    This patch enables the sysfs to control I/O request merge
+    functionality in the plug list. While this control has been
+    implemented for the request queue, it was dismissed in the plug list.
+    Therefore, block layer merges requests together (or attempt to merge)
+    even if the merge capability was disable using sysfs nomerge parameter
+    value 2.
+    
+    This limitation is directly affects functionality of io_submit()
+    system call. The system call enables user to submit a bunch of IO
+    requests from user space using struct iocb **ios input argument.
+    However, the unconditioned merging functionality in the plug list
+    potentially merges these requests together down the road. Therefore,
+    there is no way to distinguish between an application sending bunch of
+    sequential IOs and an application sending one big IO. Ultimately, all
+    requests generated by the former app merge within the plug list
+    together and looks similar to the second app.
+    
+    While the merging functionality is a desirable feature to improve the
+    performance of IO subsystem for some applications, it is not useful
+    for other application like ours at all.
+    
+    Signed-off-by: Alireza Haghdoost &lt;alireza@cs.umn.edu&gt;
+    Reviewed-by: Jeff Moyer &lt;jmoyer@redhat.com&gt;
+    
+    Coding style modified.
+    
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/block/blk-core.c b/block/blk-core.c
+index fce4b9387f36..25f13479f552 100644
+--- a/block/blk-core.c
++++ b/block/blk-core.c
+@@ -1429,6 +1429,9 @@ static bool attempt_plug_merge(struct request_queue *q, struct bio *bio,
+ 	struct request *rq;
+ 	bool ret = false;
+ 
++	if (blk_queue_nomerges(q))
++		goto out;
++
+ 	plug = current-&gt;plug;
+ 	if (!plug)
+ 		goto out;</pre><hr><pre>commit ae0fda0cdf009731a33f031f86df8566f1977ffe
+Author: Dave C Boutcher &lt;boutcher@cs.umn.edu&gt;
+Date:   Thu Jul 6 22:08:49 2006 -0500
+
+    [SCSI] ibmvscsi: handle inactive SCSI target during probe
+    
+    Without this patch we register an interrupt with request_irq,
+    but then return a bad return code from the module probe.
+    
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/ibmvscsi/rpa_vscsi.c b/drivers/scsi/ibmvscsi/rpa_vscsi.c
+index 242b8873b333..ed22b96580c6 100644
+--- a/drivers/scsi/ibmvscsi/rpa_vscsi.c
++++ b/drivers/scsi/ibmvscsi/rpa_vscsi.c
+@@ -238,6 +238,7 @@ int ibmvscsi_init_crq_queue(struct crq_queue *queue,
+ 	if (rc == 2) {
+ 		/* Adapter is good, but other end is not ready */
+ 		printk(KERN_WARNING "ibmvscsi: Partner adapter not ready\n");
++		retrc = 0;
+ 	} else if (rc != 0) {
+ 		printk(KERN_WARNING "ibmvscsi: Error %d opening adapter\n", rc);
+ 		goto reg_crq_failed;</pre><hr><pre>commit 6c51fe10475eda9f5c535f337411e1ed0e6915b9
+Author: Dave C Boutcher &lt;boutcher@cs.umn.edu&gt;
+Date:   Thu Jul 6 22:07:47 2006 -0500
+
+    [SCSI] ibmvscsi: allocate lpevents for ibmvscsi on iseries
+    
+    Allocate the correct number of lp events when running
+    ibmvscsi on legacy iseries
+    
+    Signed-off-by: Dave Boutcher &lt;sleddog@us.ibm.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/ibmvscsi/iseries_vscsi.c b/drivers/scsi/ibmvscsi/iseries_vscsi.c
+index 7eed0b098171..6aeb5f003c3c 100644
+--- a/drivers/scsi/ibmvscsi/iseries_vscsi.c
++++ b/drivers/scsi/ibmvscsi/iseries_vscsi.c
+@@ -81,7 +81,7 @@ int ibmvscsi_init_crq_queue(struct crq_queue *queue,
+ 	int rc;
+ 
+ 	single_host_data = hostdata;
+-	rc = viopath_open(viopath_hostLp, viomajorsubtype_scsi, 0);
++	rc = viopath_open(viopath_hostLp, viomajorsubtype_scsi, max_requests);
+ 	if (rc &lt; 0) {
+ 		printk("viopath_open failed with rc %d in open_event_path\n",
+ 		       rc);</pre><hr><pre>commit cefbda2d6cd9bf78a93768130729a6d142588d67
+Author: Dave C Boutcher &lt;boutcher@cs.umn.edu&gt;
+Date:   Mon Jun 12 21:22:51 2006 -0500
+
+    [SCSI] ibmvscsi: treat busy and error conditions separately
+    
+    This patch fixes a condition where ibmvscsi treats a transport error as a
+    "busy" condition, so no errors were returned to the scsi mid-layer.
+    In a RAID environment this means that I/O hung rather than failing
+    over.
+    
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/ibmvscsi/ibmvscsi.c b/drivers/scsi/ibmvscsi/ibmvscsi.c
+index 944fc1203ebd..669ea4fff166 100644
+--- a/drivers/scsi/ibmvscsi/ibmvscsi.c
++++ b/drivers/scsi/ibmvscsi/ibmvscsi.c
+@@ -535,6 +535,7 @@ static int ibmvscsi_send_srp_event(struct srp_event_struct *evt_struct,
+ 				   struct ibmvscsi_host_data *hostdata)
+ {
+ 	u64 *crq_as_u64 = (u64 *) &amp;evt_struct-&gt;crq;
++	int request_status;
+ 	int rc;
+ 
+ 	/* If we have exhausted our request limit, just fail this request.
+@@ -542,9 +543,18 @@ static int ibmvscsi_send_srp_event(struct srp_event_struct *evt_struct,
+ 	 * (such as task management requests) that the mid layer may think we
+ 	 * can handle more requests (can_queue) when we actually can't
+ 	 */
+-	if ((evt_struct-&gt;crq.format == VIOSRP_SRP_FORMAT) &amp;&amp;
+-	    (atomic_dec_if_positive(&amp;hostdata-&gt;request_limit) &lt; 0))
+-		goto send_error;
++	if (evt_struct-&gt;crq.format == VIOSRP_SRP_FORMAT) {
++		request_status =
++			atomic_dec_if_positive(&amp;hostdata-&gt;request_limit);
++		/* If request limit was -1 when we started, it is now even
++		 * less than that
++		 */
++		if (request_status &lt; -1)
++			goto send_error;
++		/* Otherwise, if we have run out of requests */
++		else if (request_status &lt; 0)
++			goto send_busy;
++	}
+ 
+ 	/* Copy the IU into the transfer area */
+ 	*evt_struct-&gt;xfer_iu = evt_struct-&gt;iu;
+@@ -567,11 +577,23 @@ static int ibmvscsi_send_srp_event(struct srp_event_struct *evt_struct,
+ 
+ 	return 0;
+ 
+- send_error:
++ send_busy:
+ 	unmap_cmd_data(&amp;evt_struct-&gt;iu.srp.cmd, evt_struct, hostdata-&gt;dev);
+ 
+ 	free_event_struct(&amp;hostdata-&gt;pool, evt_struct);
+  	return SCSI_MLQUEUE_HOST_BUSY;
++
++ send_error:
++	unmap_cmd_data(&amp;evt_struct-&gt;iu.srp.cmd, evt_struct, hostdata-&gt;dev);
++
++	if (evt_struct-&gt;cmnd != NULL) {
++		evt_struct-&gt;cmnd-&gt;result = DID_ERROR &lt;&lt; 16;
++		evt_struct-&gt;cmnd_done(evt_struct-&gt;cmnd);
++	} else if (evt_struct-&gt;done)
++		evt_struct-&gt;done(evt_struct);
++
++	free_event_struct(&amp;hostdata-&gt;pool, evt_struct);
++	return 0;
+ }
+ 
+ /**
+@@ -1184,27 +1206,37 @@ void ibmvscsi_handle_crq(struct viosrp_crq *crq,
+ 		return;
+ 	case 0xFF:	/* Hypervisor telling us the connection is closed */
+ 		scsi_block_requests(hostdata-&gt;host);
++		atomic_set(&amp;hostdata-&gt;request_limit, 0);
+ 		if (crq-&gt;format == 0x06) {
+ 			/* We need to re-setup the interpartition connection */
+ 			printk(KERN_INFO
+ 			       "ibmvscsi: Re-enabling adapter!\n");
+-			atomic_set(&amp;hostdata-&gt;request_limit, -1);
+ 			purge_requests(hostdata, DID_REQUEUE);
+-			if (ibmvscsi_reenable_crq_queue(&amp;hostdata-&gt;queue,
+-							hostdata) == 0)
+-				if (ibmvscsi_send_crq(hostdata,
+-						      0xC001000000000000LL, 0))
++			if ((ibmvscsi_reenable_crq_queue(&amp;hostdata-&gt;queue,
++							hostdata) == 0) ||
++			    (ibmvscsi_send_crq(hostdata,
++					       0xC001000000000000LL, 0))) {
++					atomic_set(&amp;hostdata-&gt;request_limit,
++						   -1);
+ 					printk(KERN_ERR
+-					       "ibmvscsi: transmit error after"
++					       "ibmvscsi: error after"
+ 					       " enable\n");
++			}
+ 		} else {
+ 			printk(KERN_INFO
+ 			       "ibmvscsi: Virtual adapter failed rc %d!\n",
+ 			       crq-&gt;format);
+ 
+-			atomic_set(&amp;hostdata-&gt;request_limit, -1);
+ 			purge_requests(hostdata, DID_ERROR);
+-			ibmvscsi_reset_crq_queue(&amp;hostdata-&gt;queue, hostdata);
++			if ((ibmvscsi_reset_crq_queue(&amp;hostdata-&gt;queue,
++							hostdata)) ||
++			    (ibmvscsi_send_crq(hostdata,
++					       0xC001000000000000LL, 0))) {
++					atomic_set(&amp;hostdata-&gt;request_limit,
++						   -1);
++					printk(KERN_ERR
++					       "ibmvscsi: error after reset\n");
++			}
+ 		}
+ 		scsi_unblock_requests(hostdata-&gt;host);
+ 		return;
+@@ -1467,6 +1499,7 @@ static int ibmvscsi_probe(struct vio_dev *vdev, const struct vio_device_id *id)
+ 	struct Scsi_Host *host;
+ 	struct device *dev = &amp;vdev-&gt;dev;
+ 	unsigned long wait_switch = 0;
++	int rc;
+ 
+ 	vdev-&gt;dev.driver_data = NULL;
+ 
+@@ -1484,8 +1517,8 @@ static int ibmvscsi_probe(struct vio_dev *vdev, const struct vio_device_id *id)
+ 	atomic_set(&amp;hostdata-&gt;request_limit, -1);
+ 	hostdata-&gt;host-&gt;max_sectors = 32 * 8; /* default max I/O 32 pages */
+ 
+-	if (ibmvscsi_init_crq_queue(&amp;hostdata-&gt;queue, hostdata,
+-				    max_requests) != 0) {
++	rc = ibmvscsi_init_crq_queue(&amp;hostdata-&gt;queue, hostdata, max_requests);
++	if (rc != 0 &amp;&amp; rc != H_RESOURCE) {
+ 		printk(KERN_ERR "ibmvscsi: couldn't initialize crq\n");
+ 		goto init_crq_failed;
+ 	}
+@@ -1505,7 +1538,8 @@ static int ibmvscsi_probe(struct vio_dev *vdev, const struct vio_device_id *id)
+ 	 * to fail if the other end is not acive.  In that case we don't
+ 	 * want to scan
+ 	 */
+-	if (ibmvscsi_send_crq(hostdata, 0xC001000000000000LL, 0) == 0) {
++	if (ibmvscsi_send_crq(hostdata, 0xC001000000000000LL, 0) == 0
++	    || rc == H_RESOURCE) {
+ 		/*
+ 		 * Wait around max init_timeout secs for the adapter to finish
+ 		 * initializing. When we are done initializing, we will have a
+diff --git a/drivers/scsi/ibmvscsi/rpa_vscsi.c b/drivers/scsi/ibmvscsi/rpa_vscsi.c
+index 1a9992bdfef8..242b8873b333 100644
+--- a/drivers/scsi/ibmvscsi/rpa_vscsi.c
++++ b/drivers/scsi/ibmvscsi/rpa_vscsi.c
+@@ -208,6 +208,7 @@ int ibmvscsi_init_crq_queue(struct crq_queue *queue,
+ 			    int max_requests)
+ {
+ 	int rc;
++	int retrc;
+ 	struct vio_dev *vdev = to_vio_dev(hostdata-&gt;dev);
+ 
+ 	queue-&gt;msgs = (struct viosrp_crq *)get_zeroed_page(GFP_KERNEL);
+@@ -226,7 +227,7 @@ int ibmvscsi_init_crq_queue(struct crq_queue *queue,
+ 	gather_partition_info();
+ 	set_adapter_info(hostdata);
+ 
+-	rc = plpar_hcall_norets(H_REG_CRQ,
++	retrc = rc = plpar_hcall_norets(H_REG_CRQ,
+ 				vdev-&gt;unit_address,
+ 				queue-&gt;msg_token, PAGE_SIZE);
+ 	if (rc == H_RESOURCE)
+@@ -263,7 +264,7 @@ int ibmvscsi_init_crq_queue(struct crq_queue *queue,
+ 	tasklet_init(&amp;hostdata-&gt;srp_task, (void *)ibmvscsi_task,
+ 		     (unsigned long)hostdata);
+ 
+-	return 0;
++	return retrc;
+ 
+       req_irq_failed:
+ 	do {</pre><hr><pre>commit 368a6ba5d188552aea2a668301a259164c9f355e
+Author: Dave C Boutcher &lt;boutcher@cs.umn.edu&gt;
+Date:   Mon Jun 12 19:49:20 2006 -0500
+
+    [POWERPC] check firmware state before suspending
+    
+    Currently the kernel blindly halts all the processors and calls the
+    ibm,suspend-me rtas call.  If the firmware is not in the correct
+    state, we then re-start all the processors and return.  It is much
+    smarter to first check the firmware state, and only if it is waiting,
+    call the ibm,suspend-me call.
+    
+    Signed-off-by: Paul Mackerras &lt;paulus@samba.org&gt;
+
+diff --git a/arch/powerpc/kernel/rtas.c b/arch/powerpc/kernel/rtas.c
+index 13496f319855..fd15e3e3bb33 100644
+--- a/arch/powerpc/kernel/rtas.c
++++ b/arch/powerpc/kernel/rtas.c
+@@ -593,9 +593,31 @@ static void rtas_percpu_suspend_me(void *info)
+ static int rtas_ibm_suspend_me(struct rtas_args *args)
+ {
+ 	int i;
++	long state;
++	long rc;
++	unsigned long dummy;
+ 
+ 	struct rtas_suspend_me_data data;
+ 
++	/* Make sure the state is valid */
++	rc = plpar_hcall(H_VASI_STATE,
++			 ((u64)args-&gt;args[0] &lt;&lt; 32) | args-&gt;args[1],
++			 0, 0, 0,
++			 &amp;state, &amp;dummy, &amp;dummy);
++
++	if (rc) {
++		printk(KERN_ERR "rtas_ibm_suspend_me: vasi_state returned %ld\n",rc);
++		return rc;
++	} else if (state == H_VASI_ENABLED) {
++		args-&gt;args[args-&gt;nargs] = RTAS_NOT_SUSPENDABLE;
++		return 0;
++	} else if (state != H_VASI_SUSPENDING) {
++		printk(KERN_ERR "rtas_ibm_suspend_me: vasi_state returned state %ld\n",
++		       state);
++		args-&gt;args[args-&gt;nargs] = -1;
++		return 0;
++	}
++
+ 	data.waiting = 1;
+ 	data.args = args;
+ 
+diff --git a/include/asm-powerpc/hvcall.h b/include/asm-powerpc/hvcall.h
+index 6cc7e1fb7bfd..0d3c4e85711a 100644
+--- a/include/asm-powerpc/hvcall.h
++++ b/include/asm-powerpc/hvcall.h
+@@ -102,6 +102,15 @@
+ #define H_PP1			(1UL&lt;&lt;(63-62))
+ #define H_PP2			(1UL&lt;&lt;(63-63))
+ 
++/* VASI States */
++#define H_VASI_INVALID          0
++#define H_VASI_ENABLED          1
++#define H_VASI_ABORTED          2
++#define H_VASI_SUSPENDING       3
++#define H_VASI_SUSPENDED        4
++#define H_VASI_RESUMED          5
++#define H_VASI_COMPLETED        6
++
+ /* DABRX flags */
+ #define H_DABRX_HYPERVISOR	(1UL&lt;&lt;(63-61))
+ #define H_DABRX_KERNEL		(1UL&lt;&lt;(63-62))
+@@ -190,6 +199,7 @@
+ #define H_QUERY_INT_STATE       0x1E4
+ #define H_POLL_PENDING		0x1D8
+ #define H_JOIN			0x298
++#define H_VASI_STATE            0x2A4
+ #define H_ENABLE_CRQ		0x2B0
+ 
+ #ifndef __ASSEMBLY__
+diff --git a/include/asm-powerpc/rtas.h b/include/asm-powerpc/rtas.h
+index a3b4e55569c7..02e213e3d69f 100644
+--- a/include/asm-powerpc/rtas.h
++++ b/include/asm-powerpc/rtas.h
+@@ -24,6 +24,7 @@
+ #define RTAS_RMOBUF_MAX (64 * 1024)
+ 
+ /* RTAS return status codes */
++#define RTAS_NOT_SUSPENDABLE	-9004
+ #define RTAS_BUSY		-2    /* RTAS Busy */
+ #define RTAS_EXTENDED_DELAY_MIN	9900
+ #define RTAS_EXTENDED_DELAY_MAX	9905</pre><hr><pre>commit 9b833e428ad24dc7cec2c0c7e6898caa91449c95
+Author: Dave C Boutcher &lt;boutcher@cs.umn.edu&gt;
+Date:   Thu Mar 23 13:47:07 2006 -0600
+
+    [SCSI] ibmvscsi: prevent scsi commands being sent in invalid state
+    
+    There is a window where we can be re-enabling an adapter, but
+    still allow SCSI commands to be sent to the target.  This fix
+    sets our window (request_limit) to -1 as soon as we know the
+    adapter is being reenabled, and closes a very teeny tiny
+    window where we could set the window back to 1 before we
+    grab a lock.
+    
+    Signed-off-by: Dave Boutcher &lt;sleddog@us.ibm.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/ibmvscsi/ibmvscsi.c b/drivers/scsi/ibmvscsi/ibmvscsi.c
+index eaefeddb2b4a..a279d0a8dff5 100644
+--- a/drivers/scsi/ibmvscsi/ibmvscsi.c
++++ b/drivers/scsi/ibmvscsi/ibmvscsi.c
+@@ -853,14 +853,15 @@ static int send_srp_login(struct ibmvscsi_host_data *hostdata)
+ 	login-&gt;max_requested_initiator_to_target_iulen = sizeof(union srp_iu);
+ 	login-&gt;required_buffer_formats = 0x0006;
+ 	
++	spin_lock_irqsave(hostdata-&gt;host-&gt;host_lock, flags);
+ 	/* Start out with a request limit of 1, since this is negotiated in
+ 	 * the login request we are just sending
+ 	 */
+ 	atomic_set(&amp;hostdata-&gt;request_limit, 1);
+ 
+-	spin_lock_irqsave(hostdata-&gt;host-&gt;host_lock, flags);
+ 	rc = ibmvscsi_send_srp_event(evt_struct, hostdata);
+ 	spin_unlock_irqrestore(hostdata-&gt;host-&gt;host_lock, flags);
++	printk("ibmvscsic: sent SRP login\n");
+ 	return rc;
+ };
+ 
+@@ -1179,6 +1180,7 @@ void ibmvscsi_handle_crq(struct viosrp_crq *crq,
+ 			/* We need to re-setup the interpartition connection */
+ 			printk(KERN_INFO
+ 			       "ibmvscsi: Re-enabling adapter!\n");
++			atomic_set(&amp;hostdata-&gt;request_limit, -1);
+ 			purge_requests(hostdata, DID_REQUEUE);
+ 			if (ibmvscsi_reenable_crq_queue(&amp;hostdata-&gt;queue,
+ 							hostdata) == 0)</pre><hr><pre>commit b4fd884a037c791a39f2f03da719e251af176a97
+Author: Dave C Boutcher &lt;boutcher@cs.umn.edu&gt;
+Date:   Fri Feb 3 01:18:36 2006 -0600
+
+    [PATCH] powerpc: remove useless call to touch_softlockup_watchdog
+    
+    It turns out that we can't stop the watchdog from
+    triggering here.  If we touch the timer (which just uses the current jiffie
+    value) before we enable interrupts, it does nothing because jiffies
+    are not mass-updated until after we enable interrupts.  If we touch the
+    timer after we enable interrupts, its too late because the softlockup
+    watchdog will already have triggered.  The touch_softlockup_watchdog
+    call removed below does nothing.
+    
+    Signed-off-by: Dave Boutcher &lt;sleddog@us.ibm.com&gt;
+    Signed-off-by: Paul Mackerras &lt;paulus@samba.org&gt;
+
+diff --git a/arch/powerpc/kernel/rtas.c b/arch/powerpc/kernel/rtas.c
+index 0c6ed6d75b17..b5b2add7ad1e 100644
+--- a/arch/powerpc/kernel/rtas.c
++++ b/arch/powerpc/kernel/rtas.c
+@@ -599,10 +599,6 @@ static void rtas_percpu_suspend_me(void *info)
+ 	}
+ 
+ out:
+-	/* before we restore interrupts, make sure we don't
+-	 * generate a spurious soft lockup errors
+-	 */
+-	touch_softlockup_watchdog();
+ 	local_irq_restore(flags);
+ 	return;
+ }</pre><hr><pre>commit 82a4df74628a3bf0ac762be198b45e02a7c5879f
+Author: Dave C Boutcher &lt;boutcher@cs.umn.edu&gt;
+Date:   Fri Feb 3 01:18:39 2006 -0600
+
+    [PATCH] powerpc: prod all processors after ibm,suspend-me
+    
+    We need to prod everyone here since this is the only CPU that is
+    guaranteed to be running after the ibm,suspend-me RTAS call returns.
+    
+    Signed-off-by: Dave Boutcher &lt;sleddog@us.ibm.com&gt;
+    Signed-off-by: Paul Mackerras &lt;paulus@samba.org&gt;
+
+diff --git a/arch/powerpc/kernel/rtas.c b/arch/powerpc/kernel/rtas.c
+index f9b34e3ccf5a..0c6ed6d75b17 100644
+--- a/arch/powerpc/kernel/rtas.c
++++ b/arch/powerpc/kernel/rtas.c
+@@ -566,6 +566,7 @@ static int ibm_suspend_me_token = RTAS_UNKNOWN_SERVICE;
+ #ifdef CONFIG_PPC_PSERIES
+ static void rtas_percpu_suspend_me(void *info)
+ {
++	int i;
+ 	long rc;
+ 	long flags;
+ 	struct rtas_suspend_me_data *data =
+@@ -590,6 +591,8 @@ static void rtas_percpu_suspend_me(void *info)
+ 		data-&gt;waiting = 0;
+ 		data-&gt;args-&gt;args[data-&gt;args-&gt;nargs] =
+ 			rtas_call(ibm_suspend_me_token, 0, 1, NULL);
++		for_each_cpu(i)
++			plpar_hcall_norets(H_PROD,i);
+ 	} else {
+ 		data-&gt;waiting = -EBUSY;
+ 		printk(KERN_ERR "Error on H_Join hypervisor call\n");</pre>
+    <div class="pagination">
+        <a href='7_28.html'>&lt;&lt;Prev</a><a href='7.html'>1</a><a href='7_2.html'>2</a><a href='7_3.html'>3</a><a href='7_4.html'>4</a><a href='7_5.html'>5</a><a href='7_6.html'>6</a><a href='7_7.html'>7</a><a href='7_8.html'>8</a><a href='7_9.html'>9</a><a href='7_10.html'>10</a><a href='7_11.html'>11</a><a href='7_12.html'>12</a><a href='7_13.html'>13</a><a href='7_14.html'>14</a><a href='7_15.html'>15</a><a href='7_16.html'>16</a><a href='7_17.html'>17</a><a href='7_18.html'>18</a><a href='7_19.html'>19</a><a href='7_20.html'>20</a><a href='7_21.html'>21</a><a href='7_22.html'>22</a><a href='7_23.html'>23</a><a href='7_24.html'>24</a><a href='7_25.html'>25</a><a href='7_26.html'>26</a><a href='7_27.html'>27</a><a href='7_28.html'>28</a><span>[29]</span><a href='7_30.html'>30</a><a href='7_30.html'>Next&gt;&gt;</a>
+    <div>
+</body>

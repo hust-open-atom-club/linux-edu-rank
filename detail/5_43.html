@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_42.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><span>[43]</span><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_44.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit aa7b5cd750c766f66a92c9f78ba176bc77512b7e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Nov 11 05:31:41 2005 -0600
+
+    [SCSI] add kmemcache for scsi_io_context
+    
+    Add kmemcache of scsi io contexts.
+    
+    In the future when we finalize on where these functions will live
+    we can add a mempool for it and do a bioset for out REQ_BLOCK_PC
+    bios. This is needed becuase the dm-multipath handlers will
+    want to use the scsi_exectute* functions for failover and we cannot
+    have them and the bio device allocating from the same mempool.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index 3e136bfe4219..54a72f197487 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -306,6 +306,8 @@ struct scsi_io_context {
+ 	char sense[SCSI_SENSE_BUFFERSIZE];
+ };
+ 
++static kmem_cache_t *scsi_io_context_cache;
++
+ static void scsi_end_async(struct request *req)
+ {
+ 	struct scsi_io_context *sioc = req-&gt;end_io_data;
+@@ -313,7 +315,7 @@ static void scsi_end_async(struct request *req)
+ 	if (sioc-&gt;done)
+ 		sioc-&gt;done(sioc-&gt;data, sioc-&gt;sense, req-&gt;errors, req-&gt;data_len);
+ 
+-	kfree(sioc);
++	kmem_cache_free(scsi_io_context_cache, sioc);
+ 	__blk_put_request(req-&gt;q, req);
+ }
+ 
+@@ -452,9 +454,10 @@ int scsi_execute_async(struct scsi_device *sdev, const unsigned char *cmd,
+ 	int err = 0;
+ 	int write = (data_direction == DMA_TO_DEVICE);
+ 
+-	sioc = kzalloc(sizeof(*sioc), gfp);
++	sioc = kmem_cache_alloc(scsi_io_context_cache, gfp);
+ 	if (!sioc)
+ 		return DRIVER_ERROR &lt;&lt; 24;
++	memset(sioc, 0, sizeof(*sioc));
+ 
+ 	req = blk_get_request(sdev-&gt;request_queue, write, gfp);
+ 	if (!req)
+@@ -1765,6 +1768,14 @@ int __init scsi_init_queue(void)
+ {
+ 	int i;
+ 
++	scsi_io_context_cache = kmem_cache_create("scsi_io_context",
++					sizeof(struct scsi_io_context),
++					0, 0, NULL, NULL);
++	if (!scsi_io_context_cache) {
++		printk(KERN_ERR "SCSI: can't init scsi io context cache\n");
++		return -ENOMEM;
++	}
++
+ 	for (i = 0; i &lt; SG_MEMPOOL_NR; i++) {
+ 		struct scsi_host_sg_pool *sgp = scsi_sg_pools + i;
+ 		int size = sgp-&gt;size * sizeof(struct scatterlist);
+@@ -1792,6 +1803,8 @@ void scsi_exit_queue(void)
+ {
+ 	int i;
+ 
++	kmem_cache_destroy(scsi_io_context_cache);
++
+ 	for (i = 0; i &lt; SG_MEMPOOL_NR; i++) {
+ 		struct scsi_host_sg_pool *sgp = scsi_sg_pools + i;
+ 		mempool_destroy(sgp-&gt;pool);</pre><hr><pre>commit 0d95716d6a1308c465d8c17ed1a217628936bb0c
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Nov 11 05:31:40 2005 -0600
+
+    [SCSI] complete the whole command when it is REQ_BLOCK_PC
+    
+    sd does not allow scsi_io_completion to retry commands for
+    SG_IO requests, and it make sense that it should not happen for st
+    SG_IO commands too. If for st we hit the bottom of scsi_io_completion
+    we will probably screw things up pretty bad. This patch returns to the
+    block layer that the whole command completed and relies on the caller to check
+    the request errors field. For initialization commands like in sd, this adds
+    the previous behavior where scsi_io_completion did not process the error.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index 365843a1561f..3e136bfe4219 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -1247,7 +1247,13 @@ static int scsi_issue_flush_fn(request_queue_t *q, struct gendisk *disk,
+ static void scsi_generic_done(struct scsi_cmnd *cmd)
+ {
+ 	BUG_ON(!blk_pc_request(cmd-&gt;request));
+-	scsi_io_completion(cmd, cmd-&gt;result == 0 ? cmd-&gt;bufflen : 0, 0);
++	/*
++	 * This will complete the whole command with uptodate=1 so
++	 * as far as the block layer is concerned the command completed
++	 * successfully. Since this is a REQ_BLOCK_PC command the
++	 * caller should check the request's errors value
++	 */
++	scsi_io_completion(cmd, cmd-&gt;bufflen, 0);
+ }
+ 
+ static int scsi_prep_fn(struct request_queue *q, struct request *req)
+diff --git a/drivers/scsi/st.c b/drivers/scsi/st.c
+index 6d9078705c5b..053444b027d4 100644
+--- a/drivers/scsi/st.c
++++ b/drivers/scsi/st.c
+@@ -4185,7 +4185,11 @@ static void scsi_tape_release(struct kref *kref)
+ 
+ static void st_intr(struct scsi_cmnd *SCpnt)
+ {
+-	scsi_io_completion(SCpnt, (SCpnt-&gt;result ? 0: SCpnt-&gt;bufflen), 1);
++	/*
++	 * The caller should be checking the request's errors
++	 * value.
++	 */
++	scsi_io_completion(SCpnt, SCpnt-&gt;bufflen, 0);
+ }
+ 
+ /*</pre><hr><pre>commit 17e01f216b611fc46956dcd9063aec4de75991e3
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Nov 11 05:31:37 2005 -0600
+
+    [SCSI] add retries field to request for REQ_BLOCK_PC use
+    
+    For tape we need to control the retries. This patch adds a retries
+    counter on the request for REQ_BLOCK_PC commands originating from
+    scsi_execute* to use. REQ_BLOCK_PC commands comming from the block
+    layer SG_IO path continue to use the retires set in the ULD init_command.
+    (scsi_execute* does not set the gendisk so we do not execute
+    the init_command in that path).
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index eb0cfbfbcf8f..365843a1561f 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -259,6 +259,7 @@ int scsi_execute(struct scsi_device *sdev, const unsigned char *cmd,
+ 	memcpy(req-&gt;cmd, cmd, req-&gt;cmd_len);
+ 	req-&gt;sense = sense;
+ 	req-&gt;sense_len = 0;
++	req-&gt;retries = retries;
+ 	req-&gt;timeout = timeout;
+ 	req-&gt;flags |= flags | REQ_BLOCK_PC | REQ_SPECIAL | REQ_QUIET;
+ 
+@@ -472,6 +473,7 @@ int scsi_execute_async(struct scsi_device *sdev, const unsigned char *cmd,
+ 	req-&gt;sense = sioc-&gt;sense;
+ 	req-&gt;sense_len = 0;
+ 	req-&gt;timeout = timeout;
++	req-&gt;retries = retries;
+ 	req-&gt;flags |= REQ_BLOCK_PC | REQ_QUIET;
+ 	req-&gt;end_io_data = sioc;
+ 
+@@ -1393,7 +1395,7 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
+ 				cmd-&gt;sc_data_direction = DMA_NONE;
+ 			
+ 			cmd-&gt;transfersize = req-&gt;data_len;
+-			cmd-&gt;allowed = 3;
++			cmd-&gt;allowed = req-&gt;retries;
+ 			cmd-&gt;timeout_per_command = req-&gt;timeout;
+ 			cmd-&gt;done = scsi_generic_done;
+ 		}
+diff --git a/include/linux/blkdev.h b/include/linux/blkdev.h
+index 9a68716dcf75..509e9a03a328 100644
+--- a/include/linux/blkdev.h
++++ b/include/linux/blkdev.h
+@@ -184,6 +184,7 @@ struct request {
+ 	void *sense;
+ 
+ 	unsigned int timeout;
++	int retries;
+ 
+ 	/*
+ 	 * For Power Management requests</pre><hr><pre>commit 6e68af666f5336254b5715dca591026b7324499a
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Nov 11 05:30:27 2005 -0600
+
+    [SCSI] Convert SCSI mid-layer to scsi_execute_async
+    
+    Add scsi helpers to create really-large-requests and convert
+    scsi-ml to scsi_execute_async().
+    
+    Per Jens's previous comments, I placed this function in scsi_lib.c.
+    I made it follow all the queue's limits - I think I did at least :), so
+    I removed the warning on the function header.
+    
+    I think the scsi_execute_* functions should eventually take a request_queue
+    and be placed some place where the dm-multipath hw_handler can use them
+    if that failover code is going to stay in the kernel. That conversion
+    patch will be sent in another mail though.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/scsi_error.c b/drivers/scsi/scsi_error.c
+index 18c5d2523014..53ea62d3b53d 100644
+--- a/drivers/scsi/scsi_error.c
++++ b/drivers/scsi/scsi_error.c
+@@ -1314,23 +1314,6 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
+ 	}
+ }
+ 
+-/**
+- * scsi_eh_lock_done - done function for eh door lock request
+- * @scmd:	SCSI command block for the door lock request
+- *
+- * Notes:
+- * 	We completed the asynchronous door lock request, and it has either
+- * 	locked the door or failed.  We must free the command structures
+- * 	associated with this request.
+- **/
+-static void scsi_eh_lock_done(struct scsi_cmnd *scmd)
+-{
+-	struct scsi_request *sreq = scmd-&gt;sc_request;
+-
+-	scsi_release_request(sreq);
+-}
+-
+-
+ /**
+  * scsi_eh_lock_door - Prevent medium removal for the specified device
+  * @sdev:	SCSI device to prevent medium removal
+@@ -1353,29 +1336,17 @@ static void scsi_eh_lock_done(struct scsi_cmnd *scmd)
+  **/
+ static void scsi_eh_lock_door(struct scsi_device *sdev)
+ {
+-	struct scsi_request *sreq = scsi_allocate_request(sdev, GFP_KERNEL);
++	unsigned char cmnd[MAX_COMMAND_SIZE];
+ 
+-	if (unlikely(!sreq)) {
+-		printk(KERN_ERR "%s: request allocate failed,"
+-		       "prevent media removal cmd not sent\n", __FUNCTION__);
+-		return;
+-	}
++	cmnd[0] = ALLOW_MEDIUM_REMOVAL;
++	cmnd[1] = 0;
++	cmnd[2] = 0;
++	cmnd[3] = 0;
++	cmnd[4] = SCSI_REMOVAL_PREVENT;
++	cmnd[5] = 0;
+ 
+-	sreq-&gt;sr_cmnd[0] = ALLOW_MEDIUM_REMOVAL;
+-	sreq-&gt;sr_cmnd[1] = 0;
+-	sreq-&gt;sr_cmnd[2] = 0;
+-	sreq-&gt;sr_cmnd[3] = 0;
+-	sreq-&gt;sr_cmnd[4] = SCSI_REMOVAL_PREVENT;
+-	sreq-&gt;sr_cmnd[5] = 0;
+-	sreq-&gt;sr_data_direction = DMA_NONE;
+-	sreq-&gt;sr_bufflen = 0;
+-	sreq-&gt;sr_buffer = NULL;
+-	sreq-&gt;sr_allowed = 5;
+-	sreq-&gt;sr_done = scsi_eh_lock_done;
+-	sreq-&gt;sr_timeout_per_command = 10 * HZ;
+-	sreq-&gt;sr_cmd_len = COMMAND_SIZE(sreq-&gt;sr_cmnd[0]);
+-
+-	scsi_insert_special_req(sreq, 1);
++	scsi_execute_async(sdev, cmnd, DMA_NONE, NULL, 0, 0, 10 * HZ,
++			   5, NULL, NULL, GFP_KERNEL);
+ }
+ 
+ 
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index 1f2782767ca9..eb0cfbfbcf8f 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -63,39 +63,6 @@ static struct scsi_host_sg_pool scsi_sg_pools[] = {
+ }; 	
+ #undef SP
+ 
+-
+-/*
+- * Function:    scsi_insert_special_req()
+- *
+- * Purpose:     Insert pre-formed request into request queue.
+- *
+- * Arguments:   sreq	- request that is ready to be queued.
+- *              at_head	- boolean.  True if we should insert at head
+- *                        of queue, false if we should insert at tail.
+- *
+- * Lock status: Assumed that lock is not held upon entry.
+- *
+- * Returns:     Nothing
+- *
+- * Notes:       This function is called from character device and from
+- *              ioctl types of functions where the caller knows exactly
+- *              what SCSI command needs to be issued.   The idea is that
+- *              we merely inject the command into the queue (at the head
+- *              for now), and then call the queue request function to actually
+- *              process it.
+- */
+-int scsi_insert_special_req(struct scsi_request *sreq, int at_head)
+-{
+-	/*
+-	 * Because users of this function are apt to reuse requests with no
+-	 * modification, we have to sanitise the request flags here
+-	 */
+-	sreq-&gt;sr_request-&gt;flags &amp;= ~REQ_DONTPREP;
+-	blk_insert_request(sreq-&gt;sr_device-&gt;request_queue, sreq-&gt;sr_request,
+-		       	   at_head, sreq);
+-	return 0;
+-}
+-
+ static void scsi_run_queue(struct request_queue *q);
+ 
+ /*
+@@ -249,8 +216,13 @@ void scsi_do_req(struct scsi_request *sreq, const void *cmnd,
+ 
+ 	/*
+ 	 * head injection *required* here otherwise quiesce won't work
++	 *
++	 * Because users of this function are apt to reuse requests with no
++	 * modification, we have to sanitise the request flags here
+ 	 */
+-	scsi_insert_special_req(sreq, 1);
++	sreq-&gt;sr_request-&gt;flags &amp;= ~REQ_DONTPREP;
++	blk_insert_request(sreq-&gt;sr_device-&gt;request_queue, sreq-&gt;sr_request,
++		       	   1, sreq);
+ }
+ EXPORT_SYMBOL(scsi_do_req);
+ 
+@@ -327,6 +299,196 @@ int scsi_execute_req(struct scsi_device *sdev, const unsigned char *cmd,
+ }
+ EXPORT_SYMBOL(scsi_execute_req);
+ 
++struct scsi_io_context {
++	void *data;
++	void (*done)(void *data, char *sense, int result, int resid);
++	char sense[SCSI_SENSE_BUFFERSIZE];
++};
++
++static void scsi_end_async(struct request *req)
++{
++	struct scsi_io_context *sioc = req-&gt;end_io_data;
++
++	if (sioc-&gt;done)
++		sioc-&gt;done(sioc-&gt;data, sioc-&gt;sense, req-&gt;errors, req-&gt;data_len);
++
++	kfree(sioc);
++	__blk_put_request(req-&gt;q, req);
++}
++
++static int scsi_merge_bio(struct request *rq, struct bio *bio)
++{
++	struct request_queue *q = rq-&gt;q;
++
++	bio-&gt;bi_flags &amp;= ~(1 &lt;&lt; BIO_SEG_VALID);
++	if (rq_data_dir(rq) == WRITE)
++		bio-&gt;bi_rw |= (1 &lt;&lt; BIO_RW);
++	blk_queue_bounce(q, &amp;bio);
++
++	if (!rq-&gt;bio)
++		blk_rq_bio_prep(q, rq, bio);
++	else if (!q-&gt;back_merge_fn(q, rq, bio))
++		return -EINVAL;
++	else {
++		rq-&gt;biotail-&gt;bi_next = bio;
++		rq-&gt;biotail = bio;
++		rq-&gt;hard_nr_sectors += bio_sectors(bio);
++		rq-&gt;nr_sectors = rq-&gt;hard_nr_sectors;
++	}
++
++	return 0;
++}
++
++static int scsi_bi_endio(struct bio *bio, unsigned int bytes_done, int error)
++{
++	if (bio-&gt;bi_size)
++		return 1;
++
++	bio_put(bio);
++	return 0;
++}
++
++/**
++ * scsi_req_map_sg - map a scatterlist into a request
++ * @rq:		request to fill
++ * @sg:		scatterlist
++ * @nsegs:	number of elements
++ * @bufflen:	len of buffer
++ * @gfp:	memory allocation flags
++ *
++ * scsi_req_map_sg maps a scatterlist into a request so that the
++ * request can be sent to the block layer. We do not trust the scatterlist
++ * sent to use, as some ULDs use that struct to only organize the pages.
++ */
++static int scsi_req_map_sg(struct request *rq, struct scatterlist *sgl,
++			   int nsegs, unsigned bufflen, gfp_t gfp)
++{
++	struct request_queue *q = rq-&gt;q;
++	int nr_pages = (bufflen + PAGE_SIZE - 1) &gt;&gt; PAGE_SHIFT;
++	unsigned int data_len = 0, len, bytes, off;
++	struct page *page;
++	struct bio *bio = NULL;
++	int i, err, nr_vecs = 0;
++
++	for (i = 0; i &lt; nsegs; i++) {
++		page = sgl[i].page;
++		off = sgl[i].offset;
++		len = sgl[i].length;
++		data_len += len;
++
++		while (len &gt; 0) {
++			bytes = min_t(unsigned int, len, PAGE_SIZE - off);
++
++			if (!bio) {
++				nr_vecs = min_t(int, BIO_MAX_PAGES, nr_pages);
++				nr_pages -= nr_vecs;
++
++				bio = bio_alloc(gfp, nr_vecs);
++				if (!bio) {
++					err = -ENOMEM;
++					goto free_bios;
++				}
++				bio-&gt;bi_end_io = scsi_bi_endio;
++			}
++
++			if (bio_add_pc_page(q, bio, page, bytes, off) !=
++			    bytes) {
++				bio_put(bio);
++				err = -EINVAL;
++				goto free_bios;
++			}
++
++			if (bio-&gt;bi_vcnt &gt;= nr_vecs) {
++				err = scsi_merge_bio(rq, bio);
++				if (err) {
++					bio_endio(bio, bio-&gt;bi_size, 0);
++					goto free_bios;
++				}
++				bio = NULL;
++			}
++
++			page++;
++			len -= bytes;
++			off = 0;
++		}
++	}
++
++	rq-&gt;buffer = rq-&gt;data = NULL;
++	rq-&gt;data_len = data_len;
++	return 0;
++
++free_bios:
++	while ((bio = rq-&gt;bio) != NULL) {
++		rq-&gt;bio = bio-&gt;bi_next;
++		/*
++		 * call endio instead of bio_put incase it was bounced
++		 */
++		bio_endio(bio, bio-&gt;bi_size, 0);
++	}
++
++	return err;
++}
++
++/**
++ * scsi_execute_async - insert request
++ * @sdev:	scsi device
++ * @cmd:	scsi command
++ * @data_direction: data direction
++ * @buffer:	data buffer (this can be a kernel buffer or scatterlist)
++ * @bufflen:	len of buffer
++ * @use_sg:	if buffer is a scatterlist this is the number of elements
++ * @timeout:	request timeout in seconds
++ * @retries:	number of times to retry request
++ * @flags:	or into request flags
++ **/
++int scsi_execute_async(struct scsi_device *sdev, const unsigned char *cmd,
++		       int data_direction, void *buffer, unsigned bufflen,
++		       int use_sg, int timeout, int retries, void *privdata,
++		       void (*done)(void *, char *, int, int), gfp_t gfp)
++{
++	struct request *req;
++	struct scsi_io_context *sioc;
++	int err = 0;
++	int write = (data_direction == DMA_TO_DEVICE);
++
++	sioc = kzalloc(sizeof(*sioc), gfp);
++	if (!sioc)
++		return DRIVER_ERROR &lt;&lt; 24;
++
++	req = blk_get_request(sdev-&gt;request_queue, write, gfp);
++	if (!req)
++		goto free_sense;
++
++	if (use_sg)
++		err = scsi_req_map_sg(req, buffer, use_sg, bufflen, gfp);
++	else if (bufflen)
++		err = blk_rq_map_kern(req-&gt;q, req, buffer, bufflen, gfp);
++
++	if (err)
++		goto free_req;
++
++	req-&gt;cmd_len = COMMAND_SIZE(cmd[0]);
++	memcpy(req-&gt;cmd, cmd, req-&gt;cmd_len);
++	req-&gt;sense = sioc-&gt;sense;
++	req-&gt;sense_len = 0;
++	req-&gt;timeout = timeout;
++	req-&gt;flags |= REQ_BLOCK_PC | REQ_QUIET;
++	req-&gt;end_io_data = sioc;
++
++	sioc-&gt;data = privdata;
++	sioc-&gt;done = done;
++
++	blk_execute_rq_nowait(req-&gt;q, NULL, req, 1, scsi_end_async);
++	return 0;
++
++free_req:
++	blk_put_request(req);
++free_sense:
++	kfree(sioc);
++	return DRIVER_ERROR &lt;&lt; 24;
++}
++EXPORT_SYMBOL_GPL(scsi_execute_async);
++
+ /*
+  * Function:    scsi_init_cmd_errh()
+  *
+diff --git a/drivers/scsi/scsi_priv.h b/drivers/scsi/scsi_priv.h
+index a8d121c8fbcd..f04e7e11f57a 100644
+--- a/drivers/scsi/scsi_priv.h
++++ b/drivers/scsi/scsi_priv.h
+@@ -40,7 +40,6 @@ extern void scsi_exit_hosts(void);
+ extern int scsi_dispatch_cmd(struct scsi_cmnd *cmd);
+ extern int scsi_setup_command_freelist(struct Scsi_Host *shost);
+ extern void scsi_destroy_command_freelist(struct Scsi_Host *shost);
+-extern int scsi_insert_special_req(struct scsi_request *sreq, int);
+ extern void scsi_init_cmd_from_req(struct scsi_cmnd *cmd,
+ 		struct scsi_request *sreq);
+ extern void __scsi_release_request(struct scsi_request *sreq);
+diff --git a/fs/bio.c b/fs/bio.c
+index 460554b07ff9..4d21ee3873ec 100644
+--- a/fs/bio.c
++++ b/fs/bio.c
+@@ -385,6 +385,25 @@ static int __bio_add_page(request_queue_t *q, struct bio *bio, struct page
+ 	return len;
+ }
+ 
++/**
++ *	bio_add_pc_page	-	attempt to add page to bio
++ *	@bio: destination bio
++ *	@page: page to add
++ *	@len: vec entry length
++ *	@offset: vec entry offset
++ *
++ *	Attempt to add a page to the bio_vec maplist. This can fail for a
++ *	number of reasons, such as the bio being full or target block
++ *	device limitations. The target block device must allow bio's
++ *      smaller than PAGE_SIZE, so it is always possible to add a single
++ *      page to an empty bio. This should only be used by REQ_PC bios.
++ */
++int bio_add_pc_page(request_queue_t *q, struct bio *bio, struct page *page,
++		    unsigned int len, unsigned int offset)
++{
++	return __bio_add_page(q, bio, page, len, offset);
++}
++
+ /**
+  *	bio_add_page	-	attempt to add page to bio
+  *	@bio: destination bio
+@@ -1228,6 +1247,7 @@ EXPORT_SYMBOL(bio_clone);
+ EXPORT_SYMBOL(bio_phys_segments);
+ EXPORT_SYMBOL(bio_hw_segments);
+ EXPORT_SYMBOL(bio_add_page);
++EXPORT_SYMBOL(bio_add_pc_page);
+ EXPORT_SYMBOL(bio_get_nr_vecs);
+ EXPORT_SYMBOL(bio_map_user);
+ EXPORT_SYMBOL(bio_unmap_user);
+diff --git a/include/linux/bio.h b/include/linux/bio.h
+index 685fd3720df5..b60ffe32cd21 100644
+--- a/include/linux/bio.h
++++ b/include/linux/bio.h
+@@ -292,6 +292,8 @@ extern struct bio *bio_clone(struct bio *, gfp_t);
+ extern void bio_init(struct bio *);
+ 
+ extern int bio_add_page(struct bio *, struct page *, unsigned int,unsigned int);
++extern int bio_add_pc_page(struct request_queue *, struct bio *, struct page *,
++			   unsigned int, unsigned int);
+ extern int bio_get_nr_vecs(struct block_device *);
+ extern struct bio *bio_map_user(struct request_queue *, struct block_device *,
+ 				unsigned long, unsigned int, int);
+diff --git a/include/scsi/scsi_device.h b/include/scsi/scsi_device.h
+index 063e32fe036c..e94ca4d36035 100644
+--- a/include/scsi/scsi_device.h
++++ b/include/scsi/scsi_device.h
+@@ -274,6 +274,12 @@ extern int scsi_execute(struct scsi_device *sdev, const unsigned char *cmd,
+ extern int scsi_execute_req(struct scsi_device *sdev, const unsigned char *cmd,
+ 			    int data_direction, void *buffer, unsigned bufflen,
+ 			    struct scsi_sense_hdr *, int timeout, int retries);
++extern int scsi_execute_async(struct scsi_device *sdev,
++			      const unsigned char *cmd, int data_direction,
++			      void *buffer, unsigned bufflen, int use_sg,
++			      int timeout, int retries, void *privdata,
++			      void (*done)(void *, char *, int, int),
++			      gfp_t gfp);
+ 
+ static inline unsigned int sdev_channel(struct scsi_device *sdev)
+ {</pre><hr><pre>commit 6e39b69e7ea9205c5f80aeac3ef999ab8fb1a4cc
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Nov 11 05:30:24 2005 -0600
+
+    [SCSI] export blk layer functions needed for blk_execute_rq_nowait
+    
+    To send async requests we need these two functions exported.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/block/ll_rw_blk.c b/block/ll_rw_blk.c
+index 99c9ca6d5992..c525b5a2b598 100644
+--- a/block/ll_rw_blk.c
++++ b/block/ll_rw_blk.c
+@@ -2306,6 +2306,8 @@ void blk_execute_rq_nowait(request_queue_t *q, struct gendisk *bd_disk,
+ 	generic_unplug_device(q);
+ }
+ 
++EXPORT_SYMBOL_GPL(blk_execute_rq_nowait);
++
+ /**
+  * blk_execute_rq - insert a request into queue for execution
+  * @q:		queue to insert the request in
+@@ -2444,7 +2446,7 @@ void disk_round_stats(struct gendisk *disk)
+ /*
+  * queue lock must be held
+  */
+-static void __blk_put_request(request_queue_t *q, struct request *req)
++void __blk_put_request(request_queue_t *q, struct request *req)
+ {
+ 	struct request_list *rl = req-&gt;rl;
+ 
+@@ -2473,6 +2475,8 @@ static void __blk_put_request(request_queue_t *q, struct request *req)
+ 	}
+ }
+ 
++EXPORT_SYMBOL_GPL(__blk_put_request);
++
+ void blk_put_request(struct request *req)
+ {
+ 	unsigned long flags;
+diff --git a/include/linux/blkdev.h b/include/linux/blkdev.h
+index a33a31e71bbc..9a68716dcf75 100644
+--- a/include/linux/blkdev.h
++++ b/include/linux/blkdev.h
+@@ -558,6 +558,7 @@ extern void blk_unregister_queue(struct gendisk *disk);
+ extern void register_disk(struct gendisk *dev);
+ extern void generic_make_request(struct bio *bio);
+ extern void blk_put_request(struct request *);
++extern void __blk_put_request(request_queue_t *, struct request *);
+ extern void blk_end_sync_rq(struct request *rq);
+ extern void blk_attempt_remerge(request_queue_t *, struct request *);
+ extern struct request *blk_get_request(request_queue_t *, int, gfp_t);
+@@ -579,6 +580,10 @@ extern int blk_rq_map_kern(request_queue_t *, struct request *, void *, unsigned
+ extern int blk_rq_map_user_iov(request_queue_t *, struct request *, struct sg_iovec *, int);
+ extern int blk_execute_rq(request_queue_t *, struct gendisk *,
+ 			  struct request *, int);
++extern void blk_execute_rq_nowait(request_queue_t *, struct gendisk *,
++				  struct request *, int,
++				  void (*done)(struct request *));
++
+ static inline request_queue_t *bdev_get_queue(struct block_device *bdev)
+ {
+ 	return bdev-&gt;bd_disk-&gt;queue;</pre><hr><pre>commit 8a47cd340b4a299087f926ff2780d1eb08513f04
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Wed Nov 30 02:27:19 2005 -0600
+
+    [SCSI] iscsi: check header digests for mgmt tasks
+    
+    From Wang Zhenyu:
+    
+    check header digest for cmd and mgmt tasks
+    
+    Signed-off-by: Wang Zhenyu &lt;zhenyu.z.wang@intel.com&gt;
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index feb8731907c7..2d12355eed33 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -581,6 +581,12 @@ iscsi_hdr_recv(struct iscsi_conn *conn)
+ 		crypto_digest_digest(conn-&gt;rx_tfm, &amp;sg, 1, (u8 *)&amp;cdgst);
+ 		rdgst = *(uint32_t*)((char*)hdr + sizeof(struct iscsi_hdr) +
+ 				     conn-&gt;in.ahslen);
++		if (cdgst != rdgst) {
++			printk(KERN_ERR "iscsi_tcp: itt %x: hdrdgst error "
++			       "recv 0x%x calc 0x%x\n", conn-&gt;in.itt, rdgst,
++			       cdgst);
++			return ISCSI_ERR_HDR_DGST;
++		}
+ 	}
+ 
+ 	/* save opcode for later */
+@@ -610,13 +616,6 @@ iscsi_hdr_recv(struct iscsi_conn *conn)
+ 		  conn-&gt;in.ahslen, conn-&gt;in.datalen);
+ 
+ 	if (conn-&gt;in.itt &lt; session-&gt;cmds_max) {
+-		if (conn-&gt;hdrdgst_en &amp;&amp; cdgst != rdgst) {
+-			printk(KERN_ERR "iscsi_tcp: itt %x: hdrdgst error "
+-			       "recv 0x%x calc 0x%x\n", conn-&gt;in.itt, rdgst,
+-			       cdgst);
+-			return ISCSI_ERR_HDR_DGST;
+-		}
+-
+ 		ctask = (struct iscsi_cmd_task *)session-&gt;cmds[conn-&gt;in.itt];
+ 
+ 		if (!ctask-&gt;sc) {
+@@ -1128,8 +1127,7 @@ iscsi_tcp_data_recv(read_descriptor_t *rd_desc, struct sk_buff *skb,
+ 		 */
+ 		rc = iscsi_hdr_recv(conn);
+ 		if (!rc &amp;&amp; conn-&gt;in.datalen) {
+-			if (conn-&gt;datadgst_en &amp;&amp;
+-				conn-&gt;in.opcode != ISCSI_OP_LOGIN_RSP) {
++			if (conn-&gt;datadgst_en) {
+ 				BUG_ON(!conn-&gt;data_rx_tfm);
+ 				crypto_digest_init(conn-&gt;data_rx_tfm);
+ 			}
+@@ -1179,8 +1177,7 @@ iscsi_tcp_data_recv(read_descriptor_t *rd_desc, struct sk_buff *skb,
+ 		}
+ 		conn-&gt;in.copy -= conn-&gt;in.padding;
+ 		conn-&gt;in.offset += conn-&gt;in.padding;
+-		if (conn-&gt;datadgst_en &amp;&amp;
+-			conn-&gt;in.opcode != ISCSI_OP_LOGIN_RSP) {
++		if (conn-&gt;datadgst_en) {
+ 			if (conn-&gt;in.padding) {
+ 				debug_tcp("padding -&gt; %d\n", conn-&gt;in.padding);
+ 				memset(pad, 0, conn-&gt;in.padding);
+@@ -2875,8 +2872,11 @@ iscsi_conn_stop(iscsi_connh_t connh, int flag)
+ 		 * in hdr_extract() and will be re-negotiated at
+ 		 * set_param() time.
+ 		 */
+-		if (flag == STOP_CONN_RECOVER)
++		if (flag == STOP_CONN_RECOVER) {
+ 			conn-&gt;hdr_size = sizeof(struct iscsi_hdr);
++			conn-&gt;hdrdgst_en = 0;
++			conn-&gt;datadgst_en = 0;
++		}
+ 	}
+ 	up(&amp;conn-&gt;xmitsema);
+ }</pre><hr><pre>commit 4d841d6bd94d55642f8dbb11d6b672b3b50ff82e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Nov 29 23:13:01 2005 -0600
+
+    [SCSI] iscsi: update version
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 5b14c404069f..feb8731907c7 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -49,7 +49,7 @@ MODULE_AUTHOR("Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;, "
+ 	      "Alex Aizman &lt;itn780@yahoo.com&gt;");
+ MODULE_DESCRIPTION("iSCSI/TCP data-path");
+ MODULE_LICENSE("GPL");
+-MODULE_VERSION("0:4.409");
++MODULE_VERSION("0:4.445");
+ /* #define DEBUG_TCP */
+ /* #define DEBUG_SCSI */
+ #define DEBUG_ASSERT</pre><hr><pre>commit 9e3961ba2be51a88c6223143568c80e0616d93ce
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Nov 29 23:12:59 2005 -0600
+
+    [SCSI] iscsi: lower queue depth
+    
+    From Wang Zhenyu:
+    
+    High queue depth was a problem for some targets so make queue_depth adjustable
+    
+    From Mike Christie
+    
+    Make default queue_depth a little lower
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index 83e2f8c8e496..5b14c404069f 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -2401,6 +2401,15 @@ iscsi_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 	return 0;
+ }
+ 
++static int
++iscsi_change_queue_depth(struct scsi_device *sdev, int depth)
++{
++	if (depth &gt; ISCSI_MAX_CMD_PER_LUN)
++		depth = ISCSI_MAX_CMD_PER_LUN;
++	scsi_adjust_queue_depth(sdev, scsi_get_tag_type(sdev), depth);
++	return sdev-&gt;queue_depth;
++}
++
+ static int
+ iscsi_pool_init(struct iscsi_queue *q, int max, void ***items, int item_size)
+ {
+@@ -3260,13 +3269,14 @@ iscsi_r2tpool_free(struct iscsi_session *session)
+ static struct scsi_host_template iscsi_sht = {
+ 	.name			= "iSCSI Initiator over TCP/IP, v."
+ 				  ISCSI_VERSION_STR,
+-        .queuecommand           = iscsi_queuecommand,
++	.queuecommand           = iscsi_queuecommand,
++	.change_queue_depth	= iscsi_change_queue_depth,
+ 	.can_queue		= ISCSI_XMIT_CMDS_MAX - 1,
+ 	.sg_tablesize		= ISCSI_SG_TABLESIZE,
+-	.cmd_per_lun		= ISCSI_CMD_PER_LUN,
+-        .eh_abort_handler       = iscsi_eh_abort,
+-        .eh_host_reset_handler	= iscsi_eh_host_reset,
+-        .use_clustering         = DISABLE_CLUSTERING,
++	.cmd_per_lun		= ISCSI_DEF_CMD_PER_LUN,
++	.eh_abort_handler       = iscsi_eh_abort,
++	.eh_host_reset_handler	= iscsi_eh_host_reset,
++	.use_clustering         = DISABLE_CLUSTERING,
+ 	.proc_name		= "iscsi_tcp",
+ 	.this_id		= -1,
+ };
+diff --git a/drivers/scsi/iscsi_tcp.h b/drivers/scsi/iscsi_tcp.h
+index d23ae68fae0d..855f2dfd18af 100644
+--- a/drivers/scsi/iscsi_tcp.h
++++ b/drivers/scsi/iscsi_tcp.h
+@@ -71,7 +71,8 @@
+ #define ISCSI_MGMT_CMDS_MAX		32	/* must be power of 2 */
+ #define ISCSI_MGMT_ITT_OFFSET		0xa00
+ #define ISCSI_SG_TABLESIZE		SG_ALL
+-#define ISCSI_CMD_PER_LUN		128
++#define ISCSI_DEF_CMD_PER_LUN		32
++#define ISCSI_MAX_CMD_PER_LUN		128
+ #define ISCSI_TCP_MAX_CMD_LEN		16
+ 
+ #define ITT_MASK			(0xfff)</pre><hr><pre>commit f6cfba1d21e9e4afd80e2274aa4df3dc1bd0aab7
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Nov 29 23:12:57 2005 -0600
+
+    [SCSI] iscsi: data digest calculation fix
+    
+    From Wang Zhenyu:
+    
+    data digest fix (the bug caused data corruption w/Wasabi StorageBuilder target)
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index e6991515ad2e..83e2f8c8e496 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -903,11 +903,20 @@ partial_sg_digest_update(struct iscsi_conn *conn, struct scatterlist *sg,
+ 	crypto_digest_update(conn-&gt;data_rx_tfm, &amp;temp, 1);
+ }
+ 
++static void
++iscsi_recv_digest_update(struct iscsi_conn *conn, char* buf, int len)
++{
++	struct scatterlist tmp;
++
++	sg_init_one(&amp;tmp, buf, len);
++	crypto_digest_update(conn-&gt;data_rx_tfm, &amp;tmp, 1);
++}
++
+ static int iscsi_scsi_data_in(struct iscsi_conn *conn)
+ {
+ 	struct iscsi_cmd_task *ctask = conn-&gt;in.ctask;
+ 	struct scsi_cmnd *sc = ctask-&gt;sc;
+-	struct scatterlist tmp, *sg;
++	struct scatterlist *sg;
+ 	int i, offset, rc = 0;
+ 
+ 	BUG_ON((void*)ctask != sc-&gt;SCp.ptr);
+@@ -921,10 +930,8 @@ static int iscsi_scsi_data_in(struct iscsi_conn *conn)
+ 				      sc-&gt;request_bufflen, ctask-&gt;data_offset);
+ 		if (rc == -EAGAIN)
+ 			return rc;
+-		if (conn-&gt;datadgst_en) {
+-			sg_init_one(&amp;tmp, sc-&gt;request_buffer, i);
+-			crypto_digest_update(conn-&gt;data_rx_tfm, &amp;tmp, 1);
+-		}
++		if (conn-&gt;datadgst_en) 
++			iscsi_recv_digest_update(conn, sc-&gt;request_buffer, i);
+ 		rc = 0;
+ 		goto done;
+ 	}
+@@ -1018,6 +1025,9 @@ iscsi_data_recv(struct iscsi_conn *conn)
+ 		conn-&gt;in.hdr = &amp;conn-&gt;hdr;
+ 		conn-&gt;senselen = (conn-&gt;data[0] &lt;&lt; 8) | conn-&gt;data[1];
+ 		rc = iscsi_cmd_rsp(conn, conn-&gt;in.ctask);
++		if (!rc &amp;&amp; conn-&gt;datadgst_en) 
++			iscsi_recv_digest_update(conn, conn-&gt;data,
++						 conn-&gt;in.datalen);
+ 	}
+ 	break;
+ 	case ISCSI_OP_TEXT_RSP:
+@@ -1042,6 +1052,11 @@ iscsi_data_recv(struct iscsi_conn *conn)
+ 		rc = iscsi_recv_pdu(iscsi_handle(conn), conn-&gt;in.hdr,
+ 				    conn-&gt;data, conn-&gt;in.datalen);
+ 
++		if (!rc &amp;&amp; conn-&gt;datadgst_en &amp;&amp; 
++			conn-&gt;in.opcode != ISCSI_OP_LOGIN_RSP)
++			iscsi_recv_digest_update(conn, conn-&gt;data,
++			  			conn-&gt;in.datalen);
++
+ 		if (mtask &amp;&amp; conn-&gt;login_mtask != mtask) {
+ 			spin_lock(&amp;session-&gt;lock);
+ 			__kfifo_put(session-&gt;mgmtpool.queue, (void*)&amp;mtask,
+@@ -1050,6 +1065,8 @@ iscsi_data_recv(struct iscsi_conn *conn)
+ 		}
+ 	}
+ 	break;
++	case ISCSI_OP_ASYNC_EVENT:
++	case ISCSI_OP_REJECT:
+ 	default:
+ 		BUG_ON(1);
+ 	}
+@@ -1112,7 +1129,7 @@ iscsi_tcp_data_recv(read_descriptor_t *rd_desc, struct sk_buff *skb,
+ 		rc = iscsi_hdr_recv(conn);
+ 		if (!rc &amp;&amp; conn-&gt;in.datalen) {
+ 			if (conn-&gt;datadgst_en &amp;&amp;
+-			    conn-&gt;in.opcode == ISCSI_OP_SCSI_DATA_IN) {
++				conn-&gt;in.opcode != ISCSI_OP_LOGIN_RSP) {
+ 				BUG_ON(!conn-&gt;data_rx_tfm);
+ 				crypto_digest_init(conn-&gt;data_rx_tfm);
+ 			}
+@@ -1124,26 +1141,24 @@ iscsi_tcp_data_recv(read_descriptor_t *rd_desc, struct sk_buff *skb,
+ 	}
+ 
+ 	if (conn-&gt;in_progress == IN_PROGRESS_DDIGEST_RECV) {
++		uint32_t recv_digest;
+ 		debug_tcp("extra data_recv offset %d copy %d\n",
+ 			  conn-&gt;in.offset, conn-&gt;in.copy);
+-		if (conn-&gt;in.opcode == ISCSI_OP_SCSI_DATA_IN) {
+-			uint32_t recv_digest;
+-			skb_copy_bits(conn-&gt;in.skb, conn-&gt;in.offset,
+-				      &amp;recv_digest, 4);
+-			conn-&gt;in.offset += 4;
+-			conn-&gt;in.copy -= 4;
+-			if (recv_digest != conn-&gt;in.datadgst) {
+-				debug_tcp("iscsi_tcp: data digest error!"
+-					  "0x%x != 0x%x\n", recv_digest,
+-					  conn-&gt;in.datadgst);
+-				iscsi_conn_failure(conn, ISCSI_ERR_DATA_DGST);
+-				return 0;
+-			} else {
+-				debug_tcp("iscsi_tcp: data digest match!"
+-					  "0x%x == 0x%x\n", recv_digest,
+-					  conn-&gt;in.datadgst);
+-				conn-&gt;in_progress = IN_PROGRESS_WAIT_HEADER;
+-			}
++		skb_copy_bits(conn-&gt;in.skb, conn-&gt;in.offset,
++				&amp;recv_digest, 4);
++		conn-&gt;in.offset += 4;
++		conn-&gt;in.copy -= 4;
++		if (recv_digest != conn-&gt;in.datadgst) {
++			debug_tcp("iscsi_tcp: data digest error!"
++				  "0x%x != 0x%x\n", recv_digest,
++				  conn-&gt;in.datadgst);
++			iscsi_conn_failure(conn, ISCSI_ERR_DATA_DGST);
++			return 0;
++		} else {
++			debug_tcp("iscsi_tcp: data digest match!"
++				  "0x%x == 0x%x\n", recv_digest,
++				  conn-&gt;in.datadgst);
++			conn-&gt;in_progress = IN_PROGRESS_WAIT_HEADER;
+ 		}
+ 	}
+ 
+@@ -1165,7 +1180,7 @@ iscsi_tcp_data_recv(read_descriptor_t *rd_desc, struct sk_buff *skb,
+ 		conn-&gt;in.copy -= conn-&gt;in.padding;
+ 		conn-&gt;in.offset += conn-&gt;in.padding;
+ 		if (conn-&gt;datadgst_en &amp;&amp;
+-		    conn-&gt;in.opcode == ISCSI_OP_SCSI_DATA_IN) {
++			conn-&gt;in.opcode != ISCSI_OP_LOGIN_RSP) {
+ 			if (conn-&gt;in.padding) {
+ 				debug_tcp("padding -&gt; %d\n", conn-&gt;in.padding);
+ 				memset(pad, 0, conn-&gt;in.padding);</pre><hr><pre>commit 733bb6a70cb351786f3c2290ab22f71b612e6893
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Nov 29 23:12:54 2005 -0600
+
+    [SCSI] iscsi: iscsi response fix
+    
+    from Wang Zhenyu:
+    
+    Must check SCSI CMD and R2T response according to the spec
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: Alex Aizman &lt;itn780@yahoo.com&gt;
+    Signed-off-by: Dmitry Yusupov &lt;dmitry_yus@yahoo.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@SteelEye.com&gt;
+
+diff --git a/drivers/scsi/iscsi_tcp.c b/drivers/scsi/iscsi_tcp.c
+index f12d605c7729..e6991515ad2e 100644
+--- a/drivers/scsi/iscsi_tcp.c
++++ b/drivers/scsi/iscsi_tcp.c
+@@ -642,9 +642,7 @@ iscsi_hdr_recv(struct iscsi_conn *conn)
+ 		switch(conn-&gt;in.opcode) {
+ 		case ISCSI_OP_SCSI_CMD_RSP:
+ 			BUG_ON((void*)ctask != ctask-&gt;sc-&gt;SCp.ptr);
+-			if (ctask-&gt;hdr.flags &amp; ISCSI_FLAG_CMD_WRITE)
+-				rc = iscsi_cmd_rsp(conn, ctask);
+-			else if (!conn-&gt;in.datalen)
++			if (!conn-&gt;in.datalen)
+ 				rc = iscsi_cmd_rsp(conn, ctask);
+ 			else
+ 				/*
+@@ -666,8 +664,7 @@ iscsi_hdr_recv(struct iscsi_conn *conn)
+ 			break;
+ 		case ISCSI_OP_R2T:
+ 			BUG_ON((void*)ctask != ctask-&gt;sc-&gt;SCp.ptr);
+-			if (ctask-&gt;hdr.flags &amp; ISCSI_FLAG_CMD_WRITE &amp;&amp;
+-			    ctask-&gt;sc-&gt;sc_data_direction == DMA_TO_DEVICE)
++			if (ctask-&gt;sc-&gt;sc_data_direction == DMA_TO_DEVICE)
+ 				rc = iscsi_r2t_rsp(conn, ctask);
+ 			else
+ 				rc = ISCSI_ERR_PROTO;</pre>
+    <div class="pagination">
+        <a href='5_42.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><a href='5_23.html'>23</a><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><span>[43]</span><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_44.html'>Next&gt;&gt;</a>
+    <div>
+</body>

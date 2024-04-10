@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Huazhong University of Science and Technology</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Huazhong University of Science and Technology</h1>
+    <div class="pagination">
+        <a href='17_2.html'>&lt;&lt;Prev</a><a href='17.html'>1</a><a href='17_2.html'>2</a><span>[3]</span><a href='17_4.html'>4</a><a href='17_5.html'>5</a><a href='17_6.html'>6</a><a href='17_7.html'>7</a><a href='17_4.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 2e2fe5ac695a00ab03cab4db1f4d6be07168ed9d
+Author: Yuchen Yang &lt;u202114568@hust.edu.cn&gt;
+Date:   Fri May 5 22:12:55 2023 +0800
+
+    scsi: 3w-xxxx: Add error handling for initialization failure in tw_probe()
+    
+    Smatch complains that:
+    
+    tw_probe() warn: missing error code 'retval'
+    
+    This patch adds error checking to tw_probe() to handle initialization
+    failure. If tw_reset_sequence() function returns a non-zero value, the
+    function will return -EINVAL to indicate initialization failure.
+    
+    Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
+    Signed-off-by: Yuchen Yang &lt;u202114568@hust.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230505141259.7730-1-u202114568@hust.edu.cn
+    Reviewed-by: Dan Carpenter &lt;dan.carpenter@linaro.org&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/3w-xxxx.c b/drivers/scsi/3w-xxxx.c
+index 36c34ced0cc1..f39c9ec2e781 100644
+--- a/drivers/scsi/3w-xxxx.c
++++ b/drivers/scsi/3w-xxxx.c
+@@ -2305,8 +2305,10 @@ static int tw_probe(struct pci_dev *pdev, const struct pci_device_id *dev_id)
+ 	TW_DISABLE_INTERRUPTS(tw_dev);
+ 
+ 	/* Initialize the card */
+-	if (tw_reset_sequence(tw_dev))
++	if (tw_reset_sequence(tw_dev)) {
++		retval = -EINVAL;
+ 		goto out_release_mem_region;
++	}
+ 
+ 	/* Set host specific parameters */
+ 	host-&gt;max_id = TW_MAX_UNITS;</pre><hr><pre>commit ec014683c564fb74fc68e8f5e84691d3b3839d24
+Author: Chao Wang &lt;D202280639@hust.edu.cn&gt;
+Date:   Mon Apr 17 03:04:21 2023 +0000
+
+    iommu/rockchip: Fix unwind goto issue
+    
+    Smatch complains that
+    drivers/iommu/rockchip-iommu.c:1306 rk_iommu_probe() warn: missing unwind goto?
+    
+    The rk_iommu_probe function, after obtaining the irq value through
+    platform_get_irq, directly returns an error if the returned value
+    is negative, without releasing any resources.
+    
+    Fix this by adding a new error handling label "err_pm_disable" and
+    use a goto statement to redirect to the error handling process. In
+    order to preserve the original semantics, set err to the value of irq.
+    
+    Fixes: 1aa55ca9b14a ("iommu/rockchip: Move irq request past pm_runtime_enable")
+    Signed-off-by: Chao Wang &lt;D202280639@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Reviewed-by: Heiko Stuebner &lt;heiko@sntech.de&gt;
+    Link: https://lore.kernel.org/r/20230417030421.2777-1-D202280639@hust.edu.cn
+    Signed-off-by: Joerg Roedel &lt;jroedel@suse.de&gt;
+
+diff --git a/drivers/iommu/rockchip-iommu.c b/drivers/iommu/rockchip-iommu.c
+index ea5a3088bb7e..4054030c3237 100644
+--- a/drivers/iommu/rockchip-iommu.c
++++ b/drivers/iommu/rockchip-iommu.c
+@@ -1335,20 +1335,22 @@ static int rk_iommu_probe(struct platform_device *pdev)
+ 	for (i = 0; i &lt; iommu-&gt;num_irq; i++) {
+ 		int irq = platform_get_irq(pdev, i);
+ 
+-		if (irq &lt; 0)
+-			return irq;
++		if (irq &lt; 0) {
++			err = irq;
++			goto err_pm_disable;
++		}
+ 
+ 		err = devm_request_irq(iommu-&gt;dev, irq, rk_iommu_irq,
+ 				       IRQF_SHARED, dev_name(dev), iommu);
+-		if (err) {
+-			pm_runtime_disable(dev);
+-			goto err_remove_sysfs;
+-		}
++		if (err)
++			goto err_pm_disable;
+ 	}
+ 
+ 	dma_set_mask_and_coherent(dev, rk_ops-&gt;dma_bit_mask);
+ 
+ 	return 0;
++err_pm_disable:
++	pm_runtime_disable(dev);
+ err_remove_sysfs:
+ 	iommu_device_sysfs_remove(&amp;iommu-&gt;iommu);
+ err_put_group:</pre><hr><pre>commit 27b2ed5b6d53cd62fc61c3f259ae52f5cac23b66
+Author: Jiakai Luo &lt;jkluo@hust.edu.cn&gt;
+Date:   Sat Apr 22 06:34:06 2023 -0700
+
+    iio: adc: mxs-lradc: fix the order of two cleanup operations
+    
+    Smatch reports:
+    drivers/iio/adc/mxs-lradc-adc.c:766 mxs_lradc_adc_probe() warn:
+    missing unwind goto?
+    
+    the order of three init operation:
+    1.mxs_lradc_adc_trigger_init
+    2.iio_triggered_buffer_setup
+    3.mxs_lradc_adc_hw_init
+    
+    thus, the order of three cleanup operation should be:
+    1.mxs_lradc_adc_hw_stop
+    2.iio_triggered_buffer_cleanup
+    3.mxs_lradc_adc_trigger_remove
+    
+    we exchange the order of two cleanup operations,
+    introducing the following differences:
+    1.if mxs_lradc_adc_trigger_init fails, returns directly;
+    2.if trigger_init succeeds but iio_triggered_buffer_setup fails,
+    goto err_trig and remove the trigger.
+    
+    In addition, we also reorder the unwind that goes on in the
+    remove() callback to match the new ordering.
+    
+    Fixes: 6dd112b9f85e ("iio: adc: mxs-lradc: Add support for ADC driver")
+    Signed-off-by: Jiakai Luo &lt;jkluo@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230422133407.72908-1-jkluo@hust.edu.cn
+    Cc: &lt;Stable@vger.kernel.org&gt;
+    Signed-off-by: Jonathan Cameron &lt;Jonathan.Cameron@huawei.com&gt;
+
+diff --git a/drivers/iio/adc/mxs-lradc-adc.c b/drivers/iio/adc/mxs-lradc-adc.c
+index bca79a93cbe4..a50f39143d3e 100644
+--- a/drivers/iio/adc/mxs-lradc-adc.c
++++ b/drivers/iio/adc/mxs-lradc-adc.c
+@@ -757,13 +757,13 @@ static int mxs_lradc_adc_probe(struct platform_device *pdev)
+ 
+ 	ret = mxs_lradc_adc_trigger_init(iio);
+ 	if (ret)
+-		goto err_trig;
++		return ret;
+ 
+ 	ret = iio_triggered_buffer_setup(iio, &amp;iio_pollfunc_store_time,
+ 					 &amp;mxs_lradc_adc_trigger_handler,
+ 					 &amp;mxs_lradc_adc_buffer_ops);
+ 	if (ret)
+-		return ret;
++		goto err_trig;
+ 
+ 	adc-&gt;vref_mv = mxs_lradc_adc_vref_mv[lradc-&gt;soc];
+ 
+@@ -801,9 +801,9 @@ static int mxs_lradc_adc_probe(struct platform_device *pdev)
+ 
+ err_dev:
+ 	mxs_lradc_adc_hw_stop(adc);
+-	mxs_lradc_adc_trigger_remove(iio);
+-err_trig:
+ 	iio_triggered_buffer_cleanup(iio);
++err_trig:
++	mxs_lradc_adc_trigger_remove(iio);
+ 	return ret;
+ }
+ 
+@@ -814,8 +814,8 @@ static int mxs_lradc_adc_remove(struct platform_device *pdev)
+ 
+ 	iio_device_unregister(iio);
+ 	mxs_lradc_adc_hw_stop(adc);
+-	mxs_lradc_adc_trigger_remove(iio);
+ 	iio_triggered_buffer_cleanup(iio);
++	mxs_lradc_adc_trigger_remove(iio);
+ 
+ 	return 0;
+ }</pre><hr><pre>commit 8ab5fc55d7f65d58a3c3aeadf11bdf60267cd2bd
+Author: Ke Zhang &lt;m202171830@hust.edu.cn&gt;
+Date:   Fri Apr 28 11:16:36 2023 +0800
+
+    serial: arc_uart: fix of_iomap leak in `arc_serial_probe`
+    
+    Smatch reports:
+    
+    drivers/tty/serial/arc_uart.c:631 arc_serial_probe() warn:
+    'port-&gt;membase' from of_iomap() not released on lines: 631.
+    
+    In arc_serial_probe(), if uart_add_one_port() fails,
+    port-&gt;membase is not released, which would cause a resource leak.
+    
+    To fix this, I replace of_iomap with devm_platform_ioremap_resource.
+    
+    Fixes: 8dbe1d5e09a7 ("serial/arc: inline the probe helper")
+    Signed-off-by: Ke Zhang &lt;m202171830@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230428031636.44642-1-m202171830@hust.edu.cn
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/tty/serial/arc_uart.c b/drivers/tty/serial/arc_uart.c
+index 59e25f2b6632..4b2512eef577 100644
+--- a/drivers/tty/serial/arc_uart.c
++++ b/drivers/tty/serial/arc_uart.c
+@@ -606,10 +606,11 @@ static int arc_serial_probe(struct platform_device *pdev)
+ 	}
+ 	uart-&gt;baud = val;
+ 
+-	port-&gt;membase = of_iomap(np, 0);
+-	if (!port-&gt;membase)
++	port-&gt;membase = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(port-&gt;membase)) {
+ 		/* No point of dev_err since UART itself is hosed here */
+-		return -ENXIO;
++		return PTR_ERR(port-&gt;membase);
++	}
+ 
+ 	port-&gt;irq = irq_of_parse_and_map(np, 0);
+ </pre><hr><pre>commit 5a6bef734247c7a8c19511664ff77634ab86f45b
+Author: Zongjie Li &lt;u202112089@hust.edu.cn&gt;
+Date:   Tue May 9 19:27:26 2023 +0800
+
+    fbdev: arcfb: Fix error handling in arcfb_probe()
+    
+    Smatch complains that:
+    arcfb_probe() warn: 'irq' from request_irq() not released on lines: 587.
+    
+    Fix error handling in the arcfb_probe() function. If IO addresses are
+    not provided or framebuffer registration fails, the code will jump to
+    the err_addr or err_register_fb label to release resources.
+    If IRQ request fails, previously allocated resources will be freed.
+    
+    Fixes: 1154ea7dcd8e ("[PATCH] Framebuffer driver for Arc LCD board")
+    Signed-off-by: Zongjie Li &lt;u202112089@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Signed-off-by: Helge Deller &lt;deller@gmx.de&gt;
+
+diff --git a/drivers/video/fbdev/arcfb.c b/drivers/video/fbdev/arcfb.c
+index 45e64016db32..024d0ee4f04f 100644
+--- a/drivers/video/fbdev/arcfb.c
++++ b/drivers/video/fbdev/arcfb.c
+@@ -523,7 +523,7 @@ static int arcfb_probe(struct platform_device *dev)
+ 
+ 	info = framebuffer_alloc(sizeof(struct arcfb_par), &amp;dev-&gt;dev);
+ 	if (!info)
+-		goto err;
++		goto err_fb_alloc;
+ 
+ 	info-&gt;screen_base = (char __iomem *)videomemory;
+ 	info-&gt;fbops = &amp;arcfb_ops;
+@@ -535,7 +535,7 @@ static int arcfb_probe(struct platform_device *dev)
+ 
+ 	if (!dio_addr || !cio_addr || !c2io_addr) {
+ 		printk(KERN_WARNING "no IO addresses supplied\n");
+-		goto err1;
++		goto err_addr;
+ 	}
+ 	par-&gt;dio_addr = dio_addr;
+ 	par-&gt;cio_addr = cio_addr;
+@@ -551,12 +551,12 @@ static int arcfb_probe(struct platform_device *dev)
+ 			printk(KERN_INFO
+ 				"arcfb: Failed req IRQ %d\n", par-&gt;irq);
+ 			retval = -EBUSY;
+-			goto err1;
++			goto err_addr;
+ 		}
+ 	}
+ 	retval = register_framebuffer(info);
+ 	if (retval &lt; 0)
+-		goto err1;
++		goto err_register_fb;
+ 	platform_set_drvdata(dev, info);
+ 	fb_info(info, "Arc frame buffer device, using %dK of video memory\n",
+ 		videomemorysize &gt;&gt; 10);
+@@ -580,9 +580,12 @@ static int arcfb_probe(struct platform_device *dev)
+ 	}
+ 
+ 	return 0;
+-err1:
++
++err_register_fb:
++	free_irq(par-&gt;irq, info);
++err_addr:
+ 	framebuffer_release(info);
+-err:
++err_fb_alloc:
+ 	vfree(videomemory);
+ 	return retval;
+ }</pre><hr><pre>commit 123ee07ba5b7123e0ce0e0f9d64938026c16a2ce
+Author: XuDong Liu &lt;m202071377@hust.edu.cn&gt;
+Date:   Sun Apr 30 19:23:46 2023 +0800
+
+    drm: sun4i_tcon: use devm_clk_get_enabled in `sun4i_tcon_init_clocks`
+    
+    Smatch reports:
+    drivers/gpu/drm/sun4i/sun4i_tcon.c:805 sun4i_tcon_init_clocks() warn:
+    'tcon-&gt;clk' from clk_prepare_enable() not released on lines: 792,801.
+    
+    In the function sun4i_tcon_init_clocks(), tcon-&gt;clk and tcon-&gt;sclk0 are
+    not disabled in the error handling, which affects the release of
+    these variable. Although sun4i_tcon_bind(), which calls
+    sun4i_tcon_init_clocks(), use sun4i_tcon_free_clocks to disable the
+    variables mentioned, but the error handling branch of
+    sun4i_tcon_init_clocks() ignores the required disable process.
+    
+    To fix this issue, use the devm_clk_get_enabled to automatically
+    balance enable and disabled calls. As original implementation use
+    sun4i_tcon_free_clocks() to disable clk explicitly, we delete the
+    related calls and error handling that are no longer needed.
+    
+    Fixes: 9026e0d122ac ("drm: Add Allwinner A10 Display Engine support")
+    Fixes: b14e945bda8a ("drm/sun4i: tcon: Prepare and enable TCON channel 0 clock at init")
+    Fixes: 8e9240472522 ("drm/sun4i: support TCONs without channel 1")
+    Fixes: 34d698f6e349 ("drm/sun4i: Add has_channel_0 TCON quirk")
+    Signed-off-by: XuDong Liu &lt;m202071377@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Signed-off-by: Maxime Ripard &lt;maxime@cerno.tech&gt;
+    Link: https://patchwork.freedesktop.org/patch/msgid/20230430112347.4689-1-m202071377@hust.edu.cn
+
+diff --git a/drivers/gpu/drm/sun4i/sun4i_tcon.c b/drivers/gpu/drm/sun4i/sun4i_tcon.c
+index b263de7a8237..6a52fb12cbfb 100644
+--- a/drivers/gpu/drm/sun4i/sun4i_tcon.c
++++ b/drivers/gpu/drm/sun4i/sun4i_tcon.c
+@@ -784,21 +784,19 @@ static irqreturn_t sun4i_tcon_handler(int irq, void *private)
+ static int sun4i_tcon_init_clocks(struct device *dev,
+ 				  struct sun4i_tcon *tcon)
+ {
+-	tcon-&gt;clk = devm_clk_get(dev, "ahb");
++	tcon-&gt;clk = devm_clk_get_enabled(dev, "ahb");
+ 	if (IS_ERR(tcon-&gt;clk)) {
+ 		dev_err(dev, "Couldn't get the TCON bus clock\n");
+ 		return PTR_ERR(tcon-&gt;clk);
+ 	}
+-	clk_prepare_enable(tcon-&gt;clk);
+ 
+ 	if (tcon-&gt;quirks-&gt;has_channel_0) {
+-		tcon-&gt;sclk0 = devm_clk_get(dev, "tcon-ch0");
++		tcon-&gt;sclk0 = devm_clk_get_enabled(dev, "tcon-ch0");
+ 		if (IS_ERR(tcon-&gt;sclk0)) {
+ 			dev_err(dev, "Couldn't get the TCON channel 0 clock\n");
+ 			return PTR_ERR(tcon-&gt;sclk0);
+ 		}
+ 	}
+-	clk_prepare_enable(tcon-&gt;sclk0);
+ 
+ 	if (tcon-&gt;quirks-&gt;has_channel_1) {
+ 		tcon-&gt;sclk1 = devm_clk_get(dev, "tcon-ch1");
+@@ -811,12 +809,6 @@ static int sun4i_tcon_init_clocks(struct device *dev,
+ 	return 0;
+ }
+ 
+-static void sun4i_tcon_free_clocks(struct sun4i_tcon *tcon)
+-{
+-	clk_disable_unprepare(tcon-&gt;sclk0);
+-	clk_disable_unprepare(tcon-&gt;clk);
+-}
+-
+ static int sun4i_tcon_init_irq(struct device *dev,
+ 			       struct sun4i_tcon *tcon)
+ {
+@@ -1229,14 +1221,14 @@ static int sun4i_tcon_bind(struct device *dev, struct device *master,
+ 	ret = sun4i_tcon_init_regmap(dev, tcon);
+ 	if (ret) {
+ 		dev_err(dev, "Couldn't init our TCON regmap\n");
+-		goto err_free_clocks;
++		goto err_assert_reset;
+ 	}
+ 
+ 	if (tcon-&gt;quirks-&gt;has_channel_0) {
+ 		ret = sun4i_dclk_create(dev, tcon);
+ 		if (ret) {
+ 			dev_err(dev, "Couldn't create our TCON dot clock\n");
+-			goto err_free_clocks;
++			goto err_assert_reset;
+ 		}
+ 	}
+ 
+@@ -1299,8 +1291,6 @@ static int sun4i_tcon_bind(struct device *dev, struct device *master,
+ err_free_dclk:
+ 	if (tcon-&gt;quirks-&gt;has_channel_0)
+ 		sun4i_dclk_free(tcon);
+-err_free_clocks:
+-	sun4i_tcon_free_clocks(tcon);
+ err_assert_reset:
+ 	reset_control_assert(tcon-&gt;lcd_rst);
+ 	return ret;
+@@ -1314,7 +1304,6 @@ static void sun4i_tcon_unbind(struct device *dev, struct device *master,
+ 	list_del(&amp;tcon-&gt;list);
+ 	if (tcon-&gt;quirks-&gt;has_channel_0)
+ 		sun4i_dclk_free(tcon);
+-	sun4i_tcon_free_clocks(tcon);
+ }
+ 
+ static const struct component_ops sun4i_tcon_ops = {</pre><hr><pre>commit f025312b089474a54e4859f3453771314d9e3d4f
+Author: Jinhong Zhu &lt;jinhongzhu@hust.edu.cn&gt;
+Date:   Tue May 2 22:00:21 2023 +0800
+
+    scsi: qedf: Fix NULL dereference in error handling
+    
+    Smatch reported:
+    
+    drivers/scsi/qedf/qedf_main.c:3056 qedf_alloc_global_queues()
+    warn: missing unwind goto?
+    
+    At this point in the function, nothing has been allocated so we can return
+    directly. In particular the "qedf-&gt;global_queues" have not been allocated
+    so calling qedf_free_global_queues() will lead to a NULL dereference when
+    we check if (!gl[i]) and "gl" is NULL.
+    
+    Fixes: 61d8658b4a43 ("scsi: qedf: Add QLogic FastLinQ offload FCoE driver framework.")
+    Signed-off-by: Jinhong Zhu &lt;jinhongzhu@hust.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230502140022.2852-1-jinhongzhu@hust.edu.cn
+    Reviewed-by: Dan Carpenter &lt;error27@gmail.com&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/qedf/qedf_main.c b/drivers/scsi/qedf/qedf_main.c
+index 3b64de81ea0d..2a31ddc99dde 100644
+--- a/drivers/scsi/qedf/qedf_main.c
++++ b/drivers/scsi/qedf/qedf_main.c
+@@ -3041,9 +3041,8 @@ static int qedf_alloc_global_queues(struct qedf_ctx *qedf)
+ 	 * addresses of our queues
+ 	 */
+ 	if (!qedf-&gt;p_cpuq) {
+-		status = -EINVAL;
+ 		QEDF_ERR(&amp;qedf-&gt;dbg_ctx, "p_cpuq is NULL.\n");
+-		goto mem_alloc_failure;
++		return -EINVAL;
+ 	}
+ 
+ 	qedf-&gt;global_queues = kzalloc((sizeof(struct global_queue *)</pre><hr><pre>commit f3dc7bb037d813ab7da84f488dd485f0fce66347
+Author: Wang Jikai &lt;wangjikai@hust.edu.cn&gt;
+Date:   Fri Apr 21 09:22:00 2023 +0000
+
+    wifi: mt7601u: delete dead code checking debugfs returns
+    
+    Smatch reports that:
+    drivers/net/wireless/mediatek/mt7601u/debugfs.c:130
+    mt7601u_init_debugfs() warn: 'dir' is an error pointer or valid".
+    
+    Debugfs code is not supposed to need error checking so instead of
+    changing this to if (IS_ERR()) the correct thing is to just delete
+    the dead code.
+    
+    Signed-off-by: Wang Jikai &lt;wangjikai@hust.edu.cn&gt;
+    Acked-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@kernel.org&gt;
+    Link: https://lore.kernel.org/r/20230421092200.24456-1-wangjikai@hust.edu.cn
+
+diff --git a/drivers/net/wireless/mediatek/mt7601u/debugfs.c b/drivers/net/wireless/mediatek/mt7601u/debugfs.c
+index 230b0e1061a7..dbddf256921b 100644
+--- a/drivers/net/wireless/mediatek/mt7601u/debugfs.c
++++ b/drivers/net/wireless/mediatek/mt7601u/debugfs.c
+@@ -127,8 +127,6 @@ void mt7601u_init_debugfs(struct mt7601u_dev *dev)
+ 	struct dentry *dir;
+ 
+ 	dir = debugfs_create_dir("mt7601u", dev-&gt;hw-&gt;wiphy-&gt;debugfsdir);
+-	if (!dir)
+-		return;
+ 
+ 	debugfs_create_u8("temperature", 0400, dir, &amp;dev-&gt;raw_temp);
+ 	debugfs_create_u32("temp_mode", 0400, dir, &amp;dev-&gt;temp_mode);</pre><hr><pre>commit 0d727e1856ef22dd9337199430258cb64cbbc658
+Author: Ruliang Lin &lt;u202112092@hust.edu.cn&gt;
+Date:   Thu May 4 14:50:53 2023 +0800
+
+    ALSA: caiaq: input: Add error handling for unsupported input methods in `snd_usb_caiaq_input_init`
+    
+    Smatch complains that:
+    snd_usb_caiaq_input_init() warn: missing error code 'ret'
+    
+    This patch adds a new case to handle the situation where the
+    device does not support any input methods in the
+    `snd_usb_caiaq_input_init` function. It returns an `-EINVAL` error code
+    to indicate that no input methods are supported on the device.
+    
+    Fixes: 523f1dce3743 ("[ALSA] Add Native Instrument usb audio device support")
+    Signed-off-by: Ruliang Lin &lt;u202112092@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Acked-by: Daniel Mack &lt;daniel@zonque.org&gt;
+    Link: https://lore.kernel.org/r/20230504065054.3309-1-u202112092@hust.edu.cn
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/usb/caiaq/input.c b/sound/usb/caiaq/input.c
+index 1e2cf2f08eec..84f26dce7f5d 100644
+--- a/sound/usb/caiaq/input.c
++++ b/sound/usb/caiaq/input.c
+@@ -804,6 +804,7 @@ int snd_usb_caiaq_input_init(struct snd_usb_caiaqdev *cdev)
+ 
+ 	default:
+ 		/* no input methods supported on this device */
++		ret = -EINVAL;
+ 		goto exit_free_idev;
+ 	}
+ </pre><hr><pre>commit a3e9a9a5971164933e0d247125897c2e54587c6b
+Author: Kang Chen &lt;void0red@hust.edu.cn&gt;
+Date:   Wed Apr 19 10:07:49 2023 +0800
+
+    thermal/drivers/mediatek: Change clk_prepare_enable to devm_clk_get_enabled in mtk_thermal_probe
+    
+    Use devm_clk_get_enabled to do automatic resource management.
+    Meanwhile, remove error handling labels in the probe function and
+    the whole remove function.
+    
+    Signed-off-by: Kang Chen &lt;void0red@hust.edu.cn&gt;
+    Reviewed-by: Dongliang Mu &lt;dzm91@hust.edu.cn&gt;
+    Signed-off-by: Daniel Lezcano &lt;daniel.lezcano@linaro.org&gt;
+    Link: https://lore.kernel.org/r/20230419020749.621257-2-void0red@hust.edu.cn
+
+diff --git a/drivers/thermal/mediatek/auxadc_thermal.c b/drivers/thermal/mediatek/auxadc_thermal.c
+index 49bcd5304802..b59fe4307b0a 100644
+--- a/drivers/thermal/mediatek/auxadc_thermal.c
++++ b/drivers/thermal/mediatek/auxadc_thermal.c
+@@ -1206,14 +1206,6 @@ static int mtk_thermal_probe(struct platform_device *pdev)
+ 
+ 	mt-&gt;conf = of_device_get_match_data(&amp;pdev-&gt;dev);
+ 
+-	mt-&gt;clk_peri_therm = devm_clk_get(&amp;pdev-&gt;dev, "therm");
+-	if (IS_ERR(mt-&gt;clk_peri_therm))
+-		return PTR_ERR(mt-&gt;clk_peri_therm);
+-
+-	mt-&gt;clk_auxadc = devm_clk_get(&amp;pdev-&gt;dev, "auxadc");
+-	if (IS_ERR(mt-&gt;clk_auxadc))
+-		return PTR_ERR(mt-&gt;clk_auxadc);
+-
+ 	mt-&gt;thermal_base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
+ 	if (IS_ERR(mt-&gt;thermal_base))
+ 		return PTR_ERR(mt-&gt;thermal_base);
+@@ -1272,16 +1264,18 @@ static int mtk_thermal_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = clk_prepare_enable(mt-&gt;clk_auxadc);
+-	if (ret) {
++	mt-&gt;clk_auxadc = devm_clk_get_enabled(&amp;pdev-&gt;dev, "auxadc");
++	if (IS_ERR(mt-&gt;clk_auxadc)) {
++		ret = PTR_ERR(mt-&gt;clk_auxadc);
+ 		dev_err(&amp;pdev-&gt;dev, "Can't enable auxadc clk: %d\n", ret);
+ 		return ret;
+ 	}
+ 
+-	ret = clk_prepare_enable(mt-&gt;clk_peri_therm);
+-	if (ret) {
++	mt-&gt;clk_peri_therm = devm_clk_get_enabled(&amp;pdev-&gt;dev, "therm");
++	if (IS_ERR(mt-&gt;clk_peri_therm)) {
++		ret = PTR_ERR(mt-&gt;clk_peri_therm);
+ 		dev_err(&amp;pdev-&gt;dev, "Can't enable peri clk: %d\n", ret);
+-		goto err_disable_clk_auxadc;
++		return ret;
+ 	}
+ 
+ 	mtk_thermal_turn_on_buffer(mt, apmixed_base);
+@@ -1305,38 +1299,18 @@ static int mtk_thermal_probe(struct platform_device *pdev)
+ 
+ 	tzdev = devm_thermal_of_zone_register(&amp;pdev-&gt;dev, 0, mt,
+ 					      &amp;mtk_thermal_ops);
+-	if (IS_ERR(tzdev)) {
+-		ret = PTR_ERR(tzdev);
+-		goto err_disable_clk_peri_therm;
+-	}
++	if (IS_ERR(tzdev))
++		return PTR_ERR(tzdev);
+ 
+ 	ret = devm_thermal_add_hwmon_sysfs(&amp;pdev-&gt;dev, tzdev);
+ 	if (ret)
+ 		dev_warn(&amp;pdev-&gt;dev, "error in thermal_add_hwmon_sysfs");
+ 
+ 	return 0;
+-
+-err_disable_clk_peri_therm:
+-	clk_disable_unprepare(mt-&gt;clk_peri_therm);
+-err_disable_clk_auxadc:
+-	clk_disable_unprepare(mt-&gt;clk_auxadc);
+-
+-	return ret;
+-}
+-
+-static int mtk_thermal_remove(struct platform_device *pdev)
+-{
+-	struct mtk_thermal *mt = platform_get_drvdata(pdev);
+-
+-	clk_disable_unprepare(mt-&gt;clk_peri_therm);
+-	clk_disable_unprepare(mt-&gt;clk_auxadc);
+-
+-	return 0;
+ }
+ 
+ static struct platform_driver mtk_thermal_driver = {
+ 	.probe = mtk_thermal_probe,
+-	.remove = mtk_thermal_remove,
+ 	.driver = {
+ 		.name = "mtk-thermal",
+ 		.of_match_table = mtk_thermal_of_match,</pre>
+    <div class="pagination">
+        <a href='17_2.html'>&lt;&lt;Prev</a><a href='17.html'>1</a><a href='17_2.html'>2</a><span>[3]</span><a href='17_4.html'>4</a><a href='17_5.html'>5</a><a href='17_6.html'>6</a><a href='17_7.html'>7</a><a href='17_4.html'>Next&gt;&gt;</a>
+    <div>
+</body>

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Colorado School of Mines</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Colorado School of Mines</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit c4062dfc425e94290ac427a98d6b4721dd2bc91f
+Author: Erich E. Hoover &lt;ehoover@mines.edu&gt;
+Date:   Wed Feb 8 09:11:08 2012 +0000
+
+    ipv6: Implement IPV6_UNICAST_IF socket option.
+    
+    The IPV6_UNICAST_IF feature is the IPv6 compliment to IP_UNICAST_IF.
+    
+    Signed-off-by: Erich E. Hoover &lt;ehoover@mines.edu&gt;
+    Signed-off-by: Eric Dumazet &lt;eric.dumazet@gmail.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/include/linux/in6.h b/include/linux/in6.h
+index 097a34b55560..5c83d9e3eb8f 100644
+--- a/include/linux/in6.h
++++ b/include/linux/in6.h
+@@ -271,6 +271,7 @@ struct in6_flowlabel_req {
+ #define IPV6_ORIGDSTADDR        74
+ #define IPV6_RECVORIGDSTADDR    IPV6_ORIGDSTADDR
+ #define IPV6_TRANSPARENT        75
++#define IPV6_UNICAST_IF         76
+ 
+ /*
+  * Multicast Routing:
+diff --git a/include/linux/ipv6.h b/include/linux/ipv6.h
+index 6318268dcaf5..743a16a41040 100644
+--- a/include/linux/ipv6.h
++++ b/include/linux/ipv6.h
+@@ -324,6 +324,7 @@ struct ipv6_pinfo {
+ 				__unused_2:6;
+ 	__s16			mcast_hops:9;
+ #endif
++	int			ucast_oif;
+ 	int			mcast_oif;
+ 
+ 	/* pktoption flags */
+diff --git a/net/ipv6/icmp.c b/net/ipv6/icmp.c
+index 01d46bff63c3..af88934e4d79 100644
+--- a/net/ipv6/icmp.c
++++ b/net/ipv6/icmp.c
+@@ -468,6 +468,8 @@ void icmpv6_send(struct sk_buff *skb, u8 type, u8 code, __u32 info)
+ 
+ 	if (!fl6.flowi6_oif &amp;&amp; ipv6_addr_is_multicast(&amp;fl6.daddr))
+ 		fl6.flowi6_oif = np-&gt;mcast_oif;
++	else if (!fl6.flowi6_oif)
++		fl6.flowi6_oif = np-&gt;ucast_oif;
+ 
+ 	dst = icmpv6_route_lookup(net, skb, sk, &amp;fl6);
+ 	if (IS_ERR(dst))
+@@ -553,6 +555,8 @@ static void icmpv6_echo_reply(struct sk_buff *skb)
+ 
+ 	if (!fl6.flowi6_oif &amp;&amp; ipv6_addr_is_multicast(&amp;fl6.daddr))
+ 		fl6.flowi6_oif = np-&gt;mcast_oif;
++	else if (!fl6.flowi6_oif)
++		fl6.flowi6_oif = np-&gt;ucast_oif;
+ 
+ 	err = ip6_dst_lookup(sk, &amp;dst, &amp;fl6);
+ 	if (err)
+diff --git a/net/ipv6/ipv6_sockglue.c b/net/ipv6/ipv6_sockglue.c
+index 18a2719003c3..6d6b65fdaa1a 100644
+--- a/net/ipv6/ipv6_sockglue.c
++++ b/net/ipv6/ipv6_sockglue.c
+@@ -516,6 +516,36 @@ static int do_ipv6_setsockopt(struct sock *sk, int level, int optname,
+ 		retv = 0;
+ 		break;
+ 
++	case IPV6_UNICAST_IF:
++	{
++		struct net_device *dev = NULL;
++		int ifindex;
++
++		if (optlen != sizeof(int))
++			goto e_inval;
++
++		ifindex = (__force int)ntohl((__force __be32)val);
++		if (ifindex == 0) {
++			np-&gt;ucast_oif = 0;
++			retv = 0;
++			break;
++		}
++
++		dev = dev_get_by_index(net, ifindex);
++		retv = -EADDRNOTAVAIL;
++		if (!dev)
++			break;
++		dev_put(dev);
++
++		retv = -EINVAL;
++		if (sk-&gt;sk_bound_dev_if)
++			break;
++
++		np-&gt;ucast_oif = ifindex;
++		retv = 0;
++		break;
++	}
++
+ 	case IPV6_MULTICAST_IF:
+ 		if (sk-&gt;sk_type == SOCK_STREAM)
+ 			break;
+@@ -1160,6 +1190,10 @@ static int do_ipv6_getsockopt(struct sock *sk, int level, int optname,
+ 		val = np-&gt;mcast_oif;
+ 		break;
+ 
++	case IPV6_UNICAST_IF:
++		val = (__force int)htonl((__u32) np-&gt;ucast_oif);
++		break;
++
+ 	case IPV6_MTU_DISCOVER:
+ 		val = np-&gt;pmtudisc;
+ 		break;
+diff --git a/net/ipv6/raw.c b/net/ipv6/raw.c
+index d02f7e4dd611..5bddea778840 100644
+--- a/net/ipv6/raw.c
++++ b/net/ipv6/raw.c
+@@ -856,6 +856,8 @@ static int rawv6_sendmsg(struct kiocb *iocb, struct sock *sk,
+ 
+ 	if (!fl6.flowi6_oif &amp;&amp; ipv6_addr_is_multicast(&amp;fl6.daddr))
+ 		fl6.flowi6_oif = np-&gt;mcast_oif;
++	else if (!fl6.flowi6_oif)
++		fl6.flowi6_oif = np-&gt;ucast_oif;
+ 	security_sk_classify_flow(sk, flowi6_to_flowi(&amp;fl6));
+ 
+ 	dst = ip6_dst_lookup_flow(sk, &amp;fl6, final_p, true);
+diff --git a/net/ipv6/udp.c b/net/ipv6/udp.c
+index 4f96b5c63685..8aebf8f90436 100644
+--- a/net/ipv6/udp.c
++++ b/net/ipv6/udp.c
+@@ -1130,7 +1130,8 @@ int udpv6_sendmsg(struct kiocb *iocb, struct sock *sk,
+ 	if (!fl6.flowi6_oif &amp;&amp; ipv6_addr_is_multicast(&amp;fl6.daddr)) {
+ 		fl6.flowi6_oif = np-&gt;mcast_oif;
+ 		connected = 0;
+-	}
++	} else if (!fl6.flowi6_oif)
++		fl6.flowi6_oif = np-&gt;ucast_oif;
+ 
+ 	security_sk_classify_flow(sk, flowi6_to_flowi(&amp;fl6));
+ </pre><hr><pre>commit 76e21053b5bf33a07c76f99d27a74238310e3c71
+Author: Erich E. Hoover &lt;ehoover@mines.edu&gt;
+Date:   Wed Feb 8 09:11:07 2012 +0000
+
+    ipv4: Implement IP_UNICAST_IF socket option.
+    
+    The IP_UNICAST_IF feature is needed by the Wine project.  This patch
+    implements the feature by setting the outgoing interface in a similar
+    fashion to that of IP_MULTICAST_IF.  A separate option is needed to
+    handle this feature since the existing options do not provide all of
+    the characteristics required by IP_UNICAST_IF, a summary is provided
+    below.
+    
+    SO_BINDTODEVICE:
+    * SO_BINDTODEVICE requires administrative privileges, IP_UNICAST_IF
+    does not.  From reading some old mailing list articles my
+    understanding is that SO_BINDTODEVICE requires administrative
+    privileges because it can override the administrator's routing
+    settings.
+    * The SO_BINDTODEVICE option restricts both outbound and inbound
+    traffic, IP_UNICAST_IF only impacts outbound traffic.
+    
+    IP_PKTINFO:
+    * Since IP_PKTINFO and IP_UNICAST_IF are independent options,
+    implementing IP_UNICAST_IF with IP_PKTINFO will likely break some
+    applications.
+    * Implementing IP_UNICAST_IF on top of IP_PKTINFO significantly
+    complicates the Wine codebase and reduces the socket performance
+    (doing this requires a lot of extra communication between the
+    "server" and "user" layers).
+    
+    bind():
+    * bind() does not work on broadcast packets, IP_UNICAST_IF is
+    specifically intended to work with broadcast packets.
+    * Like SO_BINDTODEVICE, bind() restricts both outbound and inbound
+    traffic.
+    
+    Signed-off-by: Erich E. Hoover &lt;ehoover@mines.edu&gt;
+    Signed-off-by: Eric Dumazet &lt;eric.dumazet@gmail.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/include/linux/in.h b/include/linux/in.h
+index 01129c0ea87c..e0337f11d92e 100644
+--- a/include/linux/in.h
++++ b/include/linux/in.h
+@@ -111,6 +111,7 @@ struct in_addr {
+ #define MCAST_LEAVE_SOURCE_GROUP	47
+ #define MCAST_MSFILTER			48
+ #define IP_MULTICAST_ALL		49
++#define IP_UNICAST_IF			50
+ 
+ #define MCAST_EXCLUDE	0
+ #define MCAST_INCLUDE	1
+diff --git a/include/net/inet_sock.h b/include/net/inet_sock.h
+index e3e405106afe..022f772c0ebe 100644
+--- a/include/net/inet_sock.h
++++ b/include/net/inet_sock.h
+@@ -132,6 +132,7 @@ struct rtable;
+  * @tos - TOS
+  * @mc_ttl - Multicasting TTL
+  * @is_icsk - is this an inet_connection_sock?
++ * @uc_index - Unicast outgoing device index
+  * @mc_index - Multicast device index
+  * @mc_list - Group array
+  * @cork - info to build ip hdr on each ip frag while socket is corked
+@@ -167,6 +168,7 @@ struct inet_sock {
+ 				transparent:1,
+ 				mc_all:1,
+ 				nodefrag:1;
++	int			uc_index;
+ 	int			mc_index;
+ 	__be32			mc_addr;
+ 	struct ip_mc_socklist __rcu	*mc_list;
+diff --git a/net/ipv4/ip_sockglue.c b/net/ipv4/ip_sockglue.c
+index 8aa87c19fa00..9125529dab95 100644
+--- a/net/ipv4/ip_sockglue.c
++++ b/net/ipv4/ip_sockglue.c
+@@ -469,6 +469,7 @@ static int do_ip_setsockopt(struct sock *sk, int level,
+ 			     (1&lt;&lt;IP_ROUTER_ALERT) | (1&lt;&lt;IP_FREEBIND) |
+ 			     (1&lt;&lt;IP_PASSSEC) | (1&lt;&lt;IP_TRANSPARENT) |
+ 			     (1&lt;&lt;IP_MINTTL) | (1&lt;&lt;IP_NODEFRAG))) ||
++	    optname == IP_UNICAST_IF ||
+ 	    optname == IP_MULTICAST_TTL ||
+ 	    optname == IP_MULTICAST_ALL ||
+ 	    optname == IP_MULTICAST_LOOP ||
+@@ -628,6 +629,35 @@ static int do_ip_setsockopt(struct sock *sk, int level,
+ 			goto e_inval;
+ 		inet-&gt;mc_loop = !!val;
+ 		break;
++	case IP_UNICAST_IF:
++	{
++		struct net_device *dev = NULL;
++		int ifindex;
++
++		if (optlen != sizeof(int))
++			goto e_inval;
++
++		ifindex = (__force int)ntohl((__force __be32)val);
++		if (ifindex == 0) {
++			inet-&gt;uc_index = 0;
++			err = 0;
++			break;
++		}
++
++		dev = dev_get_by_index(sock_net(sk), ifindex);
++		err = -EADDRNOTAVAIL;
++		if (!dev)
++			break;
++		dev_put(dev);
++
++		err = -EINVAL;
++		if (sk-&gt;sk_bound_dev_if)
++			break;
++
++		inet-&gt;uc_index = ifindex;
++		err = 0;
++		break;
++	}
+ 	case IP_MULTICAST_IF:
+ 	{
+ 		struct ip_mreqn mreq;
+@@ -1178,6 +1208,9 @@ static int do_ip_getsockopt(struct sock *sk, int level, int optname,
+ 	case IP_MULTICAST_LOOP:
+ 		val = inet-&gt;mc_loop;
+ 		break;
++	case IP_UNICAST_IF:
++		val = (__force int)htonl((__u32) inet-&gt;uc_index);
++		break;
+ 	case IP_MULTICAST_IF:
+ 	{
+ 		struct in_addr addr;
+diff --git a/net/ipv4/ping.c b/net/ipv4/ping.c
+index aea5a199c37a..cfc82cf339f6 100644
+--- a/net/ipv4/ping.c
++++ b/net/ipv4/ping.c
+@@ -556,7 +556,8 @@ static int ping_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
+ 			ipc.oif = inet-&gt;mc_index;
+ 		if (!saddr)
+ 			saddr = inet-&gt;mc_addr;
+-	}
++	} else if (!ipc.oif)
++		ipc.oif = inet-&gt;uc_index;
+ 
+ 	flowi4_init_output(&amp;fl4, ipc.oif, sk-&gt;sk_mark, tos,
+ 			   RT_SCOPE_UNIVERSE, sk-&gt;sk_protocol,
+diff --git a/net/ipv4/raw.c b/net/ipv4/raw.c
+index 3ccda5ae8a27..ab466305b629 100644
+--- a/net/ipv4/raw.c
++++ b/net/ipv4/raw.c
+@@ -563,7 +563,8 @@ static int raw_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
+ 			ipc.oif = inet-&gt;mc_index;
+ 		if (!saddr)
+ 			saddr = inet-&gt;mc_addr;
+-	}
++	} else if (!ipc.oif)
++		ipc.oif = inet-&gt;uc_index;
+ 
+ 	flowi4_init_output(&amp;fl4, ipc.oif, sk-&gt;sk_mark, tos,
+ 			   RT_SCOPE_UNIVERSE,
+diff --git a/net/ipv4/udp.c b/net/ipv4/udp.c
+index 5d075b5f70fc..cd99f1a0f59f 100644
+--- a/net/ipv4/udp.c
++++ b/net/ipv4/udp.c
+@@ -917,7 +917,8 @@ int udp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
+ 		if (!saddr)
+ 			saddr = inet-&gt;mc_addr;
+ 		connected = 0;
+-	}
++	} else if (!ipc.oif)
++		ipc.oif = inet-&gt;uc_index;
+ 
+ 	if (connected)
+ 		rt = (struct rtable *)sk_dst_check(sk, 0);</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

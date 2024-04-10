@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Australian National University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Australian National University</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='43_2.html'>2</a><a href='43_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 9c0a50022b8ac7e863e6ec8342fa476fe5d1d75c
+Author: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+Date:   Tue Nov 14 10:48:04 2017 +1100
+
+    scsi: ses: don't ask for diagnostic pages repeatedly during probe
+    
+    We are testing if there is a match with the ses device in a loop by
+    calling ses_match_to_enclosure(), which will issue scsi receive
+    diagnostics commands to the ses device for every device on the same
+    host.  On one of our boxes with 840 disks, it takes a long time to load
+    the driver:
+    
+    [root@g1b-oss06 ~]# time modprobe ses
+    
+    real    40m48.247s
+    user    0m0.001s
+    sys     0m0.196s
+    
+    With the patch:
+    
+    [root@g1b-oss06 ~]# time modprobe ses
+    
+    real    0m17.915s
+    user    0m0.008s
+    sys     0m0.053s
+    
+    Note that we still need to refresh page 10 when we see a new disk to
+    create the link.
+    
+    Signed-off-by: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+    Tested-by: Jason Ozolins &lt;jason.ozolins@hpe.com&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/ses.c b/drivers/scsi/ses.c
+index 11826c5c2dd4..62f04c0511cf 100644
+--- a/drivers/scsi/ses.c
++++ b/drivers/scsi/ses.c
+@@ -615,13 +615,16 @@ static void ses_enclosure_data_process(struct enclosure_device *edev,
+ }
+ 
+ static void ses_match_to_enclosure(struct enclosure_device *edev,
+-				   struct scsi_device *sdev)
++				   struct scsi_device *sdev,
++				   int refresh)
+ {
++	struct scsi_device *edev_sdev = to_scsi_device(edev-&gt;edev.parent);
+ 	struct efd efd = {
+ 		.addr = 0,
+ 	};
+ 
+-	ses_enclosure_data_process(edev, to_scsi_device(edev-&gt;edev.parent), 0);
++	if (refresh)
++		ses_enclosure_data_process(edev, edev_sdev, 0);
+ 
+ 	if (scsi_is_sas_rphy(sdev-&gt;sdev_target-&gt;dev.parent))
+ 		efd.addr = sas_get_address(sdev);
+@@ -652,7 +655,7 @@ static int ses_intf_add(struct device *cdev,
+ 		struct enclosure_device *prev = NULL;
+ 
+ 		while ((edev = enclosure_find(&amp;sdev-&gt;host-&gt;shost_gendev, prev)) != NULL) {
+-			ses_match_to_enclosure(edev, sdev);
++			ses_match_to_enclosure(edev, sdev, 1);
+ 			prev = edev;
+ 		}
+ 		return -ENODEV;
+@@ -768,7 +771,7 @@ static int ses_intf_add(struct device *cdev,
+ 	shost_for_each_device(tmp_sdev, sdev-&gt;host) {
+ 		if (tmp_sdev-&gt;lun != 0 || scsi_device_enclosure(tmp_sdev))
+ 			continue;
+-		ses_match_to_enclosure(edev, tmp_sdev);
++		ses_match_to_enclosure(edev, tmp_sdev, 0);
+ 	}
+ 
+ 	return 0;</pre><hr><pre>commit e9105cdefbf64cd7aea300f934c92051e7cb7cff
+Author: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+Date:   Wed Aug 16 23:31:23 2017 +1000
+
+    IB/mlx4: use kvmalloc_array to allocate wrid
+    
+    We could use kvmalloc_array instead of the
+    kmalloc and __vmalloc combination.
+    After this we don't need to include linux/vmalloc.h
+    
+    Signed-off-by: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+    Reviewed-by: Leon Romanovsky &lt;leonro@mellanox.com&gt;
+    Signed-off-by: Doug Ledford &lt;dledford@redhat.com&gt;
+
+diff --git a/drivers/infiniband/hw/mlx4/qp.c b/drivers/infiniband/hw/mlx4/qp.c
+index e42acfb20588..b40d50c643e1 100644
+--- a/drivers/infiniband/hw/mlx4/qp.c
++++ b/drivers/infiniband/hw/mlx4/qp.c
+@@ -36,7 +36,6 @@
+ #include &lt;net/ip.h&gt;
+ #include &lt;linux/slab.h&gt;
+ #include &lt;linux/netdevice.h&gt;
+-#include &lt;linux/vmalloc.h&gt;
+ 
+ #include &lt;rdma/ib_cache.h&gt;
+ #include &lt;rdma/ib_pack.h&gt;
+@@ -1174,16 +1173,10 @@ static int create_qp_common(struct mlx4_ib_dev *dev, struct ib_pd *pd,
+ 		if (err)
+ 			goto err_mtt;
+ 
+-		qp-&gt;sq.wrid = kmalloc_array(qp-&gt;sq.wqe_cnt, sizeof(u64),
+-					GFP_KERNEL | __GFP_NOWARN);
+-		if (!qp-&gt;sq.wrid)
+-			qp-&gt;sq.wrid = __vmalloc(qp-&gt;sq.wqe_cnt * sizeof(u64),
+-						GFP_KERNEL, PAGE_KERNEL);
+-		qp-&gt;rq.wrid = kmalloc_array(qp-&gt;rq.wqe_cnt, sizeof(u64),
+-					GFP_KERNEL | __GFP_NOWARN);
+-		if (!qp-&gt;rq.wrid)
+-			qp-&gt;rq.wrid = __vmalloc(qp-&gt;rq.wqe_cnt * sizeof(u64),
+-						GFP_KERNEL, PAGE_KERNEL);
++		qp-&gt;sq.wrid = kvmalloc_array(qp-&gt;sq.wqe_cnt,
++					     sizeof(u64), GFP_KERNEL);
++		qp-&gt;rq.wrid = kvmalloc_array(qp-&gt;rq.wqe_cnt,
++					     sizeof(u64), GFP_KERNEL);
+ 		if (!qp-&gt;sq.wrid || !qp-&gt;rq.wrid) {
+ 			err = -ENOMEM;
+ 			goto err_wrid;
+diff --git a/drivers/infiniband/hw/mlx4/srq.c b/drivers/infiniband/hw/mlx4/srq.c
+index 0facaf5f6d23..dd7a2fce9df4 100644
+--- a/drivers/infiniband/hw/mlx4/srq.c
++++ b/drivers/infiniband/hw/mlx4/srq.c
+@@ -34,7 +34,6 @@
+ #include &lt;linux/mlx4/qp.h&gt;
+ #include &lt;linux/mlx4/srq.h&gt;
+ #include &lt;linux/slab.h&gt;
+-#include &lt;linux/vmalloc.h&gt;
+ 
+ #include "mlx4_ib.h"
+ #include &lt;rdma/mlx4-abi.h&gt;
+@@ -171,15 +170,11 @@ struct ib_srq *mlx4_ib_create_srq(struct ib_pd *pd,
+ 		if (err)
+ 			goto err_mtt;
+ 
+-		srq-&gt;wrid = kmalloc_array(srq-&gt;msrq.max, sizeof(u64),
+-					GFP_KERNEL | __GFP_NOWARN);
++		srq-&gt;wrid = kvmalloc_array(srq-&gt;msrq.max,
++					   sizeof(u64), GFP_KERNEL);
+ 		if (!srq-&gt;wrid) {
+-			srq-&gt;wrid = __vmalloc(srq-&gt;msrq.max * sizeof(u64),
+-					      GFP_KERNEL, PAGE_KERNEL);
+-			if (!srq-&gt;wrid) {
+-				err = -ENOMEM;
+-				goto err_mtt;
+-			}
++			err = -ENOMEM;
++			goto err_mtt;
+ 		}
+ 	}
+ </pre><hr><pre>commit b588300801f3502a7de5ca897af68019fbb3bc79
+Author: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+Date:   Wed Aug 16 23:31:22 2017 +1000
+
+    IB/mlx5: use kvmalloc_array for mlx5_ib_wq
+    
+    We observed multiple times on our Lustre OSS servers that when
+    the system memory is fragmented, kmalloc() in create_kernel_qp()
+    could fail order 4/5 allocations while we still have many free pages.
+    
+    Switch to kvmalloc_array() to allow the operation to contine.
+    
+    Signed-off-by: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+    Acked-by: Leon Romanovsky &lt;leonro@mellanox.com&gt;
+    Signed-off-by: Doug Ledford &lt;dledford@redhat.com&gt;
+
+diff --git a/drivers/infiniband/hw/mlx5/qp.c b/drivers/infiniband/hw/mlx5/qp.c
+index 5c7ce9bd466e..e098c97e027a 100644
+--- a/drivers/infiniband/hw/mlx5/qp.c
++++ b/drivers/infiniband/hw/mlx5/qp.c
+@@ -965,11 +965,16 @@ static int create_kernel_qp(struct mlx5_ib_dev *dev,
+ 		goto err_free;
+ 	}
+ 
+-	qp-&gt;sq.wrid = kmalloc(qp-&gt;sq.wqe_cnt * sizeof(*qp-&gt;sq.wrid), GFP_KERNEL);
+-	qp-&gt;sq.wr_data = kmalloc(qp-&gt;sq.wqe_cnt * sizeof(*qp-&gt;sq.wr_data), GFP_KERNEL);
+-	qp-&gt;rq.wrid = kmalloc(qp-&gt;rq.wqe_cnt * sizeof(*qp-&gt;rq.wrid), GFP_KERNEL);
+-	qp-&gt;sq.w_list = kmalloc(qp-&gt;sq.wqe_cnt * sizeof(*qp-&gt;sq.w_list), GFP_KERNEL);
+-	qp-&gt;sq.wqe_head = kmalloc(qp-&gt;sq.wqe_cnt * sizeof(*qp-&gt;sq.wqe_head), GFP_KERNEL);
++	qp-&gt;sq.wrid = kvmalloc_array(qp-&gt;sq.wqe_cnt,
++				     sizeof(*qp-&gt;sq.wrid), GFP_KERNEL);
++	qp-&gt;sq.wr_data = kvmalloc_array(qp-&gt;sq.wqe_cnt,
++					sizeof(*qp-&gt;sq.wr_data), GFP_KERNEL);
++	qp-&gt;rq.wrid = kvmalloc_array(qp-&gt;rq.wqe_cnt,
++				     sizeof(*qp-&gt;rq.wrid), GFP_KERNEL);
++	qp-&gt;sq.w_list = kvmalloc_array(qp-&gt;sq.wqe_cnt,
++				       sizeof(*qp-&gt;sq.w_list), GFP_KERNEL);
++	qp-&gt;sq.wqe_head = kvmalloc_array(qp-&gt;sq.wqe_cnt,
++					 sizeof(*qp-&gt;sq.wqe_head), GFP_KERNEL);
+ 
+ 	if (!qp-&gt;sq.wrid || !qp-&gt;sq.wr_data || !qp-&gt;rq.wrid ||
+ 	    !qp-&gt;sq.w_list || !qp-&gt;sq.wqe_head) {
+@@ -981,11 +986,11 @@ static int create_kernel_qp(struct mlx5_ib_dev *dev,
+ 	return 0;
+ 
+ err_wrid:
+-	kfree(qp-&gt;sq.wqe_head);
+-	kfree(qp-&gt;sq.w_list);
+-	kfree(qp-&gt;sq.wrid);
+-	kfree(qp-&gt;sq.wr_data);
+-	kfree(qp-&gt;rq.wrid);
++	kvfree(qp-&gt;sq.wqe_head);
++	kvfree(qp-&gt;sq.w_list);
++	kvfree(qp-&gt;sq.wrid);
++	kvfree(qp-&gt;sq.wr_data);
++	kvfree(qp-&gt;rq.wrid);
+ 	mlx5_db_free(dev-&gt;mdev, &amp;qp-&gt;db);
+ 
+ err_free:
+@@ -998,11 +1003,11 @@ static int create_kernel_qp(struct mlx5_ib_dev *dev,
+ 
+ static void destroy_qp_kernel(struct mlx5_ib_dev *dev, struct mlx5_ib_qp *qp)
+ {
+-	kfree(qp-&gt;sq.wqe_head);
+-	kfree(qp-&gt;sq.w_list);
+-	kfree(qp-&gt;sq.wrid);
+-	kfree(qp-&gt;sq.wr_data);
+-	kfree(qp-&gt;rq.wrid);
++	kvfree(qp-&gt;sq.wqe_head);
++	kvfree(qp-&gt;sq.w_list);
++	kvfree(qp-&gt;sq.wrid);
++	kvfree(qp-&gt;sq.wr_data);
++	kvfree(qp-&gt;rq.wrid);
+ 	mlx5_db_free(dev-&gt;mdev, &amp;qp-&gt;db);
+ 	mlx5_buf_free(dev-&gt;mdev, &amp;qp-&gt;buf);
+ }
+diff --git a/drivers/infiniband/hw/mlx5/srq.c b/drivers/infiniband/hw/mlx5/srq.c
+index 43707b101f47..30b3ddd8e1ab 100644
+--- a/drivers/infiniband/hw/mlx5/srq.c
++++ b/drivers/infiniband/hw/mlx5/srq.c
+@@ -196,7 +196,7 @@ static int create_srq_kernel(struct mlx5_ib_dev *dev, struct mlx5_ib_srq *srq,
+ 	}
+ 	mlx5_fill_page_array(&amp;srq-&gt;buf, in-&gt;pas);
+ 
+-	srq-&gt;wrid = kmalloc(srq-&gt;msrq.max * sizeof(u64), GFP_KERNEL);
++	srq-&gt;wrid = kvmalloc_array(srq-&gt;msrq.max, sizeof(u64), GFP_KERNEL);
+ 	if (!srq-&gt;wrid) {
+ 		err = -ENOMEM;
+ 		goto err_in;
+@@ -230,7 +230,7 @@ static void destroy_srq_user(struct ib_pd *pd, struct mlx5_ib_srq *srq)
+ 
+ static void destroy_srq_kernel(struct mlx5_ib_dev *dev, struct mlx5_ib_srq *srq)
+ {
+-	kfree(srq-&gt;wrid);
++	kvfree(srq-&gt;wrid);
+ 	mlx5_buf_free(dev-&gt;mdev, &amp;srq-&gt;buf);
+ 	mlx5_db_free(dev-&gt;mdev, &amp;srq-&gt;db);
+ }</pre><hr><pre>commit 817990ba1a1545875fed01a9014ac7f78dedf16d
+Author: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+Date:   Fri Dec 2 19:53:17 2016 -0500
+
+    staging: lustre: obdclass: limit lu_site hash table size on clients
+    
+    Allocating a big hash table using the current formula
+    does not really work for clients. We will create new
+    hash table for each mount on a single client which is
+    a lot of memory more than expected.
+    
+    This patch limits the hash table up to 8M for clients,
+    which has 524288 entries.
+    
+    Signed-off-by: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+    Intel-bug-id: https://jira.hpdd.intel.com/browse/LU-7689
+    Reviewed-on: http://review.whamcloud.com/18048
+    Reviewed-by: Fan Yong &lt;fan.yong@intel.com&gt;
+    Reviewed-by: Alex Zhuravlev &lt;alexey.zhuravlev@intel.com&gt;
+    Reviewed-by: Oleg Drokin &lt;oleg.drokin@intel.com&gt;
+    Signed-off-by: James Simmons &lt;jsimmons@infradead.org&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/lustre/lustre/obdclass/lu_object.c b/drivers/staging/lustre/lustre/obdclass/lu_object.c
+index a02aaa3a3b37..80e09846e3be 100644
+--- a/drivers/staging/lustre/lustre/obdclass/lu_object.c
++++ b/drivers/staging/lustre/lustre/obdclass/lu_object.c
+@@ -68,6 +68,7 @@ enum {
+ 
+ #define LU_SITE_BITS_MIN	12
+ #define LU_SITE_BITS_MAX	24
++#define LU_SITE_BITS_MAX_CL	19
+ /**
+  * total 256 buckets, we don't want too many buckets because:
+  * - consume too much memory
+@@ -878,6 +879,9 @@ static unsigned long lu_htable_order(struct lu_device *top)
+ 	unsigned long cache_size;
+ 	unsigned long bits;
+ 
++	if (!strcmp(top-&gt;ld_type-&gt;ldt_name, LUSTRE_VVP_NAME))
++		bits_max = LU_SITE_BITS_MAX_CL;
++
+ 	/*
+ 	 * Calculate hash table size, assuming that we want reasonable
+ 	 * performance when 20% of total memory is occupied by cache of</pre><hr><pre>commit b4f840c15ac78eb3d096eb3267776393b28c789f
+Author: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+Date:   Fri Dec 2 19:53:18 2016 -0500
+
+    staging: lustre: mdt: fail FMODE_WRITE open if the client is read only
+    
+    O_WRONLY/O_RDWR open on a file will get EROFS on a read only client,
+    but the rpc gets sent to the mdt anyway.
+    mdt will increase the mot_write_count of the mdt object, blocking
+    subsequent FMODE_EXEC open to the same file.
+    
+    This patch makes sure we fail the FMODE_WRITE open with EROFS on the
+    client straight away without sending the rpc to mdt.
+    
+    Signed-off-by: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+    Intel-bug-id: https://jira.hpdd.intel.com/browse/LU-7727
+    Reviewed-on: http://review.whamcloud.com/18242
+    Reviewed-by: Ian Costello &lt;icostello@ddn.com&gt;
+    Reviewed-by: Nathaniel Clark &lt;nathaniel.l.clark@intel.com&gt;
+    Reviewed-by: Yang Sheng &lt;yang.sheng@intel.com&gt;
+    Reviewed-by: Oleg Drokin &lt;oleg.drokin@intel.com&gt;
+    Signed-off-by: James Simmons &lt;jsimmons@infradead.org&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/lustre/lustre/llite/namei.c b/drivers/staging/lustre/lustre/llite/namei.c
+index b07079c4dda0..9426759aedc9 100644
+--- a/drivers/staging/lustre/lustre/llite/namei.c
++++ b/drivers/staging/lustre/lustre/llite/namei.c
+@@ -572,6 +572,10 @@ static struct dentry *ll_lookup_it(struct inode *parent, struct dentry *dentry,
+ 		}
+ 	}
+ 
++	if (it-&gt;it_op &amp; IT_OPEN &amp;&amp; it-&gt;it_flags &amp; FMODE_WRITE &amp;&amp;
++	    dentry-&gt;d_sb-&gt;s_flags &amp; MS_RDONLY)
++		return ERR_PTR(-EROFS);
++
+ 	if (it-&gt;it_op &amp; IT_CREAT)
+ 		opc = LUSTRE_OPC_CREATE;
+ 	else</pre><hr><pre>commit 542c45acfe3f2e0773dbdf7d1d08ad6d86d982b8
+Author: Andrew Wellington &lt;andrew.wellington@anu.edu.au&gt;
+Date:   Thu Nov 10 12:30:46 2016 -0500
+
+    staging: lustre: llite: support SELinux context labelling
+    
+    SELinux contexts are applied by the kernel if mount options are
+    not binary. As we don't use any binary mount options in Lustre,
+    remove the binary mount option flag.
+    
+    Signed-off-by: Andrew Wellington &lt;andrew.wellington@anu.edu.au&gt;
+    Signed-off-by: John L. Hammond &lt;john.hammond@intel.com&gt;
+    Intel-bug-id: https://jira.hpdd.intel.com/browse/LU-6950
+    Reviewed-on: http://review.whamcloud.com/15840
+    Reviewed-by: Dmitry Eremin &lt;dmitry.eremin@intel.com&gt;
+    Reviewed-by: Sebastien Buisson &lt;sebastien.buisson@bull.net&gt;
+    Reviewed-by: Oleg Drokin &lt;oleg.drokin@intel.com&gt;
+    Signed-off-by: James Simmons &lt;jsimmons@infradead.org&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/lustre/lustre/llite/llite_lib.c b/drivers/staging/lustre/lustre/llite/llite_lib.c
+index 308da0660285..62d9fcfded15 100644
+--- a/drivers/staging/lustre/lustre/llite/llite_lib.c
++++ b/drivers/staging/lustre/lustre/llite/llite_lib.c
+@@ -717,6 +717,18 @@ static int ll_options(char *options, int *flags)
+ 			*flags &amp;= ~tmp;
+ 			goto next;
+ 		}
++		tmp = ll_set_opt("context", s1, 1);
++		if (tmp)
++			goto next;
++		tmp = ll_set_opt("fscontext", s1, 1);
++		if (tmp)
++			goto next;
++		tmp = ll_set_opt("defcontext", s1, 1);
++		if (tmp)
++			goto next;
++		tmp = ll_set_opt("rootcontext", s1, 1);
++		if (tmp)
++			goto next;
+ 		tmp = ll_set_opt("user_fid2path", s1, LL_SBI_USER_FID2PATH);
+ 		if (tmp) {
+ 			*flags |= tmp;
+diff --git a/drivers/staging/lustre/lustre/obdclass/obd_mount.c b/drivers/staging/lustre/lustre/obdclass/obd_mount.c
+index 59fbc29aae94..f604824fdc7c 100644
+--- a/drivers/staging/lustre/lustre/obdclass/obd_mount.c
++++ b/drivers/staging/lustre/lustre/obdclass/obd_mount.c
+@@ -1216,8 +1216,7 @@ static struct file_system_type lustre_fs_type = {
+ 	.name	 = "lustre",
+ 	.mount	= lustre_mount,
+ 	.kill_sb      = lustre_kill_super,
+-	.fs_flags     = FS_BINARY_MOUNTDATA | FS_REQUIRES_DEV |
+-			FS_RENAME_DOES_D_MOVE,
++	.fs_flags	= FS_REQUIRES_DEV | FS_RENAME_DOES_D_MOVE,
+ };
+ MODULE_ALIAS_FS("lustre");
+ </pre><hr><pre>commit 494025c634a09f141d9282a5cfdbc24b5415a871
+Author: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+Date:   Mon May 9 10:53:46 2016 -0400
+
+    staging: lustre: o2iblnd: make rdma_create_id() support containers
+    
+    Add support for lustre's ko2iblnd driver to work with
+    containers which was requested by Sebastien Buisson.
+    
+    Signed-off-by: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+    Intel-bug-id: https://jira.hpdd.intel.com/browse/LU-6215
+    Reviewed-on: http://review.whamcloud.com/18759
+    Reviewed-by: James Simmons &lt;uja.ornl@yahoo.com&gt;
+    Reviewed-by: Sebastien Buisson &lt;sbuisson@ddn.com&gt;
+    Reviewed-by: Oleg Drokin &lt;oleg.drokin@intel.com&gt;
+    Signed-off-by: James Simmons &lt;jsimmons@infradead.org&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/lustre/lnet/klnds/o2iblnd/o2iblnd.h b/drivers/staging/lustre/lnet/klnds/o2iblnd/o2iblnd.h
+index b22984fd9ad3..45bbe93a0590 100644
+--- a/drivers/staging/lustre/lnet/klnds/o2iblnd/o2iblnd.h
++++ b/drivers/staging/lustre/lnet/klnds/o2iblnd/o2iblnd.h
+@@ -109,7 +109,7 @@ extern kib_tunables_t  kiblnd_tunables;
+ 					IBLND_CREDIT_HIGHWATER_V1 : \
+ 					t-&gt;lnd_peercredits_hiw)
+ 
+-#define kiblnd_rdma_create_id(cb, dev, ps, qpt) rdma_create_id(&amp;init_net, \
++#define kiblnd_rdma_create_id(cb, dev, ps, qpt) rdma_create_id(current-&gt;nsproxy-&gt;net_ns, \
+ 							       cb, dev, \
+ 							       ps, qpt)
+ </pre><hr><pre>commit 902a34ad7242bb50e467a24855b544148989daf4
+Author: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+Date:   Wed Mar 30 19:48:44 2016 -0400
+
+    staging/lustre/llite: make sure we do cl_page_clip on the last page
+    
+    When we are doing a partial IO on both first and last page,
+    the logic currently only call cl_page_clip on the first page, which
+    will end up with a incorrect i_size.
+    
+    Signed-off-by: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+    Reviewed-on: http://review.whamcloud.com/11630
+    Intel-bug-id: https://jira.hpdd.intel.com/browse/LU-5552
+    Reviewed-by: Ian Costello &lt;costello.ian@gmail.com&gt;
+    Reviewed-by: Niu Yawei &lt;yawei.niu@intel.com&gt;
+    Reviewed-by: Li Xi &lt;pkuelelixi@gmail.com&gt;
+    Reviewed-by: Jinshan Xiong &lt;jinshan.xiong@intel.com&gt;
+    Signed-off-by: Oleg Drokin &lt;green@linuxhacker.ru&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/lustre/lustre/llite/vvp_io.c b/drivers/staging/lustre/lustre/llite/vvp_io.c
+index e44ef21b795e..1d2fc3bf9487 100644
+--- a/drivers/staging/lustre/lustre/llite/vvp_io.c
++++ b/drivers/staging/lustre/lustre/llite/vvp_io.c
+@@ -599,12 +599,14 @@ static int vvp_io_commit_sync(const struct lu_env *env, struct cl_io *io,
+ 		page = cl_page_list_first(plist);
+ 		if (plist-&gt;pl_nr == 1) {
+ 			cl_page_clip(env, page, from, to);
+-		} else if (from &gt; 0) {
+-			cl_page_clip(env, page, from, PAGE_SIZE);
+ 		} else {
+-		page = cl_page_list_last(plist);
+-		cl_page_clip(env, page, 0, to);
+-	}
++			if (from &gt; 0)
++				cl_page_clip(env, page, from, PAGE_SIZE);
++			if (to != PAGE_SIZE) {
++				page = cl_page_list_last(plist);
++				cl_page_clip(env, page, 0, to);
++			}
++		}
+ 	}
+ 
+ 	cl_2queue_init(queue);</pre><hr><pre>commit a915ffda199013a8ee2dd6a8a23b89ea45879ed3
+Author: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+Date:   Wed Mar 25 21:53:24 2015 -0400
+
+    staging/lustre/llite: glimpse the inode before doing fiemap
+    
+    For a new inode, the i_size is 0 until a stat, which will yield
+    an empty fiemap result.
+    Fix the issue by glimpsing the size before doing fiemap.
+    
+    Signed-off-by: Li Dongyang &lt;dongyang.li@anu.edu.au&gt;
+    Signed-off-by: Bob Glossman &lt;bob.glossman@intel.com&gt;
+    Reviewed-by: Andreas Dilger &lt;andreas.dilger@intel.com&gt;
+    Reviewed-by: Jinshan Xiong &lt;jinshan.xiong@intel.com&gt;
+    Reviewed-on: http://review.whamcloud.com/13439
+    Intel-bug-id: https://jira.hpdd.intel.com/browse/LU-6091
+    Signed-off-by: Oleg Drokin &lt;oleg.drokin@intel.com&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+
+diff --git a/drivers/staging/lustre/lustre/llite/file.c b/drivers/staging/lustre/lustre/llite/file.c
+index 6dab3baa8063..85e74d18d1c7 100644
+--- a/drivers/staging/lustre/lustre/llite/file.c
++++ b/drivers/staging/lustre/lustre/llite/file.c
+@@ -1712,6 +1712,12 @@ static int ll_do_fiemap(struct inode *inode, struct ll_user_fiemap *fiemap,
+ 	fm_key.oa.o_oi = lsm-&gt;lsm_oi;
+ 	fm_key.oa.o_valid = OBD_MD_FLID | OBD_MD_FLGROUP;
+ 
++	if (i_size_read(inode) == 0) {
++		rc = ll_glimpse_size(inode);
++		if (rc)
++			goto out;
++	}
++
+ 	obdo_from_inode(&amp;fm_key.oa, inode, OBD_MD_FLSIZE);
+ 	obdo_set_parent_fid(&amp;fm_key.oa, &amp;ll_i2info(inode)-&gt;lli_fid);
+ 	/* If filesize is 0, then there would be no objects for mapping */</pre><hr><pre>commit f16928fb53111bc23516372df7f6fed86bdfa661
+Author: Sylvain FORET &lt;sylvain.foret@anu.edu.au&gt;
+Date:   Fri Apr 27 14:22:36 2007 +0200
+
+    [ALSA] snd_hda_intel: fix for intel imac
+    
+    Add handling of Intel-iMac-specific pinconfig of the sound card.
+    Intel-iMac now handled as a separated subsystem.
+    
+    Signed-off-by: Sylvain FORET &lt;sylvain.foret@anu.edu.au&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+    Signed-off-by: Jaroslav Kysela &lt;perex@suse.cz&gt;
+
+diff --git a/sound/pci/hda/patch_sigmatel.c b/sound/pci/hda/patch_sigmatel.c
+index 5e6d02cf6726..ab6d42207814 100644
+--- a/sound/pci/hda/patch_sigmatel.c
++++ b/sound/pci/hda/patch_sigmatel.c
+@@ -62,6 +62,7 @@ enum {
+ 	STAC_MACBOOK,
+ 	STAC_MACBOOK_PRO_V1,
+ 	STAC_MACBOOK_PRO_V2,
++	STAC_IMAC_INTEL,
+ 	STAC_922X_MODELS
+ };
+ 
+@@ -536,6 +537,12 @@ static unsigned int macbook_pro_v2_pin_configs[10] = {
+ 	0x400000fc, 0x400000fb,
+ };
+ 
++static unsigned int imac_intel_pin_configs[10] = {
++	0x0121e230, 0x90a70120, 0x9017e110, 0x400000fe,
++	0x400000fd, 0x0181e021, 0x1145e040, 0x400000fa,
++	0x400000fc, 0x400000fb,
++};
++
+ static unsigned int *stac922x_brd_tbl[STAC_922X_MODELS] = {
+ 	[STAC_D945_REF] = ref922x_pin_configs,
+ 	[STAC_D945GTP3] = d945gtp3_pin_configs,
+@@ -544,6 +551,7 @@ static unsigned int *stac922x_brd_tbl[STAC_922X_MODELS] = {
+ 	[STAC_MACBOOK] = macbook_pro_v1_pin_configs,
+ 	[STAC_MACBOOK_PRO_V1] = macbook_pro_v1_pin_configs,
+ 	[STAC_MACBOOK_PRO_V2] = macbook_pro_v2_pin_configs,
++	[STAC_IMAC_INTEL] = imac_intel_pin_configs,
+ };
+ 
+ static const char *stac922x_models[STAC_922X_MODELS] = {
+@@ -554,6 +562,7 @@ static const char *stac922x_models[STAC_922X_MODELS] = {
+ 	[STAC_MACBOOK]	= "macbook",
+ 	[STAC_MACBOOK_PRO_V1]	= "macbook-pro-v1",
+ 	[STAC_MACBOOK_PRO_V2]	= "macbook-pro",
++	[STAC_IMAC_INTEL] = "imac-intel",
+ };
+ 
+ static struct snd_pci_quirk stac922x_cfg_tbl[] = {
+@@ -1920,6 +1929,9 @@ static int patch_stac922x(struct hda_codec *codec)
+ 		case 0x106b1e00: /* MacBook Pro second generation */
+ 			spec-&gt;board_config = STAC_MACBOOK_PRO_V2;
+ 			break;
++		case 0x106b0700: /* Intel-based iMac */
++			spec-&gt;board_config = STAC_IMAC_INTEL;
++			break;
+ 		}
+ 	}
+ </pre>
+    <div class="pagination">
+        <span>[1]</span><a href='43_2.html'>2</a><a href='43_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

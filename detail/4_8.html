@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_7.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><span>[8]</span><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_9.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 0c12eaffdf09466f36a9ffe970dda8f4aeb6efc0
+Author: Casey Bodley &lt;cbodley@citi.umich.edu&gt;
+Date:   Sat Jul 23 14:58:10 2011 -0400
+
+    nfsd: don't break lease on CLAIM_DELEGATE_CUR
+    
+    CLAIM_DELEGATE_CUR is used in response to a broken lease; allowing it
+    to break the lease and return EAGAIN leaves the client unable to make
+    progress in returning the delegation
+    
+    nfs4_get_vfs_file() now takes struct nfsd4_open for access to the
+    claim type, and calls nfsd_open() with NFSD_MAY_NOT_BREAK_LEASE when
+    claim type is CLAIM_DELEGATE_CUR
+    
+    Signed-off-by: Casey Bodley &lt;cbodley@citi.umich.edu&gt;
+    Cc: stable@kernel.org
+    Signed-off-by: J. Bruce Fields &lt;bfields@redhat.com&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 47da52576e66..3787ec117400 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -2585,12 +2585,18 @@ static inline int nfs4_access_to_access(u32 nfs4_access)
+ 	return flags;
+ }
+ 
+-static __be32 nfs4_get_vfs_file(struct svc_rqst *rqstp, struct nfs4_file
+-*fp, struct svc_fh *cur_fh, u32 nfs4_access)
++static __be32 nfs4_get_vfs_file(struct svc_rqst *rqstp, struct nfs4_file *fp,
++		struct svc_fh *cur_fh, struct nfsd4_open *open)
+ {
+ 	__be32 status;
+-	int oflag = nfs4_access_to_omode(nfs4_access);
+-	int access = nfs4_access_to_access(nfs4_access);
++	int oflag = nfs4_access_to_omode(open-&gt;op_share_access);
++	int access = nfs4_access_to_access(open-&gt;op_share_access);
++
++	/* CLAIM_DELEGATE_CUR is used in response to a broken lease;
++	 * allowing it to break the lease and return EAGAIN leaves the
++	 * client unable to make progress in returning the delegation */
++	if (open-&gt;op_claim_type == NFS4_OPEN_CLAIM_DELEGATE_CUR)
++		access |= NFSD_MAY_NOT_BREAK_LEASE;
+ 
+ 	if (!fp-&gt;fi_fds[oflag]) {
+ 		status = nfsd_open(rqstp, cur_fh, S_IFREG, access,
+@@ -2615,7 +2621,7 @@ nfs4_new_open(struct svc_rqst *rqstp, struct nfs4_stateid **stpp,
+ 	if (stp == NULL)
+ 		return nfserr_resource;
+ 
+-	status = nfs4_get_vfs_file(rqstp, fp, cur_fh, open-&gt;op_share_access);
++	status = nfs4_get_vfs_file(rqstp, fp, cur_fh, open);
+ 	if (status) {
+ 		kmem_cache_free(stateid_slab, stp);
+ 		return status;
+@@ -2648,7 +2654,7 @@ nfs4_upgrade_open(struct svc_rqst *rqstp, struct nfs4_file *fp, struct svc_fh *c
+ 
+ 	new_access = !test_bit(op_share_access, &amp;stp-&gt;st_access_bmap);
+ 	if (new_access) {
+-		status = nfs4_get_vfs_file(rqstp, fp, cur_fh, op_share_access);
++		status = nfs4_get_vfs_file(rqstp, fp, cur_fh, open);
+ 		if (status)
+ 			return status;
+ 	}</pre><hr><pre>commit 7d751f6f8c679f51b73d01a1b5269347a929004c
+Author: Casey Bodley &lt;cbodley@citi.umich.edu&gt;
+Date:   Fri Jun 3 12:21:23 2011 -0400
+
+    nfsd: link returns nfserr_delay when breaking lease
+    
+    fix for commit 4795bb37effb7b8fe77e2d2034545d062d3788a8, nfsd: break
+    lease on unlink, link, and rename
+    
+    if the LINK operation breaks a delegation, it returns NFS4ERR_NOENT
+    (which is not a valid error in rfc 5661) instead of NFS4ERR_DELAY.
+    the return value of nfsd_break_lease() in nfsd_link() must be
+    converted from host_err to err
+    
+    Signed-off-by: Casey Bodley &lt;cbodley@citi.umich.edu&gt;
+    Cc: stable@kernel.org
+    Signed-off-by: J. Bruce Fields &lt;bfields@redhat.com&gt;
+
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index d5718273bb32..f3fb61b69a1e 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -1660,8 +1660,10 @@ nfsd_link(struct svc_rqst *rqstp, struct svc_fh *ffhp,
+ 	if (!dold-&gt;d_inode)
+ 		goto out_drop_write;
+ 	host_err = nfsd_break_lease(dold-&gt;d_inode);
+-	if (host_err)
++	if (host_err) {
++		err = nfserrno(host_err);
+ 		goto out_drop_write;
++	}
+ 	host_err = vfs_link(dold, dirp, dnew);
+ 	if (!host_err) {
+ 		err = nfserrno(commit_metadata(ffhp));</pre><hr><pre>commit 9660439861aa8dbd5e2b8087f33e20760c2c9afc
+Author: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+Date:   Tue Oct 21 14:13:47 2008 -0400
+
+    svcrpc: take advantage of tcp autotuning
+    
+    Allow the NFSv4 server to make use of TCP autotuning behaviour, which
+    was previously disabled by setting the sk_userlocks variable.
+    
+    Set the receive buffers to be big enough to receive the whole RPC
+    request, and set this for the listening socket, not the accept socket.
+    
+    Remove the code that readjusts the receive/send buffer sizes for the
+    accepted socket. Previously this code was used to influence the TCP
+    window management behaviour, which is no longer needed when autotuning
+    is enabled.
+    
+    This can improve IO bandwidth on networks with high bandwidth-delay
+    products, where a large tcp window is required.  It also simplifies
+    performance tuning, since getting adequate tcp buffers previously
+    required increasing the number of nfsd threads.
+    
+    Signed-off-by: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+    Cc: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/net/sunrpc/svcsock.c b/net/sunrpc/svcsock.c
+index a4fafcbc6ea0..213dea8b283c 100644
+--- a/net/sunrpc/svcsock.c
++++ b/net/sunrpc/svcsock.c
+@@ -436,7 +436,6 @@ static void svc_sock_setbufsize(struct socket *sock, unsigned int snd,
+ 	lock_sock(sock-&gt;sk);
+ 	sock-&gt;sk-&gt;sk_sndbuf = snd * 2;
+ 	sock-&gt;sk-&gt;sk_rcvbuf = rcv * 2;
+-	sock-&gt;sk-&gt;sk_userlocks |= SOCK_SNDBUF_LOCK|SOCK_RCVBUF_LOCK;
+ 	sock-&gt;sk-&gt;sk_write_space(sock-&gt;sk);
+ 	release_sock(sock-&gt;sk);
+ #endif
+@@ -973,23 +972,6 @@ static int svc_tcp_recv_record(struct svc_sock *svsk, struct svc_rqst *rqstp)
+ 	unsigned int want;
+ 	int len;
+ 
+-	if (test_and_clear_bit(XPT_CHNGBUF, &amp;svsk-&gt;sk_xprt.xpt_flags))
+-		/* sndbuf needs to have room for one request
+-		 * per thread, otherwise we can stall even when the
+-		 * network isn't a bottleneck.
+-		 *
+-		 * We count all threads rather than threads in a
+-		 * particular pool, which provides an upper bound
+-		 * on the number of threads which will access the socket.
+-		 *
+-		 * rcvbuf just needs to be able to hold a few requests.
+-		 * Normally they will be removed from the queue
+-		 * as soon a a complete request arrives.
+-		 */
+-		svc_sock_setbufsize(svsk-&gt;sk_sock,
+-				    (serv-&gt;sv_nrthreads+3) * serv-&gt;sv_max_mesg,
+-				    3 * serv-&gt;sv_max_mesg);
+-
+ 	clear_bit(XPT_DATA, &amp;svsk-&gt;sk_xprt.xpt_flags);
+ 
+ 	if (svsk-&gt;sk_tcplen &lt; sizeof(rpc_fraghdr)) {
+@@ -1367,15 +1349,6 @@ static void svc_tcp_init(struct svc_sock *svsk, struct svc_serv *serv)
+ 
+ 		tcp_sk(sk)-&gt;nonagle |= TCP_NAGLE_OFF;
+ 
+-		/* initialise setting must have enough space to
+-		 * receive and respond to one request.
+-		 * svc_tcp_recvfrom will re-adjust if necessary
+-		 */
+-		svc_sock_setbufsize(svsk-&gt;sk_sock,
+-				    3 * svsk-&gt;sk_xprt.xpt_server-&gt;sv_max_mesg,
+-				    3 * svsk-&gt;sk_xprt.xpt_server-&gt;sv_max_mesg);
+-
+-		set_bit(XPT_CHNGBUF, &amp;svsk-&gt;sk_xprt.xpt_flags);
+ 		set_bit(XPT_DATA, &amp;svsk-&gt;sk_xprt.xpt_flags);
+ 		if (sk-&gt;sk_state != TCP_ESTABLISHED)
+ 			set_bit(XPT_CLOSE, &amp;svsk-&gt;sk_xprt.xpt_flags);
+@@ -1439,8 +1412,14 @@ static struct svc_sock *svc_setup_socket(struct svc_serv *serv,
+ 	/* Initialize the socket */
+ 	if (sock-&gt;type == SOCK_DGRAM)
+ 		svc_udp_init(svsk, serv);
+-	else
++	else {
++		/* initialise setting must have enough space to
++		 * receive and respond to one request.
++		 */
++		svc_sock_setbufsize(svsk-&gt;sk_sock, 4 * serv-&gt;sv_max_mesg,
++					4 * serv-&gt;sv_max_mesg);
+ 		svc_tcp_init(svsk, serv);
++	}
+ 
+ 	dprintk("svc: svc_setup_socket created %p (inet %p)\n",
+ 				svsk, svsk-&gt;sk_sk);</pre><hr><pre>commit f8628220bb395104697be9c447c1085846dfc97c
+Author: Kevin Coffman &lt;kwc@citi.umich.edu&gt;
+Date:   Thu Mar 3 00:51:41 2011 +0000
+
+    gss:krb5 only include enctype numbers in gm_upcall_enctypes
+    
+    Make the value in gm_upcall_enctypes just the enctype values.
+    This allows the values to be used more easily elsewhere.
+    
+    Signed-off-by: Kevin Coffman &lt;kwc@citi.umich.edu&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index 45dbf1521b9a..f3914d0c5079 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -417,7 +417,7 @@ static void gss_encode_v1_msg(struct gss_upcall_msg *gss_msg,
+ 		gss_msg-&gt;msg.len += len;
+ 	}
+ 	if (mech-&gt;gm_upcall_enctypes) {
+-		len = sprintf(p, mech-&gt;gm_upcall_enctypes);
++		len = sprintf(p, "enctypes=%s ", mech-&gt;gm_upcall_enctypes);
+ 		p += len;
+ 		gss_msg-&gt;msg.len += len;
+ 	}
+diff --git a/net/sunrpc/auth_gss/gss_krb5_mech.c b/net/sunrpc/auth_gss/gss_krb5_mech.c
+index f375decc024b..9022f0a6503e 100644
+--- a/net/sunrpc/auth_gss/gss_krb5_mech.c
++++ b/net/sunrpc/auth_gss/gss_krb5_mech.c
+@@ -750,7 +750,7 @@ static struct gss_api_mech gss_kerberos_mech = {
+ 	.gm_ops		= &amp;gss_kerberos_ops,
+ 	.gm_pf_num	= ARRAY_SIZE(gss_kerberos_pfs),
+ 	.gm_pfs		= gss_kerberos_pfs,
+-	.gm_upcall_enctypes = "enctypes=18,17,16,23,3,1,2 ",
++	.gm_upcall_enctypes = "18,17,16,23,3,1,2",
+ };
+ 
+ static int __init init_kerberos_module(void)</pre><hr><pre>commit b0b0c0a26e846ae6646af9f59a3d2ea06b49cbc7
+Author: Kevin Coffman &lt;kwc@citi.umich.edu&gt;
+Date:   Wed Mar 2 19:51:42 2011 -0500
+
+    nfsd: add proc file listing kernel's gss_krb5 enctypes
+    
+    Add a new proc file which lists the encryption types supported
+    by the kernel's gss_krb5 code.
+    
+    Newer MIT Kerberos libraries support the assertion of acceptor
+    subkeys.  This enctype information allows user-land (svcgssd)
+    to request that the Kerberos libraries limit the encryption
+    types that it uses when generating the subkeys.
+    
+    Signed-off-by: Kevin Coffman &lt;kwc@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@redhat.com&gt;
+
+diff --git a/fs/nfsd/nfsctl.c b/fs/nfsd/nfsctl.c
+index 33b3e2b06779..35dcfa8eba21 100644
+--- a/fs/nfsd/nfsctl.c
++++ b/fs/nfsd/nfsctl.c
+@@ -12,13 +12,14 @@
+ #include &lt;linux/nfsd/syscall.h&gt;
+ #include &lt;linux/lockd/lockd.h&gt;
+ #include &lt;linux/sunrpc/clnt.h&gt;
++#include &lt;linux/sunrpc/gss_api.h&gt;
+ 
+ #include "idmap.h"
+ #include "nfsd.h"
+ #include "cache.h"
+ 
+ /*
+- *	We have a single directory with 9 nodes in it.
++ *	We have a single directory with several nodes in it.
+  */
+ enum {
+ 	NFSD_Root = 1,
+@@ -42,6 +43,7 @@ enum {
+ 	NFSD_Versions,
+ 	NFSD_Ports,
+ 	NFSD_MaxBlkSize,
++	NFSD_SupportedEnctypes,
+ 	/*
+ 	 * The below MUST come last.  Otherwise we leave a hole in nfsd_files[]
+ 	 * with !CONFIG_NFSD_V4 and simple_fill_super() goes oops
+@@ -187,6 +189,32 @@ static struct file_operations export_features_operations = {
+ 	.release	= single_release,
+ };
+ 
++static int supported_enctypes_show(struct seq_file *m, void *v)
++{
++	struct gss_api_mech *k5mech;
++
++	k5mech = gss_mech_get_by_name("krb5");
++	if (k5mech == NULL)
++		goto out;
++	if (k5mech-&gt;gm_upcall_enctypes != NULL)
++		seq_printf(m, k5mech-&gt;gm_upcall_enctypes);
++	gss_mech_put(k5mech);
++out:
++	return 0;
++}
++
++static int supported_enctypes_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, supported_enctypes_show, NULL);
++}
++
++static struct file_operations supported_enctypes_ops = {
++	.open		= supported_enctypes_open,
++	.read		= seq_read,
++	.llseek		= seq_lseek,
++	.release	= single_release,
++};
++
+ extern int nfsd_pool_stats_open(struct inode *inode, struct file *file);
+ extern int nfsd_pool_stats_release(struct inode *inode, struct file *file);
+ 
+@@ -1397,6 +1425,7 @@ static int nfsd_fill_super(struct super_block * sb, void * data, int silent)
+ 		[NFSD_Versions] = {"versions", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+ 		[NFSD_Ports] = {"portlist", &amp;transaction_ops, S_IWUSR|S_IRUGO},
+ 		[NFSD_MaxBlkSize] = {"max_block_size", &amp;transaction_ops, S_IWUSR|S_IRUGO},
++		[NFSD_SupportedEnctypes] = {"supported_krb5_enctypes", &amp;supported_enctypes_ops, S_IRUGO},
+ #ifdef CONFIG_NFSD_V4
+ 		[NFSD_Leasetime] = {"nfsv4leasetime", &amp;transaction_ops, S_IWUSR|S_IRUSR},
+ 		[NFSD_Gracetime] = {"nfsv4gracetime", &amp;transaction_ops, S_IWUSR|S_IRUSR},</pre><hr><pre>commit 540c8cb6a576f34a9a0b04467f46bb6e67a1f852
+Author: Kevin Coffman &lt;kwc@citi.umich.edu&gt;
+Date:   Wed Mar 2 19:51:41 2011 -0500
+
+    gss:krb5 only include enctype numbers in gm_upcall_enctypes
+    
+    Make the value in gm_upcall_enctypes just the enctype values.
+    This allows the values to be used more easily elsewhere.
+    
+    Signed-off-by: Kevin Coffman &lt;kwc@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@redhat.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/auth_gss.c b/net/sunrpc/auth_gss/auth_gss.c
+index 45dbf1521b9a..f3914d0c5079 100644
+--- a/net/sunrpc/auth_gss/auth_gss.c
++++ b/net/sunrpc/auth_gss/auth_gss.c
+@@ -417,7 +417,7 @@ static void gss_encode_v1_msg(struct gss_upcall_msg *gss_msg,
+ 		gss_msg-&gt;msg.len += len;
+ 	}
+ 	if (mech-&gt;gm_upcall_enctypes) {
+-		len = sprintf(p, mech-&gt;gm_upcall_enctypes);
++		len = sprintf(p, "enctypes=%s ", mech-&gt;gm_upcall_enctypes);
+ 		p += len;
+ 		gss_msg-&gt;msg.len += len;
+ 	}
+diff --git a/net/sunrpc/auth_gss/gss_krb5_mech.c b/net/sunrpc/auth_gss/gss_krb5_mech.c
+index f375decc024b..9022f0a6503e 100644
+--- a/net/sunrpc/auth_gss/gss_krb5_mech.c
++++ b/net/sunrpc/auth_gss/gss_krb5_mech.c
+@@ -750,7 +750,7 @@ static struct gss_api_mech gss_kerberos_mech = {
+ 	.gm_ops		= &amp;gss_kerberos_ops,
+ 	.gm_pf_num	= ARRAY_SIZE(gss_kerberos_pfs),
+ 	.gm_pfs		= gss_kerberos_pfs,
+-	.gm_upcall_enctypes = "enctypes=18,17,16,23,3,1,2 ",
++	.gm_upcall_enctypes = "18,17,16,23,3,1,2",
+ };
+ 
+ static int __init init_kerberos_module(void)</pre><hr><pre>commit 77a3569d6c4e14e89fa628df383b6dccc0cce6be
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Fri Apr 30 18:51:44 2010 -0400
+
+    nfsd4: keep finer-grained callback status
+    
+    Distinguish between when the callback channel is known to be down, and
+    when it is not yet confirmed.  This will be useful in the 4.1 case.
+    
+    Also, we don't seem to be using the fact that this field is atomic.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 18b740bd29ac..d32f49d6ca2c 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -470,8 +470,6 @@ static int max_cb_time(void)
+ 	return max(nfsd4_lease/10, (time_t)1) * HZ;
+ }
+ 
+-/* Reference counting, callback cleanup, etc., all look racy as heck.
+- * And why is cl_cb_set an atomic? */
+ 
+ static int setup_callback_client(struct nfs4_client *clp, struct nfs4_cb_conn *conn, struct nfsd4_session *ses)
+ {
+@@ -526,14 +524,20 @@ static void warn_no_callback_path(struct nfs4_client *clp, int reason)
+ 		(int)clp-&gt;cl_name.len, clp-&gt;cl_name.data, reason);
+ }
+ 
++static void nfsd4_mark_cb_down(struct nfs4_client *clp, int reason)
++{
++	clp-&gt;cl_cb_state = NFSD4_CB_DOWN;
++	warn_no_callback_path(clp, reason);
++}
++
+ static void nfsd4_cb_probe_done(struct rpc_task *task, void *calldata)
+ {
+ 	struct nfs4_client *clp = container_of(calldata, struct nfs4_client, cl_cb_null);
+ 
+ 	if (task-&gt;tk_status)
+-		warn_no_callback_path(clp, task-&gt;tk_status);
++		nfsd4_mark_cb_down(clp, task-&gt;tk_status);
+ 	else
+-		atomic_set(&amp;clp-&gt;cl_cb_set, 1);
++		clp-&gt;cl_cb_state = NFSD4_CB_UP;
+ }
+ 
+ static const struct rpc_call_ops nfsd4_cb_probe_ops = {
+@@ -579,14 +583,15 @@ static void do_probe_callback(struct nfs4_client *clp)
+  */
+ void nfsd4_probe_callback(struct nfs4_client *clp)
+ {
++	/* XXX: atomicity?  Also, should we be using cl_cb_flags? */
++	clp-&gt;cl_cb_state = NFSD4_CB_UNKNOWN;
+ 	set_bit(NFSD4_CLIENT_CB_UPDATE, &amp;clp-&gt;cl_cb_flags);
+ 	do_probe_callback(clp);
+ }
+ 
+ void nfsd4_change_callback(struct nfs4_client *clp, struct nfs4_cb_conn *conn)
+ {
+-	BUG_ON(atomic_read(&amp;clp-&gt;cl_cb_set));
+-
++	clp-&gt;cl_cb_state = NFSD4_CB_UNKNOWN;
+ 	spin_lock(&amp;clp-&gt;cl_lock);
+ 	memcpy(&amp;clp-&gt;cl_cb_conn, conn, sizeof(struct nfs4_cb_conn));
+ 	spin_unlock(&amp;clp-&gt;cl_lock);
+@@ -693,8 +698,7 @@ static void nfsd4_cb_recall_done(struct rpc_task *task, void *calldata)
+ 		break;
+ 	default:
+ 		/* Network partition? */
+-		atomic_set(&amp;clp-&gt;cl_cb_set, 0);
+-		warn_no_callback_path(clp, task-&gt;tk_status);
++		nfsd4_mark_cb_down(clp, task-&gt;tk_status);
+ 		if (current_rpc_client != task-&gt;tk_client) {
+ 			/* queue a callback on the new connection: */
+ 			atomic_inc(&amp;dp-&gt;dl_count);
+@@ -707,10 +711,8 @@ static void nfsd4_cb_recall_done(struct rpc_task *task, void *calldata)
+ 		task-&gt;tk_status = 0;
+ 		rpc_restart_call_prepare(task);
+ 		return;
+-	} else {
+-		atomic_set(&amp;clp-&gt;cl_cb_set, 0);
+-		warn_no_callback_path(clp, task-&gt;tk_status);
+-	}
++	} else
++		nfsd4_mark_cb_down(clp, task-&gt;tk_status);
+ }
+ 
+ static void nfsd4_cb_recall_release(void *calldata)
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 290370bc9ae7..919ad25660d6 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -1071,7 +1071,7 @@ static struct nfs4_client *create_client(struct xdr_netobj name, char *recdir,
+ 
+ 	memcpy(clp-&gt;cl_recdir, recdir, HEXDIR_LEN);
+ 	atomic_set(&amp;clp-&gt;cl_refcount, 0);
+-	atomic_set(&amp;clp-&gt;cl_cb_set, 0);
++	clp-&gt;cl_cb_state = NFSD4_CB_UNKNOWN;
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_idhash);
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_strhash);
+ 	INIT_LIST_HEAD(&amp;clp-&gt;cl_openowners);
+@@ -2003,7 +2003,6 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 		if (!same_creds(&amp;conf-&gt;cl_cred, &amp;unconf-&gt;cl_cred))
+ 			status = nfserr_clid_inuse;
+ 		else {
+-			atomic_set(&amp;conf-&gt;cl_cb_set, 0);
+ 			nfsd4_change_callback(conf, &amp;unconf-&gt;cl_cb_conn);
+ 			nfsd4_probe_callback(conf);
+ 			expire_client(unconf);
+@@ -2633,7 +2632,8 @@ nfs4_open_delegation(struct svc_fh *fh, struct nfsd4_open *open, struct nfs4_sta
+ {
+ 	struct nfs4_delegation *dp;
+ 	struct nfs4_stateowner *sop = stp-&gt;st_stateowner;
+-	int cb_up = atomic_read(&amp;sop-&gt;so_client-&gt;cl_cb_set);
++	/* XXX: or unknown and nfsv4.1: */
++	int cb_up = (sop-&gt;so_client-&gt;cl_cb_state == NFSD4_CB_UP);
+ 	struct file_lock *fl;
+ 	int status, flag = 0;
+ 
+@@ -2823,7 +2823,7 @@ nfsd4_renew(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	renew_client(clp);
+ 	status = nfserr_cb_path_down;
+ 	if (!list_empty(&amp;clp-&gt;cl_delegations)
+-			&amp;&amp; !atomic_read(&amp;clp-&gt;cl_cb_set))
++			&amp;&amp; clp-&gt;cl_cb_state != NFSD4_CB_UP)
+ 		goto out;
+ 	status = nfs_ok;
+ out:
+diff --git a/fs/nfsd/state.h b/fs/nfsd/state.h
+index 442f6d8e024c..32ff615c36f4 100644
+--- a/fs/nfsd/state.h
++++ b/fs/nfsd/state.h
+@@ -242,7 +242,10 @@ struct nfs4_client {
+ 	unsigned long		cl_cb_flags;
+ 	struct rpc_clnt		*cl_cb_client;
+ 	u32			cl_cb_ident;
+-	atomic_t		cl_cb_set;
++#define NFSD4_CB_UP		0
++#define NFSD4_CB_UNKNOWN	1
++#define NFSD4_CB_DOWN		2
++	int			cl_cb_state;
+ 	struct nfsd4_callback	cl_cb_null;
+ 	struct nfsd4_session	*cl_cb_session;
+ </pre><hr><pre>commit dcbeaa68dbbdacbbb330a86c7fc95a28473fc209
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jun 15 17:25:45 2010 -0400
+
+    nfsd4: allow backchannel recovery
+    
+    Now that we have a list of connections to choose from, we can teach the
+    callback code to just pick a suitable connection and use that, instead
+    of insisting on forever using the connection that the first
+    create_session was sent with.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index dd183af24fe6..18b740bd29ac 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -473,8 +473,7 @@ static int max_cb_time(void)
+ /* Reference counting, callback cleanup, etc., all look racy as heck.
+  * And why is cl_cb_set an atomic? */
+ 
+-static int setup_callback_client(struct nfs4_client *clp,
+-		struct nfs4_cb_conn *conn)
++static int setup_callback_client(struct nfs4_client *clp, struct nfs4_cb_conn *conn, struct nfsd4_session *ses)
+ {
+ 	struct rpc_timeout	timeparms = {
+ 		.to_initval	= max_cb_time(),
+@@ -501,6 +500,10 @@ static int setup_callback_client(struct nfs4_client *clp,
+ 		args.protocol = XPRT_TRANSPORT_TCP;
+ 		clp-&gt;cl_cb_ident = conn-&gt;cb_ident;
+ 	} else {
++		if (!conn-&gt;cb_xprt)
++			return -EINVAL;
++		clp-&gt;cl_cb_conn.cb_xprt = conn-&gt;cb_xprt;
++		clp-&gt;cl_cb_session = ses;
+ 		args.bc_xprt = conn-&gt;cb_xprt;
+ 		args.prognumber = clp-&gt;cl_cb_session-&gt;se_cb_prog;
+ 		args.protocol = XPRT_TRANSPORT_BC_TCP;
+@@ -756,10 +759,27 @@ static void nfsd4_release_cb(struct nfsd4_callback *cb)
+ 		cb-&gt;cb_ops-&gt;rpc_release(cb);
+ }
+ 
++/* requires cl_lock: */
++static struct nfsd4_conn * __nfsd4_find_backchannel(struct nfs4_client *clp)
++{
++	struct nfsd4_session *s;
++	struct nfsd4_conn *c;
++
++	list_for_each_entry(s, &amp;clp-&gt;cl_sessions, se_perclnt) {
++		list_for_each_entry(c, &amp;s-&gt;se_conns, cn_persession) {
++			if (c-&gt;cn_flags &amp; NFS4_CDFC4_BACK)
++				return c;
++		}
++	}
++	return NULL;
++}
++
+ static void nfsd4_process_cb_update(struct nfsd4_callback *cb)
+ {
+ 	struct nfs4_cb_conn conn;
+ 	struct nfs4_client *clp = cb-&gt;cb_clp;
++	struct nfsd4_session *ses = NULL;
++	struct nfsd4_conn *c;
+ 	int err;
+ 
+ 	/*
+@@ -770,6 +790,10 @@ static void nfsd4_process_cb_update(struct nfsd4_callback *cb)
+ 		rpc_shutdown_client(clp-&gt;cl_cb_client);
+ 		clp-&gt;cl_cb_client = NULL;
+ 	}
++	if (clp-&gt;cl_cb_conn.cb_xprt) {
++		svc_xprt_put(clp-&gt;cl_cb_conn.cb_xprt);
++		clp-&gt;cl_cb_conn.cb_xprt = NULL;
++	}
+ 	if (test_bit(NFSD4_CLIENT_KILL, &amp;clp-&gt;cl_cb_flags))
+ 		return;
+ 	spin_lock(&amp;clp-&gt;cl_lock);
+@@ -780,9 +804,15 @@ static void nfsd4_process_cb_update(struct nfsd4_callback *cb)
+ 	BUG_ON(!clp-&gt;cl_cb_flags);
+ 	clear_bit(NFSD4_CLIENT_CB_UPDATE, &amp;clp-&gt;cl_cb_flags);
+ 	memcpy(&amp;conn, &amp;cb-&gt;cb_clp-&gt;cl_cb_conn, sizeof(struct nfs4_cb_conn));
++	c = __nfsd4_find_backchannel(clp);
++	if (c) {
++		svc_xprt_get(c-&gt;cn_xprt);
++		conn.cb_xprt = c-&gt;cn_xprt;
++		ses = c-&gt;cn_session;
++	}
+ 	spin_unlock(&amp;clp-&gt;cl_lock);
+ 
+-	err = setup_callback_client(clp, &amp;conn);
++	err = setup_callback_client(clp, &amp;conn, ses);
+ 	if (err)
+ 		warn_no_callback_path(clp, err);
+ }
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 956174f488a7..290370bc9ae7 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -642,6 +642,7 @@ static void nfsd4_conn_lost(struct svc_xpt_user *u)
+ 		free_conn(c);
+ 	}
+ 	spin_unlock(&amp;clp-&gt;cl_lock);
++	/* XXX: mark callback for update, probe callback */
+ }
+ 
+ static struct nfsd4_conn *alloc_conn(struct svc_rqst *rqstp, u32 flags)
+@@ -790,16 +791,19 @@ static struct nfsd4_session *alloc_init_session(struct svc_rqst *rqstp, struct n
+ 		free_session(&amp;new-&gt;se_ref);
+ 		return NULL;
+ 	}
+-	if (!clp-&gt;cl_cb_session &amp;&amp; (cses-&gt;flags &amp; SESSION4_BACK_CHAN)) {
++	if (cses-&gt;flags &amp; SESSION4_BACK_CHAN) {
+ 		struct sockaddr *sa = svc_addr(rqstp);
+-
+-		clp-&gt;cl_cb_session = new;
+-		clp-&gt;cl_cb_conn.cb_xprt = rqstp-&gt;rq_xprt;
+-		svc_xprt_get(rqstp-&gt;rq_xprt);
++		/*
++		 * This is a little silly; with sessions there's no real
++		 * use for the callback address.  Use the peer address
++		 * as a reasonable default for now, but consider fixing
++		 * the rpc client not to require an address in the
++		 * future:
++		 */
+ 		rpc_copy_addr((struct sockaddr *)&amp;clp-&gt;cl_cb_conn.cb_addr, sa);
+ 		clp-&gt;cl_cb_conn.cb_addrlen = svc_addr_len(sa);
+-		nfsd4_probe_callback(clp);
+ 	}
++	nfsd4_probe_callback(clp);
+ 	return new;
+ }
+ </pre><hr><pre>commit 4c6493785a1ea9c3b3522f199760a90a30e1626c
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Jun 15 14:22:37 2010 -0400
+
+    nfsd4: modify session list under cl_lock
+    
+    We want to traverse this from the callback code.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index b583e4e800ab..3cf9900d5f32 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -771,7 +771,9 @@ static struct nfsd4_session *alloc_init_session(struct svc_rqst *rqstp, struct n
+ 	idx = hash_sessionid(&amp;new-&gt;se_sessionid);
+ 	spin_lock(&amp;client_lock);
+ 	list_add(&amp;new-&gt;se_hash, &amp;sessionid_hashtbl[idx]);
++	spin_lock(&amp;clp-&gt;cl_lock);
+ 	list_add(&amp;new-&gt;se_perclnt, &amp;clp-&gt;cl_sessions);
++	spin_unlock(&amp;clp-&gt;cl_lock);
+ 	spin_unlock(&amp;client_lock);
+ 
+ 	status = nfsd4_new_conn(rqstp, new);
+@@ -819,7 +821,9 @@ static void
+ unhash_session(struct nfsd4_session *ses)
+ {
+ 	list_del(&amp;ses-&gt;se_hash);
++	spin_lock(&amp;ses-&gt;se_client-&gt;cl_lock);
+ 	list_del(&amp;ses-&gt;se_perclnt);
++	spin_unlock(&amp;ses-&gt;se_client-&gt;cl_lock);
+ }
+ 
+ /* must be called under the client_lock */
+@@ -925,8 +929,10 @@ unhash_client_locked(struct nfs4_client *clp)
+ 
+ 	mark_client_expired(clp);
+ 	list_del(&amp;clp-&gt;cl_lru);
++	spin_lock(&amp;clp-&gt;cl_lock);
+ 	list_for_each_entry(ses, &amp;clp-&gt;cl_sessions, se_perclnt)
+ 		list_del_init(&amp;ses-&gt;se_hash);
++	spin_unlock(&amp;clp-&gt;cl_lock);
+ }
+ 
+ static void</pre><hr><pre>commit b10e30f6559978e3c8ca2a70c1cb35d6680a4021
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Dec 14 15:05:13 2010 +0000
+
+    lockd: reorganize nlm_host_rebooted
+    
+    Minor reorganization; no change in behavior.  This will save some
+    duplicated code after we split the client and server host caches.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    [ cel: Forward-ported to 2.6.37 ]
+    Signed-off-by: Chuck Lever &lt;chuck.lever@oracle.com&gt;
+    Signed-off-by: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+
+diff --git a/fs/lockd/host.c b/fs/lockd/host.c
+index cada3a12d557..2dbf1392acfc 100644
+--- a/fs/lockd/host.c
++++ b/fs/lockd/host.c
+@@ -441,6 +441,31 @@ void nlm_release_host(struct nlm_host *host)
+ 	}
+ }
+ 
++static struct nlm_host *next_host_state(struct hlist_head *cache,
++					struct nsm_handle *nsm,
++					const struct nlm_reboot *info)
++{
++	struct nlm_host *host = NULL;
++	struct hlist_head *chain;
++	struct hlist_node *pos;
++
++	mutex_lock(&amp;nlm_host_mutex);
++	for_each_host(host, pos, chain, cache) {
++		if (host-&gt;h_nsmhandle == nsm
++		    &amp;&amp; host-&gt;h_nsmstate != info-&gt;state) {
++			host-&gt;h_nsmstate = info-&gt;state;
++			host-&gt;h_state++;
++
++			nlm_get_host(host);
++			mutex_unlock(&amp;nlm_host_mutex);
++			goto out;
++		}
++	}
++out:
++	mutex_unlock(&amp;nlm_host_mutex);
++	return host;
++}
++
+ /**
+  * nlm_host_rebooted - Release all resources held by rebooted host
+  * @info: pointer to decoded results of NLM_SM_NOTIFY call
+@@ -450,8 +475,6 @@ void nlm_release_host(struct nlm_host *host)
+  */
+ void nlm_host_rebooted(const struct nlm_reboot *info)
+ {
+-	struct hlist_head *chain;
+-	struct hlist_node *pos;
+ 	struct nsm_handle *nsm;
+ 	struct nlm_host	*host;
+ 
+@@ -464,30 +487,17 @@ void nlm_host_rebooted(const struct nlm_reboot *info)
+ 	 * lock for this.
+ 	 * To avoid processing a host several times, we match the nsmstate.
+ 	 */
+-again:	mutex_lock(&amp;nlm_host_mutex);
+-	for_each_host(host, pos, chain, nlm_hosts) {
+-		if (host-&gt;h_nsmhandle == nsm
+-		 &amp;&amp; host-&gt;h_nsmstate != info-&gt;state) {
+-			host-&gt;h_nsmstate = info-&gt;state;
+-			host-&gt;h_state++;
+-
+-			nlm_get_host(host);
+-			mutex_unlock(&amp;nlm_host_mutex);
+-
+-			if (host-&gt;h_server) {
+-				/* We're server for this guy, just ditch
+-				 * all the locks he held. */
+-				nlmsvc_free_host_resources(host);
+-			} else {
+-				/* He's the server, initiate lock recovery. */
+-				nlmclnt_recovery(host);
+-			}
+-
+-			nlm_release_host(host);
+-			goto again;
++	while ((host = next_host_state(nlm_hosts, nsm, info)) != NULL) {
++		if (host-&gt;h_server) {
++			/* We're server for this guy, just ditch
++			 * all the locks he held. */
++			nlmsvc_free_host_resources(host);
++		} else {
++			/* He's the server, initiate lock recovery. */
++			nlmclnt_recovery(host);
+ 		}
++		nlm_release_host(host);
+ 	}
+-	mutex_unlock(&amp;nlm_host_mutex);
+ 	nsm_release(nsm);
+ }
+ </pre>
+    <div class="pagination">
+        <a href='4_7.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><span>[8]</span><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><a href='4_23.html'>23</a><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_9.html'>Next&gt;&gt;</a>
+    <div>
+</body>

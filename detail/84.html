@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Princeton University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Princeton University</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit 940370fc86b920b51a34217a1facc3e9e97c2456
+Author: Yury Polyanskiy &lt;ypolyans@princeton.edu&gt;
+Date:   Mon May 24 14:33:02 2010 -0700
+
+    hangcheck-timer: fix x86_32 bugs
+    
+    drivers/char/hangcheck-timer.c is doubly broken.  When the overflown value
+    of TIMER_FREQ is abnormally low, it spams the syslog with KERN_CRIT
+    messages "Hangcheck: hangcheck value past margin!" But whether it happens
+    or not depends on HZ and lpj in a complex way.  People have hit it
+    occasionally as far as google search can tell.
+    
+    First, the following line overflows unsigned long:
+    
+    # define TIMER_FREQ (HZ*loops_per_jiffy)
+    
+    Second, and more importantly, loops_per_jiffy has little to do with the
+    con= version from the the time scale of get_cycles() (aka rdtsc) to the
+    time scale of jiffies.
+    
+    The attached patch resolves both of the problems.
+    
+    Acked-by: Joel Becker &lt;joel.becker@oracle.com&gt;
+    Cc: john stultz &lt;johnstul@us.ibm.com&gt;
+    Cc: Jan Glauber &lt;jan.glauber@de.ibm.com&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/drivers/char/hangcheck-timer.c b/drivers/char/hangcheck-timer.c
+index 712d9f271aa6..e0249722d25f 100644
+--- a/drivers/char/hangcheck-timer.c
++++ b/drivers/char/hangcheck-timer.c
+@@ -49,8 +49,9 @@
+ #include &lt;asm/uaccess.h&gt;
+ #include &lt;linux/sysrq.h&gt;
+ #include &lt;linux/timer.h&gt;
++#include &lt;linux/time.h&gt;
+ 
+-#define VERSION_STR "0.9.0"
++#define VERSION_STR "0.9.1"
+ 
+ #define DEFAULT_IOFENCE_MARGIN 60	/* Default fudge factor, in seconds */
+ #define DEFAULT_IOFENCE_TICK 180	/* Default timer timeout, in seconds */
+@@ -119,10 +120,8 @@ __setup("hcheck_dump_tasks", hangcheck_parse_dump_tasks);
+ #if defined(CONFIG_S390)
+ # define HAVE_MONOTONIC
+ # define TIMER_FREQ 1000000000ULL
+-#elif defined(CONFIG_IA64)
+-# define TIMER_FREQ ((unsigned long long)local_cpu_data-&gt;itc_freq)
+ #else
+-# define TIMER_FREQ (HZ*loops_per_jiffy)
++# define TIMER_FREQ 1000000000ULL
+ #endif
+ 
+ #ifdef HAVE_MONOTONIC
+@@ -130,7 +129,9 @@ extern unsigned long long monotonic_clock(void);
+ #else
+ static inline unsigned long long monotonic_clock(void)
+ {
+-	return get_cycles();
++	struct timespec ts;
++	getrawmonotonic(&amp;ts);
++	return timespec_to_ns(&amp;ts);
+ }
+ #endif  /* HAVE_MONOTONIC */
+ 
+@@ -168,6 +169,13 @@ static void hangcheck_fire(unsigned long data)
+ 			printk(KERN_CRIT "Hangcheck: hangcheck value past margin!\n");
+ 		}
+ 	}
++#if 0
++	/*
++	 * Enable to investigate delays in detail
++	 */
++	printk("Hangcheck: called %Ld ns since last time (%Ld ns overshoot)\n",
++			tsc_diff, tsc_diff - hangcheck_tick*TIMER_FREQ);
++#endif
+ 	mod_timer(&amp;hangcheck_ticktock, jiffies + (hangcheck_tick*HZ));
+ 	hangcheck_tsc = monotonic_clock();
+ }
+@@ -180,7 +188,7 @@ static int __init hangcheck_init(void)
+ #if defined (HAVE_MONOTONIC)
+ 	printk("Hangcheck: Using monotonic_clock().\n");
+ #else
+-	printk("Hangcheck: Using get_cycles().\n");
++	printk("Hangcheck: Using getrawmonotonic().\n");
+ #endif  /* HAVE_MONOTONIC */
+ 	hangcheck_tsc_margin =
+ 		(unsigned long long)(hangcheck_margin + hangcheck_tick);</pre><hr><pre>commit ce384d83d00ee457c3931d3fdb9fa2c38e345a3c
+Author: Yury Polyanskiy &lt;ypolyans@princeton.edu&gt;
+Date:   Mon Apr 26 00:53:10 2010 -0400
+
+    MIPS: die() does not call die notifier chain
+    
+    The MIPS implementation of die() forgets to call notify_die() and thus notifiers
+    registered via register_die_notifier() are not called.  This results in kgdb not
+    being activated on exceptions.
+    
+    The only subtlety is that notify_die declares its regs argument w/o const, so
+    the const had to be removed from mips die() as well.
+    
+    [Ralf: Fixed build error for SGI IP22 and IP28 platforms.]
+    
+    Signed-off-by: Yury Polyanskiy &lt;ypolyans@princeton.edu&gt;
+    Cc: linux-mips@linux-mips.org
+    Patchworks: http://patchwork.linux-mips.org/patch/1142/
+    Acked-by: Jason Wessel &lt;jason.wessel@windriver.com&gt;
+    Signed-off-by: Ralf Baechle &lt;ralf@linux-mips.org&gt;
+    
+    ---
+
+diff --git a/arch/mips/include/asm/ptrace.h b/arch/mips/include/asm/ptrace.h
+index ce47118e52b7..cdc6a46efd98 100644
+--- a/arch/mips/include/asm/ptrace.h
++++ b/arch/mips/include/asm/ptrace.h
+@@ -142,9 +142,9 @@ extern int ptrace_set_watch_regs(struct task_struct *child,
+ 
+ extern asmlinkage void do_syscall_trace(struct pt_regs *regs, int entryexit);
+ 
+-extern NORET_TYPE void die(const char *, const struct pt_regs *) ATTRIB_NORET;
++extern NORET_TYPE void die(const char *, struct pt_regs *) ATTRIB_NORET;
+ 
+-static inline void die_if_kernel(const char *str, const struct pt_regs *regs)
++static inline void die_if_kernel(const char *str, struct pt_regs *regs)
+ {
+ 	if (unlikely(!user_mode(regs)))
+ 		die(str, regs);
+diff --git a/arch/mips/kernel/traps.c b/arch/mips/kernel/traps.c
+index 1a4dd657ccb9..36460c7b7cc8 100644
+--- a/arch/mips/kernel/traps.c
++++ b/arch/mips/kernel/traps.c
+@@ -352,9 +352,10 @@ void show_registers(const struct pt_regs *regs)
+ 
+ static DEFINE_SPINLOCK(die_lock);
+ 
+-void __noreturn die(const char * str, const struct pt_regs * regs)
++void __noreturn die(const char * str, struct pt_regs * regs)
+ {
+ 	static int die_counter;
++	int sig = SIGSEGV;
+ #ifdef CONFIG_MIPS_MT_SMTC
+ 	unsigned long dvpret = dvpe();
+ #endif /* CONFIG_MIPS_MT_SMTC */
+@@ -365,6 +366,10 @@ void __noreturn die(const char * str, const struct pt_regs * regs)
+ #ifdef CONFIG_MIPS_MT_SMTC
+ 	mips_mt_regdump(dvpret);
+ #endif /* CONFIG_MIPS_MT_SMTC */
++
++	if (notify_die(DIE_OOPS, str, regs, 0, current-&gt;thread.trap_no, SIGSEGV) == NOTIFY_STOP)
++		sig = 0;
++
+ 	printk("%s[#%d]:\n", str, ++die_counter);
+ 	show_registers(regs);
+ 	add_taint(TAINT_DIE);
+@@ -379,7 +384,7 @@ void __noreturn die(const char * str, const struct pt_regs * regs)
+ 		panic("Fatal exception");
+ 	}
+ 
+-	do_exit(SIGSEGV);
++	do_exit(sig);
+ }
+ 
+ extern struct exception_table_entry __start___dbe_table[];
+diff --git a/arch/mips/sgi-ip22/ip22-berr.c b/arch/mips/sgi-ip22/ip22-berr.c
+index de6a0cc32fea..911d3999c0c7 100644
+--- a/arch/mips/sgi-ip22/ip22-berr.c
++++ b/arch/mips/sgi-ip22/ip22-berr.c
+@@ -89,7 +89,7 @@ static void print_buserr(void)
+ void ip22_be_interrupt(int irq)
+ {
+ 	const int field = 2 * sizeof(unsigned long);
+-	const struct pt_regs *regs = get_irq_regs();
++	struct pt_regs *regs = get_irq_regs();
+ 
+ 	save_and_clear_buserr();
+ 	print_buserr();
+diff --git a/arch/mips/sgi-ip22/ip28-berr.c b/arch/mips/sgi-ip22/ip28-berr.c
+index 30e12e2ec4b5..88c684e05a3d 100644
+--- a/arch/mips/sgi-ip22/ip28-berr.c
++++ b/arch/mips/sgi-ip22/ip28-berr.c
+@@ -453,7 +453,7 @@ static int ip28_be_interrupt(const struct pt_regs *regs)
+ 
+ void ip22_be_interrupt(int irq)
+ {
+-	const struct pt_regs *regs = get_irq_regs();
++	struct pt_regs *regs = get_irq_regs();
+ 
+ 	count_be_interrupt++;
+ </pre><hr><pre>commit dcb7cd97f133f7cfbd181149a1e60215a869f895
+Author: Mark Huang &lt;mlhuang@cs.princeton.edu&gt;
+Date:   Sun Aug 13 18:57:54 2006 -0700
+
+    [NETFILTER]: ulog: fix panic on SMP kernels
+    
+    Fix kernel panic on various SMP machines. The culprit is a null
+    ub-&gt;skb in ulog_send(). If ulog_timer() has already been scheduled on
+    one CPU and is spinning on the lock, and ipt_ulog_packet() flushes the
+    queue on another CPU by calling ulog_send() right before it exits,
+    there will be no skbuff when ulog_timer() acquires the lock and calls
+    ulog_send(). Cancelling the timer in ulog_send() doesn't help because
+    it has already been scheduled and is running on the first CPU.
+    
+    Similar problem exists in ebt_ulog.c and nfnetlink_log.c.
+    
+    Signed-off-by: Mark Huang &lt;mlhuang@cs.princeton.edu&gt;
+    Signed-off-by: Patrick McHardy &lt;kaber@trash.net&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/bridge/netfilter/ebt_ulog.c b/net/bridge/netfilter/ebt_ulog.c
+index 02693a230dc1..9f950db3b76f 100644
+--- a/net/bridge/netfilter/ebt_ulog.c
++++ b/net/bridge/netfilter/ebt_ulog.c
+@@ -74,6 +74,9 @@ static void ulog_send(unsigned int nlgroup)
+ 	if (timer_pending(&amp;ub-&gt;timer))
+ 		del_timer(&amp;ub-&gt;timer);
+ 
++	if (!ub-&gt;skb)
++		return;
++
+ 	/* last nlmsg needs NLMSG_DONE */
+ 	if (ub-&gt;qlen &gt; 1)
+ 		ub-&gt;lastnlh-&gt;nlmsg_type = NLMSG_DONE;
+diff --git a/net/ipv4/netfilter/ipt_ULOG.c b/net/ipv4/netfilter/ipt_ULOG.c
+index d7dd7fe7051c..d46fd677fa11 100644
+--- a/net/ipv4/netfilter/ipt_ULOG.c
++++ b/net/ipv4/netfilter/ipt_ULOG.c
+@@ -115,6 +115,11 @@ static void ulog_send(unsigned int nlgroupnum)
+ 		del_timer(&amp;ub-&gt;timer);
+ 	}
+ 
++	if (!ub-&gt;skb) {
++		DEBUGP("ipt_ULOG: ulog_send: nothing to send\n");
++		return;
++	}
++
+ 	/* last nlmsg needs NLMSG_DONE */
+ 	if (ub-&gt;qlen &gt; 1)
+ 		ub-&gt;lastnlh-&gt;nlmsg_type = NLMSG_DONE;
+diff --git a/net/netfilter/nfnetlink_log.c b/net/netfilter/nfnetlink_log.c
+index 61cdda4e5d3b..b59d3b2bde21 100644
+--- a/net/netfilter/nfnetlink_log.c
++++ b/net/netfilter/nfnetlink_log.c
+@@ -366,6 +366,9 @@ __nfulnl_send(struct nfulnl_instance *inst)
+ 	if (timer_pending(&amp;inst-&gt;timer))
+ 		del_timer(&amp;inst-&gt;timer);
+ 
++	if (!inst-&gt;skb)
++		return 0;
++
+ 	if (inst-&gt;qlen &gt; 1)
+ 		inst-&gt;lastnlh-&gt;nlmsg_type = NLMSG_DONE;
+ </pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

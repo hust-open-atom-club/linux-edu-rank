@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Oklahoma</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Oklahoma</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit 526daee7301d8ec86d8de0698d4c9ada185c5470
+Author: French, Nicholas A &lt;naf@ou.edu&gt;
+Date:   Sun Mar 11 16:27:28 2018 -0300
+
+    media: ivtv: add parameter to enable ivtvfb on x86 PAT systems
+    
+    ivtvfb was previously disabled for x86 PAT-enabled systems
+    by commit 1bf1735b4780 ("x86/mm/pat, drivers/media/ivtv:
+    Use arch_phys_wc_add() and require PAT disabled") as a
+    workaround to abstract MTRR code away from device drivers.
+    
+    The driver is not easily upgradable to the PAT-aware
+    ioremap_wc() API since the firmware hides the address
+    ranges that should be marked write-combined from the driver.
+    However, since a write-combined cache on the framebuffer
+    is only a performance enhancement not a requirement for
+    the framebuffer to function, completely disabling the driver
+    in this configuration is not necessary.
+    
+    Add force_pat module parameter and a corresponding kernel
+    configuration parameter to optionally force initialization
+    on PAT-enabled x86 systems with a warning about the lack of
+    write-combined caching, and document the reasons the driver
+    cannot be easily updated to support wc caching on all systems.
+    
+    Signed-off-by: Nick French &lt;naf@ou.edu&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    [hverkuil-cisco@xs4all.nl: fix typo, split long pr_ lines up]
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/pci/ivtv/Kconfig b/drivers/media/pci/ivtv/Kconfig
+index c72cbbd2d40c..06ca4e23f9fb 100644
+--- a/drivers/media/pci/ivtv/Kconfig
++++ b/drivers/media/pci/ivtv/Kconfig
+@@ -70,8 +70,25 @@ config VIDEO_FB_IVTV
+ 	  This is used in the Hauppauge PVR-350 card. There is a driver
+ 	  homepage at &lt;http://www.ivtvdriver.org&gt;.
+ 
+-	  In order to use this module, you will need to boot with PAT disabled
+-	  on x86 systems, using the nopat kernel parameter.
+-
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called ivtvfb.
++
++config VIDEO_FB_IVTV_FORCE_PAT
++	bool "force cx23415 framebuffer init with x86 PAT enabled"
++	depends on VIDEO_FB_IVTV &amp;&amp; X86_PAT
++	default n
++	---help---
++	  With PAT enabled, the cx23415 framebuffer driver does not
++	  utilize write-combined caching on the framebuffer memory.
++	  For this reason, the driver will by default disable itself
++	  when initializied on a kernel with PAT enabled (i.e. not
++	  using the nopat kernel parameter).
++
++	  The driver is not easily upgradable to the PAT-aware
++	  ioremap_wc() API since the firmware hides the address
++	  ranges that should be marked write-combined from the driver.
++
++	  With this setting enabled, the framebuffer will initialize on
++	  PAT-enabled systems but the framebuffer memory will be uncached.
++
++	  If unsure, say N.
+diff --git a/drivers/media/pci/ivtv/ivtvfb.c b/drivers/media/pci/ivtv/ivtvfb.c
+index 8ec2525d8ef5..cfd21040d0e3 100644
+--- a/drivers/media/pci/ivtv/ivtvfb.c
++++ b/drivers/media/pci/ivtv/ivtvfb.c
+@@ -55,6 +55,7 @@
+ /* card parameters */
+ static int ivtvfb_card_id = -1;
+ static int ivtvfb_debug = 0;
++static bool ivtvfb_force_pat = IS_ENABLED(CONFIG_VIDEO_FB_IVTV_FORCE_PAT);
+ static bool osd_laced;
+ static int osd_depth;
+ static int osd_upper;
+@@ -64,6 +65,7 @@ static int osd_xres;
+ 
+ module_param(ivtvfb_card_id, int, 0444);
+ module_param_named(debug,ivtvfb_debug, int, 0644);
++module_param_named(force_pat, ivtvfb_force_pat, bool, 0644);
+ module_param(osd_laced, bool, 0444);
+ module_param(osd_depth, int, 0444);
+ module_param(osd_upper, int, 0444);
+@@ -79,6 +81,9 @@ MODULE_PARM_DESC(debug,
+ 		 "Debug level (bitmask). Default: errors only\n"
+ 		 "\t\t\t(debug = 3 gives full debugging)");
+ 
++MODULE_PARM_DESC(force_pat,
++		 "Force initialization on x86 PAT-enabled systems (bool).\n");
++
+ /* Why upper, left, xres, yres, depth, laced ? To match terminology used
+    by fbset.
+    Why start at 1 for left &amp; upper coordinate ? Because X doesn't allow 0 */
+@@ -1167,8 +1172,15 @@ static int ivtvfb_init_card(struct ivtv *itv)
+ 
+ #ifdef CONFIG_X86_64
+ 	if (pat_enabled()) {
+-		pr_warn("ivtvfb needs PAT disabled, boot with nopat kernel parameter\n");
+-		return -ENODEV;
++		if (ivtvfb_force_pat) {
++			pr_info("PAT is enabled. Write-combined framebuffer caching will be disabled.\n");
++			pr_info("To enable caching, boot with nopat kernel parameter\n");
++		} else {
++			pr_warn("ivtvfb needs PAT disabled for write-combined framebuffer caching.\n");
++			pr_warn("Boot with nopat kernel parameter to use caching, or use the\n");
++			pr_warn("force_pat module parameter to run with caching disabled\n");
++			return -ENODEV;
++		}
+ 	}
+ #endif
+ </pre><hr><pre>commit 1b4fd9de6ec7f3722c2b3e08cc5ad171c11f93be
+Author: French, Nicholas A &lt;naf@ou.edu&gt;
+Date:   Sun Dec 9 02:11:18 2018 -0500
+
+    media: lgdt330x: fix lock status reporting
+    
+    A typo in code cleanup commit db9c1007bc07 ("media: lgdt330x: do
+    some cleanups at status logic") broke the FE_HAS_LOCK reporting
+    for 3303 chips by inadvertently modifying the register mask.
+    
+    The broken lock status is critial as it prevents video capture
+    cards from reporting signal strength, scanning for channels,
+    and capturing video.
+    
+    Fix regression by reverting mask change.
+    
+    Cc: stable@vger.kernel.org # Kernel 4.17+
+    Fixes: db9c1007bc07 ("media: lgdt330x: do some cleanups at status logic")
+    Signed-off-by: Nick French &lt;naf@ou.edu&gt;
+    Reviewed-by: Laurent Pinchart &lt;laurent.pinchart@ideasonboard.com&gt;
+    Tested-by: Adam Stylinski &lt;kungfujesus06@gmail.com&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/dvb-frontends/lgdt330x.c b/drivers/media/dvb-frontends/lgdt330x.c
+index 96807e134886..8abb1a510a81 100644
+--- a/drivers/media/dvb-frontends/lgdt330x.c
++++ b/drivers/media/dvb-frontends/lgdt330x.c
+@@ -783,7 +783,7 @@ static int lgdt3303_read_status(struct dvb_frontend *fe,
+ 
+ 		if ((buf[0] &amp; 0x02) == 0x00)
+ 			*status |= FE_HAS_SYNC;
+-		if ((buf[0] &amp; 0xfd) == 0x01)
++		if ((buf[0] &amp; 0x01) == 0x01)
+ 			*status |= FE_HAS_VITERBI | FE_HAS_LOCK;
+ 		break;
+ 	default:</pre><hr><pre>commit a17f0cb5b9eaf8212b396d2381cf7594cd5315c7
+Author: Steve Kenton &lt;skenton@ou.edu&gt;
+Date:   Mon Jan 2 13:25:34 2017 -0500
+
+    fs/udf: make #ifdef UDF_PREALLOCATE unconditional
+    
+    Signed-off-by: Steve Kenton &lt;skenton@ou.edu&gt;
+    Signed-off-by: Jan Kara &lt;jack@suse.cz&gt;
+
+diff --git a/fs/udf/inode.c b/fs/udf/inode.c
+index 0f3db71753aa..3a5ac2221a88 100644
+--- a/fs/udf/inode.c
++++ b/fs/udf/inode.c
+@@ -857,14 +857,12 @@ static sector_t inode_getblk(struct inode *inode, sector_t block,
+ 	 * block */
+ 	udf_split_extents(inode, &amp;c, offset, newblocknum, laarr, &amp;endnum);
+ 
+-#ifdef UDF_PREALLOCATE
+ 	/* We preallocate blocks only for regular files. It also makes sense
+ 	 * for directories but there's a problem when to drop the
+ 	 * preallocation. We might use some delayed work for that but I feel
+ 	 * it's overengineering for a filesystem like UDF. */
+ 	if (S_ISREG(inode-&gt;i_mode))
+ 		udf_prealloc_extents(inode, c, lastblock, laarr, &amp;endnum);
+-#endif
+ 
+ 	/* merge any continuous blocks in laarr */
+ 	udf_merge_extents(inode, laarr, &amp;endnum);
+diff --git a/fs/udf/udfdecl.h b/fs/udf/udfdecl.h
+index 263829ef1873..b608624e7089 100644
+--- a/fs/udf/udfdecl.h
++++ b/fs/udf/udfdecl.h
+@@ -15,7 +15,6 @@
+ #include "udfend.h"
+ #include "udf_i.h"
+ 
+-#define UDF_PREALLOCATE
+ #define UDF_DEFAULT_PREALLOC_BLOCKS	8
+ 
+ extern __printf(3, 4) void _udf_err(struct super_block *sb,</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

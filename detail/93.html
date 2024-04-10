@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Southern California</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Southern California</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit 97ab4516205eedde0b6565e47175d825b88d6759
+Author: Zhen Gong &lt;zhengong@usc.edu&gt;
+Date:   Sun Nov 8 01:23:19 2020 -0800
+
+    platform/x86: intel-hid: fix _DSM function index handling
+    
+    According to the ACPI spec 9.1.1 _DSM (Device Specific Method),
+    intel_hid_dsm_fn_mask, acquired from function index 0, is "a buffer
+    containing one bit for each function index". When validitaing fn_index,
+    it should be compared with corresponding bit.
+    
+    This buffer is usually longer than a byte. Depending on whether
+    INTEL_HID_DSM_HEBC_V2_FN exist, it could be either
+    "Buffer (0x02) { 0xFF, 0x01 }" or "Buffer (0x02) { 0xFF, 0x03 }".
+    Probably it won't grow larger according to the description. On older
+    platforms, available functions could be fewer or not supported at all,
+    i.e., "Buffer (One) { 0x00 }".
+    
+    Signed-off-by: Zhen Gong &lt;zhengong@usc.edu&gt;
+    Link: https://lore.kernel.org/r/CAJCLVRCyp0ASdWTx-PxsrDC9zFBPw0U2AtPip+_Hpj2r5gUPwA@mail.gmail.com
+    Signed-off-by: Hans de Goede &lt;hdegoede@redhat.com&gt;
+
+diff --git a/drivers/platform/x86/intel-hid.c b/drivers/platform/x86/intel-hid.c
+index 86261970bd8f..9a52e56f75da 100644
+--- a/drivers/platform/x86/intel-hid.c
++++ b/drivers/platform/x86/intel-hid.c
+@@ -141,7 +141,7 @@ static bool intel_hid_execute_method(acpi_handle handle,
+ 
+ 	method_name = (char *)intel_hid_dsm_fn_to_method[fn_index];
+ 
+-	if (!(intel_hid_dsm_fn_mask &amp; fn_index))
++	if (!(intel_hid_dsm_fn_mask &amp; BIT(fn_index)))
+ 		goto skip_dsm_exec;
+ 
+ 	/* All methods expects a package with one integer element */
+@@ -214,7 +214,19 @@ static void intel_hid_init_dsm(acpi_handle handle)
+ 	obj = acpi_evaluate_dsm_typed(handle, &amp;intel_dsm_guid, 1, 0, NULL,
+ 				      ACPI_TYPE_BUFFER);
+ 	if (obj) {
+-		intel_hid_dsm_fn_mask = *obj-&gt;buffer.pointer;
++		switch (obj-&gt;buffer.length) {
++		default:
++		case 2:
++			intel_hid_dsm_fn_mask = *(u16 *)obj-&gt;buffer.pointer;
++			break;
++		case 1:
++			intel_hid_dsm_fn_mask = *obj-&gt;buffer.pointer;
++			break;
++		case 0:
++			acpi_handle_warn(handle, "intel_hid_dsm_fn_mask length is zero\n");
++			intel_hid_dsm_fn_mask = 0;
++			break;
++		}
+ 		ACPI_FREE(obj);
+ 	}
+ </pre><hr><pre>commit 5948185b97fa1f83d7855e638a72982a1073ebf5
+Author: Ryan C Goodfellow &lt;rgoodfel@isi.edu&gt;
+Date:   Fri Oct 12 11:09:01 2018 -0700
+
+    nfp: devlink port split support for 1x100G CXP NIC
+    
+    This commit makes it possible to use devlink to split the 100G CXP
+    Netronome into two 40G interfaces. Currently when you ask for 2
+    interfaces, the math in src/nfp_devlink.c:nfp_devlink_port_split
+    calculates that you want 5 lanes per port because for some reason
+    eth_port.port_lanes=10 (shouldn't this be 12 for CXP?). What we really
+    want when asking for 2 breakout interfaces is 4 lanes per port. This
+    commit makes that happen by calculating based on 8 lanes if 10 are
+    present.
+    
+    Signed-off-by: Ryan C Goodfellow &lt;rgoodfel@isi.edu&gt;
+    Reviewed-by: Jakub Kicinski &lt;jakub.kicinski@netronome.com&gt;
+    Reviewed-by: Greg Weeks &lt;greg.weeks@netronome.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/netronome/nfp/nfp_devlink.c b/drivers/net/ethernet/netronome/nfp/nfp_devlink.c
+index 107b048b33b4..808647ec3573 100644
+--- a/drivers/net/ethernet/netronome/nfp/nfp_devlink.c
++++ b/drivers/net/ethernet/netronome/nfp/nfp_devlink.c
+@@ -66,6 +66,7 @@ nfp_devlink_port_split(struct devlink *devlink, unsigned int port_index,
+ {
+ 	struct nfp_pf *pf = devlink_priv(devlink);
+ 	struct nfp_eth_table_port eth_port;
++	unsigned int lanes;
+ 	int ret;
+ 
+ 	if (count &lt; 2)
+@@ -84,8 +85,12 @@ nfp_devlink_port_split(struct devlink *devlink, unsigned int port_index,
+ 		goto out;
+ 	}
+ 
+-	ret = nfp_devlink_set_lanes(pf, eth_port.index,
+-				    eth_port.port_lanes / count);
++	/* Special case the 100G CXP -&gt; 2x40G split */
++	lanes = eth_port.port_lanes / count;
++	if (eth_port.lanes == 10 &amp;&amp; count == 2)
++		lanes = 8 / count;
++
++	ret = nfp_devlink_set_lanes(pf, eth_port.index, lanes);
+ out:
+ 	mutex_unlock(&amp;pf-&gt;lock);
+ 
+@@ -98,6 +103,7 @@ nfp_devlink_port_unsplit(struct devlink *devlink, unsigned int port_index,
+ {
+ 	struct nfp_pf *pf = devlink_priv(devlink);
+ 	struct nfp_eth_table_port eth_port;
++	unsigned int lanes;
+ 	int ret;
+ 
+ 	mutex_lock(&amp;pf-&gt;lock);
+@@ -113,7 +119,12 @@ nfp_devlink_port_unsplit(struct devlink *devlink, unsigned int port_index,
+ 		goto out;
+ 	}
+ 
+-	ret = nfp_devlink_set_lanes(pf, eth_port.index, eth_port.port_lanes);
++	/* Special case the 100G CXP -&gt; 2x40G unsplit */
++	lanes = eth_port.port_lanes;
++	if (eth_port.port_lanes == 8)
++		lanes = 10;
++
++	ret = nfp_devlink_set_lanes(pf, eth_port.index, lanes);
+ out:
+ 	mutex_unlock(&amp;pf-&gt;lock);
+ </pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

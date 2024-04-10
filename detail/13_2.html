@@ -1,0 +1,2231 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Washington</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Washington</h1>
+    <div class="pagination">
+        <a href='13.html'>&lt;&lt;Prev</a><a href='13.html'>1</a><span>[2]</span><a href='13_3.html'>3</a><a href='13_4.html'>4</a><a href='13_5.html'>5</a><a href='13_6.html'>6</a><a href='13_7.html'>7</a><a href='13_8.html'>8</a><a href='13_3.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 18a4d8c97b841632920c16a6fa9216d1214f3db7
+Author: Luke Nelson &lt;lukenels@cs.washington.edu&gt;
+Date:   Mon Jul 20 19:52:40 2020 -0700
+
+    bpf, riscv: Use compressed instructions in the rv64 JIT
+    
+    This patch uses the RVC support and encodings from bpf_jit.h to optimize
+    the rv64 jit.
+    
+    The optimizations work by replacing emit(rv_X(...)) with a call to a
+    helper function emit_X, which will emit a compressed version of the
+    instruction when possible, and when RVC is enabled.
+    
+    The JIT continues to pass all tests in lib/test_bpf.c, and introduces
+    no new failures to test_verifier; both with and without RVC being enabled.
+    
+    Most changes are straightforward replacements of emit(rv_X(...), ctx)
+    with emit_X(..., ctx), with the following exceptions bearing mention;
+    
+    * Change emit_imm to sign-extend the value in "lower", since the
+    checks for RVC (and the instructions themselves) treat the value as
+    signed. Otherwise, small negative immediates will not be recognized as
+    encodable using an RVC instruction. For example, without this change,
+    emit_imm(rd, -1, ctx) would cause lower to become 4095, which is not a
+    6b int even though a "c.li rd, -1" instruction suffices.
+    
+    * For {BPF_MOV,BPF_ADD} BPF_X, drop using addiw,addw in the 32-bit
+    cases since the values are zero-extended into the upper 32 bits in
+    the following instructions anyways, and the addition commutes with
+    zero-extension. (BPF_SUB BPF_X must still use subw since subtraction
+    does not commute with zero-extension.)
+    
+    This patch avoids optimizing branches and jumps to use RVC instructions
+    since surrounding code often makes assumptions about the sizes of
+    emitted instructions. Optimizing these will require changing these
+    functions (e.g., emit_branch) to dynamically compute jump offsets.
+    
+    The following are examples of the JITed code for the verifier selftest
+    "direct packet read test#3 for CGROUP_SKB OK", without and with RVC
+    enabled, respectively. The former uses 178 bytes, and the latter uses 112,
+    for a ~37% reduction in code size for this example.
+    
+    Without RVC:
+    
+       0: 02000813    addi  a6,zero,32
+       4: fd010113    addi  sp,sp,-48
+       8: 02813423    sd    s0,40(sp)
+       c: 02913023    sd    s1,32(sp)
+      10: 01213c23    sd    s2,24(sp)
+      14: 01313823    sd    s3,16(sp)
+      18: 01413423    sd    s4,8(sp)
+      1c: 03010413    addi  s0,sp,48
+      20: 03056683    lwu   a3,48(a0)
+      24: 02069693    slli  a3,a3,0x20
+      28: 0206d693    srli  a3,a3,0x20
+      2c: 03456703    lwu   a4,52(a0)
+      30: 02071713    slli  a4,a4,0x20
+      34: 02075713    srli  a4,a4,0x20
+      38: 03856483    lwu   s1,56(a0)
+      3c: 02049493    slli  s1,s1,0x20
+      40: 0204d493    srli  s1,s1,0x20
+      44: 03c56903    lwu   s2,60(a0)
+      48: 02091913    slli  s2,s2,0x20
+      4c: 02095913    srli  s2,s2,0x20
+      50: 04056983    lwu   s3,64(a0)
+      54: 02099993    slli  s3,s3,0x20
+      58: 0209d993    srli  s3,s3,0x20
+      5c: 09056a03    lwu   s4,144(a0)
+      60: 020a1a13    slli  s4,s4,0x20
+      64: 020a5a13    srli  s4,s4,0x20
+      68: 00900313    addi  t1,zero,9
+      6c: 006a7463    bgeu  s4,t1,0x74
+      70: 00000a13    addi  s4,zero,0
+      74: 02d52823    sw    a3,48(a0)
+      78: 02e52a23    sw    a4,52(a0)
+      7c: 02952c23    sw    s1,56(a0)
+      80: 03252e23    sw    s2,60(a0)
+      84: 05352023    sw    s3,64(a0)
+      88: 00000793    addi  a5,zero,0
+      8c: 02813403    ld    s0,40(sp)
+      90: 02013483    ld    s1,32(sp)
+      94: 01813903    ld    s2,24(sp)
+      98: 01013983    ld    s3,16(sp)
+      9c: 00813a03    ld    s4,8(sp)
+      a0: 03010113    addi  sp,sp,48
+      a4: 00078513    addi  a0,a5,0
+      a8: 00008067    jalr  zero,0(ra)
+    
+    With RVC:
+    
+       0:   02000813    addi    a6,zero,32
+       4:   7179        c.addi16sp  sp,-48
+       6:   f422        c.sdsp  s0,40(sp)
+       8:   f026        c.sdsp  s1,32(sp)
+       a:   ec4a        c.sdsp  s2,24(sp)
+       c:   e84e        c.sdsp  s3,16(sp)
+       e:   e452        c.sdsp  s4,8(sp)
+      10:   1800        c.addi4spn  s0,sp,48
+      12:   03056683    lwu     a3,48(a0)
+      16:   1682        c.slli  a3,0x20
+      18:   9281        c.srli  a3,0x20
+      1a:   03456703    lwu     a4,52(a0)
+      1e:   1702        c.slli  a4,0x20
+      20:   9301        c.srli  a4,0x20
+      22:   03856483    lwu     s1,56(a0)
+      26:   1482        c.slli  s1,0x20
+      28:   9081        c.srli  s1,0x20
+      2a:   03c56903    lwu     s2,60(a0)
+      2e:   1902        c.slli  s2,0x20
+      30:   02095913    srli    s2,s2,0x20
+      34:   04056983    lwu     s3,64(a0)
+      38:   1982        c.slli  s3,0x20
+      3a:   0209d993    srli    s3,s3,0x20
+      3e:   09056a03    lwu     s4,144(a0)
+      42:   1a02        c.slli  s4,0x20
+      44:   020a5a13    srli    s4,s4,0x20
+      48:   4325        c.li    t1,9
+      4a:   006a7363    bgeu    s4,t1,0x50
+      4e:   4a01        c.li    s4,0
+      50:   d914        c.sw    a3,48(a0)
+      52:   d958        c.sw    a4,52(a0)
+      54:   dd04        c.sw    s1,56(a0)
+      56:   03252e23    sw      s2,60(a0)
+      5a:   05352023    sw      s3,64(a0)
+      5e:   4781        c.li    a5,0
+      60:   7422        c.ldsp  s0,40(sp)
+      62:   7482        c.ldsp  s1,32(sp)
+      64:   6962        c.ldsp  s2,24(sp)
+      66:   69c2        c.ldsp  s3,16(sp)
+      68:   6a22        c.ldsp  s4,8(sp)
+      6a:   6145        c.addi16sp  sp,48
+      6c:   853e        c.mv    a0,a5
+      6e:   8082        c.jr    ra
+    
+    Signed-off-by: Luke Nelson &lt;luke.r.nels@gmail.com&gt;
+    Signed-off-by: Alexei Starovoitov &lt;ast@kernel.org&gt;
+    Cc: Björn Töpel &lt;bjorn.topel@gmail.com&gt;
+    Link: https://lore.kernel.org/bpf/20200721025241.8077-4-luke.r.nels@gmail.com
+
+diff --git a/arch/riscv/net/bpf_jit_comp64.c b/arch/riscv/net/bpf_jit_comp64.c
+index 55861269da2a..8a56b5293117 100644
+--- a/arch/riscv/net/bpf_jit_comp64.c
++++ b/arch/riscv/net/bpf_jit_comp64.c
+@@ -132,19 +132,23 @@ static void emit_imm(u8 rd, s64 val, struct rv_jit_context *ctx)
+ 	 *
+ 	 * This also means that we need to process LSB to MSB.
+ 	 */
+-	s64 upper = (val + (1 &lt;&lt; 11)) &gt;&gt; 12, lower = val &amp; 0xfff;
++	s64 upper = (val + (1 &lt;&lt; 11)) &gt;&gt; 12;
++	/* Sign-extend lower 12 bits to 64 bits since immediates for li, addiw,
++	 * and addi are signed and RVC checks will perform signed comparisons.
++	 */
++	s64 lower = ((val &amp; 0xfff) &lt;&lt; 52) &gt;&gt; 52;
+ 	int shift;
+ 
+ 	if (is_32b_int(val)) {
+ 		if (upper)
+-			emit(rv_lui(rd, upper), ctx);
++			emit_lui(rd, upper, ctx);
+ 
+ 		if (!upper) {
+-			emit(rv_addi(rd, RV_REG_ZERO, lower), ctx);
++			emit_li(rd, lower, ctx);
+ 			return;
+ 		}
+ 
+-		emit(rv_addiw(rd, rd, lower), ctx);
++		emit_addiw(rd, rd, lower, ctx);
+ 		return;
+ 	}
+ 
+@@ -154,9 +158,9 @@ static void emit_imm(u8 rd, s64 val, struct rv_jit_context *ctx)
+ 
+ 	emit_imm(rd, upper, ctx);
+ 
+-	emit(rv_slli(rd, rd, shift), ctx);
++	emit_slli(rd, rd, shift, ctx);
+ 	if (lower)
+-		emit(rv_addi(rd, rd, lower), ctx);
++		emit_addi(rd, rd, lower, ctx);
+ }
+ 
+ static void __build_epilogue(bool is_tail_call, struct rv_jit_context *ctx)
+@@ -164,43 +168,43 @@ static void __build_epilogue(bool is_tail_call, struct rv_jit_context *ctx)
+ 	int stack_adjust = ctx-&gt;stack_size, store_offset = stack_adjust - 8;
+ 
+ 	if (seen_reg(RV_REG_RA, ctx)) {
+-		emit(rv_ld(RV_REG_RA, store_offset, RV_REG_SP), ctx);
++		emit_ld(RV_REG_RA, store_offset, RV_REG_SP, ctx);
+ 		store_offset -= 8;
+ 	}
+-	emit(rv_ld(RV_REG_FP, store_offset, RV_REG_SP), ctx);
++	emit_ld(RV_REG_FP, store_offset, RV_REG_SP, ctx);
+ 	store_offset -= 8;
+ 	if (seen_reg(RV_REG_S1, ctx)) {
+-		emit(rv_ld(RV_REG_S1, store_offset, RV_REG_SP), ctx);
++		emit_ld(RV_REG_S1, store_offset, RV_REG_SP, ctx);
+ 		store_offset -= 8;
+ 	}
+ 	if (seen_reg(RV_REG_S2, ctx)) {
+-		emit(rv_ld(RV_REG_S2, store_offset, RV_REG_SP), ctx);
++		emit_ld(RV_REG_S2, store_offset, RV_REG_SP, ctx);
+ 		store_offset -= 8;
+ 	}
+ 	if (seen_reg(RV_REG_S3, ctx)) {
+-		emit(rv_ld(RV_REG_S3, store_offset, RV_REG_SP), ctx);
++		emit_ld(RV_REG_S3, store_offset, RV_REG_SP, ctx);
+ 		store_offset -= 8;
+ 	}
+ 	if (seen_reg(RV_REG_S4, ctx)) {
+-		emit(rv_ld(RV_REG_S4, store_offset, RV_REG_SP), ctx);
++		emit_ld(RV_REG_S4, store_offset, RV_REG_SP, ctx);
+ 		store_offset -= 8;
+ 	}
+ 	if (seen_reg(RV_REG_S5, ctx)) {
+-		emit(rv_ld(RV_REG_S5, store_offset, RV_REG_SP), ctx);
++		emit_ld(RV_REG_S5, store_offset, RV_REG_SP, ctx);
+ 		store_offset -= 8;
+ 	}
+ 	if (seen_reg(RV_REG_S6, ctx)) {
+-		emit(rv_ld(RV_REG_S6, store_offset, RV_REG_SP), ctx);
++		emit_ld(RV_REG_S6, store_offset, RV_REG_SP, ctx);
+ 		store_offset -= 8;
+ 	}
+ 
+-	emit(rv_addi(RV_REG_SP, RV_REG_SP, stack_adjust), ctx);
++	emit_addi(RV_REG_SP, RV_REG_SP, stack_adjust, ctx);
+ 	/* Set return value. */
+ 	if (!is_tail_call)
+-		emit(rv_addi(RV_REG_A0, RV_REG_A5, 0), ctx);
+-	emit(rv_jalr(RV_REG_ZERO, is_tail_call ? RV_REG_T3 : RV_REG_RA,
+-		     is_tail_call ? 4 : 0), /* skip TCC init */
+-	     ctx);
++		emit_mv(RV_REG_A0, RV_REG_A5, ctx);
++	emit_jalr(RV_REG_ZERO, is_tail_call ? RV_REG_T3 : RV_REG_RA,
++		  is_tail_call ? 4 : 0, /* skip TCC init */
++		  ctx);
+ }
+ 
+ static void emit_bcc(u8 cond, u8 rd, u8 rs, int rvoff,
+@@ -280,8 +284,8 @@ static void emit_branch(u8 cond, u8 rd, u8 rs, int rvoff,
+ 
+ static void emit_zext_32(u8 reg, struct rv_jit_context *ctx)
+ {
+-	emit(rv_slli(reg, reg, 32), ctx);
+-	emit(rv_srli(reg, reg, 32), ctx);
++	emit_slli(reg, reg, 32, ctx);
++	emit_srli(reg, reg, 32, ctx);
+ }
+ 
+ static int emit_bpf_tail_call(int insn, struct rv_jit_context *ctx)
+@@ -310,7 +314,7 @@ static int emit_bpf_tail_call(int insn, struct rv_jit_context *ctx)
+ 	/* if (TCC-- &lt; 0)
+ 	 *     goto out;
+ 	 */
+-	emit(rv_addi(RV_REG_T1, tcc, -1), ctx);
++	emit_addi(RV_REG_T1, tcc, -1, ctx);
+ 	off = ninsns_rvoff(tc_ninsn - (ctx-&gt;ninsns - start_insn));
+ 	emit_branch(BPF_JSLT, tcc, RV_REG_ZERO, off, ctx);
+ 
+@@ -318,12 +322,12 @@ static int emit_bpf_tail_call(int insn, struct rv_jit_context *ctx)
+ 	 * if (!prog)
+ 	 *     goto out;
+ 	 */
+-	emit(rv_slli(RV_REG_T2, RV_REG_A2, 3), ctx);
+-	emit(rv_add(RV_REG_T2, RV_REG_T2, RV_REG_A1), ctx);
++	emit_slli(RV_REG_T2, RV_REG_A2, 3, ctx);
++	emit_add(RV_REG_T2, RV_REG_T2, RV_REG_A1, ctx);
+ 	off = offsetof(struct bpf_array, ptrs);
+ 	if (is_12b_check(off, insn))
+ 		return -1;
+-	emit(rv_ld(RV_REG_T2, off, RV_REG_T2), ctx);
++	emit_ld(RV_REG_T2, off, RV_REG_T2, ctx);
+ 	off = ninsns_rvoff(tc_ninsn - (ctx-&gt;ninsns - start_insn));
+ 	emit_branch(BPF_JEQ, RV_REG_T2, RV_REG_ZERO, off, ctx);
+ 
+@@ -331,8 +335,8 @@ static int emit_bpf_tail_call(int insn, struct rv_jit_context *ctx)
+ 	off = offsetof(struct bpf_prog, bpf_func);
+ 	if (is_12b_check(off, insn))
+ 		return -1;
+-	emit(rv_ld(RV_REG_T3, off, RV_REG_T2), ctx);
+-	emit(rv_addi(RV_REG_TCC, RV_REG_T1, 0), ctx);
++	emit_ld(RV_REG_T3, off, RV_REG_T2, ctx);
++	emit_mv(RV_REG_TCC, RV_REG_T1, ctx);
+ 	__build_epilogue(true, ctx);
+ 	return 0;
+ }
+@@ -360,9 +364,9 @@ static void init_regs(u8 *rd, u8 *rs, const struct bpf_insn *insn,
+ 
+ static void emit_zext_32_rd_rs(u8 *rd, u8 *rs, struct rv_jit_context *ctx)
+ {
+-	emit(rv_addi(RV_REG_T2, *rd, 0), ctx);
++	emit_mv(RV_REG_T2, *rd, ctx);
+ 	emit_zext_32(RV_REG_T2, ctx);
+-	emit(rv_addi(RV_REG_T1, *rs, 0), ctx);
++	emit_mv(RV_REG_T1, *rs, ctx);
+ 	emit_zext_32(RV_REG_T1, ctx);
+ 	*rd = RV_REG_T2;
+ 	*rs = RV_REG_T1;
+@@ -370,15 +374,15 @@ static void emit_zext_32_rd_rs(u8 *rd, u8 *rs, struct rv_jit_context *ctx)
+ 
+ static void emit_sext_32_rd_rs(u8 *rd, u8 *rs, struct rv_jit_context *ctx)
+ {
+-	emit(rv_addiw(RV_REG_T2, *rd, 0), ctx);
+-	emit(rv_addiw(RV_REG_T1, *rs, 0), ctx);
++	emit_addiw(RV_REG_T2, *rd, 0, ctx);
++	emit_addiw(RV_REG_T1, *rs, 0, ctx);
+ 	*rd = RV_REG_T2;
+ 	*rs = RV_REG_T1;
+ }
+ 
+ static void emit_zext_32_rd_t1(u8 *rd, struct rv_jit_context *ctx)
+ {
+-	emit(rv_addi(RV_REG_T2, *rd, 0), ctx);
++	emit_mv(RV_REG_T2, *rd, ctx);
+ 	emit_zext_32(RV_REG_T2, ctx);
+ 	emit_zext_32(RV_REG_T1, ctx);
+ 	*rd = RV_REG_T2;
+@@ -386,7 +390,7 @@ static void emit_zext_32_rd_t1(u8 *rd, struct rv_jit_context *ctx)
+ 
+ static void emit_sext_32_rd(u8 *rd, struct rv_jit_context *ctx)
+ {
+-	emit(rv_addiw(RV_REG_T2, *rd, 0), ctx);
++	emit_addiw(RV_REG_T2, *rd, 0, ctx);
+ 	*rd = RV_REG_T2;
+ }
+ 
+@@ -432,7 +436,7 @@ static int emit_call(bool fixed, u64 addr, struct rv_jit_context *ctx)
+ 	if (ret)
+ 		return ret;
+ 	rd = bpf_to_rv_reg(BPF_REG_0, ctx);
+-	emit(rv_addi(rd, RV_REG_A0, 0), ctx);
++	emit_mv(rd, RV_REG_A0, ctx);
+ 	return 0;
+ }
+ 
+@@ -458,7 +462,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 			emit_zext_32(rd, ctx);
+ 			break;
+ 		}
+-		emit(is64 ? rv_addi(rd, rs, 0) : rv_addiw(rd, rs, 0), ctx);
++		emit_mv(rd, rs, ctx);
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+@@ -466,31 +470,35 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 	/* dst = dst OP src */
+ 	case BPF_ALU | BPF_ADD | BPF_X:
+ 	case BPF_ALU64 | BPF_ADD | BPF_X:
+-		emit(is64 ? rv_add(rd, rd, rs) : rv_addw(rd, rd, rs), ctx);
++		emit_add(rd, rd, rs, ctx);
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+ 	case BPF_ALU | BPF_SUB | BPF_X:
+ 	case BPF_ALU64 | BPF_SUB | BPF_X:
+-		emit(is64 ? rv_sub(rd, rd, rs) : rv_subw(rd, rd, rs), ctx);
++		if (is64)
++			emit_sub(rd, rd, rs, ctx);
++		else
++			emit_subw(rd, rd, rs, ctx);
++
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+ 	case BPF_ALU | BPF_AND | BPF_X:
+ 	case BPF_ALU64 | BPF_AND | BPF_X:
+-		emit(rv_and(rd, rd, rs), ctx);
++		emit_and(rd, rd, rs, ctx);
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+ 	case BPF_ALU | BPF_OR | BPF_X:
+ 	case BPF_ALU64 | BPF_OR | BPF_X:
+-		emit(rv_or(rd, rd, rs), ctx);
++		emit_or(rd, rd, rs, ctx);
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+ 	case BPF_ALU | BPF_XOR | BPF_X:
+ 	case BPF_ALU64 | BPF_XOR | BPF_X:
+-		emit(rv_xor(rd, rd, rs), ctx);
++		emit_xor(rd, rd, rs, ctx);
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+@@ -534,8 +542,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 	/* dst = -dst */
+ 	case BPF_ALU | BPF_NEG:
+ 	case BPF_ALU64 | BPF_NEG:
+-		emit(is64 ? rv_sub(rd, RV_REG_ZERO, rd) :
+-		     rv_subw(rd, RV_REG_ZERO, rd), ctx);
++		emit_sub(rd, RV_REG_ZERO, rd, ctx);
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+@@ -544,8 +551,8 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 	case BPF_ALU | BPF_END | BPF_FROM_LE:
+ 		switch (imm) {
+ 		case 16:
+-			emit(rv_slli(rd, rd, 48), ctx);
+-			emit(rv_srli(rd, rd, 48), ctx);
++			emit_slli(rd, rd, 48, ctx);
++			emit_srli(rd, rd, 48, ctx);
+ 			break;
+ 		case 32:
+ 			if (!aux-&gt;verifier_zext)
+@@ -558,51 +565,51 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		break;
+ 
+ 	case BPF_ALU | BPF_END | BPF_FROM_BE:
+-		emit(rv_addi(RV_REG_T2, RV_REG_ZERO, 0), ctx);
++		emit_li(RV_REG_T2, 0, ctx);
+ 
+-		emit(rv_andi(RV_REG_T1, rd, 0xff), ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, RV_REG_T1), ctx);
+-		emit(rv_slli(RV_REG_T2, RV_REG_T2, 8), ctx);
+-		emit(rv_srli(rd, rd, 8), ctx);
++		emit_andi(RV_REG_T1, rd, 0xff, ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, RV_REG_T1, ctx);
++		emit_slli(RV_REG_T2, RV_REG_T2, 8, ctx);
++		emit_srli(rd, rd, 8, ctx);
+ 		if (imm == 16)
+ 			goto out_be;
+ 
+-		emit(rv_andi(RV_REG_T1, rd, 0xff), ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, RV_REG_T1), ctx);
+-		emit(rv_slli(RV_REG_T2, RV_REG_T2, 8), ctx);
+-		emit(rv_srli(rd, rd, 8), ctx);
++		emit_andi(RV_REG_T1, rd, 0xff, ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, RV_REG_T1, ctx);
++		emit_slli(RV_REG_T2, RV_REG_T2, 8, ctx);
++		emit_srli(rd, rd, 8, ctx);
+ 
+-		emit(rv_andi(RV_REG_T1, rd, 0xff), ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, RV_REG_T1), ctx);
+-		emit(rv_slli(RV_REG_T2, RV_REG_T2, 8), ctx);
+-		emit(rv_srli(rd, rd, 8), ctx);
++		emit_andi(RV_REG_T1, rd, 0xff, ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, RV_REG_T1, ctx);
++		emit_slli(RV_REG_T2, RV_REG_T2, 8, ctx);
++		emit_srli(rd, rd, 8, ctx);
+ 		if (imm == 32)
+ 			goto out_be;
+ 
+-		emit(rv_andi(RV_REG_T1, rd, 0xff), ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, RV_REG_T1), ctx);
+-		emit(rv_slli(RV_REG_T2, RV_REG_T2, 8), ctx);
+-		emit(rv_srli(rd, rd, 8), ctx);
+-
+-		emit(rv_andi(RV_REG_T1, rd, 0xff), ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, RV_REG_T1), ctx);
+-		emit(rv_slli(RV_REG_T2, RV_REG_T2, 8), ctx);
+-		emit(rv_srli(rd, rd, 8), ctx);
+-
+-		emit(rv_andi(RV_REG_T1, rd, 0xff), ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, RV_REG_T1), ctx);
+-		emit(rv_slli(RV_REG_T2, RV_REG_T2, 8), ctx);
+-		emit(rv_srli(rd, rd, 8), ctx);
+-
+-		emit(rv_andi(RV_REG_T1, rd, 0xff), ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, RV_REG_T1), ctx);
+-		emit(rv_slli(RV_REG_T2, RV_REG_T2, 8), ctx);
+-		emit(rv_srli(rd, rd, 8), ctx);
++		emit_andi(RV_REG_T1, rd, 0xff, ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, RV_REG_T1, ctx);
++		emit_slli(RV_REG_T2, RV_REG_T2, 8, ctx);
++		emit_srli(rd, rd, 8, ctx);
++
++		emit_andi(RV_REG_T1, rd, 0xff, ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, RV_REG_T1, ctx);
++		emit_slli(RV_REG_T2, RV_REG_T2, 8, ctx);
++		emit_srli(rd, rd, 8, ctx);
++
++		emit_andi(RV_REG_T1, rd, 0xff, ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, RV_REG_T1, ctx);
++		emit_slli(RV_REG_T2, RV_REG_T2, 8, ctx);
++		emit_srli(rd, rd, 8, ctx);
++
++		emit_andi(RV_REG_T1, rd, 0xff, ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, RV_REG_T1, ctx);
++		emit_slli(RV_REG_T2, RV_REG_T2, 8, ctx);
++		emit_srli(rd, rd, 8, ctx);
+ out_be:
+-		emit(rv_andi(RV_REG_T1, rd, 0xff), ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, RV_REG_T1), ctx);
++		emit_andi(RV_REG_T1, rd, 0xff, ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, RV_REG_T1, ctx);
+ 
+-		emit(rv_addi(rd, RV_REG_T2, 0), ctx);
++		emit_mv(rd, RV_REG_T2, ctx);
+ 		break;
+ 
+ 	/* dst = imm */
+@@ -617,12 +624,10 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 	case BPF_ALU | BPF_ADD | BPF_K:
+ 	case BPF_ALU64 | BPF_ADD | BPF_K:
+ 		if (is_12b_int(imm)) {
+-			emit(is64 ? rv_addi(rd, rd, imm) :
+-			     rv_addiw(rd, rd, imm), ctx);
++			emit_addi(rd, rd, imm, ctx);
+ 		} else {
+ 			emit_imm(RV_REG_T1, imm, ctx);
+-			emit(is64 ? rv_add(rd, rd, RV_REG_T1) :
+-			     rv_addw(rd, rd, RV_REG_T1), ctx);
++			emit_add(rd, rd, RV_REG_T1, ctx);
+ 		}
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+@@ -630,12 +635,10 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 	case BPF_ALU | BPF_SUB | BPF_K:
+ 	case BPF_ALU64 | BPF_SUB | BPF_K:
+ 		if (is_12b_int(-imm)) {
+-			emit(is64 ? rv_addi(rd, rd, -imm) :
+-			     rv_addiw(rd, rd, -imm), ctx);
++			emit_addi(rd, rd, -imm, ctx);
+ 		} else {
+ 			emit_imm(RV_REG_T1, imm, ctx);
+-			emit(is64 ? rv_sub(rd, rd, RV_REG_T1) :
+-			     rv_subw(rd, rd, RV_REG_T1), ctx);
++			emit_sub(rd, rd, RV_REG_T1, ctx);
+ 		}
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+@@ -643,10 +646,10 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 	case BPF_ALU | BPF_AND | BPF_K:
+ 	case BPF_ALU64 | BPF_AND | BPF_K:
+ 		if (is_12b_int(imm)) {
+-			emit(rv_andi(rd, rd, imm), ctx);
++			emit_andi(rd, rd, imm, ctx);
+ 		} else {
+ 			emit_imm(RV_REG_T1, imm, ctx);
+-			emit(rv_and(rd, rd, RV_REG_T1), ctx);
++			emit_and(rd, rd, RV_REG_T1, ctx);
+ 		}
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+@@ -657,7 +660,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 			emit(rv_ori(rd, rd, imm), ctx);
+ 		} else {
+ 			emit_imm(RV_REG_T1, imm, ctx);
+-			emit(rv_or(rd, rd, RV_REG_T1), ctx);
++			emit_or(rd, rd, RV_REG_T1, ctx);
+ 		}
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+@@ -668,7 +671,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 			emit(rv_xori(rd, rd, imm), ctx);
+ 		} else {
+ 			emit_imm(RV_REG_T1, imm, ctx);
+-			emit(rv_xor(rd, rd, RV_REG_T1), ctx);
++			emit_xor(rd, rd, RV_REG_T1, ctx);
+ 		}
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+@@ -699,19 +702,28 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		break;
+ 	case BPF_ALU | BPF_LSH | BPF_K:
+ 	case BPF_ALU64 | BPF_LSH | BPF_K:
+-		emit(is64 ? rv_slli(rd, rd, imm) : rv_slliw(rd, rd, imm), ctx);
++		emit_slli(rd, rd, imm, ctx);
++
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+ 	case BPF_ALU | BPF_RSH | BPF_K:
+ 	case BPF_ALU64 | BPF_RSH | BPF_K:
+-		emit(is64 ? rv_srli(rd, rd, imm) : rv_srliw(rd, rd, imm), ctx);
++		if (is64)
++			emit_srli(rd, rd, imm, ctx);
++		else
++			emit(rv_srliw(rd, rd, imm), ctx);
++
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+ 	case BPF_ALU | BPF_ARSH | BPF_K:
+ 	case BPF_ALU64 | BPF_ARSH | BPF_K:
+-		emit(is64 ? rv_srai(rd, rd, imm) : rv_sraiw(rd, rd, imm), ctx);
++		if (is64)
++			emit_srai(rd, rd, imm, ctx);
++		else
++			emit(rv_sraiw(rd, rd, imm), ctx);
++
+ 		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+@@ -763,7 +775,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		if (BPF_OP(code) == BPF_JSET) {
+ 			/* Adjust for and */
+ 			rvoff -= 4;
+-			emit(rv_and(RV_REG_T1, rd, rs), ctx);
++			emit_and(RV_REG_T1, rd, rs, ctx);
+ 			emit_branch(BPF_JNE, RV_REG_T1, RV_REG_ZERO, rvoff,
+ 				    ctx);
+ 		} else {
+@@ -819,17 +831,17 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		rvoff = rv_offset(i, off, ctx);
+ 		s = ctx-&gt;ninsns;
+ 		if (is_12b_int(imm)) {
+-			emit(rv_andi(RV_REG_T1, rd, imm), ctx);
++			emit_andi(RV_REG_T1, rd, imm, ctx);
+ 		} else {
+ 			emit_imm(RV_REG_T1, imm, ctx);
+-			emit(rv_and(RV_REG_T1, rd, RV_REG_T1), ctx);
++			emit_and(RV_REG_T1, rd, RV_REG_T1, ctx);
+ 		}
+ 		/* For jset32, we should clear the upper 32 bits of t1, but
+ 		 * sign-extension is sufficient here and saves one instruction,
+ 		 * as t1 is used only in comparison against zero.
+ 		 */
+ 		if (!is64 &amp;&amp; imm &lt; 0)
+-			emit(rv_addiw(RV_REG_T1, RV_REG_T1, 0), ctx);
++			emit_addiw(RV_REG_T1, RV_REG_T1, 0, ctx);
+ 		e = ctx-&gt;ninsns;
+ 		rvoff -= ninsns_rvoff(e - s);
+ 		emit_branch(BPF_JNE, RV_REG_T1, RV_REG_ZERO, rvoff, ctx);
+@@ -887,7 +899,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		}
+ 
+ 		emit_imm(RV_REG_T1, off, ctx);
+-		emit(rv_add(RV_REG_T1, RV_REG_T1, rs), ctx);
++		emit_add(RV_REG_T1, RV_REG_T1, rs, ctx);
+ 		emit(rv_lbu(rd, 0, RV_REG_T1), ctx);
+ 		if (insn_is_zext(&amp;insn[1]))
+ 			return 1;
+@@ -899,7 +911,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		}
+ 
+ 		emit_imm(RV_REG_T1, off, ctx);
+-		emit(rv_add(RV_REG_T1, RV_REG_T1, rs), ctx);
++		emit_add(RV_REG_T1, RV_REG_T1, rs, ctx);
+ 		emit(rv_lhu(rd, 0, RV_REG_T1), ctx);
+ 		if (insn_is_zext(&amp;insn[1]))
+ 			return 1;
+@@ -911,20 +923,20 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		}
+ 
+ 		emit_imm(RV_REG_T1, off, ctx);
+-		emit(rv_add(RV_REG_T1, RV_REG_T1, rs), ctx);
++		emit_add(RV_REG_T1, RV_REG_T1, rs, ctx);
+ 		emit(rv_lwu(rd, 0, RV_REG_T1), ctx);
+ 		if (insn_is_zext(&amp;insn[1]))
+ 			return 1;
+ 		break;
+ 	case BPF_LDX | BPF_MEM | BPF_DW:
+ 		if (is_12b_int(off)) {
+-			emit(rv_ld(rd, off, rs), ctx);
++			emit_ld(rd, off, rs, ctx);
+ 			break;
+ 		}
+ 
+ 		emit_imm(RV_REG_T1, off, ctx);
+-		emit(rv_add(RV_REG_T1, RV_REG_T1, rs), ctx);
+-		emit(rv_ld(rd, 0, RV_REG_T1), ctx);
++		emit_add(RV_REG_T1, RV_REG_T1, rs, ctx);
++		emit_ld(rd, 0, RV_REG_T1, ctx);
+ 		break;
+ 
+ 	/* ST: *(size *)(dst + off) = imm */
+@@ -936,7 +948,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		}
+ 
+ 		emit_imm(RV_REG_T2, off, ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, rd), ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, rd, ctx);
+ 		emit(rv_sb(RV_REG_T2, 0, RV_REG_T1), ctx);
+ 		break;
+ 
+@@ -948,30 +960,30 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		}
+ 
+ 		emit_imm(RV_REG_T2, off, ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, rd), ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, rd, ctx);
+ 		emit(rv_sh(RV_REG_T2, 0, RV_REG_T1), ctx);
+ 		break;
+ 	case BPF_ST | BPF_MEM | BPF_W:
+ 		emit_imm(RV_REG_T1, imm, ctx);
+ 		if (is_12b_int(off)) {
+-			emit(rv_sw(rd, off, RV_REG_T1), ctx);
++			emit_sw(rd, off, RV_REG_T1, ctx);
+ 			break;
+ 		}
+ 
+ 		emit_imm(RV_REG_T2, off, ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, rd), ctx);
+-		emit(rv_sw(RV_REG_T2, 0, RV_REG_T1), ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, rd, ctx);
++		emit_sw(RV_REG_T2, 0, RV_REG_T1, ctx);
+ 		break;
+ 	case BPF_ST | BPF_MEM | BPF_DW:
+ 		emit_imm(RV_REG_T1, imm, ctx);
+ 		if (is_12b_int(off)) {
+-			emit(rv_sd(rd, off, RV_REG_T1), ctx);
++			emit_sd(rd, off, RV_REG_T1, ctx);
+ 			break;
+ 		}
+ 
+ 		emit_imm(RV_REG_T2, off, ctx);
+-		emit(rv_add(RV_REG_T2, RV_REG_T2, rd), ctx);
+-		emit(rv_sd(RV_REG_T2, 0, RV_REG_T1), ctx);
++		emit_add(RV_REG_T2, RV_REG_T2, rd, ctx);
++		emit_sd(RV_REG_T2, 0, RV_REG_T1, ctx);
+ 		break;
+ 
+ 	/* STX: *(size *)(dst + off) = src */
+@@ -982,7 +994,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		}
+ 
+ 		emit_imm(RV_REG_T1, off, ctx);
+-		emit(rv_add(RV_REG_T1, RV_REG_T1, rd), ctx);
++		emit_add(RV_REG_T1, RV_REG_T1, rd, ctx);
+ 		emit(rv_sb(RV_REG_T1, 0, rs), ctx);
+ 		break;
+ 	case BPF_STX | BPF_MEM | BPF_H:
+@@ -992,28 +1004,28 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		}
+ 
+ 		emit_imm(RV_REG_T1, off, ctx);
+-		emit(rv_add(RV_REG_T1, RV_REG_T1, rd), ctx);
++		emit_add(RV_REG_T1, RV_REG_T1, rd, ctx);
+ 		emit(rv_sh(RV_REG_T1, 0, rs), ctx);
+ 		break;
+ 	case BPF_STX | BPF_MEM | BPF_W:
+ 		if (is_12b_int(off)) {
+-			emit(rv_sw(rd, off, rs), ctx);
++			emit_sw(rd, off, rs, ctx);
+ 			break;
+ 		}
+ 
+ 		emit_imm(RV_REG_T1, off, ctx);
+-		emit(rv_add(RV_REG_T1, RV_REG_T1, rd), ctx);
+-		emit(rv_sw(RV_REG_T1, 0, rs), ctx);
++		emit_add(RV_REG_T1, RV_REG_T1, rd, ctx);
++		emit_sw(RV_REG_T1, 0, rs, ctx);
+ 		break;
+ 	case BPF_STX | BPF_MEM | BPF_DW:
+ 		if (is_12b_int(off)) {
+-			emit(rv_sd(rd, off, rs), ctx);
++			emit_sd(rd, off, rs, ctx);
+ 			break;
+ 		}
+ 
+ 		emit_imm(RV_REG_T1, off, ctx);
+-		emit(rv_add(RV_REG_T1, RV_REG_T1, rd), ctx);
+-		emit(rv_sd(RV_REG_T1, 0, rs), ctx);
++		emit_add(RV_REG_T1, RV_REG_T1, rd, ctx);
++		emit_sd(RV_REG_T1, 0, rs, ctx);
+ 		break;
+ 	/* STX XADD: lock *(u32 *)(dst + off) += src */
+ 	case BPF_STX | BPF_XADD | BPF_W:
+@@ -1021,10 +1033,10 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 	case BPF_STX | BPF_XADD | BPF_DW:
+ 		if (off) {
+ 			if (is_12b_int(off)) {
+-				emit(rv_addi(RV_REG_T1, rd, off), ctx);
++				emit_addi(RV_REG_T1, rd, off, ctx);
+ 			} else {
+ 				emit_imm(RV_REG_T1, off, ctx);
+-				emit(rv_add(RV_REG_T1, RV_REG_T1, rd), ctx);
++				emit_add(RV_REG_T1, RV_REG_T1, rd, ctx);
+ 			}
+ 
+ 			rd = RV_REG_T1;
+@@ -1073,52 +1085,53 @@ void bpf_jit_build_prologue(struct rv_jit_context *ctx)
+ 
+ 	/* First instruction is always setting the tail-call-counter
+ 	 * (TCC) register. This instruction is skipped for tail calls.
++	 * Force using a 4-byte (non-compressed) instruction.
+ 	 */
+ 	emit(rv_addi(RV_REG_TCC, RV_REG_ZERO, MAX_TAIL_CALL_CNT), ctx);
+ 
+-	emit(rv_addi(RV_REG_SP, RV_REG_SP, -stack_adjust), ctx);
++	emit_addi(RV_REG_SP, RV_REG_SP, -stack_adjust, ctx);
+ 
+ 	if (seen_reg(RV_REG_RA, ctx)) {
+-		emit(rv_sd(RV_REG_SP, store_offset, RV_REG_RA), ctx);
++		emit_sd(RV_REG_SP, store_offset, RV_REG_RA, ctx);
+ 		store_offset -= 8;
+ 	}
+-	emit(rv_sd(RV_REG_SP, store_offset, RV_REG_FP), ctx);
++	emit_sd(RV_REG_SP, store_offset, RV_REG_FP, ctx);
+ 	store_offset -= 8;
+ 	if (seen_reg(RV_REG_S1, ctx)) {
+-		emit(rv_sd(RV_REG_SP, store_offset, RV_REG_S1), ctx);
++		emit_sd(RV_REG_SP, store_offset, RV_REG_S1, ctx);
+ 		store_offset -= 8;
+ 	}
+ 	if (seen_reg(RV_REG_S2, ctx)) {
+-		emit(rv_sd(RV_REG_SP, store_offset, RV_REG_S2), ctx);
++		emit_sd(RV_REG_SP, store_offset, RV_REG_S2, ctx);
+ 		store_offset -= 8;
+ 	}
+ 	if (seen_reg(RV_REG_S3, ctx)) {
+-		emit(rv_sd(RV_REG_SP, store_offset, RV_REG_S3), ctx);
++		emit_sd(RV_REG_SP, store_offset, RV_REG_S3, ctx);
+ 		store_offset -= 8;
+ 	}
+ 	if (seen_reg(RV_REG_S4, ctx)) {
+-		emit(rv_sd(RV_REG_SP, store_offset, RV_REG_S4), ctx);
++		emit_sd(RV_REG_SP, store_offset, RV_REG_S4, ctx);
+ 		store_offset -= 8;
+ 	}
+ 	if (seen_reg(RV_REG_S5, ctx)) {
+-		emit(rv_sd(RV_REG_SP, store_offset, RV_REG_S5), ctx);
++		emit_sd(RV_REG_SP, store_offset, RV_REG_S5, ctx);
+ 		store_offset -= 8;
+ 	}
+ 	if (seen_reg(RV_REG_S6, ctx)) {
+-		emit(rv_sd(RV_REG_SP, store_offset, RV_REG_S6), ctx);
++		emit_sd(RV_REG_SP, store_offset, RV_REG_S6, ctx);
+ 		store_offset -= 8;
+ 	}
+ 
+-	emit(rv_addi(RV_REG_FP, RV_REG_SP, stack_adjust), ctx);
++	emit_addi(RV_REG_FP, RV_REG_SP, stack_adjust, ctx);
+ 
+ 	if (bpf_stack_adjust)
+-		emit(rv_addi(RV_REG_S5, RV_REG_SP, bpf_stack_adjust), ctx);
++		emit_addi(RV_REG_S5, RV_REG_SP, bpf_stack_adjust, ctx);
+ 
+ 	/* Program contains calls and tail calls, so RV_REG_TCC need
+ 	 * to be saved across calls.
+ 	 */
+ 	if (seen_tail_call(ctx) &amp;&amp; seen_call(ctx))
+-		emit(rv_addi(RV_REG_TCC_SAVED, RV_REG_TCC, 0), ctx);
++		emit_mv(RV_REG_TCC_SAVED, RV_REG_TCC, ctx);
+ 
+ 	ctx-&gt;stack_size = stack_adjust;
+ }</pre><hr><pre>commit 804ec72c68c8477b8713a1e8f8eda120d3471031
+Author: Luke Nelson &lt;lukenels@cs.washington.edu&gt;
+Date:   Mon Jul 20 19:52:39 2020 -0700
+
+    bpf, riscv: Add encodings for compressed instructions
+    
+    This patch adds functions for encoding and emitting compressed riscv
+    (RVC) instructions to the BPF JIT.
+    
+    Some regular riscv instructions can be compressed into an RVC instruction
+    if the instruction fields meet some requirements. For example, "add rd,
+    rs1, rs2" can be compressed into "c.add rd, rs2" when rd == rs1.
+    
+    To make using RVC encodings simpler, this patch also adds helper
+    functions that selectively emit either a regular instruction or a
+    compressed instruction if possible.
+    
+    For example, emit_add will produce a "c.add" if possible and regular
+    "add" otherwise.
+    
+    Signed-off-by: Luke Nelson &lt;luke.r.nels@gmail.com&gt;
+    Signed-off-by: Alexei Starovoitov &lt;ast@kernel.org&gt;
+    Link: https://lore.kernel.org/bpf/20200721025241.8077-3-luke.r.nels@gmail.com
+
+diff --git a/arch/riscv/net/bpf_jit.h b/arch/riscv/net/bpf_jit.h
+index e90d336a9e5f..75c1e9996867 100644
+--- a/arch/riscv/net/bpf_jit.h
++++ b/arch/riscv/net/bpf_jit.h
+@@ -53,6 +53,18 @@ enum {
+ 	RV_REG_T6 =	31,
+ };
+ 
++static inline bool is_creg(u8 reg)
++{
++	return (1 &lt;&lt; reg) &amp; (BIT(RV_REG_FP) |
++			     BIT(RV_REG_S1) |
++			     BIT(RV_REG_A0) |
++			     BIT(RV_REG_A1) |
++			     BIT(RV_REG_A2) |
++			     BIT(RV_REG_A3) |
++			     BIT(RV_REG_A4) |
++			     BIT(RV_REG_A5));
++}
++
+ struct rv_jit_context {
+ 	struct bpf_prog *prog;
+ 	u16 *insns;		/* RV insns */
+@@ -142,6 +154,36 @@ static inline int invert_bpf_cond(u8 cond)
+ 	return -1;
+ }
+ 
++static inline bool is_6b_int(long val)
++{
++	return -(1L &lt;&lt; 5) &lt;= val &amp;&amp; val &lt; (1L &lt;&lt; 5);
++}
++
++static inline bool is_7b_uint(unsigned long val)
++{
++	return val &lt; (1UL &lt;&lt; 7);
++}
++
++static inline bool is_8b_uint(unsigned long val)
++{
++	return val &lt; (1UL &lt;&lt; 8);
++}
++
++static inline bool is_9b_uint(unsigned long val)
++{
++	return val &lt; (1UL &lt;&lt; 9);
++}
++
++static inline bool is_10b_int(long val)
++{
++	return -(1L &lt;&lt; 9) &lt;= val &amp;&amp; val &lt; (1L &lt;&lt; 9);
++}
++
++static inline bool is_10b_uint(unsigned long val)
++{
++	return val &lt; (1UL &lt;&lt; 10);
++}
++
+ static inline bool is_12b_int(long val)
+ {
+ 	return -(1L &lt;&lt; 11) &lt;= val &amp;&amp; val &lt; (1L &lt;&lt; 11);
+@@ -232,6 +274,59 @@ static inline u32 rv_amo_insn(u8 funct5, u8 aq, u8 rl, u8 rs2, u8 rs1,
+ 	return rv_r_insn(funct7, rs2, rs1, funct3, rd, opcode);
+ }
+ 
++/* RISC-V compressed instruction formats. */
++
++static inline u16 rv_cr_insn(u8 funct4, u8 rd, u8 rs2, u8 op)
++{
++	return (funct4 &lt;&lt; 12) | (rd &lt;&lt; 7) | (rs2 &lt;&lt; 2) | op;
++}
++
++static inline u16 rv_ci_insn(u8 funct3, u32 imm6, u8 rd, u8 op)
++{
++	u32 imm;
++
++	imm = ((imm6 &amp; 0x20) &lt;&lt; 7) | ((imm6 &amp; 0x1f) &lt;&lt; 2);
++	return (funct3 &lt;&lt; 13) | (rd &lt;&lt; 7) | op | imm;
++}
++
++static inline u16 rv_css_insn(u8 funct3, u32 uimm, u8 rs2, u8 op)
++{
++	return (funct3 &lt;&lt; 13) | (uimm &lt;&lt; 7) | (rs2 &lt;&lt; 2) | op;
++}
++
++static inline u16 rv_ciw_insn(u8 funct3, u32 uimm, u8 rd, u8 op)
++{
++	return (funct3 &lt;&lt; 13) | (uimm &lt;&lt; 5) | ((rd &amp; 0x7) &lt;&lt; 2) | op;
++}
++
++static inline u16 rv_cl_insn(u8 funct3, u32 imm_hi, u8 rs1, u32 imm_lo, u8 rd,
++			     u8 op)
++{
++	return (funct3 &lt;&lt; 13) | (imm_hi &lt;&lt; 10) | ((rs1 &amp; 0x7) &lt;&lt; 7) |
++		(imm_lo &lt;&lt; 5) | ((rd &amp; 0x7) &lt;&lt; 2) | op;
++}
++
++static inline u16 rv_cs_insn(u8 funct3, u32 imm_hi, u8 rs1, u32 imm_lo, u8 rs2,
++			     u8 op)
++{
++	return (funct3 &lt;&lt; 13) | (imm_hi &lt;&lt; 10) | ((rs1 &amp; 0x7) &lt;&lt; 7) |
++		(imm_lo &lt;&lt; 5) | ((rs2 &amp; 0x7) &lt;&lt; 2) | op;
++}
++
++static inline u16 rv_ca_insn(u8 funct6, u8 rd, u8 funct2, u8 rs2, u8 op)
++{
++	return (funct6 &lt;&lt; 10) | ((rd &amp; 0x7) &lt;&lt; 7) | (funct2 &lt;&lt; 5) |
++		((rs2 &amp; 0x7) &lt;&lt; 2) | op;
++}
++
++static inline u16 rv_cb_insn(u8 funct3, u32 imm6, u8 funct2, u8 rd, u8 op)
++{
++	u32 imm;
++
++	imm = ((imm6 &amp; 0x20) &lt;&lt; 7) | ((imm6 &amp; 0x1f) &lt;&lt; 2);
++	return (funct3 &lt;&lt; 13) | (funct2 &lt;&lt; 10) | ((rd &amp; 0x7) &lt;&lt; 7) | op | imm;
++}
++
+ /* Instructions shared by both RV32 and RV64. */
+ 
+ static inline u32 rv_addi(u8 rd, u8 rs1, u16 imm11_0)
+@@ -439,6 +534,135 @@ static inline u32 rv_amoadd_w(u8 rd, u8 rs2, u8 rs1, u8 aq, u8 rl)
+ 	return rv_amo_insn(0, aq, rl, rs2, rs1, 2, rd, 0x2f);
+ }
+ 
++/* RVC instrutions. */
++
++static inline u16 rvc_addi4spn(u8 rd, u32 imm10)
++{
++	u32 imm;
++
++	imm = ((imm10 &amp; 0x30) &lt;&lt; 2) | ((imm10 &amp; 0x3c0) &gt;&gt; 4) |
++		((imm10 &amp; 0x4) &gt;&gt; 1) | ((imm10 &amp; 0x8) &gt;&gt; 3);
++	return rv_ciw_insn(0x0, imm, rd, 0x0);
++}
++
++static inline u16 rvc_lw(u8 rd, u32 imm7, u8 rs1)
++{
++	u32 imm_hi, imm_lo;
++
++	imm_hi = (imm7 &amp; 0x38) &gt;&gt; 3;
++	imm_lo = ((imm7 &amp; 0x4) &gt;&gt; 1) | ((imm7 &amp; 0x40) &gt;&gt; 6);
++	return rv_cl_insn(0x2, imm_hi, rs1, imm_lo, rd, 0x0);
++}
++
++static inline u16 rvc_sw(u8 rs1, u32 imm7, u8 rs2)
++{
++	u32 imm_hi, imm_lo;
++
++	imm_hi = (imm7 &amp; 0x38) &gt;&gt; 3;
++	imm_lo = ((imm7 &amp; 0x4) &gt;&gt; 1) | ((imm7 &amp; 0x40) &gt;&gt; 6);
++	return rv_cs_insn(0x6, imm_hi, rs1, imm_lo, rs2, 0x0);
++}
++
++static inline u16 rvc_addi(u8 rd, u32 imm6)
++{
++	return rv_ci_insn(0, imm6, rd, 0x1);
++}
++
++static inline u16 rvc_li(u8 rd, u32 imm6)
++{
++	return rv_ci_insn(0x2, imm6, rd, 0x1);
++}
++
++static inline u16 rvc_addi16sp(u32 imm10)
++{
++	u32 imm;
++
++	imm = ((imm10 &amp; 0x200) &gt;&gt; 4) | (imm10 &amp; 0x10) | ((imm10 &amp; 0x40) &gt;&gt; 3) |
++		((imm10 &amp; 0x180) &gt;&gt; 6) | ((imm10 &amp; 0x20) &gt;&gt; 5);
++	return rv_ci_insn(0x3, imm, RV_REG_SP, 0x1);
++}
++
++static inline u16 rvc_lui(u8 rd, u32 imm6)
++{
++	return rv_ci_insn(0x3, imm6, rd, 0x1);
++}
++
++static inline u16 rvc_srli(u8 rd, u32 imm6)
++{
++	return rv_cb_insn(0x4, imm6, 0, rd, 0x1);
++}
++
++static inline u16 rvc_srai(u8 rd, u32 imm6)
++{
++	return rv_cb_insn(0x4, imm6, 0x1, rd, 0x1);
++}
++
++static inline u16 rvc_andi(u8 rd, u32 imm6)
++{
++	return rv_cb_insn(0x4, imm6, 0x2, rd, 0x1);
++}
++
++static inline u16 rvc_sub(u8 rd, u8 rs)
++{
++	return rv_ca_insn(0x23, rd, 0, rs, 0x1);
++}
++
++static inline u16 rvc_xor(u8 rd, u8 rs)
++{
++	return rv_ca_insn(0x23, rd, 0x1, rs, 0x1);
++}
++
++static inline u16 rvc_or(u8 rd, u8 rs)
++{
++	return rv_ca_insn(0x23, rd, 0x2, rs, 0x1);
++}
++
++static inline u16 rvc_and(u8 rd, u8 rs)
++{
++	return rv_ca_insn(0x23, rd, 0x3, rs, 0x1);
++}
++
++static inline u16 rvc_slli(u8 rd, u32 imm6)
++{
++	return rv_ci_insn(0, imm6, rd, 0x2);
++}
++
++static inline u16 rvc_lwsp(u8 rd, u32 imm8)
++{
++	u32 imm;
++
++	imm = ((imm8 &amp; 0xc0) &gt;&gt; 6) | (imm8 &amp; 0x3c);
++	return rv_ci_insn(0x2, imm, rd, 0x2);
++}
++
++static inline u16 rvc_jr(u8 rs1)
++{
++	return rv_cr_insn(0x8, rs1, RV_REG_ZERO, 0x2);
++}
++
++static inline u16 rvc_mv(u8 rd, u8 rs)
++{
++	return rv_cr_insn(0x8, rd, rs, 0x2);
++}
++
++static inline u16 rvc_jalr(u8 rs1)
++{
++	return rv_cr_insn(0x9, rs1, RV_REG_ZERO, 0x2);
++}
++
++static inline u16 rvc_add(u8 rd, u8 rs)
++{
++	return rv_cr_insn(0x9, rd, rs, 0x2);
++}
++
++static inline u16 rvc_swsp(u32 imm8, u8 rs2)
++{
++	u32 imm;
++
++	imm = (imm8 &amp; 0x3c) | ((imm8 &amp; 0xc0) &gt;&gt; 6);
++	return rv_css_insn(0x6, imm, rs2, 0x2);
++}
++
+ /*
+  * RV64-only instructions.
+  *
+@@ -528,6 +752,234 @@ static inline u32 rv_amoadd_d(u8 rd, u8 rs2, u8 rs1, u8 aq, u8 rl)
+ 	return rv_amo_insn(0, aq, rl, rs2, rs1, 3, rd, 0x2f);
+ }
+ 
++/* RV64-only RVC instructions. */
++
++static inline u16 rvc_ld(u8 rd, u32 imm8, u8 rs1)
++{
++	u32 imm_hi, imm_lo;
++
++	imm_hi = (imm8 &amp; 0x38) &gt;&gt; 3;
++	imm_lo = (imm8 &amp; 0xc0) &gt;&gt; 6;
++	return rv_cl_insn(0x3, imm_hi, rs1, imm_lo, rd, 0x0);
++}
++
++static inline u16 rvc_sd(u8 rs1, u32 imm8, u8 rs2)
++{
++	u32 imm_hi, imm_lo;
++
++	imm_hi = (imm8 &amp; 0x38) &gt;&gt; 3;
++	imm_lo = (imm8 &amp; 0xc0) &gt;&gt; 6;
++	return rv_cs_insn(0x7, imm_hi, rs1, imm_lo, rs2, 0x0);
++}
++
++static inline u16 rvc_subw(u8 rd, u8 rs)
++{
++	return rv_ca_insn(0x27, rd, 0, rs, 0x1);
++}
++
++static inline u16 rvc_addiw(u8 rd, u32 imm6)
++{
++	return rv_ci_insn(0x1, imm6, rd, 0x1);
++}
++
++static inline u16 rvc_ldsp(u8 rd, u32 imm9)
++{
++	u32 imm;
++
++	imm = ((imm9 &amp; 0x1c0) &gt;&gt; 6) | (imm9 &amp; 0x38);
++	return rv_ci_insn(0x3, imm, rd, 0x2);
++}
++
++static inline u16 rvc_sdsp(u32 imm9, u8 rs2)
++{
++	u32 imm;
++
++	imm = (imm9 &amp; 0x38) | ((imm9 &amp; 0x1c0) &gt;&gt; 6);
++	return rv_css_insn(0x7, imm, rs2, 0x2);
++}
++
++#endif /* __riscv_xlen == 64 */
++
++/* Helper functions that emit RVC instructions when possible. */
++
++static inline void emit_jalr(u8 rd, u8 rs, s32 imm, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rd == RV_REG_RA &amp;&amp; rs &amp;&amp; !imm)
++		emitc(rvc_jalr(rs), ctx);
++	else if (rvc_enabled() &amp;&amp; !rd &amp;&amp; rs &amp;&amp; !imm)
++		emitc(rvc_jr(rs), ctx);
++	else
++		emit(rv_jalr(rd, rs, imm), ctx);
++}
++
++static inline void emit_mv(u8 rd, u8 rs, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rd &amp;&amp; rs)
++		emitc(rvc_mv(rd, rs), ctx);
++	else
++		emit(rv_addi(rd, rs, 0), ctx);
++}
++
++static inline void emit_add(u8 rd, u8 rs1, u8 rs2, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rd &amp;&amp; rd == rs1 &amp;&amp; rs2)
++		emitc(rvc_add(rd, rs2), ctx);
++	else
++		emit(rv_add(rd, rs1, rs2), ctx);
++}
++
++static inline void emit_addi(u8 rd, u8 rs, s32 imm, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rd == RV_REG_SP &amp;&amp; rd == rs &amp;&amp; is_10b_int(imm) &amp;&amp; imm &amp;&amp; !(imm &amp; 0xf))
++		emitc(rvc_addi16sp(imm), ctx);
++	else if (rvc_enabled() &amp;&amp; is_creg(rd) &amp;&amp; rs == RV_REG_SP &amp;&amp; is_10b_uint(imm) &amp;&amp;
++		 !(imm &amp; 0x3) &amp;&amp; imm)
++		emitc(rvc_addi4spn(rd, imm), ctx);
++	else if (rvc_enabled() &amp;&amp; rd &amp;&amp; rd == rs &amp;&amp; imm &amp;&amp; is_6b_int(imm))
++		emitc(rvc_addi(rd, imm), ctx);
++	else
++		emit(rv_addi(rd, rs, imm), ctx);
++}
++
++static inline void emit_li(u8 rd, s32 imm, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rd &amp;&amp; is_6b_int(imm))
++		emitc(rvc_li(rd, imm), ctx);
++	else
++		emit(rv_addi(rd, RV_REG_ZERO, imm), ctx);
++}
++
++static inline void emit_lui(u8 rd, s32 imm, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rd &amp;&amp; rd != RV_REG_SP &amp;&amp; is_6b_int(imm) &amp;&amp; imm)
++		emitc(rvc_lui(rd, imm), ctx);
++	else
++		emit(rv_lui(rd, imm), ctx);
++}
++
++static inline void emit_slli(u8 rd, u8 rs, s32 imm, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rd &amp;&amp; rd == rs &amp;&amp; imm &amp;&amp; (u32)imm &lt; __riscv_xlen)
++		emitc(rvc_slli(rd, imm), ctx);
++	else
++		emit(rv_slli(rd, rs, imm), ctx);
++}
++
++static inline void emit_andi(u8 rd, u8 rs, s32 imm, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; is_creg(rd) &amp;&amp; rd == rs &amp;&amp; is_6b_int(imm))
++		emitc(rvc_andi(rd, imm), ctx);
++	else
++		emit(rv_andi(rd, rs, imm), ctx);
++}
++
++static inline void emit_srli(u8 rd, u8 rs, s32 imm, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; is_creg(rd) &amp;&amp; rd == rs &amp;&amp; imm &amp;&amp; (u32)imm &lt; __riscv_xlen)
++		emitc(rvc_srli(rd, imm), ctx);
++	else
++		emit(rv_srli(rd, rs, imm), ctx);
++}
++
++static inline void emit_srai(u8 rd, u8 rs, s32 imm, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; is_creg(rd) &amp;&amp; rd == rs &amp;&amp; imm &amp;&amp; (u32)imm &lt; __riscv_xlen)
++		emitc(rvc_srai(rd, imm), ctx);
++	else
++		emit(rv_srai(rd, rs, imm), ctx);
++}
++
++static inline void emit_sub(u8 rd, u8 rs1, u8 rs2, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; is_creg(rd) &amp;&amp; rd == rs1 &amp;&amp; is_creg(rs2))
++		emitc(rvc_sub(rd, rs2), ctx);
++	else
++		emit(rv_sub(rd, rs1, rs2), ctx);
++}
++
++static inline void emit_or(u8 rd, u8 rs1, u8 rs2, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; is_creg(rd) &amp;&amp; rd == rs1 &amp;&amp; is_creg(rs2))
++		emitc(rvc_or(rd, rs2), ctx);
++	else
++		emit(rv_or(rd, rs1, rs2), ctx);
++}
++
++static inline void emit_and(u8 rd, u8 rs1, u8 rs2, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; is_creg(rd) &amp;&amp; rd == rs1 &amp;&amp; is_creg(rs2))
++		emitc(rvc_and(rd, rs2), ctx);
++	else
++		emit(rv_and(rd, rs1, rs2), ctx);
++}
++
++static inline void emit_xor(u8 rd, u8 rs1, u8 rs2, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; is_creg(rd) &amp;&amp; rd == rs1 &amp;&amp; is_creg(rs2))
++		emitc(rvc_xor(rd, rs2), ctx);
++	else
++		emit(rv_xor(rd, rs1, rs2), ctx);
++}
++
++static inline void emit_lw(u8 rd, s32 off, u8 rs1, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rs1 == RV_REG_SP &amp;&amp; rd &amp;&amp; is_8b_uint(off) &amp;&amp; !(off &amp; 0x3))
++		emitc(rvc_lwsp(rd, off), ctx);
++	else if (rvc_enabled() &amp;&amp; is_creg(rd) &amp;&amp; is_creg(rs1) &amp;&amp; is_7b_uint(off) &amp;&amp; !(off &amp; 0x3))
++		emitc(rvc_lw(rd, off, rs1), ctx);
++	else
++		emit(rv_lw(rd, off, rs1), ctx);
++}
++
++static inline void emit_sw(u8 rs1, s32 off, u8 rs2, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rs1 == RV_REG_SP &amp;&amp; is_8b_uint(off) &amp;&amp; !(off &amp; 0x3))
++		emitc(rvc_swsp(off, rs2), ctx);
++	else if (rvc_enabled() &amp;&amp; is_creg(rs1) &amp;&amp; is_creg(rs2) &amp;&amp; is_7b_uint(off) &amp;&amp; !(off &amp; 0x3))
++		emitc(rvc_sw(rs1, off, rs2), ctx);
++	else
++		emit(rv_sw(rs1, off, rs2), ctx);
++}
++
++/* RV64-only helper functions. */
++#if __riscv_xlen == 64
++
++static inline void emit_addiw(u8 rd, u8 rs, s32 imm, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rd &amp;&amp; rd == rs &amp;&amp; is_6b_int(imm))
++		emitc(rvc_addiw(rd, imm), ctx);
++	else
++		emit(rv_addiw(rd, rs, imm), ctx);
++}
++
++static inline void emit_ld(u8 rd, s32 off, u8 rs1, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rs1 == RV_REG_SP &amp;&amp; rd &amp;&amp; is_9b_uint(off) &amp;&amp; !(off &amp; 0x7))
++		emitc(rvc_ldsp(rd, off), ctx);
++	else if (rvc_enabled() &amp;&amp; is_creg(rd) &amp;&amp; is_creg(rs1) &amp;&amp; is_8b_uint(off) &amp;&amp; !(off &amp; 0x7))
++		emitc(rvc_ld(rd, off, rs1), ctx);
++	else
++		emit(rv_ld(rd, off, rs1), ctx);
++}
++
++static inline void emit_sd(u8 rs1, s32 off, u8 rs2, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; rs1 == RV_REG_SP &amp;&amp; is_9b_uint(off) &amp;&amp; !(off &amp; 0x7))
++		emitc(rvc_sdsp(off, rs2), ctx);
++	else if (rvc_enabled() &amp;&amp; is_creg(rs1) &amp;&amp; is_creg(rs2) &amp;&amp; is_8b_uint(off) &amp;&amp; !(off &amp; 0x7))
++		emitc(rvc_sd(rs1, off, rs2), ctx);
++	else
++		emit(rv_sd(rs1, off, rs2), ctx);
++}
++
++static inline void emit_subw(u8 rd, u8 rs1, u8 rs2, struct rv_jit_context *ctx)
++{
++	if (rvc_enabled() &amp;&amp; is_creg(rd) &amp;&amp; rd == rs1 &amp;&amp; is_creg(rs2))
++		emitc(rvc_subw(rd, rs2), ctx);
++	else
++		emit(rv_subw(rd, rs1, rs2), ctx);
++}
++
+ #endif /* __riscv_xlen == 64 */
+ 
+ void bpf_jit_build_prologue(struct rv_jit_context *ctx);</pre><hr><pre>commit bfabff3cb0fef366086c64f24be8ab316a355b99
+Author: Luke Nelson &lt;lukenels@cs.washington.edu&gt;
+Date:   Mon Jul 20 19:52:38 2020 -0700
+
+    bpf, riscv: Modify JIT ctx to support compressed instructions
+    
+    This patch makes the necessary changes to struct rv_jit_context and to
+    bpf_int_jit_compile to support compressed riscv (RVC) instructions in
+    the BPF JIT.
+    
+    It changes the JIT image to be u16 instead of u32, since RVC instructions
+    are 2 bytes as opposed to 4.
+    
+    It also changes ctx-&gt;offset and ctx-&gt;ninsns to refer to 2-byte
+    instructions rather than 4-byte ones. The riscv PC is required to be
+    16-bit aligned with or without RVC, so this is sufficient to refer to
+    any valid riscv offset.
+    
+    The code for computing jump offsets in bytes is updated accordingly,
+    and factored into a new "ninsns_rvoff" function to simplify the code.
+    
+    Signed-off-by: Luke Nelson &lt;luke.r.nels@gmail.com&gt;
+    Signed-off-by: Alexei Starovoitov &lt;ast@kernel.org&gt;
+    Link: https://lore.kernel.org/bpf/20200721025241.8077-2-luke.r.nels@gmail.com
+
+diff --git a/arch/riscv/net/bpf_jit.h b/arch/riscv/net/bpf_jit.h
+index 20e235d06f66..e90d336a9e5f 100644
+--- a/arch/riscv/net/bpf_jit.h
++++ b/arch/riscv/net/bpf_jit.h
+@@ -13,6 +13,11 @@
+ #include &lt;linux/filter.h&gt;
+ #include &lt;asm/cacheflush.h&gt;
+ 
++static inline bool rvc_enabled(void)
++{
++	return IS_ENABLED(CONFIG_RISCV_ISA_C);
++}
++
+ enum {
+ 	RV_REG_ZERO =	0,	/* The constant value 0 */
+ 	RV_REG_RA =	1,	/* Return address */
+@@ -50,7 +55,7 @@ enum {
+ 
+ struct rv_jit_context {
+ 	struct bpf_prog *prog;
+-	u32 *insns;		/* RV insns */
++	u16 *insns;		/* RV insns */
+ 	int ninsns;
+ 	int epilogue_offset;
+ 	int *offset;		/* BPF to RV */
+@@ -58,6 +63,12 @@ struct rv_jit_context {
+ 	int stack_size;
+ };
+ 
++/* Convert from ninsns to bytes. */
++static inline int ninsns_rvoff(int ninsns)
++{
++	return ninsns &lt;&lt; 1;
++}
++
+ struct rv_jit_data {
+ 	struct bpf_binary_header *header;
+ 	u8 *image;
+@@ -74,8 +85,22 @@ static inline void bpf_flush_icache(void *start, void *end)
+ 	flush_icache_range((unsigned long)start, (unsigned long)end);
+ }
+ 
++/* Emit a 4-byte riscv instruction. */
+ static inline void emit(const u32 insn, struct rv_jit_context *ctx)
+ {
++	if (ctx-&gt;insns) {
++		ctx-&gt;insns[ctx-&gt;ninsns] = insn;
++		ctx-&gt;insns[ctx-&gt;ninsns + 1] = (insn &gt;&gt; 16);
++	}
++
++	ctx-&gt;ninsns += 2;
++}
++
++/* Emit a 2-byte riscv compressed instruction. */
++static inline void emitc(const u16 insn, struct rv_jit_context *ctx)
++{
++	BUILD_BUG_ON(!rvc_enabled());
++
+ 	if (ctx-&gt;insns)
+ 		ctx-&gt;insns[ctx-&gt;ninsns] = insn;
+ 
+@@ -86,7 +111,7 @@ static inline int epilogue_offset(struct rv_jit_context *ctx)
+ {
+ 	int to = ctx-&gt;epilogue_offset, from = ctx-&gt;ninsns;
+ 
+-	return (to - from) &lt;&lt; 2;
++	return ninsns_rvoff(to - from);
+ }
+ 
+ /* Return -1 or inverted cond. */
+@@ -149,7 +174,7 @@ static inline int rv_offset(int insn, int off, struct rv_jit_context *ctx)
+ 	off++; /* BPF branch is from PC+1, RV is from PC */
+ 	from = (insn &gt; 0) ? ctx-&gt;offset[insn - 1] : 0;
+ 	to = (insn + off &gt; 0) ? ctx-&gt;offset[insn + off - 1] : 0;
+-	return (to - from) &lt;&lt; 2;
++	return ninsns_rvoff(to - from);
+ }
+ 
+ /* Instruction formats. */
+diff --git a/arch/riscv/net/bpf_jit_comp32.c b/arch/riscv/net/bpf_jit_comp32.c
+index b198eaa74456..bc5f2204693f 100644
+--- a/arch/riscv/net/bpf_jit_comp32.c
++++ b/arch/riscv/net/bpf_jit_comp32.c
+@@ -644,7 +644,7 @@ static int emit_branch_r64(const s8 *src1, const s8 *src2, s32 rvoff,
+ 
+ 	e = ctx-&gt;ninsns;
+ 	/* Adjust for extra insns. */
+-	rvoff -= (e - s) &lt;&lt; 2;
++	rvoff -= ninsns_rvoff(e - s);
+ 	emit_jump_and_link(RV_REG_ZERO, rvoff, true, ctx);
+ 	return 0;
+ }
+@@ -713,7 +713,7 @@ static int emit_bcc(u8 op, u8 rd, u8 rs, int rvoff, struct rv_jit_context *ctx)
+ 	if (far) {
+ 		e = ctx-&gt;ninsns;
+ 		/* Adjust for extra insns. */
+-		rvoff -= (e - s) &lt;&lt; 2;
++		rvoff -= ninsns_rvoff(e - s);
+ 		emit_jump_and_link(RV_REG_ZERO, rvoff, true, ctx);
+ 	}
+ 	return 0;
+@@ -731,7 +731,7 @@ static int emit_branch_r32(const s8 *src1, const s8 *src2, s32 rvoff,
+ 
+ 	e = ctx-&gt;ninsns;
+ 	/* Adjust for extra insns. */
+-	rvoff -= (e - s) &lt;&lt; 2;
++	rvoff -= ninsns_rvoff(e - s);
+ 
+ 	if (emit_bcc(op, lo(rs1), lo(rs2), rvoff, ctx))
+ 		return -1;
+@@ -795,7 +795,7 @@ static int emit_bpf_tail_call(int insn, struct rv_jit_context *ctx)
+ 	 * if (index &gt;= max_entries)
+ 	 *   goto out;
+ 	 */
+-	off = (tc_ninsn - (ctx-&gt;ninsns - start_insn)) &lt;&lt; 2;
++	off = ninsns_rvoff(tc_ninsn - (ctx-&gt;ninsns - start_insn));
+ 	emit_bcc(BPF_JGE, lo(idx_reg), RV_REG_T1, off, ctx);
+ 
+ 	/*
+@@ -804,7 +804,7 @@ static int emit_bpf_tail_call(int insn, struct rv_jit_context *ctx)
+ 	 *   goto out;
+ 	 */
+ 	emit(rv_addi(RV_REG_T1, RV_REG_TCC, -1), ctx);
+-	off = (tc_ninsn - (ctx-&gt;ninsns - start_insn)) &lt;&lt; 2;
++	off = ninsns_rvoff(tc_ninsn - (ctx-&gt;ninsns - start_insn));
+ 	emit_bcc(BPF_JSLT, RV_REG_TCC, RV_REG_ZERO, off, ctx);
+ 
+ 	/*
+@@ -818,7 +818,7 @@ static int emit_bpf_tail_call(int insn, struct rv_jit_context *ctx)
+ 	if (is_12b_check(off, insn))
+ 		return -1;
+ 	emit(rv_lw(RV_REG_T0, off, RV_REG_T0), ctx);
+-	off = (tc_ninsn - (ctx-&gt;ninsns - start_insn)) &lt;&lt; 2;
++	off = ninsns_rvoff(tc_ninsn - (ctx-&gt;ninsns - start_insn));
+ 	emit_bcc(BPF_JEQ, RV_REG_T0, RV_REG_ZERO, off, ctx);
+ 
+ 	/*
+@@ -1214,7 +1214,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 			emit_imm32(tmp2, imm, ctx);
+ 			src = tmp2;
+ 			e = ctx-&gt;ninsns;
+-			rvoff -= (e - s) &lt;&lt; 2;
++			rvoff -= ninsns_rvoff(e - s);
+ 		}
+ 
+ 		if (is64)
+diff --git a/arch/riscv/net/bpf_jit_comp64.c b/arch/riscv/net/bpf_jit_comp64.c
+index 6cfd164cbe88..55861269da2a 100644
+--- a/arch/riscv/net/bpf_jit_comp64.c
++++ b/arch/riscv/net/bpf_jit_comp64.c
+@@ -304,14 +304,14 @@ static int emit_bpf_tail_call(int insn, struct rv_jit_context *ctx)
+ 	if (is_12b_check(off, insn))
+ 		return -1;
+ 	emit(rv_lwu(RV_REG_T1, off, RV_REG_A1), ctx);
+-	off = (tc_ninsn - (ctx-&gt;ninsns - start_insn)) &lt;&lt; 2;
++	off = ninsns_rvoff(tc_ninsn - (ctx-&gt;ninsns - start_insn));
+ 	emit_branch(BPF_JGE, RV_REG_A2, RV_REG_T1, off, ctx);
+ 
+ 	/* if (TCC-- &lt; 0)
+ 	 *     goto out;
+ 	 */
+ 	emit(rv_addi(RV_REG_T1, tcc, -1), ctx);
+-	off = (tc_ninsn - (ctx-&gt;ninsns - start_insn)) &lt;&lt; 2;
++	off = ninsns_rvoff(tc_ninsn - (ctx-&gt;ninsns - start_insn));
+ 	emit_branch(BPF_JSLT, tcc, RV_REG_ZERO, off, ctx);
+ 
+ 	/* prog = array-&gt;ptrs[index];
+@@ -324,7 +324,7 @@ static int emit_bpf_tail_call(int insn, struct rv_jit_context *ctx)
+ 	if (is_12b_check(off, insn))
+ 		return -1;
+ 	emit(rv_ld(RV_REG_T2, off, RV_REG_T2), ctx);
+-	off = (tc_ninsn - (ctx-&gt;ninsns - start_insn)) &lt;&lt; 2;
++	off = ninsns_rvoff(tc_ninsn - (ctx-&gt;ninsns - start_insn));
+ 	emit_branch(BPF_JEQ, RV_REG_T2, RV_REG_ZERO, off, ctx);
+ 
+ 	/* goto *(prog-&gt;bpf_func + 4); */
+@@ -757,7 +757,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 			e = ctx-&gt;ninsns;
+ 
+ 			/* Adjust for extra insns */
+-			rvoff -= (e - s) &lt;&lt; 2;
++			rvoff -= ninsns_rvoff(e - s);
+ 		}
+ 
+ 		if (BPF_OP(code) == BPF_JSET) {
+@@ -810,7 +810,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		e = ctx-&gt;ninsns;
+ 
+ 		/* Adjust for extra insns */
+-		rvoff -= (e - s) &lt;&lt; 2;
++		rvoff -= ninsns_rvoff(e - s);
+ 		emit_branch(BPF_OP(code), rd, rs, rvoff, ctx);
+ 		break;
+ 
+@@ -831,7 +831,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		if (!is64 &amp;&amp; imm &lt; 0)
+ 			emit(rv_addiw(RV_REG_T1, RV_REG_T1, 0), ctx);
+ 		e = ctx-&gt;ninsns;
+-		rvoff -= (e - s) &lt;&lt; 2;
++		rvoff -= ninsns_rvoff(e - s);
+ 		emit_branch(BPF_JNE, RV_REG_T1, RV_REG_ZERO, rvoff, ctx);
+ 		break;
+ 
+diff --git a/arch/riscv/net/bpf_jit_core.c b/arch/riscv/net/bpf_jit_core.c
+index 709b94ece3ed..3630d447352c 100644
+--- a/arch/riscv/net/bpf_jit_core.c
++++ b/arch/riscv/net/bpf_jit_core.c
+@@ -73,7 +73,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
+ 
+ 	if (ctx-&gt;offset) {
+ 		extra_pass = true;
+-		image_size = sizeof(u32) * ctx-&gt;ninsns;
++		image_size = sizeof(*ctx-&gt;insns) * ctx-&gt;ninsns;
+ 		goto skip_init_ctx;
+ 	}
+ 
+@@ -103,7 +103,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
+ 			if (jit_data-&gt;header)
+ 				break;
+ 
+-			image_size = sizeof(u32) * ctx-&gt;ninsns;
++			image_size = sizeof(*ctx-&gt;insns) * ctx-&gt;ninsns;
+ 			jit_data-&gt;header =
+ 				bpf_jit_binary_alloc(image_size,
+ 						     &amp;jit_data-&gt;image,
+@@ -114,7 +114,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
+ 				goto out_offset;
+ 			}
+ 
+-			ctx-&gt;insns = (u32 *)jit_data-&gt;image;
++			ctx-&gt;insns = (u16 *)jit_data-&gt;image;
+ 			/*
+ 			 * Now, when the image is allocated, the image can
+ 			 * potentially shrink more (auipc/jalr -&gt; jal).</pre><hr><pre>commit fd868f14818901821699988fdac680ebd80cd360
+Author: Luke Nelson &lt;lukenels@cs.washington.edu&gt;
+Date:   Fri May 8 11:15:46 2020 -0700
+
+    bpf, arm64: Optimize ADD,SUB,JMP BPF_K using arm64 add/sub immediates
+    
+    The current code for BPF_{ADD,SUB} BPF_K loads the BPF immediate to a
+    temporary register before performing the addition/subtraction. Similarly,
+    BPF_JMP BPF_K cases load the immediate to a temporary register before
+    comparison.
+    
+    This patch introduces optimizations that use arm64 immediate add, sub,
+    cmn, or cmp instructions when the BPF immediate fits. If the immediate
+    does not fit, it falls back to using a temporary register.
+    
+    Example of generated code for BPF_ALU64_IMM(BPF_ADD, R0, 2):
+    
+    without optimization:
+    
+      24: mov x10, #0x2
+      28: add x7, x7, x10
+    
+    with optimization:
+    
+      24: add x7, x7, #0x2
+    
+    The code could use A64_{ADD,SUB}_I directly and check if it returns
+    AARCH64_BREAK_FAULT, similar to how logical immediates are handled.
+    However, aarch64_insn_gen_add_sub_imm from insn.c prints error messages
+    when the immediate does not fit, and it's simpler to check if the
+    immediate fits ahead of time.
+    
+    Co-developed-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Luke Nelson &lt;luke.r.nels@gmail.com&gt;
+    Acked-by: Daniel Borkmann &lt;daniel@iogearbox.net&gt;
+    Link: https://lore.kernel.org/r/20200508181547.24783-4-luke.r.nels@gmail.com
+    Signed-off-by: Will Deacon &lt;will@kernel.org&gt;
+
+diff --git a/arch/arm64/net/bpf_jit.h b/arch/arm64/net/bpf_jit.h
+index f36a779949e6..923ae7ff68c8 100644
+--- a/arch/arm64/net/bpf_jit.h
++++ b/arch/arm64/net/bpf_jit.h
+@@ -100,6 +100,14 @@
+ /* Rd = Rn OP imm12 */
+ #define A64_ADD_I(sf, Rd, Rn, imm12) A64_ADDSUB_IMM(sf, Rd, Rn, imm12, ADD)
+ #define A64_SUB_I(sf, Rd, Rn, imm12) A64_ADDSUB_IMM(sf, Rd, Rn, imm12, SUB)
++#define A64_ADDS_I(sf, Rd, Rn, imm12) \
++	A64_ADDSUB_IMM(sf, Rd, Rn, imm12, ADD_SETFLAGS)
++#define A64_SUBS_I(sf, Rd, Rn, imm12) \
++	A64_ADDSUB_IMM(sf, Rd, Rn, imm12, SUB_SETFLAGS)
++/* Rn + imm12; set condition flags */
++#define A64_CMN_I(sf, Rn, imm12) A64_ADDS_I(sf, A64_ZR, Rn, imm12)
++/* Rn - imm12; set condition flags */
++#define A64_CMP_I(sf, Rn, imm12) A64_SUBS_I(sf, A64_ZR, Rn, imm12)
+ /* Rd = Rn */
+ #define A64_MOV(sf, Rd, Rn) A64_ADD_I(sf, Rd, Rn, 0)
+ 
+diff --git a/arch/arm64/net/bpf_jit_comp.c b/arch/arm64/net/bpf_jit_comp.c
+index 083e5d8a5e2c..561a2fea9cdd 100644
+--- a/arch/arm64/net/bpf_jit_comp.c
++++ b/arch/arm64/net/bpf_jit_comp.c
+@@ -167,6 +167,12 @@ static inline int epilogue_offset(const struct jit_ctx *ctx)
+ 	return to - from;
+ }
+ 
++static bool is_addsub_imm(u32 imm)
++{
++	/* Either imm12 or shifted imm12. */
++	return !(imm &amp; ~0xfff) || !(imm &amp; ~0xfff000);
++}
++
+ /* Stack must be multiples of 16B */
+ #define STACK_ALIGN(sz) (((sz) + 15) &amp; ~15)
+ 
+@@ -479,13 +485,25 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
+ 	/* dst = dst OP imm */
+ 	case BPF_ALU | BPF_ADD | BPF_K:
+ 	case BPF_ALU64 | BPF_ADD | BPF_K:
+-		emit_a64_mov_i(is64, tmp, imm, ctx);
+-		emit(A64_ADD(is64, dst, dst, tmp), ctx);
++		if (is_addsub_imm(imm)) {
++			emit(A64_ADD_I(is64, dst, dst, imm), ctx);
++		} else if (is_addsub_imm(-imm)) {
++			emit(A64_SUB_I(is64, dst, dst, -imm), ctx);
++		} else {
++			emit_a64_mov_i(is64, tmp, imm, ctx);
++			emit(A64_ADD(is64, dst, dst, tmp), ctx);
++		}
+ 		break;
+ 	case BPF_ALU | BPF_SUB | BPF_K:
+ 	case BPF_ALU64 | BPF_SUB | BPF_K:
+-		emit_a64_mov_i(is64, tmp, imm, ctx);
+-		emit(A64_SUB(is64, dst, dst, tmp), ctx);
++		if (is_addsub_imm(imm)) {
++			emit(A64_SUB_I(is64, dst, dst, imm), ctx);
++		} else if (is_addsub_imm(-imm)) {
++			emit(A64_ADD_I(is64, dst, dst, -imm), ctx);
++		} else {
++			emit_a64_mov_i(is64, tmp, imm, ctx);
++			emit(A64_SUB(is64, dst, dst, tmp), ctx);
++		}
+ 		break;
+ 	case BPF_ALU | BPF_AND | BPF_K:
+ 	case BPF_ALU64 | BPF_AND | BPF_K:
+@@ -639,8 +657,14 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
+ 	case BPF_JMP32 | BPF_JSLT | BPF_K:
+ 	case BPF_JMP32 | BPF_JSGE | BPF_K:
+ 	case BPF_JMP32 | BPF_JSLE | BPF_K:
+-		emit_a64_mov_i(is64, tmp, imm, ctx);
+-		emit(A64_CMP(is64, dst, tmp), ctx);
++		if (is_addsub_imm(imm)) {
++			emit(A64_CMP_I(is64, dst, imm), ctx);
++		} else if (is_addsub_imm(-imm)) {
++			emit(A64_CMN_I(is64, dst, -imm), ctx);
++		} else {
++			emit_a64_mov_i(is64, tmp, imm, ctx);
++			emit(A64_CMP(is64, dst, tmp), ctx);
++		}
+ 		goto emit_cond_jmp;
+ 	case BPF_JMP | BPF_JSET | BPF_K:
+ 	case BPF_JMP32 | BPF_JSET | BPF_K:</pre><hr><pre>commit fd49591cb49b72abd1b665222a635ccb17df7923
+Author: Luke Nelson &lt;lukenels@cs.washington.edu&gt;
+Date:   Fri May 8 11:15:45 2020 -0700
+
+    bpf, arm64: Optimize AND,OR,XOR,JSET BPF_K using arm64 logical immediates
+    
+    The current code for BPF_{AND,OR,XOR,JSET} BPF_K loads the immediate to
+    a temporary register before use.
+    
+    This patch changes the code to avoid using a temporary register
+    when the BPF immediate is encodable using an arm64 logical immediate
+    instruction. If the encoding fails (due to the immediate not being
+    encodable), it falls back to using a temporary register.
+    
+    Example of generated code for BPF_ALU32_IMM(BPF_AND, R0, 0x80000001):
+    
+    without optimization:
+    
+      24: mov  w10, #0x8000ffff
+      28: movk w10, #0x1
+      2c: and  w7, w7, w10
+    
+    with optimization:
+    
+      24: and  w7, w7, #0x80000001
+    
+    Since the encoding process is quite complex, the JIT reuses existing
+    functionality in arch/arm64/kernel/insn.c for encoding logical immediates
+    rather than duplicate it in the JIT.
+    
+    Co-developed-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Luke Nelson &lt;luke.r.nels@gmail.com&gt;
+    Acked-by: Daniel Borkmann &lt;daniel@iogearbox.net&gt;
+    Link: https://lore.kernel.org/r/20200508181547.24783-3-luke.r.nels@gmail.com
+    Signed-off-by: Will Deacon &lt;will@kernel.org&gt;
+
+diff --git a/arch/arm64/net/bpf_jit.h b/arch/arm64/net/bpf_jit.h
+index eb73f9f72c46..f36a779949e6 100644
+--- a/arch/arm64/net/bpf_jit.h
++++ b/arch/arm64/net/bpf_jit.h
+@@ -189,4 +189,18 @@
+ /* Rn &amp; Rm; set condition flags */
+ #define A64_TST(sf, Rn, Rm) A64_ANDS(sf, A64_ZR, Rn, Rm)
+ 
++/* Logical (immediate) */
++#define A64_LOGIC_IMM(sf, Rd, Rn, imm, type) ({ \
++	u64 imm64 = (sf) ? (u64)imm : (u64)(u32)imm; \
++	aarch64_insn_gen_logical_immediate(AARCH64_INSN_LOGIC_##type, \
++		A64_VARIANT(sf), Rn, Rd, imm64); \
++})
++/* Rd = Rn OP imm */
++#define A64_AND_I(sf, Rd, Rn, imm) A64_LOGIC_IMM(sf, Rd, Rn, imm, AND)
++#define A64_ORR_I(sf, Rd, Rn, imm) A64_LOGIC_IMM(sf, Rd, Rn, imm, ORR)
++#define A64_EOR_I(sf, Rd, Rn, imm) A64_LOGIC_IMM(sf, Rd, Rn, imm, EOR)
++#define A64_ANDS_I(sf, Rd, Rn, imm) A64_LOGIC_IMM(sf, Rd, Rn, imm, AND_SETFLAGS)
++/* Rn &amp; imm; set condition flags */
++#define A64_TST_I(sf, Rn, imm) A64_ANDS_I(sf, A64_ZR, Rn, imm)
++
+ #endif /* _BPF_JIT_H */
+diff --git a/arch/arm64/net/bpf_jit_comp.c b/arch/arm64/net/bpf_jit_comp.c
+index cdc79de0c794..083e5d8a5e2c 100644
+--- a/arch/arm64/net/bpf_jit_comp.c
++++ b/arch/arm64/net/bpf_jit_comp.c
+@@ -356,6 +356,7 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
+ 	const bool isdw = BPF_SIZE(code) == BPF_DW;
+ 	u8 jmp_cond, reg;
+ 	s32 jmp_offset;
++	u32 a64_insn;
+ 
+ #define check_imm(bits, imm) do {				\
+ 	if ((((imm) &gt; 0) &amp;&amp; ((imm) &gt;&gt; (bits))) ||		\
+@@ -488,18 +489,33 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
+ 		break;
+ 	case BPF_ALU | BPF_AND | BPF_K:
+ 	case BPF_ALU64 | BPF_AND | BPF_K:
+-		emit_a64_mov_i(is64, tmp, imm, ctx);
+-		emit(A64_AND(is64, dst, dst, tmp), ctx);
++		a64_insn = A64_AND_I(is64, dst, dst, imm);
++		if (a64_insn != AARCH64_BREAK_FAULT) {
++			emit(a64_insn, ctx);
++		} else {
++			emit_a64_mov_i(is64, tmp, imm, ctx);
++			emit(A64_AND(is64, dst, dst, tmp), ctx);
++		}
+ 		break;
+ 	case BPF_ALU | BPF_OR | BPF_K:
+ 	case BPF_ALU64 | BPF_OR | BPF_K:
+-		emit_a64_mov_i(is64, tmp, imm, ctx);
+-		emit(A64_ORR(is64, dst, dst, tmp), ctx);
++		a64_insn = A64_ORR_I(is64, dst, dst, imm);
++		if (a64_insn != AARCH64_BREAK_FAULT) {
++			emit(a64_insn, ctx);
++		} else {
++			emit_a64_mov_i(is64, tmp, imm, ctx);
++			emit(A64_ORR(is64, dst, dst, tmp), ctx);
++		}
+ 		break;
+ 	case BPF_ALU | BPF_XOR | BPF_K:
+ 	case BPF_ALU64 | BPF_XOR | BPF_K:
+-		emit_a64_mov_i(is64, tmp, imm, ctx);
+-		emit(A64_EOR(is64, dst, dst, tmp), ctx);
++		a64_insn = A64_EOR_I(is64, dst, dst, imm);
++		if (a64_insn != AARCH64_BREAK_FAULT) {
++			emit(a64_insn, ctx);
++		} else {
++			emit_a64_mov_i(is64, tmp, imm, ctx);
++			emit(A64_EOR(is64, dst, dst, tmp), ctx);
++		}
+ 		break;
+ 	case BPF_ALU | BPF_MUL | BPF_K:
+ 	case BPF_ALU64 | BPF_MUL | BPF_K:
+@@ -628,8 +644,13 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
+ 		goto emit_cond_jmp;
+ 	case BPF_JMP | BPF_JSET | BPF_K:
+ 	case BPF_JMP32 | BPF_JSET | BPF_K:
+-		emit_a64_mov_i(is64, tmp, imm, ctx);
+-		emit(A64_TST(is64, dst, tmp), ctx);
++		a64_insn = A64_TST_I(is64, dst, imm);
++		if (a64_insn != AARCH64_BREAK_FAULT) {
++			emit(a64_insn, ctx);
++		} else {
++			emit_a64_mov_i(is64, tmp, imm, ctx);
++			emit(A64_TST(is64, dst, tmp), ctx);
++		}
+ 		goto emit_cond_jmp;
+ 	/* function call */
+ 	case BPF_JMP | BPF_CALL:</pre><hr><pre>commit 579d1b3faa3735e781ff74aac0afd598515dbc63
+Author: Luke Nelson &lt;lukenels@cs.washington.edu&gt;
+Date:   Fri May 8 11:15:44 2020 -0700
+
+    arm64: insn: Fix two bugs in encoding 32-bit logical immediates
+    
+    This patch fixes two issues present in the current function for encoding
+    arm64 logical immediates when using the 32-bit variants of instructions.
+    
+    First, the code does not correctly reject an all-ones 32-bit immediate,
+    and returns an undefined instruction encoding.
+    
+    Second, the code incorrectly rejects some 32-bit immediates that are
+    actually encodable as logical immediates. The root cause is that the code
+    uses a default mask of 64-bit all-ones, even for 32-bit immediates.
+    This causes an issue later on when the default mask is used to fill the
+    top bits of the immediate with ones, shown here:
+    
+      /*
+       * Pattern: 0..01..10..01..1
+       *
+       * Fill the unused top bits with ones, and check if
+       * the result is a valid immediate (all ones with a
+       * contiguous ranges of zeroes).
+       */
+      imm |= ~mask;
+      if (!range_of_ones(~imm))
+              return AARCH64_BREAK_FAULT;
+    
+    To see the problem, consider an immediate of the form 0..01..10..01..1,
+    where the upper 32 bits are zero, such as 0x80000001. The code checks
+    if ~(imm | ~mask) contains a range of ones: the incorrect mask yields
+    1..10..01..10..0, which fails the check; the correct mask yields
+    0..01..10..0, which succeeds.
+    
+    The fix for both issues is to generate a correct mask based on the
+    instruction immediate size, and use the mask to check for all-ones,
+    all-zeroes, and values wider than the mask.
+    
+    Currently, arch/arm64/kvm/va_layout.c is the only user of this function,
+    which uses 64-bit immediates and therefore won't trigger these bugs.
+    
+    We tested the new code against llvm-mc with all 1,302 encodable 32-bit
+    logical immediates and all 5,334 encodable 64-bit logical immediates.
+    
+    Fixes: ef3935eeebff ("arm64: insn: Add encoder for bitwise operations using literals")
+    Suggested-by: Will Deacon &lt;will@kernel.org&gt;
+    Co-developed-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Luke Nelson &lt;luke.r.nels@gmail.com&gt;
+    Reviewed-by: Marc Zyngier &lt;maz@kernel.org&gt;
+    Link: https://lore.kernel.org/r/20200508181547.24783-2-luke.r.nels@gmail.com
+    Signed-off-by: Will Deacon &lt;will@kernel.org&gt;
+
+diff --git a/arch/arm64/kernel/insn.c b/arch/arm64/kernel/insn.c
+index 4a9e773a177f..cc2f3d901c91 100644
+--- a/arch/arm64/kernel/insn.c
++++ b/arch/arm64/kernel/insn.c
+@@ -1535,16 +1535,10 @@ static u32 aarch64_encode_immediate(u64 imm,
+ 				    u32 insn)
+ {
+ 	unsigned int immr, imms, n, ones, ror, esz, tmp;
+-	u64 mask = ~0UL;
+-
+-	/* Can't encode full zeroes or full ones */
+-	if (!imm || !~imm)
+-		return AARCH64_BREAK_FAULT;
++	u64 mask;
+ 
+ 	switch (variant) {
+ 	case AARCH64_INSN_VARIANT_32BIT:
+-		if (upper_32_bits(imm))
+-			return AARCH64_BREAK_FAULT;
+ 		esz = 32;
+ 		break;
+ 	case AARCH64_INSN_VARIANT_64BIT:
+@@ -1556,6 +1550,12 @@ static u32 aarch64_encode_immediate(u64 imm,
+ 		return AARCH64_BREAK_FAULT;
+ 	}
+ 
++	mask = GENMASK(esz - 1, 0);
++
++	/* Can't encode full zeroes, full ones, or value wider than the mask */
++	if (!imm || imm == mask || imm &amp; ~mask)
++		return AARCH64_BREAK_FAULT;
++
+ 	/*
+ 	 * Inverse of Replicate(). Try to spot a repeating pattern
+ 	 * with a pow2 stride.</pre><hr><pre>commit 073ca6a0369e09c586a103e665f2dd67f1c71444
+Author: Luke Nelson &lt;lukenels@cs.washington.edu&gt;
+Date:   Tue May 5 17:03:20 2020 -0700
+
+    bpf, riscv: Optimize BPF_JSET BPF_K using andi on RV64
+    
+    This patch optimizes BPF_JSET BPF_K by using a RISC-V andi instruction
+    when the BPF immediate fits in 12 bits, instead of first loading the
+    immediate to a temporary register.
+    
+    Examples of generated code with and without this optimization:
+    
+    BPF_JMP_IMM(BPF_JSET, R1, 2, 1) without optimization:
+    
+      20: li    t1,2
+      24: and   t1,a0,t1
+      28: bnez  t1,0x30
+    
+    BPF_JMP_IMM(BPF_JSET, R1, 2, 1) with optimization:
+    
+      20: andi  t1,a0,2
+      24: bnez  t1,0x2c
+    
+    BPF_JMP32_IMM(BPF_JSET, R1, 2, 1) without optimization:
+    
+      20: li    t1,2
+      24: mv    t2,a0
+      28: slli  t2,t2,0x20
+      2c: srli  t2,t2,0x20
+      30: slli  t1,t1,0x20
+      34: srli  t1,t1,0x20
+      38: and   t1,t2,t1
+      3c: bnez  t1,0x44
+    
+    BPF_JMP32_IMM(BPF_JSET, R1, 2, 1) with optimization:
+    
+      20: andi  t1,a0,2
+      24: bnez  t1,0x2c
+    
+    In these examples, because the upper 32 bits of the sign-extended
+    immediate are 0, BPF_JMP BPF_JSET and BPF_JMP32 BPF_JSET are equivalent
+    and therefore the JIT produces identical code for them.
+    
+    Co-developed-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Luke Nelson &lt;luke.r.nels@gmail.com&gt;
+    Signed-off-by: Daniel Borkmann &lt;daniel@iogearbox.net&gt;
+    Reviewed-by: Björn Töpel &lt;bjorn.topel@gmail.com&gt;
+    Acked-by: Björn Töpel &lt;bjorn.topel@gmail.com&gt;
+    Link: https://lore.kernel.org/bpf/20200506000320.28965-5-luke.r.nels@gmail.com
+
+diff --git a/arch/riscv/net/bpf_jit_comp64.c b/arch/riscv/net/bpf_jit_comp64.c
+index b07cef952019..6cfd164cbe88 100644
+--- a/arch/riscv/net/bpf_jit_comp64.c
++++ b/arch/riscv/net/bpf_jit_comp64.c
+@@ -792,8 +792,6 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 	case BPF_JMP32 | BPF_JSGE | BPF_K:
+ 	case BPF_JMP | BPF_JSLE | BPF_K:
+ 	case BPF_JMP32 | BPF_JSLE | BPF_K:
+-	case BPF_JMP | BPF_JSET | BPF_K:
+-	case BPF_JMP32 | BPF_JSET | BPF_K:
+ 		rvoff = rv_offset(i, off, ctx);
+ 		s = ctx-&gt;ninsns;
+ 		if (imm) {
+@@ -813,15 +811,28 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 
+ 		/* Adjust for extra insns */
+ 		rvoff -= (e - s) &lt;&lt; 2;
++		emit_branch(BPF_OP(code), rd, rs, rvoff, ctx);
++		break;
+ 
+-		if (BPF_OP(code) == BPF_JSET) {
+-			/* Adjust for and */
+-			rvoff -= 4;
+-			emit(rv_and(rs, rd, rs), ctx);
+-			emit_branch(BPF_JNE, rs, RV_REG_ZERO, rvoff, ctx);
++	case BPF_JMP | BPF_JSET | BPF_K:
++	case BPF_JMP32 | BPF_JSET | BPF_K:
++		rvoff = rv_offset(i, off, ctx);
++		s = ctx-&gt;ninsns;
++		if (is_12b_int(imm)) {
++			emit(rv_andi(RV_REG_T1, rd, imm), ctx);
+ 		} else {
+-			emit_branch(BPF_OP(code), rd, rs, rvoff, ctx);
++			emit_imm(RV_REG_T1, imm, ctx);
++			emit(rv_and(RV_REG_T1, rd, RV_REG_T1), ctx);
+ 		}
++		/* For jset32, we should clear the upper 32 bits of t1, but
++		 * sign-extension is sufficient here and saves one instruction,
++		 * as t1 is used only in comparison against zero.
++		 */
++		if (!is64 &amp;&amp; imm &lt; 0)
++			emit(rv_addiw(RV_REG_T1, RV_REG_T1, 0), ctx);
++		e = ctx-&gt;ninsns;
++		rvoff -= (e - s) &lt;&lt; 2;
++		emit_branch(BPF_JNE, RV_REG_T1, RV_REG_ZERO, rvoff, ctx);
+ 		break;
+ 
+ 	/* function call */</pre><hr><pre>commit ca349a6a104e58479defdc08ce56472a48f7cb81
+Author: Luke Nelson &lt;lukenels@cs.washington.edu&gt;
+Date:   Tue May 5 17:03:19 2020 -0700
+
+    bpf, riscv: Optimize BPF_JMP BPF_K when imm == 0 on RV64
+    
+    This patch adds an optimization to BPF_JMP (32- and 64-bit) BPF_K for
+    when the BPF immediate is zero.
+    
+    When the immediate is zero, the code can directly use the RISC-V zero
+    register instead of loading a zero immediate to a temporary register
+    first.
+    
+    Co-developed-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Luke Nelson &lt;luke.r.nels@gmail.com&gt;
+    Signed-off-by: Daniel Borkmann &lt;daniel@iogearbox.net&gt;
+    Reviewed-by: Björn Töpel &lt;bjorn.topel@gmail.com&gt;
+    Acked-by: Björn Töpel &lt;bjorn.topel@gmail.com&gt;
+    Link: https://lore.kernel.org/bpf/20200506000320.28965-4-luke.r.nels@gmail.com
+
+diff --git a/arch/riscv/net/bpf_jit_comp64.c b/arch/riscv/net/bpf_jit_comp64.c
+index c3ce9a911b66..b07cef952019 100644
+--- a/arch/riscv/net/bpf_jit_comp64.c
++++ b/arch/riscv/net/bpf_jit_comp64.c
+@@ -796,7 +796,13 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 	case BPF_JMP32 | BPF_JSET | BPF_K:
+ 		rvoff = rv_offset(i, off, ctx);
+ 		s = ctx-&gt;ninsns;
+-		emit_imm(RV_REG_T1, imm, ctx);
++		if (imm) {
++			emit_imm(RV_REG_T1, imm, ctx);
++			rs = RV_REG_T1;
++		} else {
++			/* If imm is 0, simply use zero register. */
++			rs = RV_REG_ZERO;
++		}
+ 		if (!is64) {
+ 			if (is_signed_bpf_cond(BPF_OP(code)))
+ 				emit_sext_32_rd(&amp;rd, ctx);
+@@ -811,11 +817,10 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 		if (BPF_OP(code) == BPF_JSET) {
+ 			/* Adjust for and */
+ 			rvoff -= 4;
+-			emit(rv_and(RV_REG_T1, rd, RV_REG_T1), ctx);
+-			emit_branch(BPF_JNE, RV_REG_T1, RV_REG_ZERO, rvoff,
+-				    ctx);
++			emit(rv_and(rs, rd, rs), ctx);
++			emit_branch(BPF_JNE, rs, RV_REG_ZERO, rvoff, ctx);
+ 		} else {
+-			emit_branch(BPF_OP(code), rd, RV_REG_T1, rvoff, ctx);
++			emit_branch(BPF_OP(code), rd, rs, rvoff, ctx);
+ 		}
+ 		break;
+ </pre><hr><pre>commit 21a099abb765c3754689e1f7ca4536fa560112d0
+Author: Luke Nelson &lt;lukenels@cs.washington.edu&gt;
+Date:   Tue May 5 17:03:18 2020 -0700
+
+    bpf, riscv: Optimize FROM_LE using verifier_zext on RV64
+    
+    This patch adds two optimizations for BPF_ALU BPF_END BPF_FROM_LE in
+    the RV64 BPF JIT.
+    
+    First, it enables the verifier zero-extension optimization to avoid zero
+    extension when imm == 32. Second, it avoids generating code for imm ==
+    64, since it is equivalent to a no-op.
+    
+    Co-developed-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Luke Nelson &lt;luke.r.nels@gmail.com&gt;
+    Signed-off-by: Daniel Borkmann &lt;daniel@iogearbox.net&gt;
+    Reviewed-by: Björn Töpel &lt;bjorn.topel@gmail.com&gt;
+    Acked-by: Björn Töpel &lt;bjorn.topel@gmail.com&gt;
+    Link: https://lore.kernel.org/bpf/20200506000320.28965-3-luke.r.nels@gmail.com
+
+diff --git a/arch/riscv/net/bpf_jit_comp64.c b/arch/riscv/net/bpf_jit_comp64.c
+index e2636902a74e..c3ce9a911b66 100644
+--- a/arch/riscv/net/bpf_jit_comp64.c
++++ b/arch/riscv/net/bpf_jit_comp64.c
+@@ -542,13 +542,21 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 
+ 	/* dst = BSWAP##imm(dst) */
+ 	case BPF_ALU | BPF_END | BPF_FROM_LE:
+-	{
+-		int shift = 64 - imm;
+-
+-		emit(rv_slli(rd, rd, shift), ctx);
+-		emit(rv_srli(rd, rd, shift), ctx);
++		switch (imm) {
++		case 16:
++			emit(rv_slli(rd, rd, 48), ctx);
++			emit(rv_srli(rd, rd, 48), ctx);
++			break;
++		case 32:
++			if (!aux-&gt;verifier_zext)
++				emit_zext_32(rd, ctx);
++			break;
++		case 64:
++			/* Do nothing */
++			break;
++		}
+ 		break;
+-	}
++
+ 	case BPF_ALU | BPF_END | BPF_FROM_BE:
+ 		emit(rv_addi(RV_REG_T2, RV_REG_ZERO, 0), ctx);
+ </pre><hr><pre>commit 0224b2acea0f9e3908d33e27b2dcb4e04686e997
+Author: Luke Nelson &lt;lukenels@cs.washington.edu&gt;
+Date:   Tue May 5 17:03:17 2020 -0700
+
+    bpf, riscv: Enable missing verifier_zext optimizations on RV64
+    
+    Commit 66d0d5a854a6 ("riscv: bpf: eliminate zero extension code-gen")
+    added support for the verifier zero-extension optimization on RV64 and
+    commit 46dd3d7d287b ("bpf, riscv: Enable zext optimization for more
+    RV64G ALU ops") enabled it for more instruction cases.
+    
+    However, BPF_LSH BPF_X and BPF_{LSH,RSH,ARSH} BPF_K are still missing
+    the optimization.
+    
+    This patch enables the zero-extension optimization for these remaining
+    cases.
+    
+    Co-developed-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Xi Wang &lt;xi.wang@gmail.com&gt;
+    Signed-off-by: Luke Nelson &lt;luke.r.nels@gmail.com&gt;
+    Signed-off-by: Daniel Borkmann &lt;daniel@iogearbox.net&gt;
+    Reviewed-by: Björn Töpel &lt;bjorn.topel@gmail.com&gt;
+    Acked-by: Björn Töpel &lt;bjorn.topel@gmail.com&gt;
+    Link: https://lore.kernel.org/bpf/20200506000320.28965-2-luke.r.nels@gmail.com
+
+diff --git a/arch/riscv/net/bpf_jit_comp64.c b/arch/riscv/net/bpf_jit_comp64.c
+index d208a9fd6c52..e2636902a74e 100644
+--- a/arch/riscv/net/bpf_jit_comp64.c
++++ b/arch/riscv/net/bpf_jit_comp64.c
+@@ -515,7 +515,7 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 	case BPF_ALU | BPF_LSH | BPF_X:
+ 	case BPF_ALU64 | BPF_LSH | BPF_X:
+ 		emit(is64 ? rv_sll(rd, rd, rs) : rv_sllw(rd, rd, rs), ctx);
+-		if (!is64)
++		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+ 	case BPF_ALU | BPF_RSH | BPF_X:
+@@ -692,19 +692,19 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
+ 	case BPF_ALU | BPF_LSH | BPF_K:
+ 	case BPF_ALU64 | BPF_LSH | BPF_K:
+ 		emit(is64 ? rv_slli(rd, rd, imm) : rv_slliw(rd, rd, imm), ctx);
+-		if (!is64)
++		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+ 	case BPF_ALU | BPF_RSH | BPF_K:
+ 	case BPF_ALU64 | BPF_RSH | BPF_K:
+ 		emit(is64 ? rv_srli(rd, rd, imm) : rv_srliw(rd, rd, imm), ctx);
+-		if (!is64)
++		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+ 	case BPF_ALU | BPF_ARSH | BPF_K:
+ 	case BPF_ALU64 | BPF_ARSH | BPF_K:
+ 		emit(is64 ? rv_srai(rd, rd, imm) : rv_sraiw(rd, rd, imm), ctx);
+-		if (!is64)
++		if (!is64 &amp;&amp; !aux-&gt;verifier_zext)
+ 			emit_zext_32(rd, ctx);
+ 		break;
+ </pre>
+    <div class="pagination">
+        <a href='13.html'>&lt;&lt;Prev</a><a href='13.html'>1</a><span>[2]</span><a href='13_3.html'>3</a><a href='13_4.html'>4</a><a href='13_5.html'>5</a><a href='13_6.html'>6</a><a href='13_7.html'>7</a><a href='13_8.html'>8</a><a href='13_3.html'>Next&gt;&gt;</a>
+    <div>
+</body>

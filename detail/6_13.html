@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6_12.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><span>[13]</span><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_14.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 7edfd68165b8dab8cde231728ff092a625469eb7
+Author: Jinlong Chen &lt;nickyc975@zju.edu.cn&gt;
+Date:   Wed Nov 2 10:52:29 2022 +0800
+
+    blk-mq: improve error handling in blk_mq_alloc_rq_map()
+    
+    Use goto-style error handling like we do elsewhere in the kernel.
+    
+    Signed-off-by: Jinlong Chen &lt;nickyc975@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/bbbc2d9b17b137798c7fb92042141ca4cbbc58cc.1667356813.git.nickyc975@zju.edu.cn
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/block/blk-mq.c b/block/blk-mq.c
+index bae6f81c39b3..d4824b53f6b2 100644
+--- a/block/blk-mq.c
++++ b/block/blk-mq.c
+@@ -3305,21 +3305,22 @@ static struct blk_mq_tags *blk_mq_alloc_rq_map(struct blk_mq_tag_set *set,
+ 	tags-&gt;rqs = kcalloc_node(nr_tags, sizeof(struct request *),
+ 				 GFP_NOIO | __GFP_NOWARN | __GFP_NORETRY,
+ 				 node);
+-	if (!tags-&gt;rqs) {
+-		blk_mq_free_tags(tags);
+-		return NULL;
+-	}
++	if (!tags-&gt;rqs)
++		goto err_free_tags;
+ 
+ 	tags-&gt;static_rqs = kcalloc_node(nr_tags, sizeof(struct request *),
+ 					GFP_NOIO | __GFP_NOWARN | __GFP_NORETRY,
+ 					node);
+-	if (!tags-&gt;static_rqs) {
+-		kfree(tags-&gt;rqs);
+-		blk_mq_free_tags(tags);
+-		return NULL;
+-	}
++	if (!tags-&gt;static_rqs)
++		goto err_free_rqs;
+ 
+ 	return tags;
++
++err_free_rqs:
++	kfree(tags-&gt;rqs);
++err_free_tags:
++	blk_mq_free_tags(tags);
++	return NULL;
+ }
+ 
+ static int blk_mq_init_request(struct blk_mq_tag_set *set, struct request *rq,</pre><hr><pre>commit 56c1ee92246a5099a626b955dd7f6636cdce6f93
+Author: Jinlong Chen &lt;nickyc975@zju.edu.cn&gt;
+Date:   Sun Oct 30 16:32:12 2022 +0800
+
+    blk-mq: remove redundant call to blk_freeze_queue_start in blk_mq_destroy_queue
+    
+    The calling relationship in blk_mq_destroy_queue() is as follows:
+    
+    blk_mq_destroy_queue()
+        ...
+        -&gt; blk_queue_start_drain()
+            -&gt; blk_freeze_queue_start()  &lt;- called
+            ...
+        -&gt; blk_freeze_queue()
+            -&gt; blk_freeze_queue_start()  &lt;- called again
+            -&gt; blk_mq_freeze_queue_wait()
+        ...
+    
+    So there is a redundant call to blk_freeze_queue_start().
+    
+    Replace blk_freeze_queue() with blk_mq_freeze_queue_wait() to avoid the
+    redundant call.
+    
+    Signed-off-by: Jinlong Chen &lt;nickyc975@zju.edu.cn&gt;
+    Reviewed-by: Christoph Hellwig &lt;hch@lst.de&gt;
+    Link: https://lore.kernel.org/r/20221030083212.1251255-1-nickyc975@zju.edu.cn
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/block/blk-mq.c b/block/blk-mq.c
+index bcb402f9bff6..623e8a506539 100644
+--- a/block/blk-mq.c
++++ b/block/blk-mq.c
+@@ -4037,7 +4037,7 @@ void blk_mq_destroy_queue(struct request_queue *q)
+ 
+ 	blk_queue_flag_set(QUEUE_FLAG_DYING, q);
+ 	blk_queue_start_drain(q);
+-	blk_freeze_queue(q);
++	blk_mq_freeze_queue_wait(q);
+ 
+ 	blk_sync_queue(q);
+ 	blk_mq_cancel_work_sync(q);</pre><hr><pre>commit 219cf43c552a49a7710b7b341bf616682a2643f0
+Author: Jinlong Chen &lt;nickyc975@zju.edu.cn&gt;
+Date:   Sun Oct 30 17:47:30 2022 +0800
+
+    blk-mq: move queue_is_mq out of blk_mq_cancel_work_sync
+    
+    The only caller that needs queue_is_mq check is del_gendisk, so move the
+    check into it.
+    
+    Signed-off-by: Jinlong Chen &lt;nickyc975@zju.edu.cn&gt;
+    Reviewed-by: Christoph Hellwig &lt;hch@lst.de&gt;
+    Link: https://lore.kernel.org/r/20221030094730.1275463-1-nickyc975@zju.edu.cn
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/block/blk-mq.c b/block/blk-mq.c
+index 060c8cca4b24..bcb402f9bff6 100644
+--- a/block/blk-mq.c
++++ b/block/blk-mq.c
+@@ -4883,15 +4883,13 @@ EXPORT_SYMBOL(blk_mq_rq_cpu);
+ 
+ void blk_mq_cancel_work_sync(struct request_queue *q)
+ {
+-	if (queue_is_mq(q)) {
+-		struct blk_mq_hw_ctx *hctx;
+-		unsigned long i;
++	struct blk_mq_hw_ctx *hctx;
++	unsigned long i;
+ 
+-		cancel_delayed_work_sync(&amp;q-&gt;requeue_work);
++	cancel_delayed_work_sync(&amp;q-&gt;requeue_work);
+ 
+-		queue_for_each_hw_ctx(q, hctx, i)
+-			cancel_delayed_work_sync(&amp;hctx-&gt;run_work);
+-	}
++	queue_for_each_hw_ctx(q, hctx, i)
++		cancel_delayed_work_sync(&amp;hctx-&gt;run_work);
+ }
+ 
+ static int __init blk_mq_init(void)
+diff --git a/block/genhd.c b/block/genhd.c
+index 17b33c62423d..493b93faee9c 100644
+--- a/block/genhd.c
++++ b/block/genhd.c
+@@ -638,7 +638,9 @@ void del_gendisk(struct gendisk *disk)
+ 
+ 	blk_sync_queue(q);
+ 	blk_flush_integrity();
+-	blk_mq_cancel_work_sync(q);
++
++	if (queue_is_mq(q))
++		blk_mq_cancel_work_sync(q);
+ 
+ 	blk_mq_quiesce_queue(q);
+ 	if (q-&gt;elevator) {</pre><hr><pre>commit 8ed40ee35d94df2fdb56bbbc07e17dffd2383625
+Author: Jinlong Chen &lt;nickyc975@zju.edu.cn&gt;
+Date:   Thu Oct 20 08:48:19 2022 +0200
+
+    block: fix up elevator_type refcounting
+    
+    The current reference management logic of io scheduler modules contains
+    refcnt problems. For example, blk_mq_init_sched may fail before or after
+    the calling of e-&gt;ops.init_sched. If it fails before the calling, it does
+    nothing to the reference to the io scheduler module. But if it fails after
+    the calling, it releases the reference by calling kobject_put(&amp;eq-&gt;kobj).
+    
+    As the callers of blk_mq_init_sched can't know exactly where the failure
+    happens, they can't handle the reference to the io scheduler module
+    properly: releasing the reference on failure results in double-release if
+    blk_mq_init_sched has released it, and not releasing the reference results
+    in ghost reference if blk_mq_init_sched did not release it either.
+    
+    The same problem also exists in io schedulers' init_sched implementations.
+    
+    We can address the problem by adding releasing statements to the error
+    handling procedures of blk_mq_init_sched and init_sched implementations.
+    But that is counterintuitive and requires modifications to existing io
+    schedulers.
+    
+    Instead, We make elevator_alloc get the io scheduler module references
+    that will be released by elevator_release. And then, we match each
+    elevator_get with an elevator_put. Therefore, each reference to an io
+    scheduler module explicitly has its own getter and releaser, and we no
+    longer need to worry about the refcnt problems.
+    
+    The bugs and the patch can be validated with tools here:
+    https://github.com/nickyc975/linux_elv_refcnt_bug.git
+    
+    [hch: split out a few bits into separate patches, use a non-try
+          module_get in elevator_alloc]
+    
+    Signed-off-by: Jinlong Chen &lt;nickyc975@zju.edu.cn&gt;
+    Signed-off-by: Christoph Hellwig &lt;hch@lst.de&gt;
+    Link: https://lore.kernel.org/r/20221020064819.1469928-5-hch@lst.de
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/block/blk-mq-sched.c b/block/blk-mq-sched.c
+index a4f7c101b53b..68227240fdea 100644
+--- a/block/blk-mq-sched.c
++++ b/block/blk-mq-sched.c
+@@ -555,6 +555,7 @@ static int blk_mq_init_sched_shared_tags(struct request_queue *queue)
+ 	return 0;
+ }
+ 
++/* caller must have a reference to @e, will grab another one if successful */
+ int blk_mq_init_sched(struct request_queue *q, struct elevator_type *e)
+ {
+ 	unsigned int flags = q-&gt;tag_set-&gt;flags;
+diff --git a/block/blk-mq.c b/block/blk-mq.c
+index 9db8814cdd02..098432d3caf1 100644
+--- a/block/blk-mq.c
++++ b/block/blk-mq.c
+@@ -4591,6 +4591,8 @@ static void blk_mq_elv_switch_back(struct list_head *head,
+ 
+ 	mutex_lock(&amp;q-&gt;sysfs_lock);
+ 	elevator_switch(q, t);
++	/* drop the reference acquired in blk_mq_elv_switch_none */
++	elevator_put(t);
+ 	mutex_unlock(&amp;q-&gt;sysfs_lock);
+ }
+ 
+diff --git a/block/elevator.c b/block/elevator.c
+index 61d5655a3819..d26aa787e29f 100644
+--- a/block/elevator.c
++++ b/block/elevator.c
+@@ -165,6 +165,7 @@ struct elevator_queue *elevator_alloc(struct request_queue *q,
+ 	if (unlikely(!eq))
+ 		return NULL;
+ 
++	__elevator_get(e);
+ 	eq-&gt;type = e;
+ 	kobject_init(&amp;eq-&gt;kobj, &amp;elv_ktype);
+ 	mutex_init(&amp;eq-&gt;sysfs_lock);
+@@ -704,8 +705,9 @@ void elevator_init_mq(struct request_queue *q)
+ 	if (err) {
+ 		pr_warn("\"%s\" elevator initialization failed, "
+ 			"falling back to \"none\"\n", e-&gt;elevator_name);
+-		elevator_put(e);
+ 	}
++
++	elevator_put(e);
+ }
+ 
+ /*
+@@ -737,6 +739,7 @@ int elevator_switch(struct request_queue *q, struct elevator_type *new_e)
+ static int elevator_change(struct request_queue *q, const char *elevator_name)
+ {
+ 	struct elevator_type *e;
++	int ret;
+ 
+ 	/* Make sure queue is not in the middle of being removed */
+ 	if (!blk_queue_registered(q))
+@@ -757,8 +760,9 @@ static int elevator_change(struct request_queue *q, const char *elevator_name)
+ 	e = elevator_get(q, elevator_name, true);
+ 	if (!e)
+ 		return -EINVAL;
+-
+-	return elevator_switch(q, e);
++	ret = elevator_switch(q, e);
++	elevator_put(e);
++	return ret;
+ }
+ 
+ ssize_t elv_iosched_store(struct request_queue *q, const char *buf,</pre><hr><pre>commit b54c2ad9b77de846e42104ecf94eb8329d2f03a3
+Author: Jinlong Chen &lt;nickyc975@zju.edu.cn&gt;
+Date:   Thu Oct 20 08:48:18 2022 +0200
+
+    block: check for an unchanged elevator earlier in __elevator_change
+    
+    No need to find the actual elevator_type struct for this comparism,
+    the name is all that is needed.
+    
+    Signed-off-by: Jinlong Chen &lt;nickyc975@zju.edu.cn&gt;
+    [hch: split from a larger patch]
+    Signed-off-by: Christoph Hellwig &lt;hch@lst.de&gt;
+    Link: https://lore.kernel.org/r/20221020064819.1469928-4-hch@lst.de
+    Signed-off-by: Jens Axboe &lt;axboe@kernel.dk&gt;
+
+diff --git a/block/elevator.c b/block/elevator.c
+index 5b8fb8745e9a..61d5655a3819 100644
+--- a/block/elevator.c
++++ b/block/elevator.c
+@@ -751,16 +751,13 @@ static int elevator_change(struct request_queue *q, const char *elevator_name)
+ 		return elevator_switch(q, NULL);
+ 	}
+ 
++	if (q-&gt;elevator &amp;&amp; elevator_match(q-&gt;elevator-&gt;type, elevator_name, 0))
++		return 0;
++
+ 	e = elevator_get(q, elevator_name, true);
+ 	if (!e)
+ 		return -EINVAL;
+ 
+-	if (q-&gt;elevator &amp;&amp;
+-	    elevator_match(q-&gt;elevator-&gt;type, elevator_name, 0)) {
+-		elevator_put(e);
+-		return 0;
+-	}
+-
+ 	return elevator_switch(q, e);
+ }
+ </pre><hr><pre>commit 175302f6b79ebbb207c2d58d6d3e679465de23b0
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sun Oct 9 14:37:31 2022 +0800
+
+    mISDN: hfcpci: Fix use-after-free bug in hfcpci_softirq
+    
+    The function hfcpci_softirq() is a timer handler. If it
+    is running, the timer_pending() will return 0 and the
+    del_timer_sync() in HFC_cleanup() will not be executed.
+    As a result, the use-after-free bug will happen. The
+    process is shown below:
+    
+        (cleanup routine)          |        (timer handler)
+    HFC_cleanup()                  | hfcpci_softirq()
+     if (timer_pending(&amp;hfc_tl))   |
+       del_timer_sync()            |
+     ...                           | ...
+     pci_unregister_driver(hc)     |
+      driver_unregister            |  driver_for_each_device
+       bus_remove_driver           |   _hfcpci_softirq
+        driver_detach              |   ...
+         put_device(dev) //[1]FREE |
+                                   |    dev_get_drvdata(dev) //[2]USE
+    
+    The device is deallocated is position [1] and used in
+    position [2].
+    
+    Fix by removing the "timer_pending" check in HFC_cleanup(),
+    which makes sure that the hfcpci_softirq() have finished
+    before the resource is deallocated.
+    
+    Fixes: 009fc857c5f6 ("mISDN: fix possible use-after-free in HFC_cleanup()")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/isdn/hardware/mISDN/hfcpci.c b/drivers/isdn/hardware/mISDN/hfcpci.c
+index af17459c1a5c..e964a8dd8512 100644
+--- a/drivers/isdn/hardware/mISDN/hfcpci.c
++++ b/drivers/isdn/hardware/mISDN/hfcpci.c
+@@ -2345,8 +2345,7 @@ HFC_init(void)
+ static void __exit
+ HFC_cleanup(void)
+ {
+-	if (timer_pending(&amp;hfc_tl))
+-		del_timer_sync(&amp;hfc_tl);
++	del_timer_sync(&amp;hfc_tl);
+ 
+ 	pci_unregister_driver(&amp;hfc_driver);
+ }</pre><hr><pre>commit 2568a7e0832ee30b0a351016d03062ab4e0e0a3f
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Wed Sep 28 21:39:38 2022 +0800
+
+    mISDN: fix use-after-free bugs in l1oip timer handlers
+    
+    The l1oip_cleanup() traverses the l1oip_ilist and calls
+    release_card() to cleanup module and stack. However,
+    release_card() calls del_timer() to delete the timers
+    such as keep_tl and timeout_tl. If the timer handler is
+    running, the del_timer() will not stop it and result in
+    UAF bugs. One of the processes is shown below:
+    
+        (cleanup routine)          |        (timer handler)
+    release_card()                 | l1oip_timeout()
+     ...                           |
+     del_timer()                   | ...
+     ...                           |
+     kfree(hc) //FREE              |
+                                   | hc-&gt;timeout_on = 0 //USE
+    
+    Fix by calling del_timer_sync() in release_card(), which
+    makes sure the timer handlers have finished before the
+    resources, such as l1oip and so on, have been deallocated.
+    
+    What's more, the hc-&gt;workq and hc-&gt;socket_thread can kick
+    those timers right back in. We add a bool flag to show
+    if card is released. Then, check this flag in hc-&gt;workq
+    and hc-&gt;socket_thread.
+    
+    Fixes: 3712b42d4b1b ("Add layer1 over IP support")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Leon Romanovsky &lt;leonro@nvidia.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/isdn/mISDN/l1oip.h b/drivers/isdn/mISDN/l1oip.h
+index 7ea10db20e3a..48133d022812 100644
+--- a/drivers/isdn/mISDN/l1oip.h
++++ b/drivers/isdn/mISDN/l1oip.h
+@@ -59,6 +59,7 @@ struct l1oip {
+ 	int			bundle;		/* bundle channels in one frm */
+ 	int			codec;		/* codec to use for transmis. */
+ 	int			limit;		/* limit number of bchannels */
++	bool			shutdown;	/* if card is released */
+ 
+ 	/* timer */
+ 	struct timer_list	keep_tl;
+diff --git a/drivers/isdn/mISDN/l1oip_core.c b/drivers/isdn/mISDN/l1oip_core.c
+index 2c40412466e6..a77195e378b7 100644
+--- a/drivers/isdn/mISDN/l1oip_core.c
++++ b/drivers/isdn/mISDN/l1oip_core.c
+@@ -275,7 +275,7 @@ l1oip_socket_send(struct l1oip *hc, u8 localcodec, u8 channel, u32 chanmask,
+ 	p = frame;
+ 
+ 	/* restart timer */
+-	if (time_before(hc-&gt;keep_tl.expires, jiffies + 5 * HZ))
++	if (time_before(hc-&gt;keep_tl.expires, jiffies + 5 * HZ) &amp;&amp; !hc-&gt;shutdown)
+ 		mod_timer(&amp;hc-&gt;keep_tl, jiffies + L1OIP_KEEPALIVE * HZ);
+ 	else
+ 		hc-&gt;keep_tl.expires = jiffies + L1OIP_KEEPALIVE * HZ;
+@@ -601,7 +601,9 @@ l1oip_socket_parse(struct l1oip *hc, struct sockaddr_in *sin, u8 *buf, int len)
+ 		goto multiframe;
+ 
+ 	/* restart timer */
+-	if (time_before(hc-&gt;timeout_tl.expires, jiffies + 5 * HZ) || !hc-&gt;timeout_on) {
++	if ((time_before(hc-&gt;timeout_tl.expires, jiffies + 5 * HZ) ||
++	     !hc-&gt;timeout_on) &amp;&amp;
++	    !hc-&gt;shutdown) {
+ 		hc-&gt;timeout_on = 1;
+ 		mod_timer(&amp;hc-&gt;timeout_tl, jiffies + L1OIP_TIMEOUT * HZ);
+ 	} else /* only adjust timer */
+@@ -1232,11 +1234,10 @@ release_card(struct l1oip *hc)
+ {
+ 	int	ch;
+ 
+-	if (timer_pending(&amp;hc-&gt;keep_tl))
+-		del_timer(&amp;hc-&gt;keep_tl);
++	hc-&gt;shutdown = true;
+ 
+-	if (timer_pending(&amp;hc-&gt;timeout_tl))
+-		del_timer(&amp;hc-&gt;timeout_tl);
++	del_timer_sync(&amp;hc-&gt;keep_tl);
++	del_timer_sync(&amp;hc-&gt;timeout_tl);
+ 
+ 	cancel_work_sync(&amp;hc-&gt;workq);
+ </pre><hr><pre>commit 46ba53c30666717cb06c2b3c5d896301cd00d0c0
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue Sep 20 22:42:13 2022 +0800
+
+    scsi: libsas: Fix use-after-free bug in smp_execute_task_sg()
+    
+    When executing SMP task failed, the smp_execute_task_sg() calls del_timer()
+    to delete "slow_task-&gt;timer". However, if the timer handler
+    sas_task_internal_timedout() is running, the del_timer() in
+    smp_execute_task_sg() will not stop it and a UAF will happen. The process
+    is shown below:
+    
+          (thread 1)               |        (thread 2)
+    smp_execute_task_sg()          | sas_task_internal_timedout()
+     ...                           |
+     del_timer()                   |
+     ...                           |  ...
+     sas_free_task(task)           |
+      kfree(task-&gt;slow_task) //FREE|
+                                   |  task-&gt;slow_task-&gt;... //USE
+    
+    Fix by calling del_timer_sync() in smp_execute_task_sg(), which makes sure
+    the timer handler have finished before the "task-&gt;slow_task" is
+    deallocated.
+    
+    Link: https://lore.kernel.org/r/20220920144213.10536-1-duoming@zju.edu.cn
+    Fixes: 2908d778ab3e ("[SCSI] aic94xx: new driver")
+    Reviewed-by: Jason Yan &lt;yanaijie@huawei.com&gt;
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: Martin K. Petersen &lt;martin.petersen@oracle.com&gt;
+
+diff --git a/drivers/scsi/libsas/sas_expander.c b/drivers/scsi/libsas/sas_expander.c
+index fa2209080cc2..5ce251830104 100644
+--- a/drivers/scsi/libsas/sas_expander.c
++++ b/drivers/scsi/libsas/sas_expander.c
+@@ -67,7 +67,7 @@ static int smp_execute_task_sg(struct domain_device *dev,
+ 		res = i-&gt;dft-&gt;lldd_execute_task(task, GFP_KERNEL);
+ 
+ 		if (res) {
+-			del_timer(&amp;task-&gt;slow_task-&gt;timer);
++			del_timer_sync(&amp;task-&gt;slow_task-&gt;timer);
+ 			pr_notice("executing SMP task failed:%d\n", res);
+ 			break;
+ 		}</pre><hr><pre>commit 551e4745c7f218da7070b36a06318592913676ff
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue Aug 23 19:21:27 2022 +0800
+
+    mwifiex: fix sleep in atomic context bugs caused by dev_coredumpv
+    
+    There are sleep in atomic context bugs when uploading device dump
+    data in mwifiex. The root cause is that dev_coredumpv could not
+    be used in atomic contexts, because it calls dev_set_name which
+    include operations that may sleep. The call tree shows execution
+    paths that could lead to bugs:
+    
+       (Interrupt context)
+    fw_dump_timer_fn
+      mwifiex_upload_device_dump
+        dev_coredumpv(..., GFP_KERNEL)
+          dev_coredumpm()
+            kzalloc(sizeof(*devcd), gfp); //may sleep
+            dev_set_name
+              kobject_set_name_vargs
+                kvasprintf_const(GFP_KERNEL, ...); //may sleep
+                kstrdup(s, GFP_KERNEL); //may sleep
+    
+    The corresponding fail log is shown below:
+    
+    [  135.275938] usb 1-1: == mwifiex dump information to /sys/class/devcoredump start
+    [  135.281029] BUG: sleeping function called from invalid context at include/linux/sched/mm.h:265
+    ...
+    [  135.293613] Call Trace:
+    [  135.293613]  &lt;IRQ&gt;
+    [  135.293613]  dump_stack_lvl+0x57/0x7d
+    [  135.293613]  __might_resched.cold+0x138/0x173
+    [  135.293613]  ? dev_coredumpm+0xca/0x2e0
+    [  135.293613]  kmem_cache_alloc_trace+0x189/0x1f0
+    [  135.293613]  ? devcd_match_failing+0x30/0x30
+    [  135.293613]  dev_coredumpm+0xca/0x2e0
+    [  135.293613]  ? devcd_freev+0x10/0x10
+    [  135.293613]  dev_coredumpv+0x1c/0x20
+    [  135.293613]  ? devcd_match_failing+0x30/0x30
+    [  135.293613]  mwifiex_upload_device_dump+0x65/0xb0
+    [  135.293613]  ? mwifiex_dnld_fw+0x1b0/0x1b0
+    [  135.293613]  call_timer_fn+0x122/0x3d0
+    [  135.293613]  ? msleep_interruptible+0xb0/0xb0
+    [  135.293613]  ? lock_downgrade+0x3c0/0x3c0
+    [  135.293613]  ? __next_timer_interrupt+0x13c/0x160
+    [  135.293613]  ? lockdep_hardirqs_on_prepare+0xe/0x220
+    [  135.293613]  ? mwifiex_dnld_fw+0x1b0/0x1b0
+    [  135.293613]  __run_timers.part.0+0x3f8/0x540
+    [  135.293613]  ? call_timer_fn+0x3d0/0x3d0
+    [  135.293613]  ? arch_restore_msi_irqs+0x10/0x10
+    [  135.293613]  ? lapic_next_event+0x31/0x40
+    [  135.293613]  run_timer_softirq+0x4f/0xb0
+    [  135.293613]  __do_softirq+0x1c2/0x651
+    ...
+    [  135.293613] RIP: 0010:default_idle+0xb/0x10
+    [  135.293613] RSP: 0018:ffff888006317e68 EFLAGS: 00000246
+    [  135.293613] RAX: ffffffff82ad8d10 RBX: ffff888006301cc0 RCX: ffffffff82ac90e1
+    [  135.293613] RDX: ffffed100d9ff1b4 RSI: ffffffff831ad140 RDI: ffffffff82ad8f20
+    [  135.293613] RBP: 0000000000000003 R08: 0000000000000000 R09: ffff88806cff8d9b
+    [  135.293613] R10: ffffed100d9ff1b3 R11: 0000000000000001 R12: ffffffff84593410
+    [  135.293613] R13: 0000000000000000 R14: 0000000000000000 R15: 1ffff11000c62fd2
+    ...
+    [  135.389205] usb 1-1: == mwifiex dump information to /sys/class/devcoredump end
+    
+    This patch uses delayed work to replace timer and moves the operations
+    that may sleep into a delayed work in order to mitigate bugs, it was
+    tested on Marvell 88W8801 chip whose port is usb and the firmware is
+    usb8801_uapsta.bin. The following is the result after using delayed
+    work to replace timer.
+    
+    [  134.936453] usb 1-1: == mwifiex dump information to /sys/class/devcoredump start
+    [  135.043344] usb 1-1: == mwifiex dump information to /sys/class/devcoredump end
+    
+    As we can see, there is no bug now.
+    
+    Fixes: f5ecd02a8b20 ("mwifiex: device dump support for usb interface")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Brian Norris &lt;briannorris@chromium.org&gt;
+    Acked-by: Greg Kroah-Hartman &lt;gregkh@linuxfoundation.org&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@kernel.org&gt;
+    Link: https://lore.kernel.org/r/5cfa5c473ff6d069cb67760ffa04a2f84ef450a8.1661252818.git.duoming@zju.edu.cn
+
+diff --git a/drivers/net/wireless/marvell/mwifiex/init.c b/drivers/net/wireless/marvell/mwifiex/init.c
+index fc77489cc511..7dddb4b5dea1 100644
+--- a/drivers/net/wireless/marvell/mwifiex/init.c
++++ b/drivers/net/wireless/marvell/mwifiex/init.c
+@@ -51,9 +51,10 @@ static void wakeup_timer_fn(struct timer_list *t)
+ 		adapter-&gt;if_ops.card_reset(adapter);
+ }
+ 
+-static void fw_dump_timer_fn(struct timer_list *t)
++static void fw_dump_work(struct work_struct *work)
+ {
+-	struct mwifiex_adapter *adapter = from_timer(adapter, t, devdump_timer);
++	struct mwifiex_adapter *adapter =
++		container_of(work, struct mwifiex_adapter, devdump_work.work);
+ 
+ 	mwifiex_upload_device_dump(adapter);
+ }
+@@ -309,7 +310,7 @@ static void mwifiex_init_adapter(struct mwifiex_adapter *adapter)
+ 	adapter-&gt;active_scan_triggered = false;
+ 	timer_setup(&amp;adapter-&gt;wakeup_timer, wakeup_timer_fn, 0);
+ 	adapter-&gt;devdump_len = 0;
+-	timer_setup(&amp;adapter-&gt;devdump_timer, fw_dump_timer_fn, 0);
++	INIT_DELAYED_WORK(&amp;adapter-&gt;devdump_work, fw_dump_work);
+ }
+ 
+ /*
+@@ -388,7 +389,7 @@ static void
+ mwifiex_adapter_cleanup(struct mwifiex_adapter *adapter)
+ {
+ 	del_timer(&amp;adapter-&gt;wakeup_timer);
+-	del_timer_sync(&amp;adapter-&gt;devdump_timer);
++	cancel_delayed_work_sync(&amp;adapter-&gt;devdump_work);
+ 	mwifiex_cancel_all_pending_cmd(adapter);
+ 	wake_up_interruptible(&amp;adapter-&gt;cmd_wait_q.wait);
+ 	wake_up_interruptible(&amp;adapter-&gt;hs_activate_wait_q);
+diff --git a/drivers/net/wireless/marvell/mwifiex/main.h b/drivers/net/wireless/marvell/mwifiex/main.h
+index 87729d251fed..63f861e6b28a 100644
+--- a/drivers/net/wireless/marvell/mwifiex/main.h
++++ b/drivers/net/wireless/marvell/mwifiex/main.h
+@@ -37,6 +37,7 @@
+ #include &lt;linux/pm_runtime.h&gt;
+ #include &lt;linux/slab.h&gt;
+ #include &lt;linux/of_irq.h&gt;
++#include &lt;linux/workqueue.h&gt;
+ 
+ #include "decl.h"
+ #include "ioctl.h"
+@@ -1043,7 +1044,7 @@ struct mwifiex_adapter {
+ 	/* Device dump data/length */
+ 	void *devdump_data;
+ 	int devdump_len;
+-	struct timer_list devdump_timer;
++	struct delayed_work devdump_work;
+ 
+ 	bool ignore_btcoex_events;
+ };
+diff --git a/drivers/net/wireless/marvell/mwifiex/sta_event.c b/drivers/net/wireless/marvell/mwifiex/sta_event.c
+index b6315fccd1bb..df9cdd10a494 100644
+--- a/drivers/net/wireless/marvell/mwifiex/sta_event.c
++++ b/drivers/net/wireless/marvell/mwifiex/sta_event.c
+@@ -611,8 +611,8 @@ mwifiex_fw_dump_info_event(struct mwifiex_private *priv,
+ 		 * transmission event get lost, in this cornel case,
+ 		 * user would still get partial of the dump.
+ 		 */
+-		mod_timer(&amp;adapter-&gt;devdump_timer,
+-			  jiffies + msecs_to_jiffies(MWIFIEX_TIMER_10S));
++		schedule_delayed_work(&amp;adapter-&gt;devdump_work,
++				      msecs_to_jiffies(MWIFIEX_TIMER_10S));
+ 	}
+ 
+ 	/* Overflow check */
+@@ -631,7 +631,7 @@ mwifiex_fw_dump_info_event(struct mwifiex_private *priv,
+ 	return;
+ 
+ upload_dump:
+-	del_timer_sync(&amp;adapter-&gt;devdump_timer);
++	cancel_delayed_work_sync(&amp;adapter-&gt;devdump_work);
+ 	mwifiex_upload_device_dump(adapter);
+ }
+ </pre><hr><pre>commit c0955bf957be4bead01fae1d791476260da7325d
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Sat Aug 27 23:38:15 2022 +0800
+
+    ethernet: rocker: fix sleep in atomic context bug in neigh_timer_handler
+    
+    The function neigh_timer_handler() is a timer handler that runs in an
+    atomic context. When used by rocker, neigh_timer_handler() calls
+    "kzalloc(.., GFP_KERNEL)" that may sleep. As a result, the sleep in
+    atomic context bug will happen. One of the processes is shown below:
+    
+    ofdpa_fib4_add()
+     ...
+     neigh_add_timer()
+    
+    (wait a timer)
+    
+    neigh_timer_handler()
+     neigh_release()
+      neigh_destroy()
+       rocker_port_neigh_destroy()
+        rocker_world_port_neigh_destroy()
+         ofdpa_port_neigh_destroy()
+          ofdpa_port_ipv4_neigh()
+           kzalloc(sizeof(.., GFP_KERNEL) //may sleep
+    
+    This patch changes the gfp_t parameter of kzalloc() from GFP_KERNEL to
+    GFP_ATOMIC in order to mitigate the bug.
+    
+    Fixes: 00fc0c51e35b ("rocker: Change world_ops API and implementation to be switchdev independant")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/ethernet/rocker/rocker_ofdpa.c b/drivers/net/ethernet/rocker/rocker_ofdpa.c
+index bc70c6abd6a5..58cf7cc54f40 100644
+--- a/drivers/net/ethernet/rocker/rocker_ofdpa.c
++++ b/drivers/net/ethernet/rocker/rocker_ofdpa.c
+@@ -1273,7 +1273,7 @@ static int ofdpa_port_ipv4_neigh(struct ofdpa_port *ofdpa_port,
+ 	bool removing;
+ 	int err = 0;
+ 
+-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
++	entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
+ 	if (!entry)
+ 		return -ENOMEM;
+ </pre>
+    <div class="pagination">
+        <a href='6_12.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><span>[13]</span><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_14.html'>Next&gt;&gt;</a>
+    <div>
+</body>

@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of Michigan - Ann Arbor</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of Michigan - Ann Arbor</h1>
+    <div class="pagination">
+        <a href='4_22.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><span>[23]</span><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_24.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit 595947acaaef373445131471a78650003f5d8e7d
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Mar 5 17:18:10 2009 -0500
+
+    nfsd4: set shorter timeout
+    
+    We tried to do something overly complicated with the callback rpc
+    timeouts here.  And they're wrong--the result is that by the time a
+    single callback times out, it's already too late to tell the client
+    (using the cb_path_down return to RENEW) that the callback is down.
+    
+    Use a much shorter, simpler timeout.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4callback.c b/fs/nfsd/nfs4callback.c
+index 290289bd44f7..049f052a6eb3 100644
+--- a/fs/nfsd/nfs4callback.c
++++ b/fs/nfsd/nfs4callback.c
+@@ -358,6 +358,11 @@ static struct rpc_program cb_program = {
+ 		.pipe_dir_name  = "/nfsd4_cb",
+ };
+ 
++static int max_cb_time(void)
++{
++	return max(NFSD_LEASE_TIME/10, (time_t)1) * HZ;
++}
++
+ /* Reference counting, callback cleanup, etc., all look racy as heck.
+  * And why is cb_set an atomic? */
+ 
+@@ -366,10 +371,8 @@ static struct rpc_clnt *setup_callback_client(struct nfs4_client *clp)
+ 	struct sockaddr_in	addr;
+ 	struct nfs4_callback    *cb = &amp;clp-&gt;cl_callback;
+ 	struct rpc_timeout	timeparms = {
+-		.to_initval	= (NFSD_LEASE_TIME/4) * HZ,
+-		.to_retries	= 5,
+-		.to_maxval	= (NFSD_LEASE_TIME/2) * HZ,
+-		.to_exponential	= 1,
++		.to_initval	= max_cb_time(),
++		.to_retries	= 0,
+ 	};
+ 	struct rpc_create_args args = {
+ 		.protocol	= IPPROTO_TCP,</pre><hr><pre>commit f64f79ea5f5e02ba8585f35a10b4a3bcab0cea52
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Apr 29 13:45:36 2009 -0400
+
+    nfsd4: setclientid_confirm callback-change fixes
+    
+    This setclientid_confirm case should allow the client to change
+    callbacks, but it currently has a dummy implementation that just turns
+    off callbacks completely.  That dummy implementation isn't completely
+    correct either, though:
+    
+            - There's no need to remove any client recovery directory in
+              this case.
+            - New clientid confirm verifiers should be generated (and
+              returned) in setclientid; there's no need to generate a new
+              one here.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index d24dd12ddb4d..7e1fcc3aade4 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -1688,8 +1688,6 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
+ 			/* XXX: We just turn off callbacks until we can handle
+ 			  * change request correctly. */
+ 			atomic_set(&amp;conf-&gt;cl_callback.cb_set, 0);
+-			gen_confirm(conf);
+-			nfsd4_remove_clid_dir(unconf);
+ 			expire_client(unconf);
+ 			status = nfs_ok;
+ </pre><hr><pre>commit b8fd47aefa5f13df1edacbc7e68d9874635109e5
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Apr 29 11:36:17 2009 -0400
+
+    nfsd: quiet compile warning
+    
+    Stephen Rothwell said:
+    "Today's linux-next build (powerpc ppc64_defconfig) produced this new
+    warning:
+    
+    fs/nfsd/nfs4state.c: In function 'EXPIRED_STATEID':
+    fs/nfsd/nfs4state.c:2757: warning: comparison of distinct pointer types lacks a cast
+    
+    Caused by commit 78155ed75f470710f2aecb3e75e3d97107ba8374 ("nfsd4:
+    distinguish expired from stale stateids")."
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Reported-by: Stephen Rothwell &lt;sfr@canb.auug.org.au&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 74e822ec34cb..d24dd12ddb4d 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -2754,7 +2754,7 @@ EXPIRED_STATEID(stateid_t *stateid)
+ {
+ 	if (time_before((unsigned long)boot_time,
+ 			((unsigned long)stateid-&gt;si_boot)) &amp;&amp;
+-	    time_before((stateid-&gt;si_boot + lease_time), get_seconds())) {
++	    time_before((unsigned long)(stateid-&gt;si_boot + lease_time), get_seconds())) {
+ 		dprintk("NFSD: expired stateid (%08x/%08x/%08x/%08x)!\n",
+ 			stateid-&gt;si_boot, stateid-&gt;si_stateownerid,
+ 			stateid-&gt;si_fileid, stateid-&gt;si_generation);</pre><hr><pre>commit c654b8a9cba6002aad1c01919e4928a79a4a6dcf
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Thu Apr 16 17:33:25 2009 -0400
+
+    nfsd: support ext4 i_version
+    
+    ext4 supports a real NFSv4 change attribute, which is bumped whenever
+    the ctime would be updated, including times when two updates arrive
+    within a jiffy of each other.  (Note that although ext4 has space for
+    nanosecond-precision ctime, the real resolution is lower: it actually
+    uses jiffies as the time-source.)  This ensures clients will invalidate
+    their caches when they need to.
+    
+    There is some fear that keeping the i_version up-to-date could have
+    performance drawbacks, so for now it's turned on only by a mount option.
+    We hope to do something better eventually.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Cc: Theodore Tso &lt;tytso@mit.edu&gt;
+
+diff --git a/fs/nfsd/nfs3xdr.c b/fs/nfsd/nfs3xdr.c
+index 17d0dd997204..01d4ec1c88e0 100644
+--- a/fs/nfsd/nfs3xdr.c
++++ b/fs/nfsd/nfs3xdr.c
+@@ -272,6 +272,7 @@ void fill_post_wcc(struct svc_fh *fhp)
+ 
+ 	err = vfs_getattr(fhp-&gt;fh_export-&gt;ex_path.mnt, fhp-&gt;fh_dentry,
+ 			&amp;fhp-&gt;fh_post_attr);
++	fhp-&gt;fh_post_change = fhp-&gt;fh_dentry-&gt;d_inode-&gt;i_version;
+ 	if (err)
+ 		fhp-&gt;fh_post_saved = 0;
+ 	else
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index 4a71fcd3f036..12d36a7361cd 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -1490,13 +1490,41 @@ nfsd4_decode_compound(struct nfsd4_compoundargs *argp)
+ 	memcpy(p, ptr, nbytes);					\
+ 	p += XDR_QUADLEN(nbytes);				\
+ }} while (0)
+-#define WRITECINFO(c)		do {				\
+-	*p++ = htonl(c.atomic);					\
+-	*p++ = htonl(c.before_ctime_sec);				\
+-	*p++ = htonl(c.before_ctime_nsec);				\
+-	*p++ = htonl(c.after_ctime_sec);				\
+-	*p++ = htonl(c.after_ctime_nsec);				\
+-} while (0)
++
++static void write32(__be32 **p, u32 n)
++{
++	*(*p)++ = n;
++}
++
++static void write64(__be32 **p, u64 n)
++{
++	write32(p, (u32)(n &gt;&gt; 32));
++	write32(p, (u32)n);
++}
++
++static void write_change(__be32 **p, struct kstat *stat, struct inode *inode)
++{
++	if (IS_I_VERSION(inode)) {
++		write64(p, inode-&gt;i_version);
++	} else {
++		write32(p, stat-&gt;ctime.tv_sec);
++		write32(p, stat-&gt;ctime.tv_nsec);
++	}
++}
++
++static void write_cinfo(__be32 **p, struct nfsd4_change_info *c)
++{
++	write32(p, c-&gt;atomic);
++	if (c-&gt;change_supported) {
++		write64(p, c-&gt;before_change);
++		write64(p, c-&gt;after_change);
++	} else {
++		write32(p, c-&gt;before_ctime_sec);
++		write32(p, c-&gt;before_ctime_nsec);
++		write32(p, c-&gt;after_ctime_sec);
++		write32(p, c-&gt;after_ctime_nsec);
++	}
++}
+ 
+ #define RESERVE_SPACE(nbytes)	do {				\
+ 	p = resp-&gt;p;						\
+@@ -1849,16 +1877,9 @@ nfsd4_encode_fattr(struct svc_fh *fhp, struct svc_export *exp,
+ 			WRITE32(NFS4_FH_PERSISTENT|NFS4_FH_VOL_RENAME);
+ 	}
+ 	if (bmval0 &amp; FATTR4_WORD0_CHANGE) {
+-		/*
+-		 * Note: This _must_ be consistent with the scheme for writing
+-		 * change_info, so any changes made here must be reflected there
+-		 * as well.  (See xdr4.h:set_change_info() and the WRITECINFO()
+-		 * macro above.)
+-		 */
+ 		if ((buflen -= 8) &lt; 0)
+ 			goto out_resource;
+-		WRITE32(stat.ctime.tv_sec);
+-		WRITE32(stat.ctime.tv_nsec);
++		write_change(&amp;p, &amp;stat, dentry-&gt;d_inode);
+ 	}
+ 	if (bmval0 &amp; FATTR4_WORD0_SIZE) {
+ 		if ((buflen -= 8) &lt; 0)
+@@ -2364,7 +2385,7 @@ nfsd4_encode_create(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(32);
+-		WRITECINFO(create-&gt;cr_cinfo);
++		write_cinfo(&amp;p, &amp;create-&gt;cr_cinfo);
+ 		WRITE32(2);
+ 		WRITE32(create-&gt;cr_bmval[0]);
+ 		WRITE32(create-&gt;cr_bmval[1]);
+@@ -2475,7 +2496,7 @@ nfsd4_encode_link(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_li
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(20);
+-		WRITECINFO(link-&gt;li_cinfo);
++		write_cinfo(&amp;p, &amp;link-&gt;li_cinfo);
+ 		ADJUST_ARGS();
+ 	}
+ 	return nfserr;
+@@ -2493,7 +2514,7 @@ nfsd4_encode_open(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_op
+ 
+ 	nfsd4_encode_stateid(resp, &amp;open-&gt;op_stateid);
+ 	RESERVE_SPACE(40);
+-	WRITECINFO(open-&gt;op_cinfo);
++	write_cinfo(&amp;p, &amp;open-&gt;op_cinfo);
+ 	WRITE32(open-&gt;op_rflags);
+ 	WRITE32(2);
+ 	WRITE32(open-&gt;op_bmval[0]);
+@@ -2771,7 +2792,7 @@ nfsd4_encode_remove(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(20);
+-		WRITECINFO(remove-&gt;rm_cinfo);
++		write_cinfo(&amp;p, &amp;remove-&gt;rm_cinfo);
+ 		ADJUST_ARGS();
+ 	}
+ 	return nfserr;
+@@ -2784,8 +2805,8 @@ nfsd4_encode_rename(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(40);
+-		WRITECINFO(rename-&gt;rn_sinfo);
+-		WRITECINFO(rename-&gt;rn_tinfo);
++		write_cinfo(&amp;p, &amp;rename-&gt;rn_sinfo);
++		write_cinfo(&amp;p, &amp;rename-&gt;rn_tinfo);
+ 		ADJUST_ARGS();
+ 	}
+ 	return nfserr;
+diff --git a/include/linux/nfsd/nfsfh.h b/include/linux/nfsd/nfsfh.h
+index afa19016c4a8..8f641c908450 100644
+--- a/include/linux/nfsd/nfsfh.h
++++ b/include/linux/nfsd/nfsfh.h
+@@ -151,9 +151,15 @@ typedef struct svc_fh {
+ 	__u64			fh_pre_size;	/* size before operation */
+ 	struct timespec		fh_pre_mtime;	/* mtime before oper */
+ 	struct timespec		fh_pre_ctime;	/* ctime before oper */
++	/*
++	 * pre-op nfsv4 change attr: note must check IS_I_VERSION(inode)
++	 *  to find out if it is valid.
++	 */
++	u64			fh_pre_change;
+ 
+ 	/* Post-op attributes saved in fh_unlock */
+ 	struct kstat		fh_post_attr;	/* full attrs after operation */
++	u64			fh_post_change; /* nfsv4 change; see above */
+ #endif /* CONFIG_NFSD_V3 */
+ 
+ } svc_fh;
+@@ -298,6 +304,7 @@ fill_pre_wcc(struct svc_fh *fhp)
+ 		fhp-&gt;fh_pre_mtime = inode-&gt;i_mtime;
+ 		fhp-&gt;fh_pre_ctime = inode-&gt;i_ctime;
+ 		fhp-&gt;fh_pre_size  = inode-&gt;i_size;
++		fhp-&gt;fh_pre_change = inode-&gt;i_version;
+ 		fhp-&gt;fh_pre_saved = 1;
+ 	}
+ }
+diff --git a/include/linux/nfsd/xdr4.h b/include/linux/nfsd/xdr4.h
+index f80d6013fdc3..d0f050f01eca 100644
+--- a/include/linux/nfsd/xdr4.h
++++ b/include/linux/nfsd/xdr4.h
+@@ -64,10 +64,13 @@ static inline bool nfsd4_has_session(struct nfsd4_compound_state *cs)
+ 
+ struct nfsd4_change_info {
+ 	u32		atomic;
++	bool		change_supported;
+ 	u32		before_ctime_sec;
+ 	u32		before_ctime_nsec;
++	u64		before_change;
+ 	u32		after_ctime_sec;
+ 	u32		after_ctime_nsec;
++	u64		after_change;
+ };
+ 
+ struct nfsd4_access {
+@@ -503,10 +506,16 @@ set_change_info(struct nfsd4_change_info *cinfo, struct svc_fh *fhp)
+ {
+ 	BUG_ON(!fhp-&gt;fh_pre_saved || !fhp-&gt;fh_post_saved);
+ 	cinfo-&gt;atomic = 1;
+-	cinfo-&gt;before_ctime_sec = fhp-&gt;fh_pre_ctime.tv_sec;
+-	cinfo-&gt;before_ctime_nsec = fhp-&gt;fh_pre_ctime.tv_nsec;
+-	cinfo-&gt;after_ctime_sec = fhp-&gt;fh_post_attr.ctime.tv_sec;
+-	cinfo-&gt;after_ctime_nsec = fhp-&gt;fh_post_attr.ctime.tv_nsec;
++	cinfo-&gt;change_supported = IS_I_VERSION(fhp-&gt;fh_dentry-&gt;d_inode);
++	if (cinfo-&gt;change_supported) {
++		cinfo-&gt;before_change = fhp-&gt;fh_pre_change;
++		cinfo-&gt;after_change = fhp-&gt;fh_post_change;
++	} else {
++		cinfo-&gt;before_ctime_sec = fhp-&gt;fh_pre_ctime.tv_sec;
++		cinfo-&gt;before_ctime_nsec = fhp-&gt;fh_pre_ctime.tv_nsec;
++		cinfo-&gt;after_ctime_sec = fhp-&gt;fh_post_attr.ctime.tv_sec;
++		cinfo-&gt;after_ctime_nsec = fhp-&gt;fh_post_attr.ctime.tv_nsec;
++	}
+ }
+ 
+ int nfs4svc_encode_voidres(struct svc_rqst *, __be32 *, void *);</pre><hr><pre>commit 3352d2c2d0540955a7bbb3421a28330af7f9d79c
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Apr 7 17:03:19 2009 -0700
+
+    nfsd4: delete obsolete xdr comments
+    
+    We don't need comments to tell us these macros are ugly.  And we're long
+    past trying to share any of this code with the BSD's.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index fe46edeab2f6..4a71fcd3f036 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -83,16 +83,6 @@ check_filename(char *str, int len, __be32 err)
+ 	return 0;
+ }
+ 
+-/*
+- * START OF "GENERIC" DECODE ROUTINES.
+- *   These may look a little ugly since they are imported from a "generic"
+- * set of XDR encode/decode routines which are intended to be shared by
+- * all of our NFSv4 implementations (OpenBSD, MacOS X...).
+- *
+- * If the pain of reading these is too great, it should be a straightforward
+- * task to translate them into Linux-specific versions which are more
+- * consistent with the style used in NFSv2/v3...
+- */
+ #define DECODE_HEAD				\
+ 	__be32 *p;				\
+ 	__be32 status
+@@ -1489,20 +1479,7 @@ nfsd4_decode_compound(struct nfsd4_compoundargs *argp)
+ 
+ 	DECODE_TAIL;
+ }
+-/*
+- * END OF "GENERIC" DECODE ROUTINES.
+- */
+ 
+-/*
+- * START OF "GENERIC" ENCODE ROUTINES.
+- *   These may look a little ugly since they are imported from a "generic"
+- * set of XDR encode/decode routines which are intended to be shared by
+- * all of our NFSv4 implementations (OpenBSD, MacOS X...).
+- *
+- * If the pain of reading these is too great, it should be a straightforward
+- * task to translate them into Linux-specific versions which are more
+- * consistent with the style used in NFSv2/v3...
+- */
+ #define WRITE32(n)               *p++ = htonl(n)
+ #define WRITE64(n)               do {				\
+ 	*p++ = htonl((u32)((n) &gt;&gt; 32));				\
+@@ -3252,10 +3229,6 @@ nfsd4_encode_replay(struct nfsd4_compoundres *resp, struct nfsd4_op *op)
+ 	ADJUST_ARGS();
+ }
+ 
+-/*
+- * END OF "GENERIC" ENCODE ROUTINES.
+- */
+-
+ int
+ nfs4svc_encode_voidres(struct svc_rqst *rqstp, __be32 *p, void *dummy)
+ {</pre><hr><pre>commit bc749ca4c405d507e6ec6e3f3e5475e9a09faf0a
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Tue Apr 7 16:55:27 2009 -0700
+
+    nfsd: eliminate ENCODE_HEAD macro
+    
+    This macro doesn't serve any useful purpose.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index b820c311931c..fe46edeab2f6 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -1503,8 +1503,6 @@ nfsd4_decode_compound(struct nfsd4_compoundargs *argp)
+  * task to translate them into Linux-specific versions which are more
+  * consistent with the style used in NFSv2/v3...
+  */
+-#define ENCODE_HEAD              __be32 *p
+-
+ #define WRITE32(n)               *p++ = htonl(n)
+ #define WRITE64(n)               do {				\
+ 	*p++ = htonl((u32)((n) &gt;&gt; 32));				\
+@@ -2334,7 +2332,7 @@ nfsd4_encode_dirent(void *ccdv, const char *name, int namlen,
+ static void
+ nfsd4_encode_stateid(struct nfsd4_compoundres *resp, stateid_t *sid)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	RESERVE_SPACE(sizeof(stateid_t));
+ 	WRITE32(sid-&gt;si_generation);
+@@ -2345,7 +2343,7 @@ nfsd4_encode_stateid(struct nfsd4_compoundres *resp, stateid_t *sid)
+ static __be32
+ nfsd4_encode_access(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_access *access)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(8);
+@@ -2372,7 +2370,7 @@ nfsd4_encode_close(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_c
+ static __be32
+ nfsd4_encode_commit(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_commit *commit)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(8);
+@@ -2385,7 +2383,7 @@ nfsd4_encode_commit(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_
+ static __be32
+ nfsd4_encode_create(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_create *create)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(32);
+@@ -2421,7 +2419,7 @@ nfsd4_encode_getfh(struct nfsd4_compoundres *resp, __be32 nfserr, struct svc_fh
+ {
+ 	struct svc_fh *fhp = *fhpp;
+ 	unsigned int len;
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (!nfserr) {
+ 		len = fhp-&gt;fh_handle.fh_size;
+@@ -2440,7 +2438,7 @@ nfsd4_encode_getfh(struct nfsd4_compoundres *resp, __be32 nfserr, struct svc_fh
+ static void
+ nfsd4_encode_lock_denied(struct nfsd4_compoundres *resp, struct nfsd4_lock_denied *ld)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	RESERVE_SPACE(32 + XDR_LEN(ld-&gt;ld_sop ? ld-&gt;ld_sop-&gt;so_owner.len : 0));
+ 	WRITE64(ld-&gt;ld_start);
+@@ -2496,7 +2494,7 @@ nfsd4_encode_locku(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_l
+ static __be32
+ nfsd4_encode_link(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_link *link)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(20);
+@@ -2510,7 +2508,7 @@ nfsd4_encode_link(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_li
+ static __be32
+ nfsd4_encode_open(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_open *open)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 	ENCODE_SEQID_OP_HEAD;
+ 
+ 	if (nfserr)
+@@ -2605,7 +2603,7 @@ nfsd4_encode_read(struct nfsd4_compoundres *resp, __be32 nfserr,
+ 	int v, pn;
+ 	unsigned long maxcount; 
+ 	long len;
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (nfserr)
+ 		return nfserr;
+@@ -2667,7 +2665,7 @@ nfsd4_encode_readlink(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd
+ {
+ 	int maxcount;
+ 	char *page;
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (nfserr)
+ 		return nfserr;
+@@ -2716,7 +2714,7 @@ nfsd4_encode_readdir(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4
+ 	int maxcount;
+ 	loff_t offset;
+ 	__be32 *page, *savep, *tailbase;
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (nfserr)
+ 		return nfserr;
+@@ -2792,7 +2790,7 @@ nfsd4_encode_readdir(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4
+ static __be32
+ nfsd4_encode_remove(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_remove *remove)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(20);
+@@ -2805,7 +2803,7 @@ nfsd4_encode_remove(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_
+ static __be32
+ nfsd4_encode_rename(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_rename *rename)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(40);
+@@ -2825,7 +2823,7 @@ nfsd4_encode_secinfo(struct nfsd4_compoundres *resp, __be32 nfserr,
+ 	u32 nflavs;
+ 	struct exp_flavor_info *flavs;
+ 	struct exp_flavor_info def_flavs[2];
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (nfserr)
+ 		goto out;
+@@ -2890,7 +2888,7 @@ nfsd4_encode_secinfo(struct nfsd4_compoundres *resp, __be32 nfserr,
+ static __be32
+ nfsd4_encode_setattr(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_setattr *setattr)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	RESERVE_SPACE(12);
+ 	if (nfserr) {
+@@ -2910,7 +2908,7 @@ nfsd4_encode_setattr(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4
+ static __be32
+ nfsd4_encode_setclientid(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_setclientid *scd)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(8 + sizeof(nfs4_verifier));
+@@ -2930,7 +2928,7 @@ nfsd4_encode_setclientid(struct nfsd4_compoundres *resp, __be32 nfserr, struct n
+ static __be32
+ nfsd4_encode_write(struct nfsd4_compoundres *resp, __be32 nfserr, struct nfsd4_write *write)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (!nfserr) {
+ 		RESERVE_SPACE(16);
+@@ -2946,7 +2944,7 @@ static __be32
+ nfsd4_encode_exchange_id(struct nfsd4_compoundres *resp, int nfserr,
+ 			 struct nfsd4_exchange_id *exid)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 	char *major_id;
+ 	char *server_scope;
+ 	int major_id_sz;
+@@ -3001,7 +2999,7 @@ static __be32
+ nfsd4_encode_create_session(struct nfsd4_compoundres *resp, int nfserr,
+ 			    struct nfsd4_create_session *sess)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (nfserr)
+ 		return nfserr;
+@@ -3057,7 +3055,7 @@ __be32
+ nfsd4_encode_sequence(struct nfsd4_compoundres *resp, int nfserr,
+ 		      struct nfsd4_sequence *seq)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	if (nfserr)
+ 		return nfserr;
+@@ -3205,7 +3203,7 @@ void
+ nfsd4_encode_operation(struct nfsd4_compoundres *resp, struct nfsd4_op *op)
+ {
+ 	__be32 *statp;
+-	ENCODE_HEAD;
++	__be32 *p;
+ 
+ 	RESERVE_SPACE(8);
+ 	WRITE32(op-&gt;opnum);
+@@ -3239,7 +3237,7 @@ nfsd4_encode_operation(struct nfsd4_compoundres *resp, struct nfsd4_op *op)
+ void
+ nfsd4_encode_replay(struct nfsd4_compoundres *resp, struct nfsd4_op *op)
+ {
+-	ENCODE_HEAD;
++	__be32 *p;
+ 	struct nfs4_replay *rp = op-&gt;replay;
+ 
+ 	BUG_ON(!rp);</pre><hr><pre>commit a5422a5111811401f7756345e4c237ff06cf6d1e
+Author: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+Date:   Thu Apr 23 16:40:32 2009 +0300
+
+    lib: find_last_bit.o needed by a module only, move it from lib to obj
+    
+    Currently, although find_last_bit is EXPORTed, it is statically linked
+    with the kernel and is referenced only under CONFIG_SMP.
+    
+    When CONFIG_SMP is undefined and find_last_bit is referenced only by
+    modules, linking fails with:
+    
+      ERROR: "find_last_bit" [fs/nfs/nfs.ko] undefined!
+    
+    Cc: Rusty Russell &lt;rusty@rustcorp.com.au&gt;
+    Cc: Trond Myklebust &lt;Trond.Myklebust@netapp.com&gt;
+    Signed-off-by: Fred Isaman &lt;iisaman@citi.umich.edu&gt;
+    Signed-off-by: Benny Halevy &lt;bhalevy@panasas.com&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/lib/Makefile b/lib/Makefile
+index d6edd6753f40..33a40e40e3ee 100644
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -38,7 +38,7 @@ lib-$(CONFIG_RWSEM_GENERIC_SPINLOCK) += rwsem-spinlock.o
+ lib-$(CONFIG_RWSEM_XCHGADD_ALGORITHM) += rwsem.o
+ lib-$(CONFIG_GENERIC_FIND_FIRST_BIT) += find_next_bit.o
+ lib-$(CONFIG_GENERIC_FIND_NEXT_BIT) += find_next_bit.o
+-lib-$(CONFIG_GENERIC_FIND_LAST_BIT) += find_last_bit.o
++obj-$(CONFIG_GENERIC_FIND_LAST_BIT) += find_last_bit.o
+ obj-$(CONFIG_GENERIC_HWEIGHT) += hweight.o
+ obj-$(CONFIG_LOCK_KERNEL) += kernel_lock.o
+ obj-$(CONFIG_DEBUG_PREEMPT) += smp_processor_id.o</pre><hr><pre>commit 47a14ef1af48c696b214ac168f056ddc79793d0e
+Author: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+Date:   Tue Oct 21 14:13:47 2008 -0400
+
+    svcrpc: take advantage of tcp autotuning
+    
+    Allow the NFSv4 server to make use of TCP autotuning behaviour, which
+    was previously disabled by setting the sk_userlocks variable.
+    
+    Set the receive buffers to be big enough to receive the whole RPC
+    request, and set this for the listening socket, not the accept socket.
+    
+    Remove the code that readjusts the receive/send buffer sizes for the
+    accepted socket. Previously this code was used to influence the TCP
+    window management behaviour, which is no longer needed when autotuning
+    is enabled.
+    
+    This can improve IO bandwidth on networks with high bandwidth-delay
+    products, where a large tcp window is required.  It also simplifies
+    performance tuning, since getting adequate tcp buffers previously
+    required increasing the number of nfsd threads.
+    
+    Signed-off-by: Olga Kornievskaia &lt;aglo@citi.umich.edu&gt;
+    Cc: Jim Rees &lt;rees@umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/net/sunrpc/svcsock.c b/net/sunrpc/svcsock.c
+index 5763e6460fea..7a2a90fb2e06 100644
+--- a/net/sunrpc/svcsock.c
++++ b/net/sunrpc/svcsock.c
+@@ -345,7 +345,6 @@ static void svc_sock_setbufsize(struct socket *sock, unsigned int snd,
+ 	lock_sock(sock-&gt;sk);
+ 	sock-&gt;sk-&gt;sk_sndbuf = snd * 2;
+ 	sock-&gt;sk-&gt;sk_rcvbuf = rcv * 2;
+-	sock-&gt;sk-&gt;sk_userlocks |= SOCK_SNDBUF_LOCK|SOCK_RCVBUF_LOCK;
+ 	release_sock(sock-&gt;sk);
+ #endif
+ }
+@@ -797,23 +796,6 @@ static int svc_tcp_recvfrom(struct svc_rqst *rqstp)
+ 		test_bit(XPT_CONN, &amp;svsk-&gt;sk_xprt.xpt_flags),
+ 		test_bit(XPT_CLOSE, &amp;svsk-&gt;sk_xprt.xpt_flags));
+ 
+-	if (test_and_clear_bit(XPT_CHNGBUF, &amp;svsk-&gt;sk_xprt.xpt_flags))
+-		/* sndbuf needs to have room for one request
+-		 * per thread, otherwise we can stall even when the
+-		 * network isn't a bottleneck.
+-		 *
+-		 * We count all threads rather than threads in a
+-		 * particular pool, which provides an upper bound
+-		 * on the number of threads which will access the socket.
+-		 *
+-		 * rcvbuf just needs to be able to hold a few requests.
+-		 * Normally they will be removed from the queue
+-		 * as soon a a complete request arrives.
+-		 */
+-		svc_sock_setbufsize(svsk-&gt;sk_sock,
+-				    (serv-&gt;sv_nrthreads+3) * serv-&gt;sv_max_mesg,
+-				    3 * serv-&gt;sv_max_mesg);
+-
+ 	clear_bit(XPT_DATA, &amp;svsk-&gt;sk_xprt.xpt_flags);
+ 
+ 	/* Receive data. If we haven't got the record length yet, get
+@@ -1061,15 +1043,6 @@ static void svc_tcp_init(struct svc_sock *svsk, struct svc_serv *serv)
+ 
+ 		tcp_sk(sk)-&gt;nonagle |= TCP_NAGLE_OFF;
+ 
+-		/* initialise setting must have enough space to
+-		 * receive and respond to one request.
+-		 * svc_tcp_recvfrom will re-adjust if necessary
+-		 */
+-		svc_sock_setbufsize(svsk-&gt;sk_sock,
+-				    3 * svsk-&gt;sk_xprt.xpt_server-&gt;sv_max_mesg,
+-				    3 * svsk-&gt;sk_xprt.xpt_server-&gt;sv_max_mesg);
+-
+-		set_bit(XPT_CHNGBUF, &amp;svsk-&gt;sk_xprt.xpt_flags);
+ 		set_bit(XPT_DATA, &amp;svsk-&gt;sk_xprt.xpt_flags);
+ 		if (sk-&gt;sk_state != TCP_ESTABLISHED)
+ 			set_bit(XPT_CLOSE, &amp;svsk-&gt;sk_xprt.xpt_flags);
+@@ -1140,8 +1113,14 @@ static struct svc_sock *svc_setup_socket(struct svc_serv *serv,
+ 	/* Initialize the socket */
+ 	if (sock-&gt;type == SOCK_DGRAM)
+ 		svc_udp_init(svsk, serv);
+-	else
++	else {
++		/* initialise setting must have enough space to
++		 * receive and respond to one request.
++		 */
++		svc_sock_setbufsize(svsk-&gt;sk_sock, 4 * serv-&gt;sv_max_mesg,
++					4 * serv-&gt;sv_max_mesg);
+ 		svc_tcp_init(svsk, serv);
++	}
+ 
+ 	/*
+ 	 * We start one listener per sv_serv.  We want AF_INET</pre><hr><pre>commit 026722c25e6eb018eab8b9a3c198c258f5b7a2e7
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Wed Mar 18 15:06:26 2009 -0400
+
+    nfsd4: don't check ip address in setclientid
+    
+    The spec allows clients to change ip address, so we shouldn't be
+    requiring that setclientid always come from the same address.  For
+    example, a client could reboot and get a new dhcpd address, but still
+    present the same clientid to the server.  In that case the server should
+    revoke the client's previous state and allow it to continue, instead of
+    (as it currently does) returning a CLID_INUSE error.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 54651aa45790..070e9e5c0452 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -791,10 +791,9 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 	if (conf) {
+ 		/* RFC 3530 14.2.33 CASE 0: */
+ 		status = nfserr_clid_inuse;
+-		if (!same_creds(&amp;conf-&gt;cl_cred, &amp;rqstp-&gt;rq_cred)
+-				|| conf-&gt;cl_addr != sin-&gt;sin_addr.s_addr) {
+-			dprintk("NFSD: setclientid: string in use by clientat %pI4\n",
+-				&amp;conf-&gt;cl_addr);
++		if (!same_creds(&amp;conf-&gt;cl_cred, &amp;rqstp-&gt;rq_cred)) {
++			dprintk("NFSD: setclientid: string in use by client"
++				" at %pI4\n", &amp;conf-&gt;cl_addr);
+ 			goto out;
+ 		}
+ 	}</pre><hr><pre>commit 5cb031b0afddad73ea4191c9f0b76d20ca447dc0
+Author: J. Bruce Fields &lt;bfields@fieldses.org&gt;
+Date:   Sat Mar 14 16:38:41 2009 -0400
+
+    nfsd4: remove redundant check from nfsd4_open
+    
+    Note that we already checked for this invalid case at the top of this
+    function.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+
+diff --git a/fs/nfsd/nfs4proc.c b/fs/nfsd/nfs4proc.c
+index 36d74cda87a8..f156b85b4129 100644
+--- a/fs/nfsd/nfs4proc.c
++++ b/fs/nfsd/nfs4proc.c
+@@ -206,10 +206,6 @@ nfsd4_open(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
+ 
+ 	switch (open-&gt;op_claim_type) {
+ 		case NFS4_OPEN_CLAIM_DELEGATE_CUR:
+-			status = nfserr_inval;
+-			if (open-&gt;op_create)
+-				goto out;
+-			/* fall through */
+ 		case NFS4_OPEN_CLAIM_NULL:
+ 			/*
+ 			 * (1) set CURRENT_FH to the file being opened,</pre>
+    <div class="pagination">
+        <a href='4_22.html'>&lt;&lt;Prev</a><a href='4.html'>1</a><a href='4_2.html'>2</a><a href='4_3.html'>3</a><a href='4_4.html'>4</a><a href='4_5.html'>5</a><a href='4_6.html'>6</a><a href='4_7.html'>7</a><a href='4_8.html'>8</a><a href='4_9.html'>9</a><a href='4_10.html'>10</a><a href='4_11.html'>11</a><a href='4_12.html'>12</a><a href='4_13.html'>13</a><a href='4_14.html'>14</a><a href='4_15.html'>15</a><a href='4_16.html'>16</a><a href='4_17.html'>17</a><a href='4_18.html'>18</a><a href='4_19.html'>19</a><a href='4_20.html'>20</a><a href='4_21.html'>21</a><a href='4_22.html'>22</a><span>[23]</span><a href='4_24.html'>24</a><a href='4_25.html'>25</a><a href='4_26.html'>26</a><a href='4_27.html'>27</a><a href='4_28.html'>28</a><a href='4_29.html'>29</a><a href='4_30.html'>30</a><a href='4_31.html'>31</a><a href='4_32.html'>32</a><a href='4_33.html'>33</a><a href='4_34.html'>34</a><a href='4_35.html'>35</a><a href='4_36.html'>36</a><a href='4_37.html'>37</a><a href='4_38.html'>38</a><a href='4_39.html'>39</a><a href='4_40.html'>40</a><a href='4_41.html'>41</a><a href='4_42.html'>42</a><a href='4_43.html'>43</a><a href='4_44.html'>44</a><a href='4_45.html'>45</a><a href='4_46.html'>46</a><a href='4_47.html'>47</a><a href='4_48.html'>48</a><a href='4_49.html'>49</a><a href='4_50.html'>50</a><a href='4_51.html'>51</a><a href='4_52.html'>52</a><a href='4_53.html'>53</a><a href='4_54.html'>54</a><a href='4_55.html'>55</a><a href='4_56.html'>56</a><a href='4_57.html'>57</a><a href='4_24.html'>Next&gt;&gt;</a>
+    <div>
+</body>

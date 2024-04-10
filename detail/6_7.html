@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <a href='6_6.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><span>[7]</span><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_8.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit cab63f64887616e3c4e31cfd8103320be6ebc8d3
+Author: Dinghao Liu &lt;dinghao.liu@zju.edu.cn&gt;
+Date:   Thu Sep 21 16:24:10 2023 +0800
+
+    i3c: Fix potential refcount leak in i3c_master_register_new_i3c_devs
+    
+    put_device() needs to be called on failure of device_register()
+    to give up the reference initialized in it to avoid refcount leak.
+    
+    Fixes: 3a379bbcea0a ("i3c: Add core I3C infrastructure")
+    Signed-off-by: Dinghao Liu &lt;dinghao.liu@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20230921082410.25548-1-dinghao.liu@zju.edu.cn
+    Signed-off-by: Alexandre Belloni &lt;alexandre.belloni@bootlin.com&gt;
+
+diff --git a/drivers/i3c/master.c b/drivers/i3c/master.c
+index 839eb8b4bbde..e66a1f84cefb 100644
+--- a/drivers/i3c/master.c
++++ b/drivers/i3c/master.c
+@@ -1525,9 +1525,11 @@ i3c_master_register_new_i3c_devs(struct i3c_master_controller *master)
+ 			desc-&gt;dev-&gt;dev.of_node = desc-&gt;boardinfo-&gt;of_node;
+ 
+ 		ret = device_register(&amp;desc-&gt;dev-&gt;dev);
+-		if (ret)
++		if (ret) {
+ 			dev_err(&amp;master-&gt;dev,
+ 				"Failed to add I3C device (err = %d)\n", ret);
++			put_device(&amp;desc-&gt;dev-&gt;dev);
++		}
+ 	}
+ }
+ </pre><hr><pre>commit f4dcf06bc6e0161920b700ba3966411d716a321b
+Author: Dinghao Liu &lt;dinghao.liu@zju.edu.cn&gt;
+Date:   Mon Sep 25 16:08:44 2023 +0800
+
+    ACPI: video: Fix NULL pointer dereference in acpi_video_bus_add()
+    
+    acpi_video_bus_add_notify_handler() could free video-&gt;input and
+    set it to NULL on failure, but this failure would be missed in its
+    caller acpi_video_bus_add(). As a result, when an error happens in
+    acpi_dev_install_notify_handler(), acpi_video_bus_add() would call
+    acpi_video_bus_remove_notify_handler(), where a potential NULL pointer
+    video-&gt;input is dereferenced in input_unregister_device().
+    
+    Fix this by adding a return value check and adjusting the following
+    error handling code.
+    
+    Fixes: 6f7016819766 ("ACPI: video: Install Notify() handler directly")
+    Signed-off-by: Dinghao Liu &lt;dinghao.liu@zju.edu.cn&gt;
+    [ rjw: Subject and changelog edits ]
+    Signed-off-by: Rafael J. Wysocki &lt;rafael.j.wysocki@intel.com&gt;
+
+diff --git a/drivers/acpi/acpi_video.c b/drivers/acpi/acpi_video.c
+index 948e31f7ce6e..b411948594ff 100644
+--- a/drivers/acpi/acpi_video.c
++++ b/drivers/acpi/acpi_video.c
+@@ -2057,7 +2057,9 @@ static int acpi_video_bus_add(struct acpi_device *device)
+ 	    !auto_detect)
+ 		acpi_video_bus_register_backlight(video);
+ 
+-	acpi_video_bus_add_notify_handler(video);
++	error = acpi_video_bus_add_notify_handler(video);
++	if (error)
++		goto err_del;
+ 
+ 	error = acpi_dev_install_notify_handler(device, ACPI_DEVICE_NOTIFY,
+ 						acpi_video_bus_notify);
+@@ -2067,10 +2069,11 @@ static int acpi_video_bus_add(struct acpi_device *device)
+ 	return 0;
+ 
+ err_remove:
++	acpi_video_bus_remove_notify_handler(video);
++err_del:
+ 	mutex_lock(&amp;video_list_lock);
+ 	list_del(&amp;video-&gt;entry);
+ 	mutex_unlock(&amp;video_list_lock);
+-	acpi_video_bus_remove_notify_handler(video);
+ 	acpi_video_bus_unregister_backlight(video);
+ err_put_video:
+ 	acpi_video_bus_put_devices(video);</pre><hr><pre>commit 246f80a0b17f8f582b2c0996db02998239057c65
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Wed Aug 2 11:37:37 2023 +0800
+
+    sh: push-switch: Reorder cleanup operations to avoid use-after-free bug
+    
+    The original code puts flush_work() before timer_shutdown_sync()
+    in switch_drv_remove(). Although we use flush_work() to stop
+    the worker, it could be rescheduled in switch_timer(). As a result,
+    a use-after-free bug can occur. The details are shown below:
+    
+          (cpu 0)                    |      (cpu 1)
+    switch_drv_remove()              |
+     flush_work()                    |
+      ...                            |  switch_timer // timer
+                                     |   schedule_work(&amp;psw-&gt;work)
+     timer_shutdown_sync()           |
+     ...                             |  switch_work_handler // worker
+     kfree(psw) // free              |
+                                     |   psw-&gt;state = 0 // use
+    
+    This patch puts timer_shutdown_sync() before flush_work() to
+    mitigate the bugs. As a result, the worker and timer will be
+    stopped safely before the deallocate operations.
+    
+    Fixes: 9f5e8eee5cfe ("sh: generic push-switch framework.")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Geert Uytterhoeven &lt;geert+renesas@glider.be&gt;
+    Reviewed-by: John Paul Adrian Glaubitz &lt;glaubitz@physik.fu-berlin.de&gt;
+    Link: https://lore.kernel.org/r/20230802033737.9738-1-duoming@zju.edu.cn
+    Signed-off-by: John Paul Adrian Glaubitz &lt;glaubitz@physik.fu-berlin.de&gt;
+
+diff --git a/arch/sh/drivers/push-switch.c b/arch/sh/drivers/push-switch.c
+index c95f48ff3f6f..6ecba5f521eb 100644
+--- a/arch/sh/drivers/push-switch.c
++++ b/arch/sh/drivers/push-switch.c
+@@ -101,8 +101,8 @@ static int switch_drv_remove(struct platform_device *pdev)
+ 		device_remove_file(&amp;pdev-&gt;dev, &amp;dev_attr_switch);
+ 
+ 	platform_set_drvdata(pdev, NULL);
+-	flush_work(&amp;psw-&gt;work);
+ 	timer_shutdown_sync(&amp;psw-&gt;debounce);
++	flush_work(&amp;psw-&gt;work);
+ 	free_irq(irq, pdev);
+ 
+ 	kfree(psw);</pre><hr><pre>commit 218d690c49b7e9c94ad0d317adbdd4af846ea0dc
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Wed Aug 9 11:31:51 2023 +0800
+
+    wifi: nl80211/cfg80211: add forgotten nla_policy for BSS color attribute
+    
+    The previous commit dd3e4fc75b4a ("nl80211/cfg80211: add BSS color to
+    NDP ranging parameters") adds a parameter for NDP ranging by introducing
+    a new attribute type named NL80211_PMSR_FTM_REQ_ATTR_BSS_COLOR.
+    
+    However, the author forgot to also describe the nla_policy at
+    nl80211_pmsr_ftm_req_attr_policy (net/wireless/nl80211.c). Just
+    complement it to avoid malformed attribute that causes out-of-attribute
+    access.
+    
+    Fixes: dd3e4fc75b4a ("nl80211/cfg80211: add BSS color to NDP ranging parameters")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Simon Horman &lt;horms@kernel.org&gt;
+    Link: https://lore.kernel.org/r/20230809033151.768910-1-linma@zju.edu.cn
+    Signed-off-by: Johannes Berg &lt;johannes.berg@intel.com&gt;
+
+diff --git a/net/wireless/nl80211.c b/net/wireless/nl80211.c
+index 0ffebf1a1eb6..de47838aca4f 100644
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -323,6 +323,7 @@ nl80211_pmsr_ftm_req_attr_policy[NL80211_PMSR_FTM_REQ_ATTR_MAX + 1] = {
+ 	[NL80211_PMSR_FTM_REQ_ATTR_TRIGGER_BASED] = { .type = NLA_FLAG },
+ 	[NL80211_PMSR_FTM_REQ_ATTR_NON_TRIGGER_BASED] = { .type = NLA_FLAG },
+ 	[NL80211_PMSR_FTM_REQ_ATTR_LMR_FEEDBACK] = { .type = NLA_FLAG },
++	[NL80211_PMSR_FTM_REQ_ATTR_BSS_COLOR] = { .type = NLA_U8 },
+ };
+ 
+ static const struct nla_policy</pre><hr><pre>commit 5d6ba607d6cb5c58a4ddf33381e18c83dbb4098f
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Thu Jul 27 20:57:52 2023 +0300
+
+    vdpa: Add max vqp attr to vdpa_nl_policy for nlattr length check
+    
+    The vdpa_nl_policy structure is used to validate the nlattr when parsing
+    the incoming nlmsg. It will ensure the attribute being described produces
+    a valid nlattr pointer in info-&gt;attrs before entering into each handler
+    in vdpa_nl_ops.
+    
+    That is to say, the missing part in vdpa_nl_policy may lead to illegal
+    nlattr after parsing, which could lead to OOB read just like CVE-2023-3773.
+    
+    This patch adds the missing nla_policy for vdpa max vqp attr to avoid
+    such bugs.
+    
+    Fixes: ad69dd0bf26b ("vdpa: Introduce query of device config layout")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Cc: stable@vger.kernel.org
+    Message-Id: &lt;20230727175757.73988-7-dtatulea@nvidia.com&gt;
+    Signed-off-by: Michael S. Tsirkin &lt;mst@redhat.com&gt;
+
+diff --git a/drivers/vdpa/vdpa.c b/drivers/vdpa/vdpa.c
+index 75f1df2b9d2a..f2f654fd84e5 100644
+--- a/drivers/vdpa/vdpa.c
++++ b/drivers/vdpa/vdpa.c
+@@ -1247,6 +1247,7 @@ static const struct nla_policy vdpa_nl_policy[VDPA_ATTR_MAX + 1] = {
+ 	[VDPA_ATTR_MGMTDEV_DEV_NAME] = { .type = NLA_STRING },
+ 	[VDPA_ATTR_DEV_NAME] = { .type = NLA_STRING },
+ 	[VDPA_ATTR_DEV_NET_CFG_MACADDR] = NLA_POLICY_ETH_ADDR,
++	[VDPA_ATTR_DEV_NET_CFG_MAX_VQP] = { .type = NLA_U16 },
+ 	/* virtio spec 1.1 section 5.1.4.1 for valid MTU range */
+ 	[VDPA_ATTR_DEV_NET_CFG_MTU] = NLA_POLICY_MIN(NLA_U16, 68),
+ 	[VDPA_ATTR_DEV_QUEUE_INDEX] = { .type = NLA_U32 },</pre><hr><pre>commit b3003e1b54e057f5f3124e437b80c3bef26ed3fe
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Thu Jul 27 20:57:50 2023 +0300
+
+    vdpa: Add queue index attr to vdpa_nl_policy for nlattr length check
+    
+    The vdpa_nl_policy structure is used to validate the nlattr when parsing
+    the incoming nlmsg. It will ensure the attribute being described produces
+    a valid nlattr pointer in info-&gt;attrs before entering into each handler
+    in vdpa_nl_ops.
+    
+    That is to say, the missing part in vdpa_nl_policy may lead to illegal
+    nlattr after parsing, which could lead to OOB read just like CVE-2023-3773.
+    
+    This patch adds the missing nla_policy for vdpa queue index attr to avoid
+    such bugs.
+    
+    Fixes: 13b00b135665 ("vdpa: Add support for querying vendor statistics")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Cc: stable@vger.kernelorg
+    Message-Id: &lt;20230727175757.73988-5-dtatulea@nvidia.com&gt;
+    Signed-off-by: Michael S. Tsirkin &lt;mst@redhat.com&gt;
+
+diff --git a/drivers/vdpa/vdpa.c b/drivers/vdpa/vdpa.c
+index 3ad355a2208a..75f1df2b9d2a 100644
+--- a/drivers/vdpa/vdpa.c
++++ b/drivers/vdpa/vdpa.c
+@@ -1249,6 +1249,7 @@ static const struct nla_policy vdpa_nl_policy[VDPA_ATTR_MAX + 1] = {
+ 	[VDPA_ATTR_DEV_NET_CFG_MACADDR] = NLA_POLICY_ETH_ADDR,
+ 	/* virtio spec 1.1 section 5.1.4.1 for valid MTU range */
+ 	[VDPA_ATTR_DEV_NET_CFG_MTU] = NLA_POLICY_MIN(NLA_U16, 68),
++	[VDPA_ATTR_DEV_QUEUE_INDEX] = { .type = NLA_U32 },
+ 	[VDPA_ATTR_DEV_FEATURES] = { .type = NLA_U64 },
+ };
+ </pre><hr><pre>commit 79c8651587504ba263d2fd67fd4406240fb21f69
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Thu Jul 27 20:57:48 2023 +0300
+
+    vdpa: Add features attr to vdpa_nl_policy for nlattr length check
+    
+    The vdpa_nl_policy structure is used to validate the nlattr when parsing
+    the incoming nlmsg. It will ensure the attribute being described produces
+    a valid nlattr pointer in info-&gt;attrs before entering into each handler
+    in vdpa_nl_ops.
+    
+    That is to say, the missing part in vdpa_nl_policy may lead to illegal
+    nlattr after parsing, which could lead to OOB read just like CVE-2023-3773.
+    
+    This patch adds the missing nla_policy for vdpa features attr to avoid
+    such bugs.
+    
+    Fixes: 90fea5a800c3 ("vdpa: device feature provisioning")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Cc: stable@vger.kernel.org
+    Message-Id: &lt;20230727175757.73988-3-dtatulea@nvidia.com&gt;
+    Signed-off-by: Michael S. Tsirkin &lt;mst@redhat.com&gt;
+
+diff --git a/drivers/vdpa/vdpa.c b/drivers/vdpa/vdpa.c
+index 965e32529eb8..3ad355a2208a 100644
+--- a/drivers/vdpa/vdpa.c
++++ b/drivers/vdpa/vdpa.c
+@@ -1249,6 +1249,7 @@ static const struct nla_policy vdpa_nl_policy[VDPA_ATTR_MAX + 1] = {
+ 	[VDPA_ATTR_DEV_NET_CFG_MACADDR] = NLA_POLICY_ETH_ADDR,
+ 	/* virtio spec 1.1 section 5.1.4.1 for valid MTU range */
+ 	[VDPA_ATTR_DEV_NET_CFG_MTU] = NLA_POLICY_MIN(NLA_U16, 68),
++	[VDPA_ATTR_DEV_FEATURES] = { .type = NLA_U64 },
+ };
+ 
+ static const struct genl_ops vdpa_nl_ops[] = {</pre><hr><pre>commit f1d152eb66a30aecd19f22ff2676a7cb2584a920
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Mon Aug 7 17:13:47 2023 +0800
+
+    rtnetlink: remove redundant checks for nlattr IFLA_BRIDGE_MODE
+    
+    The commit d73ef2d69c0d ("rtnetlink: let rtnl_bridge_setlink checks
+    IFLA_BRIDGE_MODE length") added the nla_len check in rtnl_bridge_setlink,
+    which is the only caller for ndo_bridge_setlink handlers defined in
+    low-level driver codes. Hence, this patch cleanups the redundant checks in
+    each ndo_bridge_setlink handler function.
+    
+    Suggested-by: Hangbin Liu &lt;liuhangbin@gmail.com&gt;
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Acked-by: Pavan Chebbi &lt;pavan.chebbi@broadcom.com&gt;
+    Reviewed-by: Simon Horman &lt;horms@kernel.org&gt;
+    Link: https://lore.kernel.org/r/20230807091347.3804523-1-linma@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/drivers/net/ethernet/broadcom/bnxt/bnxt.c b/drivers/net/ethernet/broadcom/bnxt/bnxt.c
+index eb168ca983b7..7be917a8da48 100644
+--- a/drivers/net/ethernet/broadcom/bnxt/bnxt.c
++++ b/drivers/net/ethernet/broadcom/bnxt/bnxt.c
+@@ -13132,9 +13132,6 @@ static int bnxt_bridge_setlink(struct net_device *dev, struct nlmsghdr *nlh,
+ 		if (nla_type(attr) != IFLA_BRIDGE_MODE)
+ 			continue;
+ 
+-		if (nla_len(attr) &lt; sizeof(mode))
+-			return -EINVAL;
+-
+ 		mode = nla_get_u16(attr);
+ 		if (mode == bp-&gt;br_mode)
+ 			break;
+diff --git a/drivers/net/ethernet/emulex/benet/be_main.c b/drivers/net/ethernet/emulex/benet/be_main.c
+index 0616b5fe241c..ad862ed7888a 100644
+--- a/drivers/net/ethernet/emulex/benet/be_main.c
++++ b/drivers/net/ethernet/emulex/benet/be_main.c
+@@ -4986,9 +4986,6 @@ static int be_ndo_bridge_setlink(struct net_device *dev, struct nlmsghdr *nlh,
+ 		if (nla_type(attr) != IFLA_BRIDGE_MODE)
+ 			continue;
+ 
+-		if (nla_len(attr) &lt; sizeof(mode))
+-			return -EINVAL;
+-
+ 		mode = nla_get_u16(attr);
+ 		if (BE3_chip(adapter) &amp;&amp; mode == BRIDGE_MODE_VEPA)
+ 			return -EOPNOTSUPP;
+diff --git a/drivers/net/ethernet/intel/ixgbe/ixgbe_main.c b/drivers/net/ethernet/intel/ixgbe/ixgbe_main.c
+index 8eb9839a3ca6..dd03b017dfc5 100644
+--- a/drivers/net/ethernet/intel/ixgbe/ixgbe_main.c
++++ b/drivers/net/ethernet/intel/ixgbe/ixgbe_main.c
+@@ -10042,9 +10042,6 @@ static int ixgbe_ndo_bridge_setlink(struct net_device *dev,
+ 		if (nla_type(attr) != IFLA_BRIDGE_MODE)
+ 			continue;
+ 
+-		if (nla_len(attr) &lt; sizeof(mode))
+-			return -EINVAL;
+-
+ 		mode = nla_get_u16(attr);
+ 		status = ixgbe_configure_bridge_mode(adapter, mode);
+ 		if (status)
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_main.c b/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
+index c8ec6467d4d1..ca80c220e4b0 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
+@@ -4896,9 +4896,6 @@ static int mlx5e_bridge_setlink(struct net_device *dev, struct nlmsghdr *nlh,
+ 		if (nla_type(attr) != IFLA_BRIDGE_MODE)
+ 			continue;
+ 
+-		if (nla_len(attr) &lt; sizeof(mode))
+-			return -EINVAL;
+-
+ 		mode = nla_get_u16(attr);
+ 		if (mode &gt; BRIDGE_MODE_VEPA)
+ 			return -EINVAL;
+diff --git a/drivers/net/ethernet/netronome/nfp/nfp_net_common.c b/drivers/net/ethernet/netronome/nfp/nfp_net_common.c
+index f18c791cf698..de0a5d5ded30 100644
+--- a/drivers/net/ethernet/netronome/nfp/nfp_net_common.c
++++ b/drivers/net/ethernet/netronome/nfp/nfp_net_common.c
+@@ -2108,9 +2108,6 @@ static int nfp_net_bridge_setlink(struct net_device *dev, struct nlmsghdr *nlh,
+ 		if (nla_type(attr) != IFLA_BRIDGE_MODE)
+ 			continue;
+ 
+-		if (nla_len(attr) &lt; sizeof(mode))
+-			return -EINVAL;
+-
+ 		new_ctrl = nn-&gt;dp.ctrl;
+ 		mode = nla_get_u16(attr);
+ 		if (mode == BRIDGE_MODE_VEPA)</pre><hr><pre>commit 31d49ba033095f6e8158c60f69714a500922e0c3
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Tue Aug 1 09:32:48 2023 +0800
+
+    net: dcb: choose correct policy to parse DCB_ATTR_BCN
+    
+    The dcbnl_bcn_setcfg uses erroneous policy to parse tb[DCB_ATTR_BCN],
+    which is introduced in commit 859ee3c43812 ("DCB: Add support for DCB
+    BCN"). Please see the comment in below code
+    
+    static int dcbnl_bcn_setcfg(...)
+    {
+      ...
+      ret = nla_parse_nested_deprecated(..., dcbnl_pfc_up_nest, .. )
+      // !!! dcbnl_pfc_up_nest for attributes
+      //  DCB_PFC_UP_ATTR_0 to DCB_PFC_UP_ATTR_ALL in enum dcbnl_pfc_up_attrs
+      ...
+      for (i = DCB_BCN_ATTR_RP_0; i &lt;= DCB_BCN_ATTR_RP_7; i++) {
+      // !!! DCB_BCN_ATTR_RP_0 to DCB_BCN_ATTR_RP_7 in enum dcbnl_bcn_attrs
+        ...
+        value_byte = nla_get_u8(data[i]);
+        ...
+      }
+      ...
+      for (i = DCB_BCN_ATTR_BCNA_0; i &lt;= DCB_BCN_ATTR_RI; i++) {
+      // !!! DCB_BCN_ATTR_BCNA_0 to DCB_BCN_ATTR_RI in enum dcbnl_bcn_attrs
+      ...
+        value_int = nla_get_u32(data[i]);
+      ...
+      }
+      ...
+    }
+    
+    That is, the nla_parse_nested_deprecated uses dcbnl_pfc_up_nest
+    attributes to parse nlattr defined in dcbnl_pfc_up_attrs. But the
+    following access code fetch each nlattr as dcbnl_bcn_attrs attributes.
+    By looking up the associated nla_policy for dcbnl_bcn_attrs. We can find
+    the beginning part of these two policies are "same".
+    
+    static const struct nla_policy dcbnl_pfc_up_nest[...] = {
+            [DCB_PFC_UP_ATTR_0]   = {.type = NLA_U8},
+            [DCB_PFC_UP_ATTR_1]   = {.type = NLA_U8},
+            [DCB_PFC_UP_ATTR_2]   = {.type = NLA_U8},
+            [DCB_PFC_UP_ATTR_3]   = {.type = NLA_U8},
+            [DCB_PFC_UP_ATTR_4]   = {.type = NLA_U8},
+            [DCB_PFC_UP_ATTR_5]   = {.type = NLA_U8},
+            [DCB_PFC_UP_ATTR_6]   = {.type = NLA_U8},
+            [DCB_PFC_UP_ATTR_7]   = {.type = NLA_U8},
+            [DCB_PFC_UP_ATTR_ALL] = {.type = NLA_FLAG},
+    };
+    
+    static const struct nla_policy dcbnl_bcn_nest[...] = {
+            [DCB_BCN_ATTR_RP_0]         = {.type = NLA_U8},
+            [DCB_BCN_ATTR_RP_1]         = {.type = NLA_U8},
+            [DCB_BCN_ATTR_RP_2]         = {.type = NLA_U8},
+            [DCB_BCN_ATTR_RP_3]         = {.type = NLA_U8},
+            [DCB_BCN_ATTR_RP_4]         = {.type = NLA_U8},
+            [DCB_BCN_ATTR_RP_5]         = {.type = NLA_U8},
+            [DCB_BCN_ATTR_RP_6]         = {.type = NLA_U8},
+            [DCB_BCN_ATTR_RP_7]         = {.type = NLA_U8},
+            [DCB_BCN_ATTR_RP_ALL]       = {.type = NLA_FLAG},
+            // from here is somewhat different
+            [DCB_BCN_ATTR_BCNA_0]       = {.type = NLA_U32},
+            ...
+            [DCB_BCN_ATTR_ALL]          = {.type = NLA_FLAG},
+    };
+    
+    Therefore, the current code is buggy and this
+    nla_parse_nested_deprecated could overflow the dcbnl_pfc_up_nest and use
+    the adjacent nla_policy to parse attributes from DCB_BCN_ATTR_BCNA_0.
+    
+    Hence use the correct policy dcbnl_bcn_nest to parse the nested
+    tb[DCB_ATTR_BCN] TLV.
+    
+    Fixes: 859ee3c43812 ("DCB: Add support for DCB BCN")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Reviewed-by: Simon Horman &lt;horms@kernel.org&gt;
+    Link: https://lore.kernel.org/r/20230801013248.87240-1-linma@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/dcb/dcbnl.c b/net/dcb/dcbnl.c
+index c0c438128575..2e6b8c8fd2de 100644
+--- a/net/dcb/dcbnl.c
++++ b/net/dcb/dcbnl.c
+@@ -980,7 +980,7 @@ static int dcbnl_bcn_setcfg(struct net_device *netdev, struct nlmsghdr *nlh,
+ 		return -EOPNOTSUPP;
+ 
+ 	ret = nla_parse_nested_deprecated(data, DCB_BCN_ATTR_MAX,
+-					  tb[DCB_ATTR_BCN], dcbnl_pfc_up_nest,
++					  tb[DCB_ATTR_BCN], dcbnl_bcn_nest,
+ 					  NULL);
+ 	if (ret)
+ 		return ret;</pre><hr><pre>commit 1e7417c188d0a83fb385ba2dbe35fd2563f2b6f3
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Wed Jul 26 16:14:07 2023 +0800
+
+    net: usb: lan78xx: reorder cleanup operations to avoid UAF bugs
+    
+    The timer dev-&gt;stat_monitor can schedule the delayed work dev-&gt;wq and
+    the delayed work dev-&gt;wq can also arm the dev-&gt;stat_monitor timer.
+    
+    When the device is detaching, the net_device will be deallocated. but
+    the net_device private data could still be dereferenced in delayed work
+    or timer handler. As a result, the UAF bugs will happen.
+    
+    One racy situation is shown below:
+    
+          (Thread 1)                 |      (Thread 2)
+    lan78xx_stat_monitor()           |
+     ...                             |  lan78xx_disconnect()
+     lan78xx_defer_kevent()          |    ...
+      ...                            |    cancel_delayed_work_sync(&amp;dev-&gt;wq);
+      schedule_delayed_work()        |    ...
+      (wait some time)               |    free_netdev(net); //free net_device
+      lan78xx_delayedwork()          |
+      //use net_device private data  |
+      dev-&gt; //use                    |
+    
+    Although we use cancel_delayed_work_sync() to cancel the delayed work
+    in lan78xx_disconnect(), it could still be scheduled in timer handler
+    lan78xx_stat_monitor().
+    
+    Another racy situation is shown below:
+    
+          (Thread 1)                |      (Thread 2)
+    lan78xx_delayedwork             |
+     mod_timer()                    |  lan78xx_disconnect()
+                                    |   cancel_delayed_work_sync()
+     (wait some time)               |   if (timer_pending(&amp;dev-&gt;stat_monitor))
+                                    |       del_timer_sync(&amp;dev-&gt;stat_monitor);
+     lan78xx_stat_monitor()         |   ...
+      lan78xx_defer_kevent()        |   free_netdev(net); //free
+       //use net_device private data|
+       dev-&gt; //use                  |
+    
+    Although we use del_timer_sync() to delete the timer, the function
+    timer_pending() returns 0 when the timer is activated. As a result,
+    the del_timer_sync() will not be executed and the timer could be
+    re-armed.
+    
+    In order to mitigate this bug, We use timer_shutdown_sync() to shutdown
+    the timer and then use cancel_delayed_work_sync() to cancel the delayed
+    work. As a result, the net_device could be deallocated safely.
+    
+    What's more, the dev-&gt;flags is set to EVENT_DEV_DISCONNECT in
+    lan78xx_disconnect(). But it could still be set to EVENT_STAT_UPDATE
+    in lan78xx_stat_monitor(). So this patch put the set_bit() behind
+    timer_shutdown_sync().
+    
+    Fixes: 77dfff5bb7e2 ("lan78xx: Fix race condition in disconnect handling")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/drivers/net/usb/lan78xx.c b/drivers/net/usb/lan78xx.c
+index c458c030fadf..59cde06aa7f6 100644
+--- a/drivers/net/usb/lan78xx.c
++++ b/drivers/net/usb/lan78xx.c
+@@ -4224,8 +4224,6 @@ static void lan78xx_disconnect(struct usb_interface *intf)
+ 	if (!dev)
+ 		return;
+ 
+-	set_bit(EVENT_DEV_DISCONNECT, &amp;dev-&gt;flags);
+-
+ 	netif_napi_del(&amp;dev-&gt;napi);
+ 
+ 	udev = interface_to_usbdev(intf);
+@@ -4233,6 +4231,8 @@ static void lan78xx_disconnect(struct usb_interface *intf)
+ 
+ 	unregister_netdev(net);
+ 
++	timer_shutdown_sync(&amp;dev-&gt;stat_monitor);
++	set_bit(EVENT_DEV_DISCONNECT, &amp;dev-&gt;flags);
+ 	cancel_delayed_work_sync(&amp;dev-&gt;wq);
+ 
+ 	phydev = net-&gt;phydev;
+@@ -4247,9 +4247,6 @@ static void lan78xx_disconnect(struct usb_interface *intf)
+ 
+ 	usb_scuttle_anchored_urbs(&amp;dev-&gt;deferred);
+ 
+-	if (timer_pending(&amp;dev-&gt;stat_monitor))
+-		del_timer_sync(&amp;dev-&gt;stat_monitor);
+-
+ 	lan78xx_unbind(dev, intf);
+ 
+ 	lan78xx_free_tx_resources(dev);</pre>
+    <div class="pagination">
+        <a href='6_6.html'>&lt;&lt;Prev</a><a href='6.html'>1</a><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><span>[7]</span><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_8.html'>Next&gt;&gt;</a>
+    <div>
+</body>

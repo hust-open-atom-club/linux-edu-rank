@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of South Carolina</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of South Carolina</h1>
+    <div class="pagination">
+        <a href='5_22.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><span>[23]</span><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_24.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit fff9d40ce0eb4b46f3e186823ceab6bc02c3e5d3
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Aug 19 18:45:23 2008 -0500
+
+    [SCSI] fc class: unblock target after calling terminate callback (take 2)
+    
+    When we block a rport and the driver implements the terminate
+    callback we will fail IO that was running quickly. However
+    IO that was in the scsi_device/block queue sits there until
+    the dev_loss_tmo fires, and this can make it look like IO is
+    lost because new IO will get executed but that IO stuck in
+    the blocked queue sits there for some time longer.
+    
+    With this patch when the fast io fail tmo fires, we will
+    fail the blocked IO and any new IO. This patch also allows
+    all drivers to partially support the fast io fail tmo. If the
+    terminate io callback is not implemented, we will still fail blocked
+    IO and any new IO, so multipath can handle that.
+    
+    This patch also allows the fc and iscsi classes to implement the
+    same behavior. The timers are just unfornately named differently.
+    
+    This patch also fixes the problem where drivers were unblocking
+    the target in their terminate callback, which was needed for
+    rport removal, but for fast io fail timeout it would cause
+    IO to bounce arround the scsi/block layer and the LLD queuecommand.
+    And it for drivers that could have IO stuck but did not have
+    a terminate callback the unblock calls in the class will fix
+    them.
+    
+    v2.
+    - fix up bit setting style to meet JamesS's pref.
+    - Broke out new host byte error changes to make it easier to read.
+    - added JamesS's ack from list.
+    v1
+    - initial patch
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: James Smart &lt;James.Smart@emulex.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/scsi_transport_fc.c b/drivers/scsi/scsi_transport_fc.c
+index d5f7653bb94b..1e71abf0607a 100644
+--- a/drivers/scsi/scsi_transport_fc.c
++++ b/drivers/scsi/scsi_transport_fc.c
+@@ -2133,8 +2133,7 @@ fc_attach_transport(struct fc_function_template *ft)
+ 	SETUP_PRIVATE_RPORT_ATTRIBUTE_RD(roles);
+ 	SETUP_PRIVATE_RPORT_ATTRIBUTE_RD(port_state);
+ 	SETUP_PRIVATE_RPORT_ATTRIBUTE_RD(scsi_target_id);
+-	if (ft-&gt;terminate_rport_io)
+-		SETUP_PRIVATE_RPORT_ATTRIBUTE_RW(fast_io_fail_tmo);
++	SETUP_PRIVATE_RPORT_ATTRIBUTE_RW(fast_io_fail_tmo);
+ 
+ 	BUG_ON(count &gt; FC_RPORT_NUM_ATTRS);
+ 
+@@ -2328,6 +2327,22 @@ fc_remove_host(struct Scsi_Host *shost)
+ }
+ EXPORT_SYMBOL(fc_remove_host);
+ 
++static void fc_terminate_rport_io(struct fc_rport *rport)
++{
++	struct Scsi_Host *shost = rport_to_shost(rport);
++	struct fc_internal *i = to_fc_internal(shost-&gt;transportt);
++
++	/* Involve the LLDD if possible to terminate all io on the rport. */
++	if (i-&gt;f-&gt;terminate_rport_io)
++		i-&gt;f-&gt;terminate_rport_io(rport);
++
++	/*
++	 * must unblock to flush queued IO. The caller will have set
++	 * the port_state or flags, so that fc_remote_port_chkready will
++	 * fail IO.
++	 */
++	scsi_target_unblock(&amp;rport-&gt;dev);
++}
+ 
+ /**
+  * fc_starget_delete - called to delete the scsi decendents of an rport
+@@ -2340,13 +2355,8 @@ fc_starget_delete(struct work_struct *work)
+ {
+ 	struct fc_rport *rport =
+ 		container_of(work, struct fc_rport, stgt_delete_work);
+-	struct Scsi_Host *shost = rport_to_shost(rport);
+-	struct fc_internal *i = to_fc_internal(shost-&gt;transportt);
+-
+-	/* Involve the LLDD if possible to terminate all io on the rport. */
+-	if (i-&gt;f-&gt;terminate_rport_io)
+-		i-&gt;f-&gt;terminate_rport_io(rport);
+ 
++	fc_terminate_rport_io(rport);
+ 	scsi_remove_target(&amp;rport-&gt;dev);
+ }
+ 
+@@ -2372,10 +2382,7 @@ fc_rport_final_delete(struct work_struct *work)
+ 	if (rport-&gt;flags &amp; FC_RPORT_SCAN_PENDING)
+ 		scsi_flush_work(shost);
+ 
+-	/* involve the LLDD to terminate all pending i/o */
+-	if (i-&gt;f-&gt;terminate_rport_io)
+-		i-&gt;f-&gt;terminate_rport_io(rport);
+-
++	fc_terminate_rport_io(rport);
+ 	/*
+ 	 * Cancel any outstanding timers. These should really exist
+ 	 * only when rmmod'ing the LLDD and we're asking for
+@@ -2639,7 +2646,8 @@ fc_remote_port_add(struct Scsi_Host *shost, int channel,
+ 
+ 				spin_lock_irqsave(shost-&gt;host_lock, flags);
+ 
+-				rport-&gt;flags &amp;= ~FC_RPORT_DEVLOSS_PENDING;
++				rport-&gt;flags &amp;= ~(FC_RPORT_FAST_FAIL_TIMEDOUT |
++						  FC_RPORT_DEVLOSS_PENDING);
+ 
+ 				/* if target, initiate a scan */
+ 				if (rport-&gt;scsi_target_id != -1) {
+@@ -2702,6 +2710,7 @@ fc_remote_port_add(struct Scsi_Host *shost, int channel,
+ 			rport-&gt;port_id = ids-&gt;port_id;
+ 			rport-&gt;roles = ids-&gt;roles;
+ 			rport-&gt;port_state = FC_PORTSTATE_ONLINE;
++			rport-&gt;flags &amp;= ~FC_RPORT_FAST_FAIL_TIMEDOUT;
+ 
+ 			if (fci-&gt;f-&gt;dd_fcrport_size)
+ 				memset(rport-&gt;dd_data, 0,
+@@ -2784,7 +2793,6 @@ void
+ fc_remote_port_delete(struct fc_rport  *rport)
+ {
+ 	struct Scsi_Host *shost = rport_to_shost(rport);
+-	struct fc_internal *i = to_fc_internal(shost-&gt;transportt);
+ 	int timeout = rport-&gt;dev_loss_tmo;
+ 	unsigned long flags;
+ 
+@@ -2830,7 +2838,7 @@ fc_remote_port_delete(struct fc_rport  *rport)
+ 
+ 	/* see if we need to kill io faster than waiting for device loss */
+ 	if ((rport-&gt;fast_io_fail_tmo != -1) &amp;&amp;
+-	    (rport-&gt;fast_io_fail_tmo &lt; timeout) &amp;&amp; (i-&gt;f-&gt;terminate_rport_io))
++	    (rport-&gt;fast_io_fail_tmo &lt; timeout))
+ 		fc_queue_devloss_work(shost, &amp;rport-&gt;fail_io_work,
+ 					rport-&gt;fast_io_fail_tmo * HZ);
+ 
+@@ -2906,7 +2914,8 @@ fc_remote_port_rolechg(struct fc_rport  *rport, u32 roles)
+ 			fc_flush_devloss(shost);
+ 
+ 		spin_lock_irqsave(shost-&gt;host_lock, flags);
+-		rport-&gt;flags &amp;= ~FC_RPORT_DEVLOSS_PENDING;
++		rport-&gt;flags &amp;= ~(FC_RPORT_FAST_FAIL_TIMEDOUT |
++				  FC_RPORT_DEVLOSS_PENDING);
+ 		spin_unlock_irqrestore(shost-&gt;host_lock, flags);
+ 
+ 		/* ensure any stgt delete functions are done */
+@@ -3001,6 +3010,7 @@ fc_timeout_deleted_rport(struct work_struct *work)
+ 	rport-&gt;supported_classes = FC_COS_UNSPECIFIED;
+ 	rport-&gt;roles = FC_PORT_ROLE_UNKNOWN;
+ 	rport-&gt;port_state = FC_PORTSTATE_NOTPRESENT;
++	rport-&gt;flags &amp;= ~FC_RPORT_FAST_FAIL_TIMEDOUT;
+ 
+ 	/* remove the identifiers that aren't used in the consisting binding */
+ 	switch (fc_host-&gt;tgtid_bind_type) {
+@@ -3043,13 +3053,12 @@ fc_timeout_fail_rport_io(struct work_struct *work)
+ {
+ 	struct fc_rport *rport =
+ 		container_of(work, struct fc_rport, fail_io_work.work);
+-	struct Scsi_Host *shost = rport_to_shost(rport);
+-	struct fc_internal *i = to_fc_internal(shost-&gt;transportt);
+ 
+ 	if (rport-&gt;port_state != FC_PORTSTATE_BLOCKED)
+ 		return;
+ 
+-	i-&gt;f-&gt;terminate_rport_io(rport);
++	rport-&gt;flags |= FC_RPORT_FAST_FAIL_TIMEDOUT;
++	fc_terminate_rport_io(rport);
+ }
+ 
+ /**
+diff --git a/include/scsi/scsi_transport_fc.h b/include/scsi/scsi_transport_fc.h
+index 21018a4df452..fb8d01370663 100644
+--- a/include/scsi/scsi_transport_fc.h
++++ b/include/scsi/scsi_transport_fc.h
+@@ -357,6 +357,7 @@ struct fc_rport {	/* aka fc_starget_attrs */
+ /* bit field values for struct fc_rport "flags" field: */
+ #define FC_RPORT_DEVLOSS_PENDING	0x01
+ #define FC_RPORT_SCAN_PENDING		0x02
++#define FC_RPORT_FAST_FAIL_TIMEDOUT	0x03
+ 
+ #define	dev_to_rport(d)				\
+ 	container_of(d, struct fc_rport, dev)
+@@ -683,7 +684,10 @@ fc_remote_port_chkready(struct fc_rport *rport)
+ 			result = DID_NO_CONNECT &lt;&lt; 16;
+ 		break;
+ 	case FC_PORTSTATE_BLOCKED:
+-		result = DID_IMM_RETRY &lt;&lt; 16;
++		if (rport-&gt;flags &amp; FC_RPORT_FAST_FAIL_TIMEDOUT)
++			result = DID_NO_CONNECT &lt;&lt; 16;
++		else
++			result = DID_IMM_RETRY &lt;&lt; 16;
+ 		break;
+ 	default:
+ 		result = DID_NO_CONNECT &lt;&lt; 16;</pre><hr><pre>commit a93ce0244f2e94dd48e0b4a2742a4e3bf196ab53
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sun Aug 17 15:24:41 2008 -0500
+
+    [SCSI] lpfc: use SCSI_MLQUEUE_TARGET_BUSY when catching the rport transition race
+    
+    We do want to call right back into the queuecommand during the race,
+    so we can just use SCSI_MLQUEUE_TARGET_BUSY.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: James Smart &lt;James.Smart@Emulex.Com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/lpfc/lpfc_scsi.c b/drivers/scsi/lpfc/lpfc_scsi.c
+index 1bcebbd3dfac..a22bdf9548a6 100644
+--- a/drivers/scsi/lpfc/lpfc_scsi.c
++++ b/drivers/scsi/lpfc/lpfc_scsi.c
+@@ -966,10 +966,9 @@ lpfc_queuecommand(struct scsi_cmnd *cmnd, void (*done) (struct scsi_cmnd *))
+ 	 * Catch race where our node has transitioned, but the
+ 	 * transport is still transitioning.
+ 	 */
+-	if (!ndlp || !NLP_CHK_NODE_ACT(ndlp)) {
+-		cmnd-&gt;result = ScsiResult(DID_BUS_BUSY, 0);
+-		goto out_fail_command;
+-	}
++	if (!ndlp || !NLP_CHK_NODE_ACT(ndlp))
++		goto out_target_busy;
++
+ 	lpfc_cmd = lpfc_get_scsi_buf(phba);
+ 	if (lpfc_cmd == NULL) {
+ 		lpfc_adjust_queue_depth(phba);
+@@ -1014,6 +1013,8 @@ lpfc_queuecommand(struct scsi_cmnd *cmnd, void (*done) (struct scsi_cmnd *))
+ 	lpfc_release_scsi_buf(phba, lpfc_cmd);
+  out_host_busy:
+ 	return SCSI_MLQUEUE_HOST_BUSY;
++ out_target_busy:
++	return SCSI_MLQUEUE_TARGET_BUSY;
+ 
+  out_fail_command:
+ 	done(cmnd);</pre><hr><pre>commit d6d13ee19da6d291c99f980dcb76f6b7dc676804
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sun Aug 17 15:24:43 2008 -0500
+
+    [SCSI] libiscsi: Use SCSI_MLQUEUE_TARGET_BUSY
+    
+    For the conditions below we do not want the queuecommand
+    function to call us right back, so return SCSI_MLQUEUE_TARGET_BUSY.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index da7b67d30d9a..521dbf7e521d 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -1194,12 +1194,10 @@ int iscsi_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 		switch (session-&gt;state) {
+ 		case ISCSI_STATE_IN_RECOVERY:
+ 			reason = FAILURE_SESSION_IN_RECOVERY;
+-			sc-&gt;result = DID_IMM_RETRY &lt;&lt; 16;
+-			break;
++			goto reject;
+ 		case ISCSI_STATE_LOGGING_OUT:
+ 			reason = FAILURE_SESSION_LOGGING_OUT;
+-			sc-&gt;result = DID_IMM_RETRY &lt;&lt; 16;
+-			break;
++			goto reject;
+ 		case ISCSI_STATE_RECOVERY_FAILED:
+ 			reason = FAILURE_SESSION_RECOVERY_TIMEOUT;
+ 			sc-&gt;result = DID_NO_CONNECT &lt;&lt; 16;
+@@ -1267,7 +1265,7 @@ int iscsi_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+ 	spin_unlock(&amp;session-&gt;lock);
+ 	debug_scsi("cmd 0x%x rejected (%d)\n", sc-&gt;cmnd[0], reason);
+ 	spin_lock(host-&gt;host_lock);
+-	return SCSI_MLQUEUE_HOST_BUSY;
++	return SCSI_MLQUEUE_TARGET_BUSY;
+ 
+ fault:
+ 	spin_unlock(&amp;session-&gt;lock);</pre><hr><pre>commit 7b594131c4f38edeb13d8c6c0147949173c47013
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sun Aug 17 15:24:40 2008 -0500
+
+    [SCSI] qla2xxx: return SCSI_MLQUEUE_TARGET_BUSY when driver has detected rport error or race
+    
+    If the fcport is not online then we do not want to block IO to all ports on
+    the host. We just want to stop IO on port not online, so we should be using
+    the SCSI_MLQUEUE_TARGET_BUSY return value.
+    
+    For the case where we race with the rport memset initialization
+    we do not want the queuecommand to be called again so we can just use
+    SCSI_MLQUEUE_TARGET_BUSY for this.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: Andrew Vasquez &lt;andrew.vasquez@qlogic.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/qla2xxx/qla_os.c b/drivers/scsi/qla2xxx/qla_os.c
+index 3433441b956a..2aed4721c0d0 100644
+--- a/drivers/scsi/qla2xxx/qla_os.c
++++ b/drivers/scsi/qla2xxx/qla_os.c
+@@ -394,10 +394,8 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
+ 	}
+ 
+ 	/* Close window on fcport/rport state-transitioning. */
+-	if (fcport-&gt;drport) {
+-		cmd-&gt;result = DID_IMM_RETRY &lt;&lt; 16;
+-		goto qc_fail_command;
+-	}
++	if (fcport-&gt;drport)
++		goto qc_target_busy;
+ 
+ 	if (atomic_read(&amp;fcport-&gt;state) != FCS_ONLINE) {
+ 		if (atomic_read(&amp;fcport-&gt;state) == FCS_DEVICE_DEAD ||
+@@ -405,7 +403,7 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
+ 			cmd-&gt;result = DID_NO_CONNECT &lt;&lt; 16;
+ 			goto qc_fail_command;
+ 		}
+-		goto qc_host_busy;
++		goto qc_target_busy;
+ 	}
+ 
+ 	spin_unlock_irq(ha-&gt;host-&gt;host_lock);
+@@ -428,10 +426,11 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
+ 
+ qc_host_busy_lock:
+ 	spin_lock_irq(ha-&gt;host-&gt;host_lock);
+-
+-qc_host_busy:
+ 	return SCSI_MLQUEUE_HOST_BUSY;
+ 
++qc_target_busy:
++	return SCSI_MLQUEUE_TARGET_BUSY;
++
+ qc_fail_command:
+ 	done(cmd);
+ 
+@@ -461,10 +460,8 @@ qla24xx_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
+ 	}
+ 
+ 	/* Close window on fcport/rport state-transitioning. */
+-	if (fcport-&gt;drport) {
+-		cmd-&gt;result = DID_IMM_RETRY &lt;&lt; 16;
+-		goto qc24_fail_command;
+-	}
++	if (fcport-&gt;drport)
++		goto qc24_target_busy;
+ 
+ 	if (atomic_read(&amp;fcport-&gt;state) != FCS_ONLINE) {
+ 		if (atomic_read(&amp;fcport-&gt;state) == FCS_DEVICE_DEAD ||
+@@ -472,7 +469,7 @@ qla24xx_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
+ 			cmd-&gt;result = DID_NO_CONNECT &lt;&lt; 16;
+ 			goto qc24_fail_command;
+ 		}
+-		goto qc24_host_busy;
++		goto qc24_target_busy;
+ 	}
+ 
+ 	spin_unlock_irq(ha-&gt;host-&gt;host_lock);
+@@ -495,10 +492,11 @@ qla24xx_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
+ 
+ qc24_host_busy_lock:
+ 	spin_lock_irq(ha-&gt;host-&gt;host_lock);
+-
+-qc24_host_busy:
+ 	return SCSI_MLQUEUE_HOST_BUSY;
+ 
++qc24_target_busy:
++	return SCSI_MLQUEUE_TARGET_BUSY;
++
+ qc24_fail_command:
+ 	done(cmd);
+ </pre><hr><pre>commit c5e98e912c5423a0ec2eed7aa1064578d44f8a8e
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sun Aug 17 15:24:39 2008 -0500
+
+    [SCSI] qla4xxx: return SCSI_MLQUEUE_TARGET_BUSY when driver has detected session error
+    
+    When qla4xxx begins recovery and the iscsi class is firing up to handle
+    it, we need to retrn SCSI_MLQUEUE_TARGET_BUSY from the driver instead
+    of host busy, because the session recovery only affects the one target.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Acked-by: David C Somayajulu &lt;david.somayajulu@qlogic.com&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/qla4xxx/ql4_os.c b/drivers/scsi/qla4xxx/ql4_os.c
+index de8279ad7d89..4255b36ff968 100644
+--- a/drivers/scsi/qla4xxx/ql4_os.c
++++ b/drivers/scsi/qla4xxx/ql4_os.c
+@@ -439,7 +439,7 @@ static int qla4xxx_queuecommand(struct scsi_cmnd *cmd,
+ 			cmd-&gt;result = DID_NO_CONNECT &lt;&lt; 16;
+ 			goto qc_fail_command;
+ 		}
+-		goto qc_host_busy;
++		return SCSI_MLQUEUE_TARGET_BUSY;
+ 	}
+ 
+ 	if (test_bit(DPC_RESET_HA_INTR, &amp;ha-&gt;dpc_flags))</pre><hr><pre>commit f0c0a376d0fcd4c5579ecf5e95f88387cba85211
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sun Aug 17 15:24:38 2008 -0500
+
+    [SCSI] Add helper code so transport classes/driver can control queueing (v3)
+    
+    SCSI-ml manages the queueing limits for the device and host, but
+    does not do so at the target level. However something something similar
+    can come in userful when a driver is transitioning a transport object to
+    the the blocked state, becuase at that time we do not want to queue
+    io and we do not want the queuecommand to be called again.
+    
+    The patch adds code similar to the exisiting SCSI_ML_*BUSY handlers.
+    You can now return SCSI_MLQUEUE_TARGET_BUSY when we hit
+    a transport level queueing issue like the hw cannot allocate some
+    resource at the iscsi session/connection level, or the target has temporarily
+    closed or shrunk the queueing window, or if we are transitioning
+    to the blocked state.
+    
+    bnx2i, when they rework their firmware according to netdev
+    developers requests, will also need to be able to limit queueing at this
+    level. bnx2i will hook into libiscsi, but will allocate a scsi host per
+    netdevice/hba, so unlike pure software iscsi/iser which is allocating
+    a host per session, it cannot set the scsi_host-&gt;can_queue and return
+    SCSI_MLQUEUE_HOST_BUSY to reflect queueing limits on the transport.
+    
+    The iscsi class/driver can also set a scsi_target-&gt;can_queue value which
+    reflects the max commands the driver/class can support. For iscsi this
+    reflects the number of commands we can support for each session due to
+    session/connection hw limits, driver limits, and to also reflect the
+    session/targets's queueing window.
+    
+    Changes:
+    v1 - initial patch.
+    v2 - Fix scsi_run_queue handling of multiple blocked targets.
+    Previously we would break from the main loop if a device was added back on
+    the starved list. We now run over the list and check if any target is
+    blocked.
+    v3 - Rediff for scsi-misc.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/scsi.c b/drivers/scsi/scsi.c
+index 2ac3cb2b9081..f8b79d401d58 100644
+--- a/drivers/scsi/scsi.c
++++ b/drivers/scsi/scsi.c
+@@ -754,8 +754,12 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
+ 	}
+ 	spin_unlock_irqrestore(host-&gt;host_lock, flags);
+ 	if (rtn) {
+-		scsi_queue_insert(cmd, (rtn == SCSI_MLQUEUE_DEVICE_BUSY) ?
+-						rtn : SCSI_MLQUEUE_HOST_BUSY);
++		if (rtn != SCSI_MLQUEUE_DEVICE_BUSY &amp;&amp;
++		    rtn != SCSI_MLQUEUE_TARGET_BUSY)
++			rtn = SCSI_MLQUEUE_HOST_BUSY;
++
++		scsi_queue_insert(cmd, rtn);
++
+ 		SCSI_LOG_MLQUEUE(3,
+ 		    printk("queuecommand : request rejected\n"));
+ 	}
+@@ -800,6 +804,7 @@ static struct scsi_driver *scsi_cmd_to_driver(struct scsi_cmnd *cmd)
+ void scsi_finish_command(struct scsi_cmnd *cmd)
+ {
+ 	struct scsi_device *sdev = cmd-&gt;device;
++	struct scsi_target *starget = scsi_target(sdev);
+ 	struct Scsi_Host *shost = sdev-&gt;host;
+ 	struct scsi_driver *drv;
+ 	unsigned int good_bytes;
+@@ -815,6 +820,7 @@ void scsi_finish_command(struct scsi_cmnd *cmd)
+ 	 * XXX(hch): What about locking?
+          */
+         shost-&gt;host_blocked = 0;
++	starget-&gt;target_blocked = 0;
+         sdev-&gt;device_blocked = 0;
+ 
+ 	/*
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index 98ee55ced592..91c74c55aa5e 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -114,6 +114,7 @@ int scsi_queue_insert(struct scsi_cmnd *cmd, int reason)
+ {
+ 	struct Scsi_Host *host = cmd-&gt;device-&gt;host;
+ 	struct scsi_device *device = cmd-&gt;device;
++	struct scsi_target *starget = scsi_target(device);
+ 	struct request_queue *q = device-&gt;request_queue;
+ 	unsigned long flags;
+ 
+@@ -133,10 +134,17 @@ int scsi_queue_insert(struct scsi_cmnd *cmd, int reason)
+ 	 * if a command is requeued with no other commands outstanding
+ 	 * either for the device or for the host.
+ 	 */
+-	if (reason == SCSI_MLQUEUE_HOST_BUSY)
++	switch (reason) {
++	case SCSI_MLQUEUE_HOST_BUSY:
+ 		host-&gt;host_blocked = host-&gt;max_host_blocked;
+-	else if (reason == SCSI_MLQUEUE_DEVICE_BUSY)
++		break;
++	case SCSI_MLQUEUE_DEVICE_BUSY:
+ 		device-&gt;device_blocked = device-&gt;max_device_blocked;
++		break;
++	case SCSI_MLQUEUE_TARGET_BUSY:
++		starget-&gt;target_blocked = starget-&gt;max_target_blocked;
++		break;
++	}
+ 
+ 	/*
+ 	 * Decrement the counters, since these commands are no longer
+@@ -460,10 +468,12 @@ static void scsi_init_cmd_errh(struct scsi_cmnd *cmd)
+ void scsi_device_unbusy(struct scsi_device *sdev)
+ {
+ 	struct Scsi_Host *shost = sdev-&gt;host;
++	struct scsi_target *starget = scsi_target(sdev);
+ 	unsigned long flags;
+ 
+ 	spin_lock_irqsave(shost-&gt;host_lock, flags);
+ 	shost-&gt;host_busy--;
++	starget-&gt;target_busy--;
+ 	if (unlikely(scsi_host_in_recovery(shost) &amp;&amp;
+ 		     (shost-&gt;host_failed || shost-&gt;host_eh_scheduled)))
+ 		scsi_eh_wakeup(shost);
+@@ -519,6 +529,13 @@ static void scsi_single_lun_run(struct scsi_device *current_sdev)
+ 	spin_unlock_irqrestore(shost-&gt;host_lock, flags);
+ }
+ 
++static inline int scsi_target_is_busy(struct scsi_target *starget)
++{
++	return ((starget-&gt;can_queue &gt; 0 &amp;&amp;
++		 starget-&gt;target_busy &gt;= starget-&gt;can_queue) ||
++		 starget-&gt;target_blocked);
++}
++
+ /*
+  * Function:	scsi_run_queue()
+  *
+@@ -533,7 +550,7 @@ static void scsi_single_lun_run(struct scsi_device *current_sdev)
+  */
+ static void scsi_run_queue(struct request_queue *q)
+ {
+-	struct scsi_device *sdev = q-&gt;queuedata;
++	struct scsi_device *starved_head = NULL, *sdev = q-&gt;queuedata;
+ 	struct Scsi_Host *shost = sdev-&gt;host;
+ 	unsigned long flags;
+ 
+@@ -560,6 +577,21 @@ static void scsi_run_queue(struct request_queue *q)
+ 		 */
+ 		sdev = list_entry(shost-&gt;starved_list.next,
+ 					  struct scsi_device, starved_entry);
++		/*
++		 * The *queue_ready functions can add a device back onto the
++		 * starved list's tail, so we must check for a infinite loop.
++		 */
++		if (sdev == starved_head)
++			break;
++		if (!starved_head)
++			starved_head = sdev;
++
++		if (scsi_target_is_busy(scsi_target(sdev))) {
++			list_move_tail(&amp;sdev-&gt;starved_entry,
++				       &amp;shost-&gt;starved_list);
++			continue;
++		}
++
+ 		list_del_init(&amp;sdev-&gt;starved_entry);
+ 		spin_unlock(shost-&gt;host_lock);
+ 
+@@ -575,13 +607,6 @@ static void scsi_run_queue(struct request_queue *q)
+ 		spin_unlock(sdev-&gt;request_queue-&gt;queue_lock);
+ 
+ 		spin_lock(shost-&gt;host_lock);
+-		if (unlikely(!list_empty(&amp;sdev-&gt;starved_entry)))
+-			/*
+-			 * sdev lost a race, and was put back on the
+-			 * starved list. This is unlikely but without this
+-			 * in theory we could loop forever.
+-			 */
+-			break;
+ 	}
+ 	spin_unlock_irqrestore(shost-&gt;host_lock, flags);
+ 
+@@ -1344,6 +1369,52 @@ static inline int scsi_dev_queue_ready(struct request_queue *q,
+ 	return 1;
+ }
+ 
++
++/*
++ * scsi_target_queue_ready: checks if there we can send commands to target
++ * @sdev: scsi device on starget to check.
++ *
++ * Called with the host lock held.
++ */
++static inline int scsi_target_queue_ready(struct Scsi_Host *shost,
++					   struct scsi_device *sdev)
++{
++	struct scsi_target *starget = scsi_target(sdev);
++
++	if (starget-&gt;single_lun) {
++		if (starget-&gt;starget_sdev_user &amp;&amp;
++		    starget-&gt;starget_sdev_user != sdev)
++			return 0;
++		starget-&gt;starget_sdev_user = sdev;
++	}
++
++	if (starget-&gt;target_busy == 0 &amp;&amp; starget-&gt;target_blocked) {
++		/*
++		 * unblock after target_blocked iterates to zero
++		 */
++		if (--starget-&gt;target_blocked == 0) {
++			SCSI_LOG_MLQUEUE(3, starget_printk(KERN_INFO, starget,
++					 "unblocking target at zero depth\n"));
++		} else {
++			blk_plug_device(sdev-&gt;request_queue);
++			return 0;
++		}
++	}
++
++	if (scsi_target_is_busy(starget)) {
++		if (list_empty(&amp;sdev-&gt;starved_entry)) {
++			list_add_tail(&amp;sdev-&gt;starved_entry,
++				      &amp;shost-&gt;starved_list);
++			return 0;
++		}
++	}
++
++	/* We're OK to process the command, so we can't be starved */
++	if (!list_empty(&amp;sdev-&gt;starved_entry))
++		list_del_init(&amp;sdev-&gt;starved_entry);
++	return 1;
++}
++
+ /*
+  * scsi_host_queue_ready: if we can send requests to shost, return 1 else
+  * return 0. We must end up running the queue again whenever 0 is
+@@ -1390,6 +1461,7 @@ static void scsi_kill_request(struct request *req, struct request_queue *q)
+ {
+ 	struct scsi_cmnd *cmd = req-&gt;special;
+ 	struct scsi_device *sdev = cmd-&gt;device;
++	struct scsi_target *starget = scsi_target(sdev);
+ 	struct Scsi_Host *shost = sdev-&gt;host;
+ 
+ 	blkdev_dequeue_request(req);
+@@ -1413,6 +1485,7 @@ static void scsi_kill_request(struct request *req, struct request_queue *q)
+ 	spin_unlock(sdev-&gt;request_queue-&gt;queue_lock);
+ 	spin_lock(shost-&gt;host_lock);
+ 	shost-&gt;host_busy++;
++	starget-&gt;target_busy++;
+ 	spin_unlock(shost-&gt;host_lock);
+ 	spin_lock(sdev-&gt;request_queue-&gt;queue_lock);
+ 
+@@ -1550,14 +1623,13 @@ static void scsi_request_fn(struct request_queue *q)
+ 			goto not_ready;
+ 		}
+ 
++		if (!scsi_target_queue_ready(shost, sdev))
++			goto not_ready;
++
+ 		if (!scsi_host_queue_ready(q, shost, sdev))
+ 			goto not_ready;
+-		if (scsi_target(sdev)-&gt;single_lun) {
+-			if (scsi_target(sdev)-&gt;starget_sdev_user &amp;&amp;
+-			    scsi_target(sdev)-&gt;starget_sdev_user != sdev)
+-				goto not_ready;
+-			scsi_target(sdev)-&gt;starget_sdev_user = sdev;
+-		}
++
++		scsi_target(sdev)-&gt;target_busy++;
+ 		shost-&gt;host_busy++;
+ 
+ 		/*
+diff --git a/drivers/scsi/scsi_scan.c b/drivers/scsi/scsi_scan.c
+index 334862e26a1b..b14dc02c3ded 100644
+--- a/drivers/scsi/scsi_scan.c
++++ b/drivers/scsi/scsi_scan.c
+@@ -419,6 +419,7 @@ static struct scsi_target *scsi_alloc_target(struct device *parent,
+ 	dev-&gt;type = &amp;scsi_target_type;
+ 	starget-&gt;id = id;
+ 	starget-&gt;channel = channel;
++	starget-&gt;can_queue = 0;
+ 	INIT_LIST_HEAD(&amp;starget-&gt;siblings);
+ 	INIT_LIST_HEAD(&amp;starget-&gt;devices);
+ 	starget-&gt;state = STARGET_CREATED;
+diff --git a/include/scsi/scsi.h b/include/scsi/scsi.h
+index 192f8716aa9e..3a5662b2817e 100644
+--- a/include/scsi/scsi.h
++++ b/include/scsi/scsi.h
+@@ -426,6 +426,7 @@ static inline int scsi_is_wlun(unsigned int lun)
+ #define SCSI_MLQUEUE_HOST_BUSY   0x1055
+ #define SCSI_MLQUEUE_DEVICE_BUSY 0x1056
+ #define SCSI_MLQUEUE_EH_RETRY    0x1057
++#define SCSI_MLQUEUE_TARGET_BUSY 0x1058
+ 
+ /*
+  *  Use these to separate status msg and our bytes
+diff --git a/include/scsi/scsi_device.h b/include/scsi/scsi_device.h
+index b49e725be039..a37a8148a310 100644
+--- a/include/scsi/scsi_device.h
++++ b/include/scsi/scsi_device.h
+@@ -238,6 +238,16 @@ struct scsi_target {
+ 						 * for the device at a time. */
+ 	unsigned int		pdt_1f_for_no_lun;	/* PDT = 0x1f */
+ 						/* means no lun present */
++	/* commands actually active on LLD. protected by host lock. */
++	unsigned int		target_busy;
++	/*
++	 * LLDs should set this in the slave_alloc host template callout.
++	 * If set to zero then there is not limit.
++	 */
++	unsigned int		can_queue;
++	unsigned int		target_blocked;
++	unsigned int		max_target_blocked;
++#define SCSI_DEFAULT_TARGET_BLOCKED	3
+ 
+ 	char			scsi_level;
+ 	struct execute_work	ew;</pre><hr><pre>commit ac26d41dee65167109e7cdcd0289b44ca61cd741
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Sat Sep 6 08:39:15 2008 -0500
+
+    [SCSI] libiscsi: return error passed in during iscsi recovery
+    
+    Due to patch building error on my side, we are still passing DID_BUS_BUSY
+    for commands that are running, when we want to return whatever the caller
+    of fail_all_commands wanted. This replaces the hardcoded error code with
+    the value that is passed in.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/libiscsi.c b/drivers/scsi/libiscsi.c
+index 299e075a7b34..0b7457d558f7 100644
+--- a/drivers/scsi/libiscsi.c
++++ b/drivers/scsi/libiscsi.c
+@@ -1456,7 +1456,7 @@ static void fail_all_commands(struct iscsi_conn *conn, unsigned lun,
+ 		if (lun == task-&gt;sc-&gt;device-&gt;lun || lun == -1) {
+ 			debug_scsi("failing in progress sc %p itt 0x%x\n",
+ 				   task-&gt;sc, task-&gt;itt);
+-			fail_command(conn, task, DID_BUS_BUSY &lt;&lt; 16);
++			fail_command(conn, task, error &lt;&lt; 16);
+ 		}
+ 	}
+ }</pre><hr><pre>commit bb8fb4e6840ecebdc61f7ebd0653187e7128dde5
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Sep 2 14:36:07 2008 -0700
+
+    ibft: fix target info parsing in ibft module
+    
+    I got this patch through Red Hat's bugzilla from the bug submitter and
+    patch creator.  I have just fixed it up so it applies without fuzz to
+    upstream kernels.
+    
+    Original patch and description from Shyam kumar Iyer:
+    
+    The issue [ibft module not displaying targets with short names] is because
+    of an offset calculatation error in the iscsi_ibft.c code.  Due to this
+    error directory structure for the target in /sys/firmware/ibft does not
+    get created and so the initiator is unable to connect to the target.
+    
+    Note that this bug surfaced only with an name that had a short section at
+    the end.  eg: "iqn.1984-05.com.dell:dell".  It did not surface when the
+    iqn's had a longer section at the end.  eg:
+    "iqn.2001-04.com.example:storage.disk2.sys1.xyz"
+    
+    So, the eot_offset was calculated such that an extra 48 bytes i.e.  the
+    size of the ibft_header which has already been accounted was subtracted
+    twice.
+    
+    This was not evident with longer iqn names because they would overshoot
+    the total ibft length more than 48 bytes and thus would escape the bug.
+    
+    Signed-off-by: Shyam Kumar Iyer &lt;shyam_iyer@dell.com&gt;
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Cc: Konrad Rzeszutek &lt;konrad@virtualiron.com&gt;
+    Cc: Peter Jones &lt;pjones@redhat.com&gt;
+    Cc: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+    Cc: Greg Kroah-Hartman &lt;gregkh@suse.de&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@linux-foundation.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@linux-foundation.org&gt;
+
+diff --git a/drivers/firmware/iscsi_ibft.c b/drivers/firmware/iscsi_ibft.c
+index 8024e3bfd877..b91ef63126ed 100644
+--- a/drivers/firmware/iscsi_ibft.c
++++ b/drivers/firmware/iscsi_ibft.c
+@@ -669,8 +669,7 @@ static int __init ibft_register_kobjects(struct ibft_table_header *header,
+ 
+ 	control = (void *)header + sizeof(*header);
+ 	end = (void *)control + control-&gt;hdr.length;
+-	eot_offset = (void *)header + header-&gt;length -
+-		     (void *)control - sizeof(*header);
++	eot_offset = (void *)header + header-&gt;length - (void *)control;
+ 	rc = ibft_verify_hdr("control", (struct ibft_hdr *)control, id_control,
+ 			     sizeof(*control));
+ </pre><hr><pre>commit 6bd522f6a226f435508433d24e0de4619e016a9d
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Tue Jul 22 15:34:38 2008 -0500
+
+    [SCSI] scsi_lib: use blk_rq_tagged in scsi_request_fn
+    
+    I goofed and did not see the macro for checking if a request is tagged.
+    This patch has us use blk_rq_tagged instead of digging into the req-&gt;tag.
+    
+    Patch was made over scsi-misc.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index a20730c48020..6d62be664d55 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -1533,7 +1533,7 @@ static void scsi_request_fn(struct request_queue *q)
+ 		 * we add the dev to the starved list so it eventually gets
+ 		 * a run when a tag is freed.
+ 		 */
+-		if (blk_queue_tagged(q) &amp;&amp; (req-&gt;tag == -1)) {
++		if (blk_queue_tagged(q) &amp;&amp; !blk_rq_tagged(req)) {
+ 			if (list_empty(&amp;sdev-&gt;starved_entry))
+ 				list_add_tail(&amp;sdev-&gt;starved_entry,
+ 					      &amp;shost-&gt;starved_list);</pre><hr><pre>commit ecefe8a97577d6c1a68d14ab6fb19bce99448af2
+Author: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+Date:   Fri Jul 11 19:50:35 2008 -0500
+
+    [SCSI] fix shared tag map tag allocation
+    
+    When drivers use a shared tag map we can end up with more requests
+    than tags, because the tag map is shost-&gt;can_queue tags and there
+    can be sdevs * sdev-&gt;queue_depth requests. In scsi_request_fn
+    if tag allocation fails we just drop down to just dequeueing the
+    tag without a tag. The problem is that drivers using the shared tag
+    map rely on a valid tag always being set, because it will use the
+    tag number to lookup commands later.
+    
+    This patch has us check if we got a valid tag when the host lock
+    is held right before we check if the host queue is ready. We do the
+    check here because to allocate the tag we need the q lock, but
+    if the tag is bad we want to add the device/q onto the starved list
+    which requires the host lock.
+    
+    Signed-off-by: Mike Christie &lt;michaelc@cs.wisc.edu&gt;
+    Signed-off-by: James Bottomley &lt;James.Bottomley@HansenPartnership.com&gt;
+
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index 88d1b5f44e59..fe77ccacf319 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -1497,6 +1497,21 @@ static void scsi_request_fn(struct request_queue *q)
+ 		}
+ 		spin_lock(shost-&gt;host_lock);
+ 
++		/*
++		 * We hit this when the driver is using a host wide
++		 * tag map. For device level tag maps the queue_depth check
++		 * in the device ready fn would prevent us from trying
++		 * to allocate a tag. Since the map is a shared host resource
++		 * we add the dev to the starved list so it eventually gets
++		 * a run when a tag is freed.
++		 */
++		if (blk_queue_tagged(q) &amp;&amp; (req-&gt;tag == -1)) {
++			if (list_empty(&amp;sdev-&gt;starved_entry))
++				list_add_tail(&amp;sdev-&gt;starved_entry,
++					      &amp;shost-&gt;starved_list);
++			goto not_ready;
++		}
++
+ 		if (!scsi_host_queue_ready(q, shost, sdev))
+ 			goto not_ready;
+ 		if (scsi_target(sdev)-&gt;single_lun) {</pre>
+    <div class="pagination">
+        <a href='5_22.html'>&lt;&lt;Prev</a><a href='5.html'>1</a><a href='5_2.html'>2</a><a href='5_3.html'>3</a><a href='5_4.html'>4</a><a href='5_5.html'>5</a><a href='5_6.html'>6</a><a href='5_7.html'>7</a><a href='5_8.html'>8</a><a href='5_9.html'>9</a><a href='5_10.html'>10</a><a href='5_11.html'>11</a><a href='5_12.html'>12</a><a href='5_13.html'>13</a><a href='5_14.html'>14</a><a href='5_15.html'>15</a><a href='5_16.html'>16</a><a href='5_17.html'>17</a><a href='5_18.html'>18</a><a href='5_19.html'>19</a><a href='5_20.html'>20</a><a href='5_21.html'>21</a><a href='5_22.html'>22</a><span>[23]</span><a href='5_24.html'>24</a><a href='5_25.html'>25</a><a href='5_26.html'>26</a><a href='5_27.html'>27</a><a href='5_28.html'>28</a><a href='5_29.html'>29</a><a href='5_30.html'>30</a><a href='5_31.html'>31</a><a href='5_32.html'>32</a><a href='5_33.html'>33</a><a href='5_34.html'>34</a><a href='5_35.html'>35</a><a href='5_36.html'>36</a><a href='5_37.html'>37</a><a href='5_38.html'>38</a><a href='5_39.html'>39</a><a href='5_40.html'>40</a><a href='5_41.html'>41</a><a href='5_42.html'>42</a><a href='5_43.html'>43</a><a href='5_44.html'>44</a><a href='5_45.html'>45</a><a href='5_46.html'>46</a><a href='5_47.html'>47</a><a href='5_48.html'>48</a><a href='5_24.html'>Next&gt;&gt;</a>
+    <div>
+</body>

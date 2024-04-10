@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Temple University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Temple University</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit d6450e19329c85ac4888c185429094236a650928
+Author: Nick Sillik &lt;n.sillik@temple.edu&gt;
+Date:   Wed Aug 17 13:37:34 2005 -0400
+
+    [PATCH] USB Storage: code cleanups for onetouch.c
+    
+    As sugested by Alan Stern here are a few code cleanups for onetouch.c:
+    
+    -Check number of endpoints before directly referencing intf-&gt;endpoint[2]
+    -Use defined constants instead of magic numbers
+    -Revmove the non-ascii characters from copyright notice
+    -Make registration and deregistration messages more similar
+    
+    Signed-off-by: Nick Sillik &lt;n.sillik@temple.edu&gt;
+    Signed-off-by: Greg Kroah-Hartman &lt;gregkh@suse.de&gt;
+
+diff --git a/drivers/usb/storage/onetouch.c b/drivers/usb/storage/onetouch.c
+index 07fd29ceb347..2c9402dc702b 100644
+--- a/drivers/usb/storage/onetouch.c
++++ b/drivers/usb/storage/onetouch.c
+@@ -5,7 +5,7 @@
+  *	Copyright (c) 2005 Nick Sillik &lt;n.sillik@temple.edu&gt;
+  *
+  * Initial work by:
+- * 	Copyright (c) 2003 Erik Thyrén &lt;erth7411@student.uu.se&gt;
++ * 	Copyright (c) 2003 Erik Thyren &lt;erth7411@student.uu.se&gt;
+  *
+  * Based on usbmouse.c (Vojtech Pavlik) and xpad.c (Marko Friedemann)
+  *
+@@ -35,6 +35,8 @@
+ #include &lt;linux/slab.h&gt;
+ #include &lt;linux/module.h&gt;
+ #include &lt;linux/usb.h&gt;
++#include &lt;linux/usb_ch9.h&gt;
++#include &lt;linux/usb_input.h&gt;
+ #include "usb.h"
+ #include "onetouch.h"
+ #include "debug.h"
+@@ -116,10 +118,14 @@ int onetouch_connect_input(struct us_data *ss)
+ 
+ 	interface = ss-&gt;pusb_intf-&gt;cur_altsetting;
+ 
++	if (interface-&gt;desc.bNumEndpoints != 3)
++		return -ENODEV;
++
+ 	endpoint = &amp;interface-&gt;endpoint[2].desc;
+-	if(!(endpoint-&gt;bEndpointAddress &amp; 0x80))
++	if(!(endpoint-&gt;bEndpointAddress &amp; USB_DIR_IN))
+ 		return -ENODEV;
+-	if((endpoint-&gt;bmAttributes &amp; 3) != 3)
++	if((endpoint-&gt;bmAttributes &amp; USB_ENDPOINT_XFERTYPE_MASK)
++			!= USB_ENDPOINT_XFER_INT)
+ 		return -ENODEV;
+ 
+ 	pipe = usb_rcvintpipe(udev, endpoint-&gt;bEndpointAddress);
+@@ -128,7 +134,8 @@ int onetouch_connect_input(struct us_data *ss)
+ 	if (!(onetouch = kcalloc(1, sizeof(struct usb_onetouch), GFP_KERNEL)))
+ 		return -ENOMEM;
+ 
+-	onetouch-&gt;data = usb_buffer_alloc(udev, ONETOUCH_PKT_LEN, SLAB_ATOMIC, &amp;onetouch-&gt;data_dma);
++	onetouch-&gt;data = usb_buffer_alloc(udev, ONETOUCH_PKT_LEN,
++					  SLAB_ATOMIC, &amp;onetouch-&gt;data_dma);
+ 	if (!onetouch-&gt;data){
+ 		kfree(onetouch);
+ 		return -ENOMEM;
+@@ -137,7 +144,8 @@ int onetouch_connect_input(struct us_data *ss)
+ 	onetouch-&gt;irq = usb_alloc_urb(0, GFP_KERNEL);
+ 	if (!onetouch-&gt;irq){
+ 		kfree(onetouch);
+-		usb_buffer_free(udev, ONETOUCH_PKT_LEN, onetouch-&gt;data, onetouch-&gt;data_dma);
++		usb_buffer_free(udev, ONETOUCH_PKT_LEN,
++				onetouch-&gt;data, onetouch-&gt;data_dma);
+ 		return -ENODEV;
+ 	}
+ 
+@@ -152,16 +160,13 @@ int onetouch_connect_input(struct us_data *ss)
+ 	onetouch-&gt;dev.open = usb_onetouch_open;
+ 	onetouch-&gt;dev.close = usb_onetouch_close;
+ 
+-	usb_make_path(udev, path, 64);
++	usb_make_path(udev, path, sizeof(path));
+ 	sprintf(onetouch-&gt;phys, "%s/input0", path);
+ 
+ 	onetouch-&gt;dev.name = onetouch-&gt;name;
+ 	onetouch-&gt;dev.phys = onetouch-&gt;phys;
+ 
+-	onetouch-&gt;dev.id.bustype = BUS_USB;
+-	onetouch-&gt;dev.id.vendor = le16_to_cpu(udev-&gt;descriptor.idVendor);
+-	onetouch-&gt;dev.id.product = le16_to_cpu(udev-&gt;descriptor.idProduct);
+-	onetouch-&gt;dev.id.version = le16_to_cpu(udev-&gt;descriptor.bcdDevice);
++	usb_to_input_id(udev, &amp;onetouch-&gt;dev.id);
+ 
+ 	onetouch-&gt;dev.dev = &amp;udev-&gt;dev;
+ 
+@@ -199,7 +204,7 @@ void onetouch_release_input(void *onetouch_)
+ 		usb_free_urb(onetouch-&gt;irq);
+ 		usb_buffer_free(onetouch-&gt;udev, ONETOUCH_PKT_LEN,
+ 				onetouch-&gt;data, onetouch-&gt;data_dma);
+-		printk(KERN_INFO "Maxtor Onetouch %04x:%04x Deregistered\n",
+-			onetouch-&gt;dev.id.vendor, onetouch-&gt;dev.id.product);
++		printk(KERN_INFO "usb-input: deregistering %s\n",
++				onetouch-&gt;dev.name);
+ 	}
+ }</pre><hr><pre>commit 7cee432a22bb328ea7a4012dacc5a3471fabeb07
+Author: Nick Sillik &lt;n.sillik@temple.edu&gt;
+Date:   Wed Jul 27 14:46:03 2005 -0700
+
+    [NETFILTER]: Fix -Wunder error in ip_conntrack_core.c
+    
+    Signed-off-by: Nick Sillik &lt;n.sillik@temple.edu&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/ipv4/netfilter/ip_conntrack_core.c b/net/ipv4/netfilter/ip_conntrack_core.c
+index 63bf88264980..86f04e41dd8e 100644
+--- a/net/ipv4/netfilter/ip_conntrack_core.c
++++ b/net/ipv4/netfilter/ip_conntrack_core.c
+@@ -510,7 +510,7 @@ init_conntrack(const struct ip_conntrack_tuple *tuple,
+ 		/* Welcome, Mr. Bond.  We've been expecting you... */
+ 		__set_bit(IPS_EXPECTED_BIT, &amp;conntrack-&gt;status);
+ 		conntrack-&gt;master = exp-&gt;master;
+-#if CONFIG_IP_NF_CONNTRACK_MARK
++#ifdef CONFIG_IP_NF_CONNTRACK_MARK
+ 		conntrack-&gt;mark = exp-&gt;master-&gt;mark;
+ #endif
+ 		nf_conntrack_get(&amp;conntrack-&gt;master-&gt;ct_general);</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

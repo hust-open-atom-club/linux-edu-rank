@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by National Institute of Technology Surathkal</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by National Institute of Technology Surathkal</h1>
+    <div class="pagination">
+        <a href='34.html'>&lt;&lt;Prev</a><a href='34.html'>1</a><span>[2]</span>
+    </div>
+    <hr>
+    <pre>commit c9d2ac5e6b2acfc6945718888a5bec357378733e
+Author: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+Date:   Tue Feb 26 00:40:01 2019 +0530
+
+    net: sched: pie: update references
+    
+    RFC 8033 replaces the IETF draft for PIE
+    
+    Signed-off-by: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+    Signed-off-by: Dhaval Khandla &lt;dhavaljkhandla26@gmail.com&gt;
+    Signed-off-by: Hrishikesh Hiraskar &lt;hrishihiraskar@gmail.com&gt;
+    Signed-off-by: Manish Kumar B &lt;bmanish15597@gmail.com&gt;
+    Signed-off-by: Sachin D. Patil &lt;sdp.sachin@gmail.com&gt;
+    Signed-off-by: Leslie Monis &lt;lesliemonis@gmail.com&gt;
+    Acked-by: Dave Taht &lt;dave.taht@gmail.com&gt;
+    Acked-by: Jamal Hadi Salim &lt;jhs@mojatatu.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/sched/sch_pie.c b/net/sched/sch_pie.c
+index 916b878d3491..f8314a14a256 100644
+--- a/net/sched/sch_pie.c
++++ b/net/sched/sch_pie.c
+@@ -17,9 +17,7 @@
+  * University of Oslo, Norway.
+  *
+  * References:
+- * IETF draft submission: http://tools.ietf.org/html/draft-pan-aqm-pie-00
+- * IEEE  Conference on High Performance Switching and Routing 2013 :
+- * "PIE: A * Lightweight Control Scheme to Address the Bufferbloat Problem"
++ * RFC 8033: https://tools.ietf.org/html/rfc8034
+  */
+ 
+ #include &lt;linux/module.h&gt;</pre><hr><pre>commit 95400b975dd32d2398ecff4dcc6f7bf0ffbd725f
+Author: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+Date:   Tue Feb 26 00:40:00 2019 +0530
+
+    net: sched: pie: add derandomization mechanism
+    
+    Random dropping of packets to achieve latency control may
+    introduce outlier situations where packets are dropped too
+    close to each other or too far from each other. This can
+    cause the real drop percentage to temporarily deviate from
+    the intended drop probability. In certain scenarios, such
+    as a small number of simultaneous TCP flows, these
+    deviations can cause significant deviations in link
+    utilization and queuing latency.
+    
+    RFC 8033 suggests using a derandomization mechanism to avoid
+    these deviations.
+    
+    Signed-off-by: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+    Signed-off-by: Dhaval Khandla &lt;dhavaljkhandla26@gmail.com&gt;
+    Signed-off-by: Hrishikesh Hiraskar &lt;hrishihiraskar@gmail.com&gt;
+    Signed-off-by: Manish Kumar B &lt;bmanish15597@gmail.com&gt;
+    Signed-off-by: Sachin D. Patil &lt;sdp.sachin@gmail.com&gt;
+    Signed-off-by: Leslie Monis &lt;lesliemonis@gmail.com&gt;
+    Acked-by: Dave Taht &lt;dave.taht@gmail.com&gt;
+    Acked-by: Jamal Hadi Salim &lt;jhs@mojatatu.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/sched/sch_pie.c b/net/sched/sch_pie.c
+index 30f158582499..916b878d3491 100644
+--- a/net/sched/sch_pie.c
++++ b/net/sched/sch_pie.c
+@@ -55,8 +55,10 @@ struct pie_vars {
+ 	psched_time_t qdelay_old;
+ 	u64 dq_count;		/* measured in bytes */
+ 	psched_time_t dq_tstamp;	/* drain rate */
++	u64 accu_prob;		/* accumulated drop probability */
+ 	u32 avg_dq_rate;	/* bytes per pschedtime tick,scaled */
+ 	u32 qlen_old;		/* in bytes */
++	u8 accu_prob_overflows;	/* overflows of accu_prob */
+ };
+ 
+ /* statistics gathering */
+@@ -91,9 +93,11 @@ static void pie_params_init(struct pie_params *params)
+ static void pie_vars_init(struct pie_vars *vars)
+ {
+ 	vars-&gt;dq_count = DQCOUNT_INVALID;
++	vars-&gt;accu_prob = 0;
+ 	vars-&gt;avg_dq_rate = 0;
+ 	/* default of 150 ms in pschedtime */
+ 	vars-&gt;burst_time = PSCHED_NS2TICKS(150 * NSEC_PER_MSEC);
++	vars-&gt;accu_prob_overflows = 0;
+ }
+ 
+ static bool drop_early(struct Qdisc *sch, u32 packet_size)
+@@ -128,9 +132,29 @@ static bool drop_early(struct Qdisc *sch, u32 packet_size)
+ 	else
+ 		local_prob = q-&gt;vars.prob;
+ 
++	if (local_prob == 0) {
++		q-&gt;vars.accu_prob = 0;
++		q-&gt;vars.accu_prob_overflows = 0;
++	}
++
++	if (local_prob &gt; MAX_PROB - q-&gt;vars.accu_prob)
++		q-&gt;vars.accu_prob_overflows++;
++
++	q-&gt;vars.accu_prob += local_prob;
++
++	if (q-&gt;vars.accu_prob_overflows == 0 &amp;&amp;
++	    q-&gt;vars.accu_prob &lt; (MAX_PROB / 100) * 85)
++		return false;
++	if (q-&gt;vars.accu_prob_overflows == 8 &amp;&amp;
++	    q-&gt;vars.accu_prob &gt;= MAX_PROB / 2)
++		return true;
++
+ 	prandom_bytes(&amp;rnd, 8);
+-	if (rnd &lt; local_prob)
++	if (rnd &lt; local_prob) {
++		q-&gt;vars.accu_prob = 0;
++		q-&gt;vars.accu_prob_overflows = 0;
+ 		return true;
++	}
+ 
+ 	return false;
+ }
+@@ -168,6 +192,8 @@ static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
+ 
+ out:
+ 	q-&gt;stats.dropped++;
++	q-&gt;vars.accu_prob = 0;
++	q-&gt;vars.accu_prob_overflows = 0;
+ 	return qdisc_drop(skb, sch, to_free);
+ }
+ </pre><hr><pre>commit 3f7ae5f3dc5295ac17d6521130ed8a8f8a723fbf
+Author: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+Date:   Tue Feb 26 00:39:59 2019 +0530
+
+    net: sched: pie: add more cases to auto-tune alpha and beta
+    
+    The current implementation scales the local alpha and beta
+    variables in the calculate_probability function by the same
+    amount for all values of drop probability below 1%.
+    
+    RFC 8033 suggests using additional cases for auto-tuning
+    alpha and beta when the drop probability is less than 1%.
+    
+    In order to add more auto-tuning cases, MAX_PROB must be
+    scaled by u64 instead of u32 to prevent underflow when
+    scaling the local alpha and beta variables in the
+    calculate_probability function.
+    
+    Signed-off-by: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+    Signed-off-by: Dhaval Khandla &lt;dhavaljkhandla26@gmail.com&gt;
+    Signed-off-by: Hrishikesh Hiraskar &lt;hrishihiraskar@gmail.com&gt;
+    Signed-off-by: Manish Kumar B &lt;bmanish15597@gmail.com&gt;
+    Signed-off-by: Sachin D. Patil &lt;sdp.sachin@gmail.com&gt;
+    Signed-off-by: Leslie Monis &lt;lesliemonis@gmail.com&gt;
+    Acked-by: Dave Taht &lt;dave.taht@gmail.com&gt;
+    Acked-by: Jamal Hadi Salim &lt;jhs@mojatatu.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/include/uapi/linux/pkt_sched.h b/include/uapi/linux/pkt_sched.h
+index 0d18b1d1fbbc..1eb572ef3f27 100644
+--- a/include/uapi/linux/pkt_sched.h
++++ b/include/uapi/linux/pkt_sched.h
+@@ -954,7 +954,7 @@ enum {
+ #define TCA_PIE_MAX   (__TCA_PIE_MAX - 1)
+ 
+ struct tc_pie_xstats {
+-	__u32 prob;             /* current probability */
++	__u64 prob;             /* current probability */
+ 	__u32 delay;            /* current delay in ms */
+ 	__u32 avg_dq_rate;      /* current average dq_rate in bits/pie_time */
+ 	__u32 packets_in;       /* total number of packets enqueued */
+diff --git a/net/sched/sch_pie.c b/net/sched/sch_pie.c
+index d88ab53593b3..30f158582499 100644
+--- a/net/sched/sch_pie.c
++++ b/net/sched/sch_pie.c
+@@ -33,7 +33,7 @@
+ 
+ #define QUEUE_THRESHOLD 16384
+ #define DQCOUNT_INVALID -1
+-#define MAX_PROB  0xffffffff
++#define MAX_PROB 0xffffffffffffffff
+ #define PIE_SCALE 8
+ 
+ /* parameters used */
+@@ -49,7 +49,7 @@ struct pie_params {
+ 
+ /* variables used */
+ struct pie_vars {
+-	u32 prob;		/* probability but scaled by u32 limit. */
++	u64 prob;		/* probability but scaled by u64 limit. */
+ 	psched_time_t burst_time;
+ 	psched_time_t qdelay;
+ 	psched_time_t qdelay_old;
+@@ -99,8 +99,8 @@ static void pie_vars_init(struct pie_vars *vars)
+ static bool drop_early(struct Qdisc *sch, u32 packet_size)
+ {
+ 	struct pie_sched_data *q = qdisc_priv(sch);
+-	u32 rnd;
+-	u32 local_prob = q-&gt;vars.prob;
++	u64 rnd;
++	u64 local_prob = q-&gt;vars.prob;
+ 	u32 mtu = psched_mtu(qdisc_dev(sch));
+ 
+ 	/* If there is still burst allowance left skip random early drop */
+@@ -124,11 +124,11 @@ static bool drop_early(struct Qdisc *sch, u32 packet_size)
+ 	 * probablity. Smaller packets will have lower drop prob in this case
+ 	 */
+ 	if (q-&gt;params.bytemode &amp;&amp; packet_size &lt;= mtu)
+-		local_prob = (local_prob / mtu) * packet_size;
++		local_prob = (u64)packet_size * div_u64(local_prob, mtu);
+ 	else
+ 		local_prob = q-&gt;vars.prob;
+ 
+-	rnd = prandom_u32();
++	prandom_bytes(&amp;rnd, 8);
+ 	if (rnd &lt; local_prob)
+ 		return true;
+ 
+@@ -317,9 +317,10 @@ static void calculate_probability(struct Qdisc *sch)
+ 	u32 qlen = sch-&gt;qstats.backlog;	/* queue size in bytes */
+ 	psched_time_t qdelay = 0;	/* in pschedtime */
+ 	psched_time_t qdelay_old = q-&gt;vars.qdelay;	/* in pschedtime */
+-	s32 delta = 0;		/* determines the change in probability */
+-	u32 oldprob;
+-	u32 alpha, beta;
++	s64 delta = 0;		/* determines the change in probability */
++	u64 oldprob;
++	u64 alpha, beta;
++	u32 power;
+ 	bool update_prob = true;
+ 
+ 	q-&gt;vars.qdelay_old = q-&gt;vars.qdelay;
+@@ -339,38 +340,36 @@ static void calculate_probability(struct Qdisc *sch)
+ 	 * value for alpha as 0.125. In this implementation, we use values 0-32
+ 	 * passed from user space to represent this. Also, alpha and beta have
+ 	 * unit of HZ and need to be scaled before they can used to update
+-	 * probability. alpha/beta are updated locally below by 1) scaling them
+-	 * appropriately 2) scaling down by 16 to come to 0-2 range.
+-	 * Please see paper for details.
+-	 *
+-	 * We scale alpha and beta differently depending on whether we are in
+-	 * light, medium or high dropping mode.
++	 * probability. alpha/beta are updated locally below by scaling down
++	 * by 16 to come to 0-2 range.
+ 	 */
+-	if (q-&gt;vars.prob &lt; MAX_PROB / 100) {
+-		alpha =
+-		    (q-&gt;params.alpha * (MAX_PROB / PSCHED_TICKS_PER_SEC)) &gt;&gt; 7;
+-		beta =
+-		    (q-&gt;params.beta * (MAX_PROB / PSCHED_TICKS_PER_SEC)) &gt;&gt; 7;
+-	} else if (q-&gt;vars.prob &lt; MAX_PROB / 10) {
+-		alpha =
+-		    (q-&gt;params.alpha * (MAX_PROB / PSCHED_TICKS_PER_SEC)) &gt;&gt; 5;
+-		beta =
+-		    (q-&gt;params.beta * (MAX_PROB / PSCHED_TICKS_PER_SEC)) &gt;&gt; 5;
+-	} else {
+-		alpha =
+-		    (q-&gt;params.alpha * (MAX_PROB / PSCHED_TICKS_PER_SEC)) &gt;&gt; 4;
+-		beta =
+-		    (q-&gt;params.beta * (MAX_PROB / PSCHED_TICKS_PER_SEC)) &gt;&gt; 4;
++	alpha = ((u64)q-&gt;params.alpha * (MAX_PROB / PSCHED_TICKS_PER_SEC)) &gt;&gt; 4;
++	beta = ((u64)q-&gt;params.beta * (MAX_PROB / PSCHED_TICKS_PER_SEC)) &gt;&gt; 4;
++
++	/* We scale alpha and beta differently depending on how heavy the
++	 * congestion is. Please see RFC 8033 for details.
++	 */
++	if (q-&gt;vars.prob &lt; MAX_PROB / 10) {
++		alpha &gt;&gt;= 1;
++		beta &gt;&gt;= 1;
++
++		power = 100;
++		while (q-&gt;vars.prob &lt; div_u64(MAX_PROB, power) &amp;&amp;
++		       power &lt;= 1000000) {
++			alpha &gt;&gt;= 2;
++			beta &gt;&gt;= 2;
++			power *= 10;
++		}
+ 	}
+ 
+ 	/* alpha and beta should be between 0 and 32, in multiples of 1/16 */
+-	delta += alpha * ((qdelay - q-&gt;params.target));
+-	delta += beta * ((qdelay - qdelay_old));
++	delta += alpha * (u64)(qdelay - q-&gt;params.target);
++	delta += beta * (u64)(qdelay - qdelay_old);
+ 
+ 	oldprob = q-&gt;vars.prob;
+ 
+ 	/* to ensure we increase probability in steps of no more than 2% */
+-	if (delta &gt; (s32)(MAX_PROB / (100 / 2)) &amp;&amp;
++	if (delta &gt; (s64)(MAX_PROB / (100 / 2)) &amp;&amp;
+ 	    q-&gt;vars.prob &gt;= MAX_PROB / 10)
+ 		delta = (MAX_PROB / 100) * 2;
+ </pre><hr><pre>commit 30a92ad703b93a96588e05b5bcd7247d7350c673
+Author: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+Date:   Tue Feb 26 00:39:58 2019 +0530
+
+    net: sched: pie: change initial value of pie_vars-&gt;burst_time
+    
+    RFC 8033 suggests an initial value of 150 milliseconds for
+    the maximum time allowed for a burst of packets.
+    
+    Signed-off-by: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+    Signed-off-by: Dhaval Khandla &lt;dhavaljkhandla26@gmail.com&gt;
+    Signed-off-by: Hrishikesh Hiraskar &lt;hrishihiraskar@gmail.com&gt;
+    Signed-off-by: Manish Kumar B &lt;bmanish15597@gmail.com&gt;
+    Signed-off-by: Sachin D. Patil &lt;sdp.sachin@gmail.com&gt;
+    Signed-off-by: Leslie Monis &lt;lesliemonis@gmail.com&gt;
+    Acked-by: Dave Taht &lt;dave.taht@gmail.com&gt;
+    Acked-by: Jamal Hadi Salim &lt;jhs@mojatatu.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/sched/sch_pie.c b/net/sched/sch_pie.c
+index 702f75afc312..d88ab53593b3 100644
+--- a/net/sched/sch_pie.c
++++ b/net/sched/sch_pie.c
+@@ -92,8 +92,8 @@ static void pie_vars_init(struct pie_vars *vars)
+ {
+ 	vars-&gt;dq_count = DQCOUNT_INVALID;
+ 	vars-&gt;avg_dq_rate = 0;
+-	/* default of 100 ms in pschedtime */
+-	vars-&gt;burst_time = PSCHED_NS2TICKS(100 * NSEC_PER_MSEC);
++	/* default of 150 ms in pschedtime */
++	vars-&gt;burst_time = PSCHED_NS2TICKS(150 * NSEC_PER_MSEC);
+ }
+ 
+ static bool drop_early(struct Qdisc *sch, u32 packet_size)</pre><hr><pre>commit 29daa85538664714cf01b5132d8c7fe6be40bcb6
+Author: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+Date:   Tue Feb 26 00:39:57 2019 +0530
+
+    net: sched: pie: change default value of pie_params-&gt;tupdate
+    
+    RFC 8033 suggests a default value of 15 milliseconds for the
+    update interval.
+    
+    Signed-off-by: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+    Signed-off-by: Dhaval Khandla &lt;dhavaljkhandla26@gmail.com&gt;
+    Signed-off-by: Hrishikesh Hiraskar &lt;hrishihiraskar@gmail.com&gt;
+    Signed-off-by: Manish Kumar B &lt;bmanish15597@gmail.com&gt;
+    Signed-off-by: Sachin D. Patil &lt;sdp.sachin@gmail.com&gt;
+    Signed-off-by: Leslie Monis &lt;lesliemonis@gmail.com&gt;
+    Acked-by: Dave Taht &lt;dave.taht@gmail.com&gt;
+    Acked-by: Jamal Hadi Salim &lt;jhs@mojatatu.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/sched/sch_pie.c b/net/sched/sch_pie.c
+index 91af9bf19852..702f75afc312 100644
+--- a/net/sched/sch_pie.c
++++ b/net/sched/sch_pie.c
+@@ -81,7 +81,7 @@ static void pie_params_init(struct pie_params *params)
+ {
+ 	params-&gt;alpha = 2;
+ 	params-&gt;beta = 20;
+-	params-&gt;tupdate = usecs_to_jiffies(30 * USEC_PER_MSEC);	/* 30 ms */
++	params-&gt;tupdate = usecs_to_jiffies(15 * USEC_PER_MSEC);	/* 15 ms */
+ 	params-&gt;limit = 1000;	/* default of 1000 packets */
+ 	params-&gt;target = PSCHED_NS2TICKS(15 * NSEC_PER_MSEC);	/* 15 ms */
+ 	params-&gt;ecn = false;</pre><hr><pre>commit abde7920de0607ecb7877fb9e4f3dfe9350b364b
+Author: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+Date:   Tue Feb 26 00:39:56 2019 +0530
+
+    net: sched: pie: change default value of pie_params-&gt;target
+    
+    RFC 8033 suggests a default value of 15 milliseconds for the
+    target queue delay.
+    
+    Signed-off-by: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+    Signed-off-by: Dhaval Khandla &lt;dhavaljkhandla26@gmail.com&gt;
+    Signed-off-by: Hrishikesh Hiraskar &lt;hrishihiraskar@gmail.com&gt;
+    Signed-off-by: Manish Kumar B &lt;bmanish15597@gmail.com&gt;
+    Signed-off-by: Sachin D. Patil &lt;sdp.sachin@gmail.com&gt;
+    Signed-off-by: Leslie Monis &lt;lesliemonis@gmail.com&gt;
+    Acked-by: Dave Taht &lt;dave.taht@gmail.com&gt;
+    Acked-by: Jamal Hadi Salim &lt;jhs@mojatatu.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/sched/sch_pie.c b/net/sched/sch_pie.c
+index 7778eff6cdb7..91af9bf19852 100644
+--- a/net/sched/sch_pie.c
++++ b/net/sched/sch_pie.c
+@@ -83,7 +83,7 @@ static void pie_params_init(struct pie_params *params)
+ 	params-&gt;beta = 20;
+ 	params-&gt;tupdate = usecs_to_jiffies(30 * USEC_PER_MSEC);	/* 30 ms */
+ 	params-&gt;limit = 1000;	/* default of 1000 packets */
+-	params-&gt;target = PSCHED_NS2TICKS(20 * NSEC_PER_MSEC);	/* 20 ms */
++	params-&gt;target = PSCHED_NS2TICKS(15 * NSEC_PER_MSEC);	/* 15 ms */
+ 	params-&gt;ecn = false;
+ 	params-&gt;bytemode = false;
+ }</pre><hr><pre>commit 575090036c76287b99e06fbfaaa838326b626153
+Author: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+Date:   Tue Feb 26 00:39:55 2019 +0530
+
+    net: sched: pie: change value of QUEUE_THRESHOLD
+    
+    RFC 8033 recommends a value of 16384 bytes for the queue
+    threshold.
+    
+    Signed-off-by: Mohit P. Tahiliani &lt;tahiliani@nitk.edu.in&gt;
+    Signed-off-by: Dhaval Khandla &lt;dhavaljkhandla26@gmail.com&gt;
+    Signed-off-by: Hrishikesh Hiraskar &lt;hrishihiraskar@gmail.com&gt;
+    Signed-off-by: Manish Kumar B &lt;bmanish15597@gmail.com&gt;
+    Signed-off-by: Sachin D. Patil &lt;sdp.sachin@gmail.com&gt;
+    Signed-off-by: Leslie Monis &lt;lesliemonis@gmail.com&gt;
+    Acked-by: Dave Taht &lt;dave.taht@gmail.com&gt;
+    Acked-by: Jamal Hadi Salim &lt;jhs@mojatatu.com&gt;
+    Signed-off-by: David S. Miller &lt;davem@davemloft.net&gt;
+
+diff --git a/net/sched/sch_pie.c b/net/sched/sch_pie.c
+index d1429371592f..7778eff6cdb7 100644
+--- a/net/sched/sch_pie.c
++++ b/net/sched/sch_pie.c
+@@ -31,7 +31,7 @@
+ #include &lt;net/pkt_sched.h&gt;
+ #include &lt;net/inet_ecn.h&gt;
+ 
+-#define QUEUE_THRESHOLD 10000
++#define QUEUE_THRESHOLD 16384
+ #define DQCOUNT_INVALID -1
+ #define MAX_PROB  0xffffffff
+ #define PIE_SCALE 8</pre>
+    <div class="pagination">
+        <a href='34.html'>&lt;&lt;Prev</a><a href='34.html'>1</a><span>[2]</span>
+    <div>
+</body>

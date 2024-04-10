@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by Zhejiang University</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by Zhejiang University</h1>
+    <div class="pagination">
+        <span>[1]</span><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_2.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit fd819ad3ecf6f3c232a06b27423ce9ed8c20da89
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Fri Mar 29 09:50:23 2024 +0800
+
+    ax25: fix use-after-free bugs caused by ax25_ds_del_timer
+    
+    When the ax25 device is detaching, the ax25_dev_device_down()
+    calls ax25_ds_del_timer() to cleanup the slave_timer. When
+    the timer handler is running, the ax25_ds_del_timer() that
+    calls del_timer() in it will return directly. As a result,
+    the use-after-free bugs could happen, one of the scenarios
+    is shown below:
+    
+          (Thread 1)          |      (Thread 2)
+                              | ax25_ds_timeout()
+    ax25_dev_device_down()    |
+      ax25_ds_del_timer()     |
+        del_timer()           |
+      ax25_dev_put() //FREE   |
+                              |  ax25_dev-&gt; //USE
+    
+    In order to mitigate bugs, when the device is detaching, use
+    timer_shutdown_sync() to stop the timer.
+    
+    Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Simon Horman &lt;horms@kernel.org&gt;
+    Link: https://lore.kernel.org/r/20240329015023.9223-1-duoming@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/ax25/ax25_dev.c b/net/ax25/ax25_dev.c
+index c5462486dbca..282ec581c072 100644
+--- a/net/ax25/ax25_dev.c
++++ b/net/ax25/ax25_dev.c
+@@ -105,7 +105,7 @@ void ax25_dev_device_down(struct net_device *dev)
+ 	spin_lock_bh(&amp;ax25_dev_lock);
+ 
+ #ifdef CONFIG_AX25_DAMA_SLAVE
+-	ax25_ds_del_timer(ax25_dev);
++	timer_shutdown_sync(&amp;ax25_dev-&gt;dama.slave_timer);
+ #endif
+ 
+ 	/*</pre><hr><pre>commit 051e0840ffa8ab25554d6b14b62c9ab9e4901457
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Tue Mar 26 17:42:38 2024 +0800
+
+    ALSA: sh: aica: reorder cleanup operations to avoid UAF bugs
+    
+    The dreamcastcard-&gt;timer could schedule the spu_dma_work and the
+    spu_dma_work could also arm the dreamcastcard-&gt;timer.
+    
+    When the snd_pcm_substream is closing, the aica_channel will be
+    deallocated. But it could still be dereferenced in the worker
+    thread. The reason is that del_timer() will return directly
+    regardless of whether the timer handler is running or not and
+    the worker could be rescheduled in the timer handler. As a result,
+    the UAF bug will happen. The racy situation is shown below:
+    
+          (Thread 1)                 |      (Thread 2)
+    snd_aicapcm_pcm_close()          |
+     ...                             |  run_spu_dma() //worker
+                                     |    mod_timer()
+      flush_work()                   |
+      del_timer()                    |  aica_period_elapsed() //timer
+      kfree(dreamcastcard-&gt;channel)  |    schedule_work()
+                                     |  run_spu_dma() //worker
+      ...                            |    dreamcastcard-&gt;channel-&gt; //USE
+    
+    In order to mitigate this bug and other possible corner cases,
+    call mod_timer() conditionally in run_spu_dma(), then implement
+    PCM sync_stop op to cancel both the timer and worker. The sync_stop
+    op will be called from PCM core appropriately when needed.
+    
+    Fixes: 198de43d758c ("[ALSA] Add ALSA support for the SEGA Dreamcast PCM device")
+    Suggested-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Message-ID: &lt;20240326094238.95442-1-duoming@zju.edu.cn&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/sh/aica.c b/sound/sh/aica.c
+index 320ac792c7fe..3182c634464d 100644
+--- a/sound/sh/aica.c
++++ b/sound/sh/aica.c
+@@ -278,7 +278,8 @@ static void run_spu_dma(struct work_struct *work)
+ 		dreamcastcard-&gt;clicks++;
+ 		if (unlikely(dreamcastcard-&gt;clicks &gt;= AICA_PERIOD_NUMBER))
+ 			dreamcastcard-&gt;clicks %= AICA_PERIOD_NUMBER;
+-		mod_timer(&amp;dreamcastcard-&gt;timer, jiffies + 1);
++		if (snd_pcm_running(dreamcastcard-&gt;substream))
++			mod_timer(&amp;dreamcastcard-&gt;timer, jiffies + 1);
+ 	}
+ }
+ 
+@@ -290,6 +291,8 @@ static void aica_period_elapsed(struct timer_list *t)
+ 	/*timer function - so cannot sleep */
+ 	int play_period;
+ 	struct snd_pcm_runtime *runtime;
++	if (!snd_pcm_running(substream))
++		return;
+ 	runtime = substream-&gt;runtime;
+ 	dreamcastcard = substream-&gt;pcm-&gt;private_data;
+ 	/* Have we played out an additional period? */
+@@ -350,12 +353,19 @@ static int snd_aicapcm_pcm_open(struct snd_pcm_substream
+ 	return 0;
+ }
+ 
++static int snd_aicapcm_pcm_sync_stop(struct snd_pcm_substream *substream)
++{
++	struct snd_card_aica *dreamcastcard = substream-&gt;pcm-&gt;private_data;
++
++	del_timer_sync(&amp;dreamcastcard-&gt;timer);
++	cancel_work_sync(&amp;dreamcastcard-&gt;spu_dma_work);
++	return 0;
++}
++
+ static int snd_aicapcm_pcm_close(struct snd_pcm_substream
+ 				 *substream)
+ {
+ 	struct snd_card_aica *dreamcastcard = substream-&gt;pcm-&gt;private_data;
+-	flush_work(&amp;(dreamcastcard-&gt;spu_dma_work));
+-	del_timer(&amp;dreamcastcard-&gt;timer);
+ 	dreamcastcard-&gt;substream = NULL;
+ 	kfree(dreamcastcard-&gt;channel);
+ 	spu_disable();
+@@ -401,6 +411,7 @@ static const struct snd_pcm_ops snd_aicapcm_playback_ops = {
+ 	.prepare = snd_aicapcm_pcm_prepare,
+ 	.trigger = snd_aicapcm_pcm_trigger,
+ 	.pointer = snd_aicapcm_pcm_pointer,
++	.sync_stop = snd_aicapcm_pcm_sync_stop,
+ };
+ 
+ /* TO DO: set up to handle more than one pcm instance */</pre><hr><pre>commit 84e95149bd341705f0eca6a7fcb955c548805002
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Fri Mar 8 22:25:40 2024 +0800
+
+    nfp: flower: handle acti_netdevs allocation failure
+    
+    The kmalloc_array() in nfp_fl_lag_do_work() will return null, if
+    the physical memory has run out. As a result, if we dereference
+    the acti_netdevs, the null pointer dereference bugs will happen.
+    
+    This patch adds a check to judge whether allocation failure occurs.
+    If it happens, the delayed work will be rescheduled and try again.
+    
+    Fixes: bb9a8d031140 ("nfp: flower: monitor and offload LAG groups")
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Louis Peens &lt;louis.peens@corigine.com&gt;
+    Link: https://lore.kernel.org/r/20240308142540.9674-1-duoming@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/drivers/net/ethernet/netronome/nfp/flower/lag_conf.c b/drivers/net/ethernet/netronome/nfp/flower/lag_conf.c
+index 361d7c495e2d..2c7bd6e80d99 100644
+--- a/drivers/net/ethernet/netronome/nfp/flower/lag_conf.c
++++ b/drivers/net/ethernet/netronome/nfp/flower/lag_conf.c
+@@ -337,6 +337,11 @@ static void nfp_fl_lag_do_work(struct work_struct *work)
+ 
+ 		acti_netdevs = kmalloc_array(entry-&gt;slave_cnt,
+ 					     sizeof(*acti_netdevs), GFP_KERNEL);
++		if (!acti_netdevs) {
++			schedule_delayed_work(&amp;lag-&gt;work,
++					      NFP_FL_LAG_DELAY);
++			continue;
++		}
+ 
+ 		/* Include sanity check in the loop. It may be that a bond has
+ 		 * changed between processing the last notification and the</pre><hr><pre>commit 7938e9ce39d6779d2f85d822cc930f73420e54a6
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Fri Mar 1 16:44:37 2024 +0800
+
+    clk: zynq: Prevent null pointer dereference caused by kmalloc failure
+    
+    The kmalloc() in zynq_clk_setup() will return null if the
+    physical memory has run out. As a result, if we use snprintf()
+    to write data to the null address, the null pointer dereference
+    bug will happen.
+    
+    This patch uses a stack variable to replace the kmalloc().
+    
+    Fixes: 0ee52b157b8e ("clk: zynq: Add clock controller driver")
+    Suggested-by: Michal Simek &lt;michal.simek@amd.com&gt;
+    Suggested-by: Stephen Boyd &lt;sboyd@kernel.org&gt;
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Link: https://lore.kernel.org/r/20240301084437.16084-1-duoming@zju.edu.cn
+    Acked-by: Michal Simek &lt;michal.simek@amd.com&gt;
+    Signed-off-by: Stephen Boyd &lt;sboyd@kernel.org&gt;
+
+diff --git a/drivers/clk/zynq/clkc.c b/drivers/clk/zynq/clkc.c
+index 7bdeaff2bfd6..c28d3dacf0fb 100644
+--- a/drivers/clk/zynq/clkc.c
++++ b/drivers/clk/zynq/clkc.c
+@@ -42,6 +42,7 @@ static void __iomem *zynq_clkc_base;
+ #define SLCR_SWDT_CLK_SEL		(zynq_clkc_base + 0x204)
+ 
+ #define NUM_MIO_PINS	54
++#define CLK_NAME_LEN	16
+ 
+ #define DBG_CLK_CTRL_CLKACT_TRC		BIT(0)
+ #define DBG_CLK_CTRL_CPU_1XCLKACT	BIT(1)
+@@ -215,7 +216,7 @@ static void __init zynq_clk_setup(struct device_node *np)
+ 	int i;
+ 	u32 tmp;
+ 	int ret;
+-	char *clk_name;
++	char clk_name[CLK_NAME_LEN];
+ 	unsigned int fclk_enable = 0;
+ 	const char *clk_output_name[clk_max];
+ 	const char *cpu_parents[4];
+@@ -426,12 +427,10 @@ static void __init zynq_clk_setup(struct device_node *np)
+ 			"gem1_emio_mux", CLK_SET_RATE_PARENT,
+ 			SLCR_GEM1_CLK_CTRL, 0, 0, &amp;gem1clk_lock);
+ 
+-	tmp = strlen("mio_clk_00x");
+-	clk_name = kmalloc(tmp, GFP_KERNEL);
+ 	for (i = 0; i &lt; NUM_MIO_PINS; i++) {
+ 		int idx;
+ 
+-		snprintf(clk_name, tmp, "mio_clk_%2.2d", i);
++		snprintf(clk_name, CLK_NAME_LEN, "mio_clk_%2.2d", i);
+ 		idx = of_property_match_string(np, "clock-names", clk_name);
+ 		if (idx &gt;= 0)
+ 			can_mio_mux_parents[i] = of_clk_get_parent_name(np,
+@@ -439,7 +438,6 @@ static void __init zynq_clk_setup(struct device_node *np)
+ 		else
+ 			can_mio_mux_parents[i] = dummy_nm;
+ 	}
+-	kfree(clk_name);
+ 	clk_register_mux(NULL, "can_mux", periph_parents, 4,
+ 			CLK_SET_RATE_NO_REPARENT, SLCR_CAN_CLK_CTRL, 4, 2, 0,
+ 			&amp;canclk_lock);</pre><hr><pre>commit 16e87fe23d4af6df920406494ced5c0f4354567b
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Wed Mar 6 13:01:04 2024 +0800
+
+    nouveau/dmem: handle kcalloc() allocation failure
+    
+    The kcalloc() in nouveau_dmem_evict_chunk() will return null if
+    the physical memory has run out. As a result, if we dereference
+    src_pfns, dst_pfns or dma_addrs, the null pointer dereference bugs
+    will happen.
+    
+    Moreover, the GPU is going away. If the kcalloc() fails, we could not
+    evict all pages mapping a chunk. So this patch adds a __GFP_NOFAIL
+    flag in kcalloc().
+    
+    Finally, as there is no need to have physically contiguous memory,
+    this patch switches kcalloc() to kvcalloc() in order to avoid
+    failing allocations.
+    
+    CC: &lt;stable@vger.kernel.org&gt; # v6.1
+    Fixes: 249881232e14 ("nouveau/dmem: evict device private memory during release")
+    Suggested-by: Danilo Krummrich &lt;dakr@redhat.com&gt;
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Signed-off-by: Danilo Krummrich &lt;dakr@redhat.com&gt;
+    Link: https://patchwork.freedesktop.org/patch/msgid/20240306050104.11259-1-duoming@zju.edu.cn
+
+diff --git a/drivers/gpu/drm/nouveau/nouveau_dmem.c b/drivers/gpu/drm/nouveau/nouveau_dmem.c
+index 12feecf71e75..6fb65b01d778 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_dmem.c
++++ b/drivers/gpu/drm/nouveau/nouveau_dmem.c
+@@ -378,9 +378,9 @@ nouveau_dmem_evict_chunk(struct nouveau_dmem_chunk *chunk)
+ 	dma_addr_t *dma_addrs;
+ 	struct nouveau_fence *fence;
+ 
+-	src_pfns = kcalloc(npages, sizeof(*src_pfns), GFP_KERNEL);
+-	dst_pfns = kcalloc(npages, sizeof(*dst_pfns), GFP_KERNEL);
+-	dma_addrs = kcalloc(npages, sizeof(*dma_addrs), GFP_KERNEL);
++	src_pfns = kvcalloc(npages, sizeof(*src_pfns), GFP_KERNEL | __GFP_NOFAIL);
++	dst_pfns = kvcalloc(npages, sizeof(*dst_pfns), GFP_KERNEL | __GFP_NOFAIL);
++	dma_addrs = kvcalloc(npages, sizeof(*dma_addrs), GFP_KERNEL | __GFP_NOFAIL);
+ 
+ 	migrate_device_range(src_pfns, chunk-&gt;pagemap.range.start &gt;&gt; PAGE_SHIFT,
+ 			npages);
+@@ -406,11 +406,11 @@ nouveau_dmem_evict_chunk(struct nouveau_dmem_chunk *chunk)
+ 	migrate_device_pages(src_pfns, dst_pfns, npages);
+ 	nouveau_dmem_fence_done(&amp;fence);
+ 	migrate_device_finalize(src_pfns, dst_pfns, npages);
+-	kfree(src_pfns);
+-	kfree(dst_pfns);
++	kvfree(src_pfns);
++	kvfree(dst_pfns);
+ 	for (i = 0; i &lt; npages; i++)
+ 		dma_unmap_page(chunk-&gt;drm-&gt;dev-&gt;dev, dma_addrs[i], PAGE_SIZE, DMA_BIDIRECTIONAL);
+-	kfree(dma_addrs);
++	kvfree(dma_addrs);
+ }
+ 
+ void</pre><hr><pre>commit b4152222e04cb8afeeca239c90e3fcaf4c553b42
+Author: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+Date:   Thu Feb 29 18:31:53 2024 +0800
+
+    wifi: brcm80211: handle pmk_op allocation failure
+    
+    The kzalloc() in brcmf_pmksa_v3_op() will return null if the
+    physical memory has run out. As a result, if we dereference
+    the null value, the null pointer dereference bug will happen.
+    
+    Return -ENOMEM from brcmf_pmksa_v3_op() if kzalloc() fails
+    for pmk_op.
+    
+    Fixes: a96202acaea4 ("wifi: brcmfmac: cfg80211: Add support for PMKID_V3 operations")
+    Acked-by: Arend van Spriel &lt;arend.vanspriel@broadcom.com&gt;
+    Signed-off-by: Duoming Zhou &lt;duoming@zju.edu.cn&gt;
+    Reviewed-by: Kees Cook &lt;keescook@chromium.org&gt;
+    Signed-off-by: Kalle Valo &lt;kvalo@kernel.org&gt;
+    Link: https://msgid.link/20240229103153.18533-1-duoming@zju.edu.cn
+
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
+index 54ff59a8c35c..b99aa66dc5a9 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
+@@ -4308,6 +4308,9 @@ brcmf_pmksa_v3_op(struct brcmf_if *ifp, struct cfg80211_pmksa *pmksa,
+ 	int ret;
+ 
+ 	pmk_op = kzalloc(sizeof(*pmk_op), GFP_KERNEL);
++	if (!pmk_op)
++		return -ENOMEM;
++
+ 	pmk_op-&gt;version = cpu_to_le16(BRCMF_PMKSA_VER_3);
+ 
+ 	if (!pmksa) {</pre><hr><pre>commit 3cfcfc102a5e57b021b786a755a38935e357797d
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Tue Jan 2 13:38:13 2024 +0800
+
+    SUNRPC: fix some memleaks in gssx_dec_option_array
+    
+    The creds and oa-&gt;data need to be freed in the error-handling paths after
+    their allocation. So this patch add these deallocations in the
+    corresponding paths.
+    
+    Fixes: 1d658336b05f ("SUNRPC: Add RPC based upcall mechanism for RPCGSS auth")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Chuck Lever &lt;chuck.lever@oracle.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/gss_rpc_xdr.c b/net/sunrpc/auth_gss/gss_rpc_xdr.c
+index d79f12c2550a..cb32ab9a8395 100644
+--- a/net/sunrpc/auth_gss/gss_rpc_xdr.c
++++ b/net/sunrpc/auth_gss/gss_rpc_xdr.c
+@@ -250,8 +250,8 @@ static int gssx_dec_option_array(struct xdr_stream *xdr,
+ 
+ 	creds = kzalloc(sizeof(struct svc_cred), GFP_KERNEL);
+ 	if (!creds) {
+-		kfree(oa-&gt;data);
+-		return -ENOMEM;
++		err = -ENOMEM;
++		goto free_oa;
+ 	}
+ 
+ 	oa-&gt;data[0].option.data = CREDS_VALUE;
+@@ -265,29 +265,40 @@ static int gssx_dec_option_array(struct xdr_stream *xdr,
+ 
+ 		/* option buffer */
+ 		p = xdr_inline_decode(xdr, 4);
+-		if (unlikely(p == NULL))
+-			return -ENOSPC;
++		if (unlikely(p == NULL)) {
++			err = -ENOSPC;
++			goto free_creds;
++		}
+ 
+ 		length = be32_to_cpup(p);
+ 		p = xdr_inline_decode(xdr, length);
+-		if (unlikely(p == NULL))
+-			return -ENOSPC;
++		if (unlikely(p == NULL)) {
++			err = -ENOSPC;
++			goto free_creds;
++		}
+ 
+ 		if (length == sizeof(CREDS_VALUE) &amp;&amp;
+ 		    memcmp(p, CREDS_VALUE, sizeof(CREDS_VALUE)) == 0) {
+ 			/* We have creds here. parse them */
+ 			err = gssx_dec_linux_creds(xdr, creds);
+ 			if (err)
+-				return err;
++				goto free_creds;
+ 			oa-&gt;data[0].value.len = 1; /* presence */
+ 		} else {
+ 			/* consume uninteresting buffer */
+ 			err = gssx_dec_buffer(xdr, &amp;dummy);
+ 			if (err)
+-				return err;
++				goto free_creds;
+ 		}
+ 	}
+ 	return 0;
++
++free_creds:
++	kfree(creds);
++free_oa:
++	kfree(oa-&gt;data);
++	oa-&gt;data = NULL;
++	return err;
+ }
+ 
+ static int gssx_dec_status(struct xdr_stream *xdr,</pre><hr><pre>commit e67b652d8e8591d3b1e569dbcdfcee15993e91fa
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Sun Dec 24 16:20:33 2023 +0800
+
+    SUNRPC: fix a memleak in gss_import_v2_context
+    
+    The ctx-&gt;mech_used.data allocated by kmemdup is not freed in neither
+    gss_import_v2_context nor it only caller gss_krb5_import_sec_context,
+    which frees ctx on error.
+    
+    Thus, this patch reform the last call of gss_import_v2_context to the
+    gss_krb5_import_ctx_v2, preventing the memleak while keepping the return
+    formation.
+    
+    Fixes: 47d848077629 ("gss_krb5: handle new context format from gssd")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Reviewed-by: Jeff Layton &lt;jlayton@kernel.org&gt;
+    Signed-off-by: Chuck Lever &lt;chuck.lever@oracle.com&gt;
+
+diff --git a/net/sunrpc/auth_gss/gss_krb5_mech.c b/net/sunrpc/auth_gss/gss_krb5_mech.c
+index 64cff717c3d9..3366505bc669 100644
+--- a/net/sunrpc/auth_gss/gss_krb5_mech.c
++++ b/net/sunrpc/auth_gss/gss_krb5_mech.c
+@@ -398,6 +398,7 @@ gss_import_v2_context(const void *p, const void *end, struct krb5_ctx *ctx,
+ 	u64 seq_send64;
+ 	int keylen;
+ 	u32 time32;
++	int ret;
+ 
+ 	p = simple_get_bytes(p, end, &amp;ctx-&gt;flags, sizeof(ctx-&gt;flags));
+ 	if (IS_ERR(p))
+@@ -450,8 +451,16 @@ gss_import_v2_context(const void *p, const void *end, struct krb5_ctx *ctx,
+ 	}
+ 	ctx-&gt;mech_used.len = gss_kerberos_mech.gm_oid.len;
+ 
+-	return gss_krb5_import_ctx_v2(ctx, gfp_mask);
++	ret = gss_krb5_import_ctx_v2(ctx, gfp_mask);
++	if (ret) {
++		p = ERR_PTR(ret);
++		goto out_free;
++	}
+ 
++	return 0;
++
++out_free:
++	kfree(ctx-&gt;mech_used.data);
+ out_err:
+ 	return PTR_ERR(p);
+ }</pre><hr><pre>commit 743ad091fb46e622f1b690385bb15e3cd3daf874
+Author: Lin Ma &lt;linma@zju.edu.cn&gt;
+Date:   Tue Feb 27 20:11:28 2024 +0800
+
+    rtnetlink: fix error logic of IFLA_BRIDGE_FLAGS writing back
+    
+    In the commit d73ef2d69c0d ("rtnetlink: let rtnl_bridge_setlink checks
+    IFLA_BRIDGE_MODE length"), an adjustment was made to the old loop logic
+    in the function `rtnl_bridge_setlink` to enable the loop to also check
+    the length of the IFLA_BRIDGE_MODE attribute. However, this adjustment
+    removed the `break` statement and led to an error logic of the flags
+    writing back at the end of this function.
+    
+    if (have_flags)
+        memcpy(nla_data(attr), &amp;flags, sizeof(flags));
+        // attr should point to IFLA_BRIDGE_FLAGS NLA !!!
+    
+    Before the mentioned commit, the `attr` is granted to be IFLA_BRIDGE_FLAGS.
+    However, this is not necessarily true fow now as the updated loop will let
+    the attr point to the last NLA, even an invalid NLA which could cause
+    overflow writes.
+    
+    This patch introduces a new variable `br_flag` to save the NLA pointer
+    that points to IFLA_BRIDGE_FLAGS and uses it to resolve the mentioned
+    error logic.
+    
+    Fixes: d73ef2d69c0d ("rtnetlink: let rtnl_bridge_setlink checks IFLA_BRIDGE_MODE length")
+    Signed-off-by: Lin Ma &lt;linma@zju.edu.cn&gt;
+    Acked-by: Nikolay Aleksandrov &lt;razor@blackwall.org&gt;
+    Link: https://lore.kernel.org/r/20240227121128.608110-1-linma@zju.edu.cn
+    Signed-off-by: Jakub Kicinski &lt;kuba@kernel.org&gt;
+
+diff --git a/net/core/rtnetlink.c b/net/core/rtnetlink.c
+index 9c4f427f3a50..ae86f751efc3 100644
+--- a/net/core/rtnetlink.c
++++ b/net/core/rtnetlink.c
+@@ -5169,10 +5169,9 @@ static int rtnl_bridge_setlink(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 	struct net *net = sock_net(skb-&gt;sk);
+ 	struct ifinfomsg *ifm;
+ 	struct net_device *dev;
+-	struct nlattr *br_spec, *attr = NULL;
++	struct nlattr *br_spec, *attr, *br_flags_attr = NULL;
+ 	int rem, err = -EOPNOTSUPP;
+ 	u16 flags = 0;
+-	bool have_flags = false;
+ 
+ 	if (nlmsg_len(nlh) &lt; sizeof(*ifm))
+ 		return -EINVAL;
+@@ -5190,11 +5189,11 @@ static int rtnl_bridge_setlink(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 	br_spec = nlmsg_find_attr(nlh, sizeof(struct ifinfomsg), IFLA_AF_SPEC);
+ 	if (br_spec) {
+ 		nla_for_each_nested(attr, br_spec, rem) {
+-			if (nla_type(attr) == IFLA_BRIDGE_FLAGS &amp;&amp; !have_flags) {
++			if (nla_type(attr) == IFLA_BRIDGE_FLAGS &amp;&amp; !br_flags_attr) {
+ 				if (nla_len(attr) &lt; sizeof(flags))
+ 					return -EINVAL;
+ 
+-				have_flags = true;
++				br_flags_attr = attr;
+ 				flags = nla_get_u16(attr);
+ 			}
+ 
+@@ -5238,8 +5237,8 @@ static int rtnl_bridge_setlink(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 		}
+ 	}
+ 
+-	if (have_flags)
+-		memcpy(nla_data(attr), &amp;flags, sizeof(flags));
++	if (br_flags_attr)
++		memcpy(nla_data(br_flags_attr), &amp;flags, sizeof(flags));
+ out:
+ 	return err;
+ }</pre><hr><pre>commit d0b07f712bf61e1a3cf23c87c663791c42e50837
+Author: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+Date:   Wed Feb 21 13:17:04 2024 +0800
+
+    media: ttpci: fix two memleaks in budget_av_attach
+    
+    When saa7146_register_device and saa7146_vv_init fails, budget_av_attach
+    should free the resources it allocates, like the error-handling of
+    ttpci_budget_init does. Besides, there are two fixme comment refers to
+    such deallocations.
+    
+    Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
+    Signed-off-by: Zhipeng Lu &lt;alexious@zju.edu.cn&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+
+diff --git a/drivers/media/pci/ttpci/budget-av.c b/drivers/media/pci/ttpci/budget-av.c
+index 230b104a7cdf..a47c5850ef87 100644
+--- a/drivers/media/pci/ttpci/budget-av.c
++++ b/drivers/media/pci/ttpci/budget-av.c
+@@ -1463,7 +1463,8 @@ static int budget_av_attach(struct saa7146_dev *dev, struct saa7146_pci_extensio
+ 		budget_av-&gt;has_saa7113 = 1;
+ 		err = saa7146_vv_init(dev, &amp;vv_data);
+ 		if (err != 0) {
+-			/* fixme: proper cleanup here */
++			ttpci_budget_deinit(&amp;budget_av-&gt;budget);
++			kfree(budget_av);
+ 			ERR("cannot init vv subsystem\n");
+ 			return err;
+ 		}
+@@ -1472,9 +1473,10 @@ static int budget_av_attach(struct saa7146_dev *dev, struct saa7146_pci_extensio
+ 		vv_data.vid_ops.vidioc_s_input = vidioc_s_input;
+ 
+ 		if ((err = saa7146_register_device(&amp;budget_av-&gt;vd, dev, "knc1", VFL_TYPE_VIDEO))) {
+-			/* fixme: proper cleanup here */
+-			ERR("cannot register capture v4l2 device\n");
+ 			saa7146_vv_release(dev);
++			ttpci_budget_deinit(&amp;budget_av-&gt;budget);
++			kfree(budget_av);
++			ERR("cannot register capture v4l2 device\n");
+ 			return err;
+ 		}
+ </pre>
+    <div class="pagination">
+        <span>[1]</span><a href='6_2.html'>2</a><a href='6_3.html'>3</a><a href='6_4.html'>4</a><a href='6_5.html'>5</a><a href='6_6.html'>6</a><a href='6_7.html'>7</a><a href='6_8.html'>8</a><a href='6_9.html'>9</a><a href='6_10.html'>10</a><a href='6_11.html'>11</a><a href='6_12.html'>12</a><a href='6_13.html'>13</a><a href='6_14.html'>14</a><a href='6_15.html'>15</a><a href='6_16.html'>16</a><a href='6_17.html'>17</a><a href='6_18.html'>18</a><a href='6_19.html'>19</a><a href='6_20.html'>20</a><a href='6_21.html'>21</a><a href='6_22.html'>22</a><a href='6_23.html'>23</a><a href='6_24.html'>24</a><a href='6_25.html'>25</a><a href='6_26.html'>26</a><a href='6_27.html'>27</a><a href='6_28.html'>28</a><a href='6_29.html'>29</a><a href='6_30.html'>30</a><a href='6_31.html'>31</a><a href='6_32.html'>32</a><a href='6_33.html'>33</a><a href='6_34.html'>34</a><a href='6_2.html'>Next&gt;&gt;</a>
+    <div>
+</body>

@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of California, San Diego</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of California, San Diego</h1>
+    <div class="pagination">
+        <span>[1]</span>
+    </div>
+    <hr>
+    <pre>commit 5532c6282787124a7fd778d779d19148ae87479e
+Author: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+Date:   Thu Jul 4 17:58:12 2019 -0300
+
+    media: dvb_frontend.h: Fix shifting signed 32-bit value problem
+    
+    Fix DVBFE_ALGO_RECOVERY and DVBFE_ALGO_SEARCH_ERROR use BIT macro which
+    fixes undefined behavior error by certain compilers.
+    
+    Also changed all other bit shifted definitions to use macro for better
+    readability.
+    
+    Signed-off-by: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+    Signed-off-by: Sean Young &lt;sean@mess.org&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/include/media/dvb_frontend.h b/include/media/dvb_frontend.h
+index f05cd7b94a2c..0d76fa4551b3 100644
+--- a/include/media/dvb_frontend.h
++++ b/include/media/dvb_frontend.h
+@@ -41,6 +41,7 @@
+ #include &lt;linux/delay.h&gt;
+ #include &lt;linux/mutex.h&gt;
+ #include &lt;linux/slab.h&gt;
++#include &lt;linux/bitops.h&gt;
+ 
+ #include &lt;linux/dvb/frontend.h&gt;
+ 
+@@ -141,10 +142,10 @@ struct analog_parameters {
+  *	These devices have AUTO recovery capabilities from LOCK failure
+  */
+ enum dvbfe_algo {
+-	DVBFE_ALGO_HW			= (1 &lt;&lt;  0),
+-	DVBFE_ALGO_SW			= (1 &lt;&lt;  1),
+-	DVBFE_ALGO_CUSTOM		= (1 &lt;&lt;  2),
+-	DVBFE_ALGO_RECOVERY		= (1 &lt;&lt; 31)
++	DVBFE_ALGO_HW			= BIT(0),
++	DVBFE_ALGO_SW			= BIT(1),
++	DVBFE_ALGO_CUSTOM		= BIT(2),
++	DVBFE_ALGO_RECOVERY		= BIT(31),
+ };
+ 
+ /**
+@@ -170,12 +171,12 @@ enum dvbfe_algo {
+  *	The frontend search algorithm was requested to search again
+  */
+ enum dvbfe_search {
+-	DVBFE_ALGO_SEARCH_SUCCESS	= (1 &lt;&lt;  0),
+-	DVBFE_ALGO_SEARCH_ASLEEP	= (1 &lt;&lt;  1),
+-	DVBFE_ALGO_SEARCH_FAILED	= (1 &lt;&lt;  2),
+-	DVBFE_ALGO_SEARCH_INVALID	= (1 &lt;&lt;  3),
+-	DVBFE_ALGO_SEARCH_AGAIN		= (1 &lt;&lt;  4),
+-	DVBFE_ALGO_SEARCH_ERROR		= (1 &lt;&lt; 31),
++	DVBFE_ALGO_SEARCH_SUCCESS	= BIT(0),
++	DVBFE_ALGO_SEARCH_ASLEEP	= BIT(1),
++	DVBFE_ALGO_SEARCH_FAILED	= BIT(2),
++	DVBFE_ALGO_SEARCH_INVALID	= BIT(3),
++	DVBFE_ALGO_SEARCH_AGAIN		= BIT(4),
++	DVBFE_ALGO_SEARCH_ERROR		= BIT(31),
+ };
+ 
+ /**</pre><hr><pre>commit d4a6a9537bc32811486282206ecfb7c53754b74d
+Author: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+Date:   Wed Jul 17 10:19:46 2019 -0400
+
+    media: hdpvr: Add device num check and handling
+    
+    Add hdpvr device num check and error handling
+    
+    We need to increment the device count atomically before we checkout a
+    device to make sure that we do not reach the max count, otherwise we get
+    out-of-bounds errors as reported by syzbot.
+    
+    Reported-and-tested-by: syzbot+aac8d0d7205f112045d2@syzkaller.appspotmail.com
+    
+    Signed-off-by: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/usb/hdpvr/hdpvr-core.c b/drivers/media/usb/hdpvr/hdpvr-core.c
+index 9b9d894d29bc..a0905c81d2cb 100644
+--- a/drivers/media/usb/hdpvr/hdpvr-core.c
++++ b/drivers/media/usb/hdpvr/hdpvr-core.c
+@@ -271,6 +271,7 @@ static int hdpvr_probe(struct usb_interface *interface,
+ #endif
+ 	size_t buffer_size;
+ 	int i;
++	int dev_num;
+ 	int retval = -ENOMEM;
+ 
+ 	/* allocate memory for our device state and initialize it */
+@@ -368,8 +369,17 @@ static int hdpvr_probe(struct usb_interface *interface,
+ 	}
+ #endif
+ 
++	dev_num = atomic_inc_return(&amp;dev_nr);
++	if (dev_num &gt;= HDPVR_MAX) {
++		v4l2_err(&amp;dev-&gt;v4l2_dev,
++			 "max device number reached, device register failed\n");
++		atomic_dec(&amp;dev_nr);
++		retval = -ENODEV;
++		goto reg_fail;
++	}
++
+ 	retval = hdpvr_register_videodev(dev, &amp;interface-&gt;dev,
+-				    video_nr[atomic_inc_return(&amp;dev_nr)]);
++				    video_nr[dev_num]);
+ 	if (retval &lt; 0) {
+ 		v4l2_err(&amp;dev-&gt;v4l2_dev, "registering videodev failed\n");
+ 		goto reg_fail;</pre><hr><pre>commit 429bb83af8bcea0115eb34fd7ed94a35166d8384
+Author: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+Date:   Wed Jul 10 08:30:54 2019 -0700
+
+    Documentation: virtual: Add toctree hooks
+    
+    Added toctree hooks for indexing. Hooks added only for newly added
+    files.
+    
+    The hook for the top of the tree will be added in a later patch series
+    when a few more substantial changes have been added.
+    
+    Signed-off-by: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+    Signed-off-by: Paolo Bonzini &lt;pbonzini@redhat.com&gt;
+
+diff --git a/Documentation/virtual/index.rst b/Documentation/virtual/index.rst
+new file mode 100644
+index 000000000000..062ffb527043
+--- /dev/null
++++ b/Documentation/virtual/index.rst
+@@ -0,0 +1,18 @@
++.. SPDX-License-Identifier: GPL-2.0
++
++============================
++Linux Virtualization Support
++============================
++
++.. toctree::
++   :maxdepth: 2
++
++   kvm/index
++   paravirt_ops
++
++.. only:: html and subproject
++
++   Indices
++   =======
++
++   * :ref:`genindex`
+diff --git a/Documentation/virtual/kvm/index.rst b/Documentation/virtual/kvm/index.rst
+new file mode 100644
+index 000000000000..0b206a06f5be
+--- /dev/null
++++ b/Documentation/virtual/kvm/index.rst
+@@ -0,0 +1,11 @@
++.. SPDX-License-Identifier: GPL-2.0
++
++===
++KVM
++===
++
++.. toctree::
++   :maxdepth: 2
++
++   amd-memory-encryption
++   cpuid</pre><hr><pre>commit e287d6de62f745e223d2f7d9b621c892d4b2b45a
+Author: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+Date:   Wed Jul 10 08:30:53 2019 -0700
+
+    Documentation: kvm: Convert cpuid.txt to .rst
+    
+    Convert cpuid.txt to .rst format to be parsable by sphinx.
+    
+    Change format and spacing to make function definitions and return values
+    much more clear. Also added a table that is parsable by sphinx and makes
+    the information much more clean. Updated Author email to their new
+    active email address. Added license identifier with the consent of the
+    author.
+    
+    Signed-off-by: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+    Signed-off-by: Paolo Bonzini &lt;pbonzini@redhat.com&gt;
+
+diff --git a/Documentation/virtual/kvm/cpuid.rst b/Documentation/virtual/kvm/cpuid.rst
+new file mode 100644
+index 000000000000..01b081f6e7ea
+--- /dev/null
++++ b/Documentation/virtual/kvm/cpuid.rst
+@@ -0,0 +1,107 @@
++.. SPDX-License-Identifier: GPL-2.0
++
++==============
++KVM CPUID bits
++==============
++
++:Author: Glauber Costa &lt;glommer@gmail.com&gt;
++
++A guest running on a kvm host, can check some of its features using
++cpuid. This is not always guaranteed to work, since userspace can
++mask-out some, or even all KVM-related cpuid features before launching
++a guest.
++
++KVM cpuid functions are:
++
++function: KVM_CPUID_SIGNATURE (0x40000000)
++
++returns::
++
++   eax = 0x40000001
++   ebx = 0x4b4d564b
++   ecx = 0x564b4d56
++   edx = 0x4d
++
++Note that this value in ebx, ecx and edx corresponds to the string "KVMKVMKVM".
++The value in eax corresponds to the maximum cpuid function present in this leaf,
++and will be updated if more functions are added in the future.
++Note also that old hosts set eax value to 0x0. This should
++be interpreted as if the value was 0x40000001.
++This function queries the presence of KVM cpuid leafs.
++
++function: define KVM_CPUID_FEATURES (0x40000001)
++
++returns::
++
++          ebx, ecx
++          eax = an OR'ed group of (1 &lt;&lt; flag)
++
++where ``flag`` is defined as below:
++
++================================= =========== ================================
++flag                              value       meaning
++================================= =========== ================================
++KVM_FEATURE_CLOCKSOURCE           0           kvmclock available at msrs
++                                              0x11 and 0x12
++
++KVM_FEATURE_NOP_IO_DELAY          1           not necessary to perform delays
++                                              on PIO operations
++
++KVM_FEATURE_MMU_OP                2           deprecated
++
++KVM_FEATURE_CLOCKSOURCE2          3           kvmclock available at msrs
++
++                                              0x4b564d00 and 0x4b564d01
++KVM_FEATURE_ASYNC_PF              4           async pf can be enabled by
++                                              writing to msr 0x4b564d02
++
++KVM_FEATURE_STEAL_TIME            5           steal time can be enabled by
++                                              writing to msr 0x4b564d03
++
++KVM_FEATURE_PV_EOI                6           paravirtualized end of interrupt
++                                              handler can be enabled by
++                                              writing to msr 0x4b564d04
++
++KVM_FEATURE_PV_UNHAULT            7           guest checks this feature bit
++                                              before enabling paravirtualized
++                                              spinlock support
++
++KVM_FEATURE_PV_TLB_FLUSH          9           guest checks this feature bit
++                                              before enabling paravirtualized
++                                              tlb flush
++
++KVM_FEATURE_ASYNC_PF_VMEXIT       10          paravirtualized async PF VM EXIT
++                                              can be enabled by setting bit 2
++                                              when writing to msr 0x4b564d02
++
++KVM_FEATURE_PV_SEND_IPI           11          guest checks this feature bit
++                                              before enabling paravirtualized
++                                              sebd IPIs
++
++KVM_FEATURE_PV_POLL_CONTROL       12          host-side polling on HLT can
++                                              be disabled by writing
++                                              to msr 0x4b564d05.
++
++KVM_FEATURE_PV_SCHED_YIELD        13          guest checks this feature bit
++                                              before using paravirtualized
++                                              sched yield.
++
++KVM_FEATURE_CLOCSOURCE_STABLE_BIT 24          host will warn if no guest-side
++                                              per-cpu warps are expeced in
++                                              kvmclock
++================================= =========== ================================
++
++::
++
++      edx = an OR'ed group of (1 &lt;&lt; flag)
++
++Where ``flag`` here is defined as below:
++
++================== ============ =================================
++flag               value        meaning
++================== ============ =================================
++KVM_HINTS_REALTIME 0            guest checks this feature bit to
++                                determine that vCPUs are never
++                                preempted for an unlimited time
++                                allowing optimizations
++================== ============ =================================
+diff --git a/Documentation/virtual/kvm/cpuid.txt b/Documentation/virtual/kvm/cpuid.txt
+deleted file mode 100644
+index 2bdac528e4a2..000000000000
+--- a/Documentation/virtual/kvm/cpuid.txt
++++ /dev/null
+@@ -1,91 +0,0 @@
+-KVM CPUID bits
+-Glauber Costa &lt;glommer@redhat.com&gt;, Red Hat Inc, 2010
+-=====================================================
+-
+-A guest running on a kvm host, can check some of its features using
+-cpuid. This is not always guaranteed to work, since userspace can
+-mask-out some, or even all KVM-related cpuid features before launching
+-a guest.
+-
+-KVM cpuid functions are:
+-
+-function: KVM_CPUID_SIGNATURE (0x40000000)
+-returns : eax = 0x40000001,
+-          ebx = 0x4b4d564b,
+-          ecx = 0x564b4d56,
+-          edx = 0x4d.
+-Note that this value in ebx, ecx and edx corresponds to the string "KVMKVMKVM".
+-The value in eax corresponds to the maximum cpuid function present in this leaf,
+-and will be updated if more functions are added in the future.
+-Note also that old hosts set eax value to 0x0. This should
+-be interpreted as if the value was 0x40000001.
+-This function queries the presence of KVM cpuid leafs.
+-
+-
+-function: define KVM_CPUID_FEATURES (0x40000001)
+-returns : ebx, ecx
+-          eax = an OR'ed group of (1 &lt;&lt; flag), where each flags is:
+-
+-
+-flag                               || value || meaning
+-=============================================================================
+-KVM_FEATURE_CLOCKSOURCE            ||     0 || kvmclock available at msrs
+-                                   ||       || 0x11 and 0x12.
+-------------------------------------------------------------------------------
+-KVM_FEATURE_NOP_IO_DELAY           ||     1 || not necessary to perform delays
+-                                   ||       || on PIO operations.
+-------------------------------------------------------------------------------
+-KVM_FEATURE_MMU_OP                 ||     2 || deprecated.
+-------------------------------------------------------------------------------
+-KVM_FEATURE_CLOCKSOURCE2           ||     3 || kvmclock available at msrs
+-                                   ||       || 0x4b564d00 and 0x4b564d01
+-------------------------------------------------------------------------------
+-KVM_FEATURE_ASYNC_PF               ||     4 || async pf can be enabled by
+-                                   ||       || writing to msr 0x4b564d02
+-------------------------------------------------------------------------------
+-KVM_FEATURE_STEAL_TIME             ||     5 || steal time can be enabled by
+-                                   ||       || writing to msr 0x4b564d03.
+-------------------------------------------------------------------------------
+-KVM_FEATURE_PV_EOI                 ||     6 || paravirtualized end of interrupt
+-                                   ||       || handler can be enabled by writing
+-                                   ||       || to msr 0x4b564d04.
+-------------------------------------------------------------------------------
+-KVM_FEATURE_PV_UNHALT              ||     7 || guest checks this feature bit
+-                                   ||       || before enabling paravirtualized
+-                                   ||       || spinlock support.
+-------------------------------------------------------------------------------
+-KVM_FEATURE_PV_TLB_FLUSH           ||     9 || guest checks this feature bit
+-                                   ||       || before enabling paravirtualized
+-                                   ||       || tlb flush.
+-------------------------------------------------------------------------------
+-KVM_FEATURE_ASYNC_PF_VMEXIT        ||    10 || paravirtualized async PF VM exit
+-                                   ||       || can be enabled by setting bit 2
+-                                   ||       || when writing to msr 0x4b564d02
+-------------------------------------------------------------------------------
+-KVM_FEATURE_PV_SEND_IPI            ||    11 || guest checks this feature bit
+-                                   ||       || before using paravirtualized
+-                                   ||       || send IPIs.
+-------------------------------------------------------------------------------
+-KVM_FEATURE_PV_POLL_CONTROL        ||    12 || host-side polling on HLT can
+-                                   ||       || be disabled by writing
+-                                   ||       || to msr 0x4b564d05.
+-------------------------------------------------------------------------------
+-KVM_FEATURE_PV_SCHED_YIELD         ||    13 || guest checks this feature bit
+-                                   ||       || before using paravirtualized
+-                                   ||       || sched yield.
+-------------------------------------------------------------------------------
+-KVM_FEATURE_CLOCKSOURCE_STABLE_BIT ||    24 || host will warn if no guest-side
+-                                   ||       || per-cpu warps are expected in
+-                                   ||       || kvmclock.
+-------------------------------------------------------------------------------
+-
+-          edx = an OR'ed group of (1 &lt;&lt; flag), where each flags is:
+-
+-
+-flag                               || value || meaning
+-==================================================================================
+-KVM_HINTS_REALTIME                 ||     0 || guest checks this feature bit to
+-                                   ||       || determine that vCPUs are never
+-                                   ||       || preempted for an unlimited time,
+-                                   ||       || allowing optimizations
+-----------------------------------------------------------------------------------</pre><hr><pre>commit 8373bc4f1b7072a020860896b404bff0a54c7583
+Author: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+Date:   Wed Jul 10 08:30:52 2019 -0700
+
+    Documentation: virtual: Convert paravirt_ops.txt to .rst
+    
+    Convert paravirt_opts.txt to .rst format to be able to be parsed by
+    sphinx.
+    
+    Made some minor spacing and formatting corrections to make defintions
+    much more clear and easy to read. Added default kernel license to the
+    document.
+    
+    Signed-off-by: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+    Signed-off-by: Paolo Bonzini &lt;pbonzini@redhat.com&gt;
+
+diff --git a/Documentation/virtual/paravirt_ops.txt b/Documentation/virtual/paravirt_ops.rst
+similarity index 65%
+rename from Documentation/virtual/paravirt_ops.txt
+rename to Documentation/virtual/paravirt_ops.rst
+index d4881c00e339..6b789d27cead 100644
+--- a/Documentation/virtual/paravirt_ops.txt
++++ b/Documentation/virtual/paravirt_ops.rst
+@@ -1,3 +1,6 @@
++.. SPDX-License-Identifier: GPL-2.0
++
++============
+ Paravirt_ops
+ ============
+ 
+@@ -18,15 +21,15 @@ at boot time.
+ pv_ops operations are classified into three categories:
+ 
+ - simple indirect call
+-  These operations correspond to high level functionality where it is
+-  known that the overhead of indirect call isn't very important.
++   These operations correspond to high level functionality where it is
++   known that the overhead of indirect call isn't very important.
+ 
+ - indirect call which allows optimization with binary patch
+-  Usually these operations correspond to low level critical instructions. They
+-  are called frequently and are performance critical. The overhead is
+-  very important.
++   Usually these operations correspond to low level critical instructions. They
++   are called frequently and are performance critical. The overhead is
++   very important.
+ 
+ - a set of macros for hand written assembly code
+-  Hand written assembly codes (.S files) also need paravirtualization
+-  because they include sensitive instructions or some of code paths in
+-  them are very performance critical.
++   Hand written assembly codes (.S files) also need paravirtualization
++   because they include sensitive instructions or some of code paths in
++   them are very performance critical.</pre><hr><pre>commit c666355e60ddb4748ead3bdd983e3f7f2224aaf0
+Author: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+Date:   Fri Jun 21 21:04:38 2019 -0400
+
+    media: radio-raremono: change devm_k*alloc to k*alloc
+    
+    Change devm_k*alloc to k*alloc to manually allocate memory
+    
+    The manual allocation and freeing of memory is necessary because when
+    the USB radio is disconnected, the memory associated with devm_k*alloc
+    is freed. Meaning if we still have unresolved references to the radio
+    device, then we get use-after-free errors.
+    
+    This patch fixes this by manually allocating memory, and freeing it in
+    the v4l2.release callback that gets called when the last radio device
+    exits.
+    
+    Reported-and-tested-by: syzbot+a4387f5b6b799f6becbf@syzkaller.appspotmail.com
+    
+    Signed-off-by: Luke Nowakowski-Krijger &lt;lnowakow@eng.ucsd.edu&gt;
+    Signed-off-by: Hans Verkuil &lt;hverkuil-cisco@xs4all.nl&gt;
+    [hverkuil-cisco@xs4all.nl: cleaned up two small checkpatch.pl warnings]
+    [hverkuil-cisco@xs4all.nl: prefix subject with driver name]
+    Signed-off-by: Mauro Carvalho Chehab &lt;mchehab+samsung@kernel.org&gt;
+
+diff --git a/drivers/media/radio/radio-raremono.c b/drivers/media/radio/radio-raremono.c
+index 606f588e1edf..c3180d53c282 100644
+--- a/drivers/media/radio/radio-raremono.c
++++ b/drivers/media/radio/radio-raremono.c
+@@ -269,6 +269,14 @@ static int vidioc_g_frequency(struct file *file, void *priv,
+ 	return 0;
+ }
+ 
++static void raremono_device_release(struct v4l2_device *v4l2_dev)
++{
++	struct raremono_device *radio = to_raremono_dev(v4l2_dev);
++
++	kfree(radio-&gt;buffer);
++	kfree(radio);
++}
++
+ /* File system interface */
+ static const struct v4l2_file_operations usb_raremono_fops = {
+ 	.owner		= THIS_MODULE,
+@@ -293,12 +301,14 @@ static int usb_raremono_probe(struct usb_interface *intf,
+ 	struct raremono_device *radio;
+ 	int retval = 0;
+ 
+-	radio = devm_kzalloc(&amp;intf-&gt;dev, sizeof(struct raremono_device), GFP_KERNEL);
+-	if (radio)
+-		radio-&gt;buffer = devm_kmalloc(&amp;intf-&gt;dev, BUFFER_LENGTH, GFP_KERNEL);
+-
+-	if (!radio || !radio-&gt;buffer)
++	radio = kzalloc(sizeof(*radio), GFP_KERNEL);
++	if (!radio)
++		return -ENOMEM;
++	radio-&gt;buffer = kmalloc(BUFFER_LENGTH, GFP_KERNEL);
++	if (!radio-&gt;buffer) {
++		kfree(radio);
+ 		return -ENOMEM;
++	}
+ 
+ 	radio-&gt;usbdev = interface_to_usbdev(intf);
+ 	radio-&gt;intf = intf;
+@@ -322,7 +332,8 @@ static int usb_raremono_probe(struct usb_interface *intf,
+ 	if (retval != 3 ||
+ 	    (get_unaligned_be16(&amp;radio-&gt;buffer[1]) &amp; 0xfff) == 0x0242) {
+ 		dev_info(&amp;intf-&gt;dev, "this is not Thanko's Raremono.\n");
+-		return -ENODEV;
++		retval = -ENODEV;
++		goto free_mem;
+ 	}
+ 
+ 	dev_info(&amp;intf-&gt;dev, "Thanko's Raremono connected: (%04X:%04X)\n",
+@@ -331,7 +342,7 @@ static int usb_raremono_probe(struct usb_interface *intf,
+ 	retval = v4l2_device_register(&amp;intf-&gt;dev, &amp;radio-&gt;v4l2_dev);
+ 	if (retval &lt; 0) {
+ 		dev_err(&amp;intf-&gt;dev, "couldn't register v4l2_device\n");
+-		return retval;
++		goto free_mem;
+ 	}
+ 
+ 	mutex_init(&amp;radio-&gt;lock);
+@@ -344,6 +355,7 @@ static int usb_raremono_probe(struct usb_interface *intf,
+ 	radio-&gt;vdev.lock = &amp;radio-&gt;lock;
+ 	radio-&gt;vdev.release = video_device_release_empty;
+ 	radio-&gt;vdev.device_caps = V4L2_CAP_TUNER | V4L2_CAP_RADIO;
++	radio-&gt;v4l2_dev.release = raremono_device_release;
+ 
+ 	usb_set_intfdata(intf, &amp;radio-&gt;v4l2_dev);
+ 
+@@ -359,6 +371,10 @@ static int usb_raremono_probe(struct usb_interface *intf,
+ 	}
+ 	dev_err(&amp;intf-&gt;dev, "could not register video device\n");
+ 	v4l2_device_unregister(&amp;radio-&gt;v4l2_dev);
++
++free_mem:
++	kfree(radio-&gt;buffer);
++	kfree(radio);
+ 	return retval;
+ }
+ </pre><hr><pre>commit 02651d1a9725f29e95296c37cf9a4f16e9c01bff
+Author: Miller Puckette &lt;msp@ucsd.edu&gt;
+Date:   Thu Aug 4 12:25:56 2011 -0700
+
+    ALSA: usb-audio - add quirk for Keith McMillen StringPort
+    
+    Signed-off-by: Miller Puckette &lt;msp@ucsd.edu&gt;
+    Signed-off-by: Takashi Iwai &lt;tiwai@suse.de&gt;
+
+diff --git a/sound/usb/quirks-table.h b/sound/usb/quirks-table.h
+index dba0b7f11c54..4d4f86552a23 100644
+--- a/sound/usb/quirks-table.h
++++ b/sound/usb/quirks-table.h
+@@ -2417,6 +2417,12 @@ YAMAHA_DEVICE(0x7010, "UB99"),
+ 	.idProduct = 0x1020,
+ },
+ 
++/* KeithMcMillen Stringport */
++{
++	USB_DEVICE(0x1f38, 0x0001),
++	.bInterfaceClass = USB_CLASS_AUDIO,
++},
++
+ /* Miditech devices */
+ {
+ 	USB_DEVICE(0x4752, 0x0011),</pre>
+    <div class="pagination">
+        <span>[1]</span>
+    <div>
+</body>

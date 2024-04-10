@@ -1,0 +1,1549 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patches contributed by University of New South Wales</title>
+    <style>
+    .pagination {
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        overflow-wrap: break-word;
+    }
+    .pagination a, .pagination span {
+        margin: 0 4px;
+    }
+
+    </style>
+</head>
+<body>
+    <h1>Patches contributed by University of New South Wales</h1>
+    <div class="pagination">
+        <a href='8_10.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><span>[11]</span><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_12.html'>Next&gt;&gt;</a>
+    </div>
+    <hr>
+    <pre>commit c44c5eeb2c022ddac98a8543c08dc8ff820561dc
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:02:54 2005 -0700
+
+    [PATCH] nfsd4: add open state code for CLAIM_DELEGATE_CUR
+    
+    State logic for OPEN with claim type CLAIM_DELEGATE_CUR, which the NFSv4
+    client uses to report local OPENs on a delegated file back to the NFSv4
+    server.
+    
+    nfs4_check_deleg() performs input delegation stateid lookup and sanity check.
+    
+    Signed-off-by: Andy Adamson &lt;andros@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 3791c9d84dad..8ac0c9abe941 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -1547,22 +1547,28 @@ find_delegation_file(struct nfs4_file *fp, stateid_t *stid)
+ 	return NULL;
+ }
+ 
+-static void
++static int
+ nfs4_check_deleg(struct nfs4_file *fp, struct nfsd4_open *open,
+ 		struct nfs4_delegation **dp)
+ {
+ 	int flags;
+-	int status;
++	int status = nfserr_bad_stateid;
+ 
+ 	*dp = find_delegation_file(fp, &amp;open-&gt;op_delegate_stateid);
+ 	if (*dp == NULL)
+-		return;
++		goto out;
+ 	flags = open-&gt;op_share_access == NFS4_SHARE_ACCESS_READ ?
+ 						RD_STATE : WR_STATE;
+ 	status = nfs4_check_delegmode(*dp, flags);
+ 	if (status)
+ 		*dp = NULL;
+-	return;
++out:
++	if (open-&gt;op_claim_type != NFS4_OPEN_CLAIM_DELEGATE_CUR)
++		return nfs_ok;
++	if (status)
++		return status;
++	open-&gt;op_stateowner-&gt;so_confirmed = 1;
++	return nfs_ok;
+ }
+ 
+ static int
+@@ -1760,8 +1766,13 @@ nfsd4_process_open2(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nf
+ 	if (fp) {
+ 		if ((status = nfs4_check_open(fp, open, &amp;stp)))
+ 			goto out;
+-		nfs4_check_deleg(fp, open, &amp;dp);
++		status = nfs4_check_deleg(fp, open, &amp;dp);
++		if (status)
++			goto out;
+ 	} else {
++		status = nfserr_bad_stateid;
++		if (open-&gt;op_claim_type == NFS4_OPEN_CLAIM_DELEGATE_CUR)
++			goto out;
+ 		status = nfserr_resource;
+ 		fp = alloc_init_file(ino);
+ 		if (fp == NULL)</pre><hr><pre>commit 567d98292e81033182e3da4c33b41ada9c113447
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:02:53 2005 -0700
+
+    [PATCH] nfsd4: don't reopen for delegated client
+    
+    We don't really need to be doing a separate open for every stateid.  And in
+    the case of an open from a client that already has a delegation on a file, it
+    unnecessarily results in a delegation recall.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 31f7082df49f..3791c9d84dad 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -1547,6 +1547,24 @@ find_delegation_file(struct nfs4_file *fp, stateid_t *stid)
+ 	return NULL;
+ }
+ 
++static void
++nfs4_check_deleg(struct nfs4_file *fp, struct nfsd4_open *open,
++		struct nfs4_delegation **dp)
++{
++	int flags;
++	int status;
++
++	*dp = find_delegation_file(fp, &amp;open-&gt;op_delegate_stateid);
++	if (*dp == NULL)
++		return;
++	flags = open-&gt;op_share_access == NFS4_SHARE_ACCESS_READ ?
++						RD_STATE : WR_STATE;
++	status = nfs4_check_delegmode(*dp, flags);
++	if (status)
++		*dp = NULL;
++	return;
++}
++
+ static int
+ nfs4_check_open(struct nfs4_file *fp, struct nfsd4_open *open, struct nfs4_stateid **stpp)
+ {
+@@ -1572,21 +1590,28 @@ nfs4_check_open(struct nfs4_file *fp, struct nfsd4_open *open, struct nfs4_state
+ 
+ static int
+ nfs4_new_open(struct svc_rqst *rqstp, struct nfs4_stateid **stpp,
++		struct nfs4_delegation *dp,
+ 		struct svc_fh *cur_fh, int flags)
+ {
+ 	struct nfs4_stateid *stp;
+-	int status;
+ 
+ 	stp = kmalloc(sizeof(struct nfs4_stateid), GFP_KERNEL);
+ 	if (stp == NULL)
+ 		return nfserr_resource;
+ 
+-	status = nfsd_open(rqstp, cur_fh, S_IFREG, flags, &amp;stp-&gt;st_vfs_file);
+-	if (status) {
+-		if (status == nfserr_dropit)
+-			status = nfserr_jukebox;
+-		kfree(stp);
+-		return status;
++	if (dp) {
++		get_file(dp-&gt;dl_vfs_file);
++		stp-&gt;st_vfs_file = dp-&gt;dl_vfs_file;
++	} else {
++		int status;
++		status = nfsd_open(rqstp, cur_fh, S_IFREG, flags,
++				&amp;stp-&gt;st_vfs_file);
++		if (status) {
++			if (status == nfserr_dropit)
++				status = nfserr_jukebox;
++			kfree(stp);
++			return status;
++		}
+ 	}
+ 	vfsopen++;
+ 	*stpp = stp;
+@@ -1720,6 +1745,7 @@ nfsd4_process_open2(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nf
+ 	struct nfs4_file *fp = NULL;
+ 	struct inode *ino = current_fh-&gt;fh_dentry-&gt;d_inode;
+ 	struct nfs4_stateid *stp = NULL;
++	struct nfs4_delegation *dp = NULL;
+ 	int status;
+ 
+ 	status = nfserr_inval;
+@@ -1734,6 +1760,7 @@ nfsd4_process_open2(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nf
+ 	if (fp) {
+ 		if ((status = nfs4_check_open(fp, open, &amp;stp)))
+ 			goto out;
++		nfs4_check_deleg(fp, open, &amp;dp);
+ 	} else {
+ 		status = nfserr_resource;
+ 		fp = alloc_init_file(ino);
+@@ -1757,7 +1784,8 @@ nfsd4_process_open2(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nf
+ 			flags = MAY_WRITE;
+ 		else
+ 			flags = MAY_READ;
+-		if ((status = nfs4_new_open(rqstp, &amp;stp, current_fh, flags)))
++		status = nfs4_new_open(rqstp, &amp;stp, dp, current_fh, flags);
++		if (status)
+ 			goto out;
+ 		init_stateid(stp, fp, open);
+ 		status = nfsd4_truncate(rqstp, current_fh, open);</pre><hr><pre>commit 4a6e43e6d4e43723699879f421d321e39eab5e41
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:02:50 2005 -0700
+
+    [PATCH] nfsd4: nfs4_check_delegmode
+    
+    Additional minor code reshuffling to prepare for claim_deleg_cur support.
+    
+    Signed-off-by: Andy Adamson &lt;andros@citi.umich.edu&gt;
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index bb95275e7bae..31f7082df49f 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -1526,6 +1526,15 @@ nfsd4_process_open1(struct nfsd4_open *open)
+ 	return status;
+ }
+ 
++static inline int
++nfs4_check_delegmode(struct nfs4_delegation *dp, int flags)
++{
++	if ((flags &amp; WR_STATE) &amp;&amp; (dp-&gt;dl_type == NFS4_OPEN_DELEGATE_READ))
++		return nfserr_openmode;
++	else
++		return nfs_ok;
++}
++
+ static struct nfs4_delegation *
+ find_delegation_file(struct nfs4_file *fp, stateid_t *stid)
+ {
+@@ -1960,15 +1969,6 @@ int nfs4_check_openmode(struct nfs4_stateid *stp, int flags)
+ 	return status;
+ }
+ 
+-static inline int
+-nfs4_check_delegmode(struct nfs4_delegation *dp, int flags)
+-{
+-	if ((flags &amp; WR_STATE) &amp;&amp; (dp-&gt;dl_type == NFS4_OPEN_DELEGATE_READ))
+-		return nfserr_openmode;
+-	else
+-		return nfs_ok;
+-}
+-
+ static inline int
+ check_special_stateids(svc_fh *current_fh, stateid_t *stateid, int flags)
+ {</pre><hr><pre>commit 52f4fb43063c182f3ef7e257ab336a8be8066bb0
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Thu Jun 23 22:02:49 2005 -0700
+
+    [PATCH] nfsd4: find_delegation_file()
+    
+    Factor out a bit of common code that will be useful elsewhere.
+    
+    Signed-off-by: J. Bruce Fields &lt;bfields@citi.umich.edu&gt;
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/fs/nfsd/nfs4state.c b/fs/nfsd/nfs4state.c
+index 75e8b137580c..bb95275e7bae 100644
+--- a/fs/nfsd/nfs4state.c
++++ b/fs/nfsd/nfs4state.c
+@@ -1526,6 +1526,18 @@ nfsd4_process_open1(struct nfsd4_open *open)
+ 	return status;
+ }
+ 
++static struct nfs4_delegation *
++find_delegation_file(struct nfs4_file *fp, stateid_t *stid)
++{
++	struct nfs4_delegation *dp;
++
++	list_for_each_entry(dp, &amp;fp-&gt;fi_del_perfile, dl_del_perfile) {
++		if (dp-&gt;dl_stateid.si_stateownerid == stid-&gt;si_stateownerid)
++			return dp;
++	}
++	return NULL;
++}
++
+ static int
+ nfs4_check_open(struct nfs4_file *fp, struct nfsd4_open *open, struct nfs4_stateid **stpp)
+ {
+@@ -2419,24 +2431,15 @@ find_stateid(stateid_t *stid, int flags)
+ static struct nfs4_delegation *
+ find_delegation_stateid(struct inode *ino, stateid_t *stid)
+ {
+-	struct nfs4_delegation *dp = NULL;
+ 	struct nfs4_file *fp = NULL;
+-	u32 st_id;
+ 
+ 	dprintk("NFSD:find_delegation_stateid stateid=(%08x/%08x/%08x/%08x)\n",
+                     stid-&gt;si_boot, stid-&gt;si_stateownerid,
+                     stid-&gt;si_fileid, stid-&gt;si_generation);
+ 
+-	st_id = stid-&gt;si_stateownerid;
+ 	fp = find_file(ino);
+-	if (fp) {
+-		list_for_each_entry(dp, &amp;fp-&gt;fi_del_perfile, dl_del_perfile) {
+-			if(dp-&gt;dl_stateid.si_stateownerid == st_id) {
+-				dprintk("NFSD: find_delegation dp %p\n",dp);
+-				return dp;
+-			}
+-		}
+-	}
++	if (fp)
++		return find_delegation_file(fp, stid);
+ 	return NULL;
+ }
+ </pre><hr><pre>commit 8a5e9cf1d6626586ff08e49f400a006a9f0c3275
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:29 2005 -0700
+
+    [PATCH] md: make sure md/bitmap doesn't try to write a page with active writeback
+    
+    Due to the use of write-behind, it is possible for md to write a page to
+    the bitmap file that is still completing writeback.  This is not allowed.
+    
+    With this patch, we detect those cases and either force a sync write, or
+    back off and try later, as appropriate.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index 030d6861051a..95980ad6b27b 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -313,7 +313,16 @@ static int write_page(struct bitmap *bitmap, struct page *page, int wait)
+ 	if (bitmap-&gt;file == NULL)
+ 		return write_sb_page(bitmap-&gt;mddev, bitmap-&gt;offset, page, wait);
+ 
+-	lock_page(page);
++	if (wait)
++		lock_page(page);
++	else {
++		if (TestSetPageLocked(page))
++			return -EAGAIN; /* already locked */
++		if (PageWriteback(page)) {
++			unlock_page(page);
++			return -EAGAIN;
++		}
++	}
+ 
+ 	ret = page-&gt;mapping-&gt;a_ops-&gt;prepare_write(NULL, page, 0, PAGE_SIZE);
+ 	if (!ret)
+@@ -400,7 +409,7 @@ int bitmap_update_sb(struct bitmap *bitmap)
+ 	if (!bitmap-&gt;mddev-&gt;degraded)
+ 		sb-&gt;events_cleared = cpu_to_le64(bitmap-&gt;mddev-&gt;events);
+ 	kunmap(bitmap-&gt;sb_page);
+-	return write_page(bitmap, bitmap-&gt;sb_page, 0);
++	return write_page(bitmap, bitmap-&gt;sb_page, 1);
+ }
+ 
+ /* print out the bitmap file superblock */
+@@ -762,6 +771,7 @@ int bitmap_unplug(struct bitmap *bitmap)
+ 	unsigned long i, attr, flags;
+ 	struct page *page;
+ 	int wait = 0;
++	int err;
+ 
+ 	if (!bitmap)
+ 		return 0;
+@@ -782,9 +792,17 @@ int bitmap_unplug(struct bitmap *bitmap)
+ 			wait = 1;
+ 		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 
+-		if (attr &amp; (BITMAP_PAGE_DIRTY | BITMAP_PAGE_NEEDWRITE))
+-			if (write_page(bitmap, page, 0))
++		if (attr &amp; (BITMAP_PAGE_DIRTY | BITMAP_PAGE_NEEDWRITE)) {
++			err = write_page(bitmap, page, 0);
++			if (err == -EAGAIN) {
++				if (attr &amp; BITMAP_PAGE_DIRTY)
++					err = write_page(bitmap, page, 1);
++				else
++					err = 0;
++			}
++			if (err)
+ 				return 1;
++		}
+ 	}
+ 	if (wait) { /* if any writes were performed, we need to wait on them */
+ 		if (bitmap-&gt;file) {
+@@ -1006,8 +1024,15 @@ int bitmap_daemon_work(struct bitmap *bitmap)
+ 				}
+ 				spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 				if (attr &amp; BITMAP_PAGE_NEEDWRITE) {
+-					if (write_page(bitmap, page, 0))
++					switch (write_page(bitmap, page, 0)) {
++					case -EAGAIN:
++						set_page_attr(bitmap, page, BITMAP_PAGE_NEEDWRITE);
++						break;
++					case 0:
++						break;
++					default:
+ 						bitmap_file_kick(bitmap);
++					}
+ 					page_cache_release(page);
+ 				}
+ 				continue;
+@@ -1020,6 +1045,10 @@ int bitmap_daemon_work(struct bitmap *bitmap)
+ 					clear_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 					spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 					err = write_page(bitmap, lastpage, 0);
++					if (err == -EAGAIN) {
++						err = 0;
++						set_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
++					}
+ 				} else {
+ 					set_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 					spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+@@ -1068,6 +1097,10 @@ int bitmap_daemon_work(struct bitmap *bitmap)
+ 			clear_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 			err = write_page(bitmap, lastpage, 0);
++			if (err == -EAGAIN) {
++				set_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
++				err = 0;
++			}
+ 		} else {
+ 			set_page_attr(bitmap, lastpage, BITMAP_PAGE_NEEDWRITE);
+ 			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+@@ -1421,31 +1454,6 @@ static void bitmap_set_memory_bits(struct bitmap *bitmap, sector_t offset,
+ 	}
+ }
+ 
+-/* dirty the entire bitmap */
+-int bitmap_setallbits(struct bitmap *bitmap)
+-{
+-	unsigned long flags;
+-	unsigned long j;
+-
+-	/* dirty the in-memory bitmap */
+-	bitmap_set_memory_bits(bitmap, 0, bitmap-&gt;chunks &lt;&lt; CHUNK_BLOCK_SHIFT(bitmap), 1);
+-
+-	/* dirty the bitmap file */
+-	for (j = 0; j &lt; bitmap-&gt;file_pages; j++) {
+-		struct page *page = bitmap-&gt;filemap[j];
+-
+-		spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
+-		page_cache_get(page);
+-		spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+-		memset(kmap(page), 0xff, PAGE_SIZE);
+-		kunmap(page);
+-		if (write_page(bitmap, page, 0))
+-			return 1;
+-	}
+-
+-	return 0;
+-}
+-
+ /*
+  * free memory that was allocated
+  */</pre><hr><pre>commit 39730960d94306d7be414e8d54f4e5c071af1278
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:28 2005 -0700
+
+    [PATCH] Two small fixes for md verion-1 superblocks.
+    
+    1/ Must typecast int to (sector_t) before inverting or we
+     might not invert enough bits.
+    
+    2/ When "bitmap_offset" was added to mdp_superblock_1, we didn't increase
+       the count of words-used (96 to 100).
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index ef3ad99562c1..65fab74ad737 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -847,7 +847,7 @@ static int super_1_load(mdk_rdev_t *rdev, mdk_rdev_t *refdev, int minor_version)
+ 	case 0:
+ 		sb_offset = rdev-&gt;bdev-&gt;bd_inode-&gt;i_size &gt;&gt; 9;
+ 		sb_offset -= 8*2;
+-		sb_offset &amp;= ~(4*2-1);
++		sb_offset &amp;= ~(sector_t)(4*2-1);
+ 		/* convert from sectors to K */
+ 		sb_offset /= 2;
+ 		break;
+diff --git a/include/linux/raid/md_p.h b/include/linux/raid/md_p.h
+index 8e592a25a8b5..dc65cd435494 100644
+--- a/include/linux/raid/md_p.h
++++ b/include/linux/raid/md_p.h
+@@ -202,7 +202,7 @@ struct mdp_superblock_1 {
+ 				 * NOTE: signed, so bitmap can be before superblock
+ 				 * only meaningful of feature_map[0] is set.
+ 				 */
+-	__u8	pad1[128-96];	/* set to 0 when written */
++	__u8	pad1[128-100];	/* set to 0 when written */
+ 
+ 	/* constant this-device information - 64 bytes */
+ 	__u64	data_offset;	/* sector start of data, often 0 */</pre><hr><pre>commit 7bfa19f2748000d646dbdf8f48258cfe1d257b52
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:28 2005 -0700
+
+    [PATCH] md: allow md to update multiple superblocks in parallel.
+    
+    currently, md updates all superblocks (one on each device) in series.  It
+    waits for one write to complete before starting the next.  This isn't a big
+    problem as superblock updates don't happen that often.
+    
+    However it is neater to do it in parallel, and if the drives in the array have
+    gone to "sleep" after a period of idleness, then waking them is parallel is
+    faster (and someone else should be worrying about power drain).
+    
+    Futher, we will need parallel superblock updates for a future patch which
+    keeps the intent-logging bitmap near the superblock.
+    
+    Also remove the silly code that retired superblock updates 100 times.  This
+    simply never made sense.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index fde8acfac320..ef3ad99562c1 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -328,6 +328,40 @@ static void free_disk_sb(mdk_rdev_t * rdev)
+ }
+ 
+ 
++static int super_written(struct bio *bio, unsigned int bytes_done, int error)
++{
++	mdk_rdev_t *rdev = bio-&gt;bi_private;
++	if (bio-&gt;bi_size)
++		return 1;
++
++	if (error || !test_bit(BIO_UPTODATE, &amp;bio-&gt;bi_flags))
++		md_error(rdev-&gt;mddev, rdev);
++
++	if (atomic_dec_and_test(&amp;rdev-&gt;mddev-&gt;pending_writes))
++		wake_up(&amp;rdev-&gt;mddev-&gt;sb_wait);
++	return 0;
++}
++
++void md_super_write(mddev_t *mddev, mdk_rdev_t *rdev,
++		   sector_t sector, int size, struct page *page)
++{
++	/* write first size bytes of page to sector of rdev
++	 * Increment mddev-&gt;pending_writes before returning
++	 * and decrement it on completion, waking up sb_wait
++	 * if zero is reached.
++	 * If an error occurred, call md_error
++	 */
++	struct bio *bio = bio_alloc(GFP_NOIO, 1);
++
++	bio-&gt;bi_bdev = rdev-&gt;bdev;
++	bio-&gt;bi_sector = sector;
++	bio_add_page(bio, page, size, 0);
++	bio-&gt;bi_private = rdev;
++	bio-&gt;bi_end_io = super_written;
++	atomic_inc(&amp;mddev-&gt;pending_writes);
++	submit_bio((1&lt;&lt;BIO_RW)|(1&lt;&lt;BIO_RW_SYNC), bio);
++}
++
+ static int bi_complete(struct bio *bio, unsigned int bytes_done, int error)
+ {
+ 	if (bio-&gt;bi_size)
+@@ -1268,30 +1302,6 @@ void md_print_devices(void)
+ }
+ 
+ 
+-static int write_disk_sb(mdk_rdev_t * rdev)
+-{
+-	char b[BDEVNAME_SIZE];
+-	if (!rdev-&gt;sb_loaded) {
+-		MD_BUG();
+-		return 1;
+-	}
+-	if (rdev-&gt;faulty) {
+-		MD_BUG();
+-		return 1;
+-	}
+-
+-	dprintk(KERN_INFO "(write) %s's sb offset: %llu\n",
+-		bdevname(rdev-&gt;bdev,b),
+-	       (unsigned long long)rdev-&gt;sb_offset);
+-  
+-	if (sync_page_io(rdev-&gt;bdev, rdev-&gt;sb_offset&lt;&lt;1, MD_SB_BYTES, rdev-&gt;sb_page, WRITE))
+-		return 0;
+-
+-	printk("md: write_disk_sb failed for device %s\n", 
+-		bdevname(rdev-&gt;bdev,b));
+-	return 1;
+-}
+-
+ static void sync_sbs(mddev_t * mddev)
+ {
+ 	mdk_rdev_t *rdev;
+@@ -1306,7 +1316,7 @@ static void sync_sbs(mddev_t * mddev)
+ 
+ static void md_update_sb(mddev_t * mddev)
+ {
+-	int err, count = 100;
++	int err;
+ 	struct list_head *tmp;
+ 	mdk_rdev_t *rdev;
+ 	int sync_req;
+@@ -1326,6 +1336,7 @@ static void md_update_sb(mddev_t * mddev)
+ 		MD_BUG();
+ 		mddev-&gt;events --;
+ 	}
++	mddev-&gt;sb_dirty = 2;
+ 	sync_sbs(mddev);
+ 
+ 	/*
+@@ -1353,24 +1364,24 @@ static void md_update_sb(mddev_t * mddev)
+ 
+ 		dprintk("%s ", bdevname(rdev-&gt;bdev,b));
+ 		if (!rdev-&gt;faulty) {
+-			err += write_disk_sb(rdev);
++			md_super_write(mddev,rdev,
++				       rdev-&gt;sb_offset&lt;&lt;1, MD_SB_BYTES,
++				       rdev-&gt;sb_page);
++			dprintk(KERN_INFO "(write) %s's sb offset: %llu\n",
++				bdevname(rdev-&gt;bdev,b),
++				(unsigned long long)rdev-&gt;sb_offset);
++
+ 		} else
+ 			dprintk(")\n");
+-		if (!err &amp;&amp; mddev-&gt;level == LEVEL_MULTIPATH)
++		if (mddev-&gt;level == LEVEL_MULTIPATH)
+ 			/* only need to write one superblock... */
+ 			break;
+ 	}
+-	if (err) {
+-		if (--count) {
+-			printk(KERN_ERR "md: errors occurred during superblock"
+-				" update, repeating\n");
+-			goto repeat;
+-		}
+-		printk(KERN_ERR \
+-			"md: excessive errors occurred during superblock update, exiting\n");
+-	}
++	wait_event(mddev-&gt;sb_wait, atomic_read(&amp;mddev-&gt;pending_writes)==0);
++	/* if there was a failure, sb_dirty was set to 1, and we re-write super */
++
+ 	spin_lock(&amp;mddev-&gt;write_lock);
+-	if (mddev-&gt;in_sync != sync_req) {
++	if (mddev-&gt;in_sync != sync_req|| mddev-&gt;sb_dirty == 1) {
+ 		/* have to write it out again */
+ 		spin_unlock(&amp;mddev-&gt;write_lock);
+ 		goto repeat;
+diff --git a/include/linux/raid/md_k.h b/include/linux/raid/md_k.h
+index a3725b57fb7d..8c14ba565a45 100644
+--- a/include/linux/raid/md_k.h
++++ b/include/linux/raid/md_k.h
+@@ -262,6 +262,7 @@ struct mddev_s
+ 
+ 	spinlock_t			write_lock;
+ 	wait_queue_head_t		sb_wait;	/* for waiting on superblock updates */
++	atomic_t			pending_writes;	/* number of active superblock writes */
+ 
+ 	unsigned int			safemode;	/* if set, update "clean" superblock
+ 							 * when no writes pending.</pre><hr><pre>commit a654b9d8f851f4ca02649d5825cbe6c608adb10c
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:27 2005 -0700
+
+    [PATCH] md: allow md intent bitmap to be stored near the superblock.
+    
+    This provides an alternate to storing the bitmap in a separate file.  The
+    bitmap can be stored at a given offset from the superblock.  Obviously the
+    creator of the array must make sure this doesn't intersect with data....
+    After is good for version-0.90 superblocks.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/bitmap.c b/drivers/md/bitmap.c
+index 204564dc6a0d..030d6861051a 100644
+--- a/drivers/md/bitmap.c
++++ b/drivers/md/bitmap.c
+@@ -116,7 +116,7 @@ static unsigned char *bitmap_alloc_page(struct bitmap *bitmap)
+ 	if (!page)
+ 		printk("%s: bitmap_alloc_page FAILED\n", bmname(bitmap));
+ 	else
+-		printk("%s: bitmap_alloc_page: allocated page at %p\n",
++		PRINTK("%s: bitmap_alloc_page: allocated page at %p\n",
+ 			bmname(bitmap), page);
+ 	return page;
+ }
+@@ -258,13 +258,61 @@ char *file_path(struct file *file, char *buf, int count)
+  * basic page I/O operations
+  */
+ 
++/* IO operations when bitmap is stored near all superblocks */
++static struct page *read_sb_page(mddev_t *mddev, long offset, unsigned long index)
++{
++	/* choose a good rdev and read the page from there */
++
++	mdk_rdev_t *rdev;
++	struct list_head *tmp;
++	struct page *page = alloc_page(GFP_KERNEL);
++	sector_t target;
++
++	if (!page)
++		return ERR_PTR(-ENOMEM);
++	do {
++		ITERATE_RDEV(mddev, rdev, tmp)
++			if (rdev-&gt;in_sync &amp;&amp; !rdev-&gt;faulty)
++				goto found;
++		return ERR_PTR(-EIO);
++
++	found:
++		target = (rdev-&gt;sb_offset &lt;&lt; 1) + offset + index * (PAGE_SIZE/512);
++
++	} while (!sync_page_io(rdev-&gt;bdev, target, PAGE_SIZE, page, READ));
++
++	page-&gt;index = index;
++	return page;
++}
++
++static int write_sb_page(mddev_t *mddev, long offset, struct page *page, int wait)
++{
++	mdk_rdev_t *rdev;
++	struct list_head *tmp;
++
++	ITERATE_RDEV(mddev, rdev, tmp)
++		if (rdev-&gt;in_sync &amp;&amp; !rdev-&gt;faulty)
++			md_super_write(mddev, rdev,
++				       (rdev-&gt;sb_offset&lt;&lt;1) + offset
++				       + page-&gt;index * (PAGE_SIZE/512),
++				       PAGE_SIZE,
++				       page);
++
++	if (wait)
++		wait_event(mddev-&gt;sb_wait, atomic_read(&amp;mddev-&gt;pending_writes)==0);
++	return 0;
++}
++
+ /*
+- * write out a page
++ * write out a page to a file
+  */
+ static int write_page(struct bitmap *bitmap, struct page *page, int wait)
+ {
+ 	int ret = -ENOMEM;
+ 
++	if (bitmap-&gt;file == NULL)
++		return write_sb_page(bitmap-&gt;mddev, bitmap-&gt;offset, page, wait);
++
+ 	lock_page(page);
+ 
+ 	ret = page-&gt;mapping-&gt;a_ops-&gt;prepare_write(NULL, page, 0, PAGE_SIZE);
+@@ -394,7 +442,12 @@ static int bitmap_read_sb(struct bitmap *bitmap)
+ 	int err = -EINVAL;
+ 
+ 	/* page 0 is the superblock, read it... */
+-	bitmap-&gt;sb_page = read_page(bitmap-&gt;file, 0, &amp;bytes_read);
++	if (bitmap-&gt;file)
++		bitmap-&gt;sb_page = read_page(bitmap-&gt;file, 0, &amp;bytes_read);
++	else {
++		bitmap-&gt;sb_page = read_sb_page(bitmap-&gt;mddev, bitmap-&gt;offset, 0);
++		bytes_read = PAGE_SIZE;
++	}
+ 	if (IS_ERR(bitmap-&gt;sb_page)) {
+ 		err = PTR_ERR(bitmap-&gt;sb_page);
+ 		bitmap-&gt;sb_page = NULL;
+@@ -625,14 +678,16 @@ static void bitmap_file_kick(struct bitmap *bitmap)
+ 	bitmap_mask_state(bitmap, BITMAP_STALE, MASK_SET);
+ 	bitmap_update_sb(bitmap);
+ 
+-	path = kmalloc(PAGE_SIZE, GFP_KERNEL);
+-	if (path)
+-		ptr = file_path(bitmap-&gt;file, path, PAGE_SIZE);
++	if (bitmap-&gt;file) {
++		path = kmalloc(PAGE_SIZE, GFP_KERNEL);
++		if (path)
++			ptr = file_path(bitmap-&gt;file, path, PAGE_SIZE);
+ 
+-	printk(KERN_ALERT "%s: kicking failed bitmap file %s from array!\n",
+-		bmname(bitmap), ptr ? ptr : "");
++		printk(KERN_ALERT "%s: kicking failed bitmap file %s from array!\n",
++		       bmname(bitmap), ptr ? ptr : "");
+ 
+-	kfree(path);
++		kfree(path);
++	}
+ 
+ 	bitmap_file_put(bitmap);
+ 
+@@ -676,7 +731,7 @@ static void bitmap_file_set_bit(struct bitmap *bitmap, sector_t block)
+ 	void *kaddr;
+ 	unsigned long chunk = block &gt;&gt; CHUNK_BLOCK_SHIFT(bitmap);
+ 
+-	if (!bitmap-&gt;file || !bitmap-&gt;filemap) {
++	if (!bitmap-&gt;filemap) {
+ 		return;
+ 	}
+ 
+@@ -715,7 +770,7 @@ int bitmap_unplug(struct bitmap *bitmap)
+ 	 * flushed out to disk */
+ 	for (i = 0; i &lt; bitmap-&gt;file_pages; i++) {
+ 		spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
+-		if (!bitmap-&gt;file || !bitmap-&gt;filemap) {
++		if (!bitmap-&gt;filemap) {
+ 			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 			return 0;
+ 		}
+@@ -732,11 +787,15 @@ int bitmap_unplug(struct bitmap *bitmap)
+ 				return 1;
+ 	}
+ 	if (wait) { /* if any writes were performed, we need to wait on them */
+-		spin_lock_irq(&amp;bitmap-&gt;write_lock);
+-		wait_event_lock_irq(bitmap-&gt;write_wait,
+-			list_empty(&amp;bitmap-&gt;complete_pages), bitmap-&gt;write_lock,
+-			wake_up_process(bitmap-&gt;writeback_daemon-&gt;tsk));
+-		spin_unlock_irq(&amp;bitmap-&gt;write_lock);
++		if (bitmap-&gt;file) {
++			spin_lock_irq(&amp;bitmap-&gt;write_lock);
++			wait_event_lock_irq(bitmap-&gt;write_wait,
++					    list_empty(&amp;bitmap-&gt;complete_pages), bitmap-&gt;write_lock,
++					    wake_up_process(bitmap-&gt;writeback_daemon-&gt;tsk));
++			spin_unlock_irq(&amp;bitmap-&gt;write_lock);
++		} else
++			wait_event(bitmap-&gt;mddev-&gt;sb_wait,
++				   atomic_read(&amp;bitmap-&gt;mddev-&gt;pending_writes)==0);
+ 	}
+ 	return 0;
+ }
+@@ -764,7 +823,7 @@ static int bitmap_init_from_disk(struct bitmap *bitmap, int in_sync)
+ 	chunks = bitmap-&gt;chunks;
+ 	file = bitmap-&gt;file;
+ 
+-	BUG_ON(!file);
++	BUG_ON(!file &amp;&amp; !bitmap-&gt;offset);
+ 
+ #if INJECT_FAULTS_3
+ 	outofdate = 1;
+@@ -779,7 +838,7 @@ static int bitmap_init_from_disk(struct bitmap *bitmap, int in_sync)
+ 
+ 	num_pages = (bytes + sizeof(bitmap_super_t) + PAGE_SIZE - 1) / PAGE_SIZE;
+ 
+-	if (i_size_read(file-&gt;f_mapping-&gt;host) &lt; bytes + sizeof(bitmap_super_t)) {
++	if (file &amp;&amp; i_size_read(file-&gt;f_mapping-&gt;host) &lt; bytes + sizeof(bitmap_super_t)) {
+ 		printk(KERN_INFO "%s: bitmap file too short %lu &lt; %lu\n",
+ 			bmname(bitmap),
+ 			(unsigned long) i_size_read(file-&gt;f_mapping-&gt;host),
+@@ -816,14 +875,18 @@ static int bitmap_init_from_disk(struct bitmap *bitmap, int in_sync)
+ 				 */
+ 				page = bitmap-&gt;sb_page;
+ 				offset = sizeof(bitmap_super_t);
+-			} else {
++			} else if (file) {
+ 				page = read_page(file, index, &amp;dummy);
+-				if (IS_ERR(page)) { /* read error */
+-					ret = PTR_ERR(page);
+-					goto out;
+-				}
++				offset = 0;
++			} else {
++				page = read_sb_page(bitmap-&gt;mddev, bitmap-&gt;offset, index);
+ 				offset = 0;
+ 			}
++			if (IS_ERR(page)) { /* read error */
++				ret = PTR_ERR(page);
++				goto out;
++			}
++
+ 			oldindex = index;
+ 			oldpage = page;
+ 			kmap(page);
+@@ -874,6 +937,19 @@ static int bitmap_init_from_disk(struct bitmap *bitmap, int in_sync)
+ 	return ret;
+ }
+ 
++void bitmap_write_all(struct bitmap *bitmap)
++{
++	/* We don't actually write all bitmap blocks here,
++	 * just flag them as needing to be written
++	 */
++
++	unsigned long chunks = bitmap-&gt;chunks;
++	unsigned long bytes = (chunks+7)/8 + sizeof(bitmap_super_t);
++	unsigned long num_pages = (bytes + PAGE_SIZE-1) / PAGE_SIZE;
++	while (num_pages--)
++		bitmap-&gt;filemap_attr[num_pages] |= BITMAP_PAGE_NEEDWRITE;
++}
++
+ 
+ static void bitmap_count_page(struct bitmap *bitmap, sector_t offset, int inc)
+ {
+@@ -913,7 +989,7 @@ int bitmap_daemon_work(struct bitmap *bitmap)
+ 	for (j = 0; j &lt; bitmap-&gt;chunks; j++) {
+ 		bitmap_counter_t *bmc;
+ 		spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
+-		if (!bitmap-&gt;file || !bitmap-&gt;filemap) {
++		if (!bitmap-&gt;filemap) {
+ 			/* error or shutdown */
+ 			spin_unlock_irqrestore(&amp;bitmap-&gt;lock, flags);
+ 			break;
+@@ -1072,6 +1148,7 @@ static int bitmap_start_daemon(struct bitmap *bitmap, mdk_thread_t **ptr,
+ 
+ 	spin_lock_irqsave(&amp;bitmap-&gt;lock, flags);
+ 	*ptr = NULL;
++
+ 	if (!bitmap-&gt;file) /* no need for daemon if there's no backing file */
+ 		goto out_unlock;
+ 
+@@ -1416,9 +1493,11 @@ int bitmap_create(mddev_t *mddev)
+ 
+ 	BUG_ON(sizeof(bitmap_super_t) != 256);
+ 
+-	if (!file) /* bitmap disabled, nothing to do */
++	if (!file &amp;&amp; !mddev-&gt;bitmap_offset) /* bitmap disabled, nothing to do */
+ 		return 0;
+ 
++	BUG_ON(file &amp;&amp; mddev-&gt;bitmap_offset);
++
+ 	bitmap = kmalloc(sizeof(*bitmap), GFP_KERNEL);
+ 	if (!bitmap)
+ 		return -ENOMEM;
+@@ -1438,7 +1517,8 @@ int bitmap_create(mddev_t *mddev)
+ 		return -ENOMEM;
+ 
+ 	bitmap-&gt;file = file;
+-	get_file(file);
++	bitmap-&gt;offset = mddev-&gt;bitmap_offset;
++	if (file) get_file(file);
+ 	/* read superblock from bitmap file (this sets bitmap-&gt;chunksize) */
+ 	err = bitmap_read_sb(bitmap);
+ 	if (err)
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index 7075bebb7f37..fde8acfac320 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -337,7 +337,7 @@ static int bi_complete(struct bio *bio, unsigned int bytes_done, int error)
+ 	return 0;
+ }
+ 
+-static int sync_page_io(struct block_device *bdev, sector_t sector, int size,
++int sync_page_io(struct block_device *bdev, sector_t sector, int size,
+ 		   struct page *page, int rw)
+ {
+ 	struct bio *bio = bio_alloc(GFP_NOIO, 1);
+@@ -609,6 +609,17 @@ static int super_90_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 		memcpy(mddev-&gt;uuid+12,&amp;sb-&gt;set_uuid3, 4);
+ 
+ 		mddev-&gt;max_disks = MD_SB_DISKS;
++
++		if (sb-&gt;state &amp; (1&lt;&lt;MD_SB_BITMAP_PRESENT) &amp;&amp;
++		    mddev-&gt;bitmap_file == NULL) {
++			if (mddev-&gt;level != 1) {
++				/* FIXME use a better test */
++				printk(KERN_WARNING "md: bitmaps only support for raid1\n");
++				return -EINVAL;
++			}
++			mddev-&gt;bitmap_offset = (MD_SB_BYTES &gt;&gt; 9);
++		}
++
+ 	} else if (mddev-&gt;pers == NULL) {
+ 		/* Insist on good event counter while assembling */
+ 		__u64 ev1 = md_event(sb);
+@@ -702,6 +713,9 @@ static void super_90_sync(mddev_t *mddev, mdk_rdev_t *rdev)
+ 	sb-&gt;layout = mddev-&gt;layout;
+ 	sb-&gt;chunk_size = mddev-&gt;chunk_size;
+ 
++	if (mddev-&gt;bitmap &amp;&amp; mddev-&gt;bitmap_file == NULL)
++		sb-&gt;state |= (1&lt;&lt;MD_SB_BITMAP_PRESENT);
++
+ 	sb-&gt;disks[0].state = (1&lt;&lt;MD_DISK_REMOVED);
+ 	ITERATE_RDEV(mddev,rdev2,tmp) {
+ 		mdp_disk_t *d;
+@@ -898,6 +912,15 @@ static int super_1_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 		memcpy(mddev-&gt;uuid, sb-&gt;set_uuid, 16);
+ 
+ 		mddev-&gt;max_disks =  (4096-256)/2;
++
++		if ((le32_to_cpu(sb-&gt;feature_map) &amp; 1) &amp;&amp;
++		    mddev-&gt;bitmap_file == NULL ) {
++			if (mddev-&gt;level != 1) {
++				printk(KERN_WARNING "md: bitmaps only supported for raid1\n");
++				return -EINVAL;
++			}
++			mddev-&gt;bitmap_offset = (__s32)le32_to_cpu(sb-&gt;bitmap_offset);
++		}
+ 	} else if (mddev-&gt;pers == NULL) {
+ 		/* Insist of good event counter while assembling */
+ 		__u64 ev1 = le64_to_cpu(sb-&gt;events);
+@@ -960,6 +983,11 @@ static void super_1_sync(mddev_t *mddev, mdk_rdev_t *rdev)
+ 	else
+ 		sb-&gt;resync_offset = cpu_to_le64(0);
+ 
++	if (mddev-&gt;bitmap &amp;&amp; mddev-&gt;bitmap_file == NULL) {
++		sb-&gt;bitmap_offset = cpu_to_le32((__u32)mddev-&gt;bitmap_offset);
++		sb-&gt;feature_map = cpu_to_le32(1);
++	}
++
+ 	max_dev = 0;
+ 	ITERATE_RDEV(mddev,rdev2,tmp)
+ 		if (rdev2-&gt;desc_nr+1 &gt; max_dev)
+@@ -2406,7 +2434,8 @@ static int set_bitmap_file(mddev_t *mddev, int fd)
+ 			mdname(mddev));
+ 		fput(mddev-&gt;bitmap_file);
+ 		mddev-&gt;bitmap_file = NULL;
+-	}
++	} else
++		mddev-&gt;bitmap_offset = 0; /* file overrides offset */
+ 	return err;
+ }
+ 
+@@ -3774,6 +3803,13 @@ void md_check_recovery(mddev_t *mddev)
+ 			set_bit(MD_RECOVERY_RUNNING, &amp;mddev-&gt;recovery);
+ 			if (!spares)
+ 				set_bit(MD_RECOVERY_SYNC, &amp;mddev-&gt;recovery);
++			if (spares &amp;&amp; mddev-&gt;bitmap &amp;&amp; ! mddev-&gt;bitmap-&gt;file) {
++				/* We are adding a device or devices to an array
++				 * which has the bitmap stored on all devices.
++				 * So make sure all bitmap pages get written
++				 */
++				bitmap_write_all(mddev-&gt;bitmap);
++			}
+ 			mddev-&gt;sync_thread = md_register_thread(md_do_sync,
+ 								mddev,
+ 								"%s_resync");
+diff --git a/include/linux/raid/bitmap.h b/include/linux/raid/bitmap.h
+index cfe60cfc8f3d..e24b74b11150 100644
+--- a/include/linux/raid/bitmap.h
++++ b/include/linux/raid/bitmap.h
+@@ -217,6 +217,7 @@ struct bitmap {
+ 	/* bitmap spinlock */
+ 	spinlock_t lock;
+ 
++	long offset; /* offset from superblock if file is NULL */
+ 	struct file *file; /* backing disk file */
+ 	struct page *sb_page; /* cached copy of the bitmap file superblock */
+ 	struct page **filemap; /* list of cache pages for the file */
+@@ -255,6 +256,7 @@ void bitmap_print_sb(struct bitmap *bitmap);
+ int bitmap_update_sb(struct bitmap *bitmap);
+ 
+ int  bitmap_setallbits(struct bitmap *bitmap);
++void bitmap_write_all(struct bitmap *bitmap);
+ 
+ /* these are exported */
+ int bitmap_startwrite(struct bitmap *bitmap, sector_t offset, unsigned long sectors);
+diff --git a/include/linux/raid/md.h b/include/linux/raid/md.h
+index 75f41d8faed2..ffa316ce4dc8 100644
+--- a/include/linux/raid/md.h
++++ b/include/linux/raid/md.h
+@@ -60,7 +60,14 @@
+  */
+ #define MD_MAJOR_VERSION                0
+ #define MD_MINOR_VERSION                90
+-#define MD_PATCHLEVEL_VERSION           1
++/*
++ * MD_PATCHLEVEL_VERSION indicates kernel functionality.
++ * &gt;=1 means different superblock formats are selectable using SET_ARRAY_INFO
++ *     and major_version/minor_version accordingly
++ * &gt;=2 means that Internal bitmaps are supported by setting MD_SB_BITMAP_PRESENT
++ *     in the super status byte
++ */
++#define MD_PATCHLEVEL_VERSION           2
+ 
+ extern int register_md_personality (int p_num, mdk_personality_t *p);
+ extern int unregister_md_personality (int p_num);
+@@ -78,6 +85,12 @@ extern void md_unplug_mddev(mddev_t *mddev);
+ 
+ extern void md_print_devices (void);
+ 
++extern void md_super_write(mddev_t *mddev, mdk_rdev_t *rdev,
++			   sector_t sector, int size, struct page *page);
++extern int sync_page_io(struct block_device *bdev, sector_t sector, int size,
++			struct page *page, int rw);
++
++
+ #define MD_BUG(x...) { printk("md: bug in file %s, line %d\n", __FILE__, __LINE__); md_print_devices(); }
+ 
+ #endif 
+diff --git a/include/linux/raid/md_k.h b/include/linux/raid/md_k.h
+index 3e977025cf43..a3725b57fb7d 100644
+--- a/include/linux/raid/md_k.h
++++ b/include/linux/raid/md_k.h
+@@ -273,6 +273,10 @@ struct mddev_s
+ 
+ 	struct bitmap                   *bitmap; /* the bitmap for the device */
+ 	struct file			*bitmap_file; /* the bitmap file */
++	long				bitmap_offset; /* offset from superblock of
++							* start of bitmap. May be
++							* negative, but not '0'
++							*/
+ 
+ 	struct list_head		all_mddevs;
+ };
+diff --git a/include/linux/raid/md_p.h b/include/linux/raid/md_p.h
+index 8ba95d67329f..8e592a25a8b5 100644
+--- a/include/linux/raid/md_p.h
++++ b/include/linux/raid/md_p.h
+@@ -96,6 +96,7 @@ typedef struct mdp_device_descriptor_s {
+ #define MD_SB_CLEAN		0
+ #define MD_SB_ERRORS		1
+ 
++#define	MD_SB_BITMAP_PRESENT	8 /* bitmap may be present nearby */
+ typedef struct mdp_superblock_s {
+ 	/*
+ 	 * Constant generic information
+@@ -184,7 +185,7 @@ struct mdp_superblock_1 {
+ 	/* constant array information - 128 bytes */
+ 	__u32	magic;		/* MD_SB_MAGIC: 0xa92b4efc - little endian */
+ 	__u32	major_version;	/* 1 */
+-	__u32	feature_map;	/* 0 for now */
++	__u32	feature_map;	/* bit 0 set if 'bitmap_offset' is meaningful */
+ 	__u32	pad0;		/* always set to 0 when writing */
+ 
+ 	__u8	set_uuid[16];	/* user-space generated. */
+@@ -197,6 +198,10 @@ struct mdp_superblock_1 {
+ 
+ 	__u32	chunksize;	/* in 512byte sectors */
+ 	__u32	raid_disks;
++	__u32	bitmap_offset;	/* sectors after start of superblock that bitmap starts
++				 * NOTE: signed, so bitmap can be before superblock
++				 * only meaningful of feature_map[0] is set.
++				 */
+ 	__u8	pad1[128-96];	/* set to 0 when written */
+ 
+ 	/* constant this-device information - 64 bytes */</pre><hr><pre>commit 3d310eb7b3df1252e8595d059d982b0a9825a137
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:26 2005 -0700
+
+    [PATCH] md: fix deadlock due to md thread processing delayed requests.
+    
+    Before completing a 'write' the md superblock might need to be updated.
+    This is best done by the md_thread.
+    
+    The current code schedules this up and queues the write request for later
+    handling by the md_thread.
+    
+    However some personalities (Raid5/raid6) will deadlock if the md_thread
+    tries to submit requests to its own array.
+    
+    So this patch changes things so the processes submitting the request waits
+    for the superblock to be written and then submits the request itself.
+    
+    This fixes a recently-created deadlock in raid5/raid6
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index 789b114f860a..7075bebb7f37 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -224,8 +224,8 @@ static mddev_t * mddev_find(dev_t unit)
+ 	INIT_LIST_HEAD(&amp;new-&gt;all_mddevs);
+ 	init_timer(&amp;new-&gt;safemode_timer);
+ 	atomic_set(&amp;new-&gt;active, 1);
+-	bio_list_init(&amp;new-&gt;write_list);
+ 	spin_lock_init(&amp;new-&gt;write_lock);
++	init_waitqueue_head(&amp;new-&gt;sb_wait);
+ 
+ 	new-&gt;queue = blk_alloc_queue(GFP_KERNEL);
+ 	if (!new-&gt;queue) {
+@@ -1307,6 +1307,7 @@ static void md_update_sb(mddev_t * mddev)
+ 	if (!mddev-&gt;persistent) {
+ 		mddev-&gt;sb_dirty = 0;
+ 		spin_unlock(&amp;mddev-&gt;write_lock);
++		wake_up(&amp;mddev-&gt;sb_wait);
+ 		return;
+ 	}
+ 	spin_unlock(&amp;mddev-&gt;write_lock);
+@@ -1348,6 +1349,7 @@ static void md_update_sb(mddev_t * mddev)
+ 	}
+ 	mddev-&gt;sb_dirty = 0;
+ 	spin_unlock(&amp;mddev-&gt;write_lock);
++	wake_up(&amp;mddev-&gt;sb_wait);
+ 
+ }
+ 
+@@ -3368,29 +3370,26 @@ void md_done_sync(mddev_t *mddev, int blocks, int ok)
+ 
+ /* md_write_start(mddev, bi)
+  * If we need to update some array metadata (e.g. 'active' flag
+- * in superblock) before writing, queue bi for later writing
+- * and return 0, else return 1 and it will be written now
++ * in superblock) before writing, schedule a superblock update
++ * and wait for it to complete.
+  */
+-int md_write_start(mddev_t *mddev, struct bio *bi)
++void md_write_start(mddev_t *mddev, struct bio *bi)
+ {
++	DEFINE_WAIT(w);
+ 	if (bio_data_dir(bi) != WRITE)
+-		return 1;
++		return;
+ 
+ 	atomic_inc(&amp;mddev-&gt;writes_pending);
+-	spin_lock(&amp;mddev-&gt;write_lock);
+-	if (mddev-&gt;in_sync == 0 &amp;&amp; mddev-&gt;sb_dirty == 0) {
+-		spin_unlock(&amp;mddev-&gt;write_lock);
+-		return 1;
+-	}
+-	bio_list_add(&amp;mddev-&gt;write_list, bi);
+-
+ 	if (mddev-&gt;in_sync) {
+-		mddev-&gt;in_sync = 0;
+-		mddev-&gt;sb_dirty = 1;
++		spin_lock(&amp;mddev-&gt;write_lock);
++		if (mddev-&gt;in_sync) {
++			mddev-&gt;in_sync = 0;
++			mddev-&gt;sb_dirty = 1;
++			md_wakeup_thread(mddev-&gt;thread);
++		}
++		spin_unlock(&amp;mddev-&gt;write_lock);
+ 	}
+-	spin_unlock(&amp;mddev-&gt;write_lock);
+-	md_wakeup_thread(mddev-&gt;thread);
+-	return 0;
++	wait_event(mddev-&gt;sb_wait, mddev-&gt;sb_dirty==0);
+ }
+ 
+ void md_write_end(mddev_t *mddev)
+@@ -3685,7 +3684,6 @@ void md_check_recovery(mddev_t *mddev)
+ 		mddev-&gt;sb_dirty ||
+ 		test_bit(MD_RECOVERY_NEEDED, &amp;mddev-&gt;recovery) ||
+ 		test_bit(MD_RECOVERY_DONE, &amp;mddev-&gt;recovery) ||
+-		mddev-&gt;write_list.head ||
+ 		(mddev-&gt;safemode == 1) ||
+ 		(mddev-&gt;safemode == 2 &amp;&amp; ! atomic_read(&amp;mddev-&gt;writes_pending)
+ 		 &amp;&amp; !mddev-&gt;in_sync &amp;&amp; mddev-&gt;recovery_cp == MaxSector)
+@@ -3694,7 +3692,6 @@ void md_check_recovery(mddev_t *mddev)
+ 
+ 	if (mddev_trylock(mddev)==0) {
+ 		int spares =0;
+-		struct bio *blist;
+ 
+ 		spin_lock(&amp;mddev-&gt;write_lock);
+ 		if (mddev-&gt;safemode &amp;&amp; !atomic_read(&amp;mddev-&gt;writes_pending) &amp;&amp;
+@@ -3704,21 +3701,11 @@ void md_check_recovery(mddev_t *mddev)
+ 		}
+ 		if (mddev-&gt;safemode == 1)
+ 			mddev-&gt;safemode = 0;
+-		blist = bio_list_get(&amp;mddev-&gt;write_list);
+ 		spin_unlock(&amp;mddev-&gt;write_lock);
+ 
+ 		if (mddev-&gt;sb_dirty)
+ 			md_update_sb(mddev);
+ 
+-		while (blist) {
+-			struct bio *b = blist;
+-			blist = blist-&gt;bi_next;
+-			b-&gt;bi_next = NULL;
+-			generic_make_request(b);
+-			/* we already counted this, so need to un-count */
+-			md_write_end(mddev);
+-		}
+-
+ 
+ 		if (test_bit(MD_RECOVERY_RUNNING, &amp;mddev-&gt;recovery) &amp;&amp;
+ 		    !test_bit(MD_RECOVERY_DONE, &amp;mddev-&gt;recovery)) {
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index 3f5234fe3593..98b09773e79e 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -561,8 +561,8 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 	 * thread has put up a bar for new requests.
+ 	 * Continue immediately if no resync is active currently.
+ 	 */
+-	if (md_write_start(mddev, bio)==0)
+-		return 0;
++	md_write_start(mddev, bio); /* wait on superblock update early */
++
+ 	spin_lock_irq(&amp;conf-&gt;resync_lock);
+ 	wait_event_lock_irq(conf-&gt;wait_resume, !conf-&gt;barrier, conf-&gt;resync_lock, );
+ 	conf-&gt;nr_pending++;
+diff --git a/drivers/md/raid10.c b/drivers/md/raid10.c
+index 8476515bfdc7..fd7324a86d13 100644
+--- a/drivers/md/raid10.c
++++ b/drivers/md/raid10.c
+@@ -700,8 +700,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
+ 		return 0;
+ 	}
+ 
+-	if (md_write_start(mddev, bio) == 0)
+-		return 0;
++	md_write_start(mddev, bio);
+ 
+ 	/*
+ 	 * Register the new request and wait if the reconstruction
+diff --git a/drivers/md/raid5.c b/drivers/md/raid5.c
+index 1ce3f5aaa984..93a9726cc2d6 100644
+--- a/drivers/md/raid5.c
++++ b/drivers/md/raid5.c
+@@ -1411,8 +1411,7 @@ static int make_request (request_queue_t *q, struct bio * bi)
+ 	sector_t logical_sector, last_sector;
+ 	struct stripe_head *sh;
+ 
+-	if (md_write_start(mddev, bi)==0)
+-		return 0;
++	md_write_start(mddev, bi);
+ 
+ 	if (bio_data_dir(bi)==WRITE) {
+ 		disk_stat_inc(mddev-&gt;gendisk, writes);
+diff --git a/drivers/md/raid6main.c b/drivers/md/raid6main.c
+index d9c385496dc5..f62ea1a73d0d 100644
+--- a/drivers/md/raid6main.c
++++ b/drivers/md/raid6main.c
+@@ -1570,8 +1570,7 @@ static int make_request (request_queue_t *q, struct bio * bi)
+ 	sector_t logical_sector, last_sector;
+ 	struct stripe_head *sh;
+ 
+-	if (md_write_start(mddev, bi)==0)
+-		return 0;
++	md_write_start(mddev, bi);
+ 
+ 	if (bio_data_dir(bi)==WRITE) {
+ 		disk_stat_inc(mddev-&gt;gendisk, writes);
+diff --git a/include/linux/raid/md.h b/include/linux/raid/md.h
+index cfde8f497d6d..75f41d8faed2 100644
+--- a/include/linux/raid/md.h
++++ b/include/linux/raid/md.h
+@@ -69,7 +69,7 @@ extern mdk_thread_t * md_register_thread (void (*run) (mddev_t *mddev),
+ extern void md_unregister_thread (mdk_thread_t *thread);
+ extern void md_wakeup_thread(mdk_thread_t *thread);
+ extern void md_check_recovery(mddev_t *mddev);
+-extern int md_write_start(mddev_t *mddev, struct bio *bi);
++extern void md_write_start(mddev_t *mddev, struct bio *bi);
+ extern void md_write_end(mddev_t *mddev);
+ extern void md_handle_safemode(mddev_t *mddev);
+ extern void md_done_sync(mddev_t *mddev, int blocks, int ok);
+diff --git a/include/linux/raid/md_k.h b/include/linux/raid/md_k.h
+index 6cdcb4434c6c..3e977025cf43 100644
+--- a/include/linux/raid/md_k.h
++++ b/include/linux/raid/md_k.h
+@@ -261,7 +261,7 @@ struct mddev_s
+ 	sector_t			recovery_cp;
+ 
+ 	spinlock_t			write_lock;
+-	struct bio_list			write_list;
++	wait_queue_head_t		sb_wait;	/* for waiting on superblock updates */
+ 
+ 	unsigned int			safemode;	/* if set, update "clean" superblock
+ 							 * when no writes pending.</pre><hr><pre>commit 41158c7eb22312cfaa256744e1553bb4042ff085
+Author: NeilBrown &lt;neilb@cse.unsw.edu.au&gt;
+Date:   Tue Jun 21 17:17:25 2005 -0700
+
+    [PATCH] md: optimise reconstruction when re-adding a recently failed drive.
+    
+    When an array is degraded, bit in the intent-bitmap are never cleared.  So if
+    a recently failed drive is re-added, we only need to reconstruct the block
+    that are still reflected in the bitmap.
+    
+    This patch adds support for this re-adding.
+    
+    Signed-off-by: Neil Brown &lt;neilb@cse.unsw.edu.au&gt;
+    Signed-off-by: Andrew Morton &lt;akpm@osdl.org&gt;
+    Signed-off-by: Linus Torvalds &lt;torvalds@osdl.org&gt;
+
+diff --git a/drivers/md/md.c b/drivers/md/md.c
+index b02f8d1d77e7..789b114f860a 100644
+--- a/drivers/md/md.c
++++ b/drivers/md/md.c
+@@ -577,6 +577,8 @@ static int super_90_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 	mdp_disk_t *desc;
+ 	mdp_super_t *sb = (mdp_super_t *)page_address(rdev-&gt;sb_page);
+ 
++	rdev-&gt;raid_disk = -1;
++	rdev-&gt;in_sync = 0;
+ 	if (mddev-&gt;raid_disks == 0) {
+ 		mddev-&gt;major_version = 0;
+ 		mddev-&gt;minor_version = sb-&gt;minor_version;
+@@ -607,16 +609,24 @@ static int super_90_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 		memcpy(mddev-&gt;uuid+12,&amp;sb-&gt;set_uuid3, 4);
+ 
+ 		mddev-&gt;max_disks = MD_SB_DISKS;
+-	} else {
+-		__u64 ev1;
+-		ev1 = md_event(sb);
++	} else if (mddev-&gt;pers == NULL) {
++		/* Insist on good event counter while assembling */
++		__u64 ev1 = md_event(sb);
+ 		++ev1;
+ 		if (ev1 &lt; mddev-&gt;events) 
+ 			return -EINVAL;
+-	}
++	} else if (mddev-&gt;bitmap) {
++		/* if adding to array with a bitmap, then we can accept an
++		 * older device ... but not too old.
++		 */
++		__u64 ev1 = md_event(sb);
++		if (ev1 &lt; mddev-&gt;bitmap-&gt;events_cleared)
++			return 0;
++	} else /* just a hot-add of a new device, leave raid_disk at -1 */
++		return 0;
++
+ 	if (mddev-&gt;level != LEVEL_MULTIPATH) {
+-		rdev-&gt;raid_disk = -1;
+-		rdev-&gt;in_sync = rdev-&gt;faulty = 0;
++		rdev-&gt;faulty = 0;
+ 		desc = sb-&gt;disks + rdev-&gt;desc_nr;
+ 
+ 		if (desc-&gt;state &amp; (1&lt;&lt;MD_DISK_FAULTY))
+@@ -626,7 +636,8 @@ static int super_90_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 			rdev-&gt;in_sync = 1;
+ 			rdev-&gt;raid_disk = desc-&gt;raid_disk;
+ 		}
+-	}
++	} else /* MULTIPATH are always insync */
++		rdev-&gt;in_sync = 1;
+ 	return 0;
+ }
+ 
+@@ -868,6 +879,8 @@ static int super_1_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ {
+ 	struct mdp_superblock_1 *sb = (struct mdp_superblock_1*)page_address(rdev-&gt;sb_page);
+ 
++	rdev-&gt;raid_disk = -1;
++	rdev-&gt;in_sync = 0;
+ 	if (mddev-&gt;raid_disks == 0) {
+ 		mddev-&gt;major_version = 1;
+ 		mddev-&gt;patch_version = 0;
+@@ -885,13 +898,21 @@ static int super_1_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 		memcpy(mddev-&gt;uuid, sb-&gt;set_uuid, 16);
+ 
+ 		mddev-&gt;max_disks =  (4096-256)/2;
+-	} else {
+-		__u64 ev1;
+-		ev1 = le64_to_cpu(sb-&gt;events);
++	} else if (mddev-&gt;pers == NULL) {
++		/* Insist of good event counter while assembling */
++		__u64 ev1 = le64_to_cpu(sb-&gt;events);
+ 		++ev1;
+ 		if (ev1 &lt; mddev-&gt;events)
+ 			return -EINVAL;
+-	}
++	} else if (mddev-&gt;bitmap) {
++		/* If adding to array with a bitmap, then we can accept an
++		 * older device, but not too old.
++		 */
++		__u64 ev1 = le64_to_cpu(sb-&gt;events);
++		if (ev1 &lt; mddev-&gt;bitmap-&gt;events_cleared)
++			return 0;
++	} else /* just a hot-add of a new device, leave raid_disk at -1 */
++		return 0;
+ 
+ 	if (mddev-&gt;level != LEVEL_MULTIPATH) {
+ 		int role;
+@@ -899,14 +920,10 @@ static int super_1_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 		role = le16_to_cpu(sb-&gt;dev_roles[rdev-&gt;desc_nr]);
+ 		switch(role) {
+ 		case 0xffff: /* spare */
+-			rdev-&gt;in_sync = 0;
+ 			rdev-&gt;faulty = 0;
+-			rdev-&gt;raid_disk = -1;
+ 			break;
+ 		case 0xfffe: /* faulty */
+-			rdev-&gt;in_sync = 0;
+ 			rdev-&gt;faulty = 1;
+-			rdev-&gt;raid_disk = -1;
+ 			break;
+ 		default:
+ 			rdev-&gt;in_sync = 1;
+@@ -914,7 +931,9 @@ static int super_1_validate(mddev_t *mddev, mdk_rdev_t *rdev)
+ 			rdev-&gt;raid_disk = role;
+ 			break;
+ 		}
+-	}
++	} else /* MULTIPATH are always insync */
++		rdev-&gt;in_sync = 1;
++
+ 	return 0;
+ }
+ 
+@@ -2155,6 +2174,18 @@ static int add_new_disk(mddev_t * mddev, mdu_disk_info_t *info)
+ 				PTR_ERR(rdev));
+ 			return PTR_ERR(rdev);
+ 		}
++		/* set save_raid_disk if appropriate */
++		if (!mddev-&gt;persistent) {
++			if (info-&gt;state &amp; (1&lt;&lt;MD_DISK_SYNC)  &amp;&amp;
++			    info-&gt;raid_disk &lt; mddev-&gt;raid_disks)
++				rdev-&gt;raid_disk = info-&gt;raid_disk;
++			else
++				rdev-&gt;raid_disk = -1;
++		} else
++			super_types[mddev-&gt;major_version].
++				validate_super(mddev, rdev);
++		rdev-&gt;saved_raid_disk = rdev-&gt;raid_disk;
++
+ 		rdev-&gt;in_sync = 0; /* just to be sure */
+ 		rdev-&gt;raid_disk = -1;
+ 		err = bind_rdev_to_array(rdev, mddev);
+@@ -3706,6 +3737,14 @@ void md_check_recovery(mddev_t *mddev)
+ 				mddev-&gt;pers-&gt;spare_active(mddev);
+ 			}
+ 			md_update_sb(mddev);
++
++			/* if array is no-longer degraded, then any saved_raid_disk
++			 * information must be scrapped
++			 */
++			if (!mddev-&gt;degraded)
++				ITERATE_RDEV(mddev,rdev,rtmp)
++					rdev-&gt;saved_raid_disk = -1;
++
+ 			mddev-&gt;recovery = 0;
+ 			/* flag recovery needed just to double check */
+ 			set_bit(MD_RECOVERY_NEEDED, &amp;mddev-&gt;recovery);
+diff --git a/drivers/md/raid1.c b/drivers/md/raid1.c
+index c3b4772cfaea..3f5234fe3593 100644
+--- a/drivers/md/raid1.c
++++ b/drivers/md/raid1.c
+@@ -811,9 +811,12 @@ static int raid1_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
+ {
+ 	conf_t *conf = mddev-&gt;private;
+ 	int found = 0;
+-	int mirror;
++	int mirror = 0;
+ 	mirror_info_t *p;
+ 
++	if (rdev-&gt;saved_raid_disk &gt;= 0 &amp;&amp;
++	    conf-&gt;mirrors[rdev-&gt;saved_raid_disk].rdev == NULL)
++		mirror = rdev-&gt;saved_raid_disk;
+ 	for (mirror=0; mirror &lt; mddev-&gt;raid_disks; mirror++)
+ 		if ( !(p=conf-&gt;mirrors+mirror)-&gt;rdev) {
+ 
+@@ -830,6 +833,8 @@ static int raid1_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
+ 			p-&gt;head_position = 0;
+ 			rdev-&gt;raid_disk = mirror;
+ 			found = 1;
++			if (rdev-&gt;saved_raid_disk != mirror)
++				conf-&gt;fullsync = 1;
+ 			p-&gt;rdev = rdev;
+ 			break;
+ 		}
+diff --git a/include/linux/raid/md_k.h b/include/linux/raid/md_k.h
+index 16e94a9f0f8c..6cdcb4434c6c 100644
+--- a/include/linux/raid/md_k.h
++++ b/include/linux/raid/md_k.h
+@@ -183,6 +183,10 @@ struct mdk_rdev_s
+ 
+ 	int desc_nr;			/* descriptor index in the superblock */
+ 	int raid_disk;			/* role of device in array */
++	int saved_raid_disk;		/* role that device used to have in the
++					 * array and could again if we did a partial
++					 * resync from the bitmap
++					 */
+ 
+ 	atomic_t	nr_pending;	/* number of pending requests.
+ 					 * only maintained for arrays that</pre>
+    <div class="pagination">
+        <a href='8_10.html'>&lt;&lt;Prev</a><a href='8.html'>1</a><a href='8_2.html'>2</a><a href='8_3.html'>3</a><a href='8_4.html'>4</a><a href='8_5.html'>5</a><a href='8_6.html'>6</a><a href='8_7.html'>7</a><a href='8_8.html'>8</a><a href='8_9.html'>9</a><a href='8_10.html'>10</a><span>[11]</span><a href='8_12.html'>12</a><a href='8_13.html'>13</a><a href='8_14.html'>14</a><a href='8_15.html'>15</a><a href='8_16.html'>16</a><a href='8_17.html'>17</a><a href='8_18.html'>18</a><a href='8_12.html'>Next&gt;&gt;</a>
+    <div>
+</body>
