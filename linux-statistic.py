@@ -24,10 +24,9 @@ repo = git.Repo(path)
 
 
 print("Getting university list...")
-university_json = requests.get(
+university_list:list = requests.get(
     "https://github.com/Hipo/university-domains-list/raw/master/world_universities_and_domains.json"
-).text
-university_list: list = json.loads(university_json)
+).json()
 
 
 print("Getting commits list...")
