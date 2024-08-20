@@ -10,6 +10,22 @@ import git
 import requests
 from tqdm import tqdm
 
+def is_university_domain(test_domain, uni_list):
+    '''
+    Verify if the provided domain is a university domain in the uni_list
+    '''
+    for university in uni_list:
+        if test_domain in university["domains"]:
+            return True
+
+    for university in uni_list:
+        for raw_domain in university["domains"]:
+            # domain: sc.edu
+            # raw_domain: osc.edu
+            if test_domain.endswith(raw_domain):
+                return True
+    return False
+
 parser = ArgumentParser()
 parser.add_argument("--branch", type=str, default="master")
 parser.add_argument("--path", type=str, default="/tmp/linux")
@@ -51,7 +67,7 @@ for commit in tqdm(commits):
         continue
     # get email domain
     domain = email.split("@")[-1]
-    if not ".edu" in domain:
+    if not is_university_domain(domain, university_list):
         continue
 
     result_patches[domain] = result_patches.get(domain, 0) + 1
