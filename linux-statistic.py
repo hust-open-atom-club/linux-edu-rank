@@ -11,17 +11,15 @@ import requests
 from tqdm import tqdm
 
 
-def find_university(test_domain, uni_list, return_bool=False):
+def find_university(test_domain, uni_list):
     for university in uni_list:
         if test_domain in university["domains"]:
-            return True if return_bool else university
+            return university
     for university in uni_list:
         for raw_domain in university["domains"]:
-            if test_domain.endswith(raw_domain):
-                return True if return_bool else university
-            if not return_bool and raw_domain.endswith(test_domain):
+            if test_domain.endswith(raw_domain) or raw_domain.endswith(test_domain):
                 return university
-    return False if return_bool else None
+    return None
 
 
 parser = ArgumentParser()
@@ -63,7 +61,7 @@ for commit in tqdm(commits):
         continue
     # get email domain
     domain = email.split("@")[-1]
-    if not find_university(domain, university_list, True):
+    if not find_university(domain, university_list):
         continue
 
     result_patches[domain] = result_patches.get(domain, 0) + 1
@@ -94,7 +92,7 @@ result = map(
         "domain": x[0],
         "count": x[1],
         "lines": result_lines[x[0]],
-        "university": find_university(x[0], university_list, False),
+        "university": find_university(x[0], university_list),
     },
     result_patches.items(),
 )
