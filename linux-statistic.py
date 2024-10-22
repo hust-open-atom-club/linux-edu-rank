@@ -24,22 +24,6 @@ def find_university(test_domain, uni_list, return_bool=False):
     return False if return_bool else None
 
 
-# def is_university_domain(test_domain, uni_list):
-#     '''
-#     Verify if the provided domain is a university domain in the uni_list
-#     '''
-#     for university in uni_list:
-#         if test_domain in university["domains"]:
-#             return True
-#
-#     for university in uni_list:
-#         for raw_domain in university["domains"]:
-#             # domain: sc.edu
-#             # raw_domain: osc.edu
-#             if test_domain.endswith(raw_domain):
-#                 return True
-#     return False
-
 parser = ArgumentParser()
 parser.add_argument("--branch", type=str, default="master")
 parser.add_argument("--path", type=str, default="/tmp/linux")
@@ -103,18 +87,6 @@ for commit in tqdm(commits):
             ),
         }
     )
-
-# def get_university(domain):
-#     for university in university_list:
-#         if domain in university["domains"]:
-#             return university
-#
-#     for university in university_list:
-#         for raw_domain in university["domains"]:
-#             if domain.endswith(raw_domain) or raw_domain.endswith(domain):
-#                 return university
-#     return None
-
 
 # sort and save result to file
 result = map(
