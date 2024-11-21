@@ -86,7 +86,7 @@ def main():
             "domain": x[0],
             "count": x[1],
             "lines": result_lines[x[0]],
-            "university": my_module.get_university(x[0]),
+            "university": my_module.get_university(x[0], university_list),
         },
         result_patches.items(),
     )
@@ -96,7 +96,7 @@ def main():
     for item in result:
 
         if item["university"] is None:
-            authors = my_module.result_authors_transform(result_authors)
+            authors = my_module.result_authors_transform(result_authors, item)
             authors.sort(key=lambda x: x["count"], reverse=True)
             result_tmp[item["domain"]] = {
                 "name": f"Unknown ({item['domain']})",
@@ -119,7 +119,7 @@ def main():
             }
         if item["domain"] not in result_tmp[name]["domains"]:
             result_tmp[name]["domains"].append(item["domain"])
-            result_tmp[name]["authors"].extend(my_module.result_authors_transform(result_authors))
+            result_tmp[name]["authors"].extend(my_module.result_authors_transform(result_authors, item))
         result_tmp[name]["authors"].sort(key=lambda x: x["count"], reverse=True)
         result_tmp[name]["count"] += item["count"]
         result_tmp[name]["lines"] += item["lines"]
