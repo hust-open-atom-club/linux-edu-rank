@@ -10,7 +10,7 @@ import git
 import requests
 from tqdm import tqdm
 
-import my_module
+import function_lib
 
 def main():
     parser = ArgumentParser()
@@ -54,7 +54,7 @@ def main():
             continue
         # get email domain
         domain = email.split("@")[-1]
-        if not my_module.is_university_domain(domain, university_list):
+        if not function_lib.is_university_domain(domain, university_list):
             continue
 
         result_patches[domain] = result_patches.get(domain, 0) + 1
@@ -86,7 +86,7 @@ def main():
             "domain": x[0],
             "count": x[1],
             "lines": result_lines[x[0]],
-            "university": my_module.get_university(x[0], university_list),
+            "university": function_lib.get_university(x[0], university_list),
         },
         result_patches.items(),
     )
@@ -96,7 +96,7 @@ def main():
     for item in result:
 
         if item["university"] is None:
-            authors = my_module.result_authors_transform(result_authors, item)
+            authors = function_lib.result_authors_transform(result_authors, item)
             authors.sort(key=lambda x: x["count"], reverse=True)
             result_tmp[item["domain"]] = {
                 "name": f"Unknown ({item['domain']})",
@@ -119,7 +119,7 @@ def main():
             }
         if item["domain"] not in result_tmp[name]["domains"]:
             result_tmp[name]["domains"].append(item["domain"])
-            result_tmp[name]["authors"].extend(my_module.result_authors_transform(result_authors, item))
+            result_tmp[name]["authors"].extend(function_lib.result_authors_transform(result_authors, item))
         result_tmp[name]["authors"].sort(key=lambda x: x["count"], reverse=True)
         result_tmp[name]["count"] += item["count"]
         result_tmp[name]["lines"] += item["lines"]
@@ -160,7 +160,7 @@ def main():
         patches = []
         for d in domains:
             patches.extend(result_detail[d])
-        my_module.generate_html(item["id"], "Patches contributed by " + item["name"], patches)
+        function_lib.generate_html(item["id"], "Patches contributed by " + item["name"], patches)
 
     print("Done!")
 
