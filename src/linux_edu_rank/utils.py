@@ -40,16 +40,10 @@ def result_authors_transform(result_authors,item):
         )
     )
 
-
-def generate_html(id, title, patches):
-    PAGE_SIZE = 10
-    total = len(patches)
-    page_num = total // PAGE_SIZE + 1
-
-    def get_href(page):
+def get_href(page):
         return f"{id}.html" if page == 1 else f"{id}_{page}.html"
 
-    def get_pagination(page):
+def get_pagination(page, page_num):
         str = ""
         if page > 1:
             str += "<a href='{}'>&lt;&lt;Prev</a>".format(get_href(page - 1))
@@ -64,6 +58,12 @@ def generate_html(id, title, patches):
             str += "<a href='{}'>Next&gt;&gt;</a>".format(get_href(page + 1))
         return str
 
+
+def generate_html(id, title, patches):
+    PAGE_SIZE = 10
+    total = len(patches)
+    page_num = total // PAGE_SIZE + 1 
+    
     template = """<!DOCTYPE html>
 <html>
 <head>
@@ -99,7 +99,7 @@ def generate_html(id, title, patches):
             f.write(
                 template.format(
                     title=title,
-                    pagination=get_pagination(i),
+                    pagination=get_pagination(i, page_num),
                     content="<hr>".join(
                         map(
                             lambda x: "<pre>{}</pre>".format(
