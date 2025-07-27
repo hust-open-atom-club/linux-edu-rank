@@ -28,7 +28,7 @@ def is_university_domain(test_domain, uni_list):
 
 parser = ArgumentParser()
 parser.add_argument("--branch", type=str, default="master")
-parser.add_argument("--path", type=str, default="/tmp/linux")
+parser.add_argument("--path", type=str, default="./linux")
 parser.add_argument("--repo", type=str, default="Linux Mainline")
 
 args = parser.parse_args()
