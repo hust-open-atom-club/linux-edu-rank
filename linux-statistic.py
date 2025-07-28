@@ -10,6 +10,12 @@ import git
 import requests
 from tqdm import tqdm
 
+def is_university_domain(udomain, university_domains):
+    """Check if the domain or its parent domains belongs to a university."""
+    parts = udomain.split(".")
+    parent_domains = [".".join(parts[i:]) for i in range(0, len(parts))]
+    return any(parent in university_domains for parent in parent_domains)
+
 parser = ArgumentParser()
 parser.add_argument("--branch", type=str, default="master")
 parser.add_argument("--path", type=str, default="./linux")
@@ -27,8 +33,10 @@ university_list:list = requests.get(
     "https://github.com/Hipo/university-domains-list/raw/master/world_universities_and_domains.json"
 ).json()
 
-# assemble all domains into one list
-all_domains = list({domain for u in university_list for domain in u["domains"]})
+# assemble all domains into one set
+all_domains = set({domain for u in university_list for domain in u["domains"]})
+# speed up domain check by caching
+non_university_domain_cache = []
 
 print("Getting commits list...")
 commits = list(repo.iter_commits(branch))
@@ -52,7 +60,11 @@ for commit in tqdm(commits):
         continue
     # get email domain
     domain = email.split("@")[-1]
-    if not domain in all_domains:
+    
+    if domain in non_university_domain_cache:
+        continue
+    elif not is_university_domain(domain, all_domains):
+        non_university_domain_cache.append(domain)
         continue
 
     result_patches[domain] = result_patches.get(domain, 0) + 1
@@ -78,11 +90,13 @@ for commit in tqdm(commits):
     )
 
 
-def get_university(domain):
+def get_university(udomain):
+    """Get the university name if the domain or its parent domains belongs to a university."""
     for university in university_list:
-        if domain in university["domains"]:
+        if is_university_domain(udomain, university["domains"]):
             return university
     return None
+
 
 # sort and save result to file
 result = map(
