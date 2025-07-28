@@ -10,22 +10,6 @@ import git
 import requests
 from tqdm import tqdm
 
-def is_university_domain(test_domain, uni_list):
-    '''
-    Verify if the provided domain is a university domain in the uni_list
-    '''
-    for university in uni_list:
-        if test_domain in university["domains"]:
-            return True
-
-    for university in uni_list:
-        for raw_domain in university["domains"]:
-            # domain: sc.edu
-            # raw_domain: osc.edu
-            if test_domain.endswith(raw_domain):
-                return True
-    return False
-
 parser = ArgumentParser()
 parser.add_argument("--branch", type=str, default="master")
 parser.add_argument("--path", type=str, default="./linux")
@@ -38,12 +22,13 @@ repo_name = args.repo
 
 repo = git.Repo(path)
 
-
 print("Getting university list...")
 university_list:list = requests.get(
     "https://github.com/Hipo/university-domains-list/raw/master/world_universities_and_domains.json"
 ).json()
 
+# assemble all domains into one list
+all_domains = list({domain for u in university_list for domain in u["domains"]})
 
 print("Getting commits list...")
 commits = list(repo.iter_commits(branch))
@@ -67,7 +52,7 @@ for commit in tqdm(commits):
         continue
     # get email domain
     domain = email.split("@")[-1]
-    if not is_university_domain(domain, university_list):
+    if not domain in all_domains:
         continue
 
     result_patches[domain] = result_patches.get(domain, 0) + 1
@@ -77,7 +62,7 @@ for commit in tqdm(commits):
     result_detail[domain].append(repo.git.show(commit.hexsha))
     if result_authors.get(domain) is None:
         result_authors[domain] = {}
-    if result_authors.get(domain).get(email) is None:
+    if result_authors[domain].get(email) is None:
         result_authors[domain][email] = [commit.author.name, 0, []]
     result_authors[domain][email][1] = result_authors[domain][email][1] + 1
     result_authors[domain][email][2].append(
@@ -97,13 +82,7 @@ def get_university(domain):
     for university in university_list:
         if domain in university["domains"]:
             return university
-
-    for university in university_list:
-        for raw_domain in university["domains"]:
-            if domain.endswith(raw_domain) or raw_domain.endswith(domain):
-                return university
     return None
-
 
 # sort and save result to file
 result = map(
@@ -135,7 +114,7 @@ for item in result:
 
     if item["university"] is None:
         authors = result_authors_transform(result_authors)
-        authors.sort(key=lambda x: x["count"], reverse=True),
+        authors.sort(key=lambda x: x["count"], reverse=True)
         result_tmp[item["domain"]] = {
             "name": f"Unknown ({item['domain']})",
             "domains": [item["domain"]],
