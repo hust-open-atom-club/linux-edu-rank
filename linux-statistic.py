@@ -105,11 +105,12 @@ for commit in tqdm(commits):
 
 def get_university(udomain):
     """Get the university name if the domain or its parent domains belongs to a university."""
+    parts = udomain.split(".")
+    parent_domains = [".".join(parts[i:]) for i in range(0, len(parts))]
     for university in university_list:
-        if is_university_domain(udomain, university["domains"]):
+        if any(parent in university["domains"] for parent in parent_domains):
             return university
     return None
-
 
 # sort and save result to file
 result = map(
