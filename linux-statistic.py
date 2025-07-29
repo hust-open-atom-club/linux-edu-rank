@@ -10,11 +10,6 @@ import git
 import requests
 from tqdm import tqdm
 
-def is_university_domain(udomain, university_domains):
-    """Check if the domain or its parent domains belongs to a university."""
-    parts = udomain.split(".")
-    parent_domains = [".".join(parts[i:]) for i in range(0, len(parts))]
-    return any(parent in university_domains for parent in parent_domains)
 
 parser = ArgumentParser()
 parser.add_argument("--branch", type=str, default="master")
@@ -34,7 +29,7 @@ university_list:list = requests.get(
 ).json()
 
 # assemble all domains into one set
-all_domains = set({domain for u in university_list for domain in u["domains"]})
+all_domains = set(domain for u in university_list for domain in u["domains"])
 # speed up domain check by caching
 non_university_domain_cache = set()
 
@@ -61,31 +56,49 @@ for commit in tqdm(commits):
     # get email domain
     domain = email.split("@")[-1]
     
+    # check if the domain is in the non_university_domain cache
     if domain in non_university_domain_cache:
         continue
-    elif not is_university_domain(domain, all_domains):
-        non_university_domain_cache.add(domain)
+
+    # check if the domain or its parent domains belongs to a university
+    parts = domain.split(".")
+    if len(parts) == 2:
+        if not domain in all_domains:
+            non_university_domain_cache.add(domain)
+            continue
+    elif len(parts) > 2:
+        parent_domains = [".".join(parts[i:]) for i in range(0, len(parts)-2)]
+        if all(parent not in all_domains for parent in parent_domains):
+            non_university_domain_cache.add(domain)
+            continue
+    else:
         continue
 
-    result_patches[domain] = result_patches.get(domain, 0) + 1
-    result_lines[domain] = result_lines.get(domain, 0) + commit.stats.total["lines"]
-    if result_detail.get(domain) is None:
+    # cache commit stats
+    commit_stats = commit.stats.total
+
+    # initialize result for this domain if not exists
+    if domain not in result_patches:
+        result_patches[domain] = 0
+        result_lines[domain] = 0
         result_detail[domain] = []
-    result_detail[domain].append(repo.git.show(commit.hexsha))
-    if result_authors.get(domain) is None:
         result_authors[domain] = {}
-    if result_authors[domain].get(email) is None:
+
+    result_patches[domain] += 1
+    result_lines[domain] += commit_stats["lines"]
+    result_detail[domain].append(repo.git.show(commit.hexsha))
+    
+    # update author information
+    if email not in result_authors[domain]:
         result_authors[domain][email] = [commit.author.name, 0, []]
-    result_authors[domain][email][1] = result_authors[domain][email][1] + 1
+    result_authors[domain][email][1] += 1
     result_authors[domain][email][2].append(
         {
             "commit": commit.hexsha,
             "summary": commit.summary,
             "date": commit.authored_datetime.isoformat(),
-            "files": commit.stats.total["files"],
-            "lines": "-{}/+{}".format(
-                commit.stats.total["deletions"], commit.stats.total["insertions"]
-            ),
+            "files": commit_stats["files"],
+            "lines": f"-{commit_stats["deletions"]}/+{commit_stats["insertions"]}"
         }
     )
 
