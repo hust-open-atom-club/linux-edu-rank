@@ -36,7 +36,7 @@ university_list:list = requests.get(
 # assemble all domains into one set
 all_domains = set({domain for u in university_list for domain in u["domains"]})
 # speed up domain check by caching
-non_university_domain_cache = []
+non_university_domain_cache = set()
 
 print("Getting commits list...")
 commits = list(repo.iter_commits(branch))
@@ -64,7 +64,7 @@ for commit in tqdm(commits):
     if domain in non_university_domain_cache:
         continue
     elif not is_university_domain(domain, all_domains):
-        non_university_domain_cache.append(domain)
+        non_university_domain_cache.add(domain)
         continue
 
     result_patches[domain] = result_patches.get(domain, 0) + 1
