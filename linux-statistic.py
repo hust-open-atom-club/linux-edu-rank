@@ -55,24 +55,16 @@ for commit in tqdm(commits):
         continue
     # get email domain
     domain = email.split("@")[-1]
-    
     # check if the domain is in the non_university_domain cache
     if domain in non_university_domain_cache:
         continue
-
-    # check if the domain or its parent domains belongs to a university
-    parts = domain.split(".")
-    if len(parts) == 2:
-        if not domain in all_domains:
-            non_university_domain_cache.add(domain)
-            continue
-    elif len(parts) > 2:
-        parent_domains = [".".join(parts[i:]) for i in range(0, len(parts)-2)]
+    if domain not in all_domains:
+        # check if its parent domains belong to a university
+        parts = domain.split(".")
+        parent_domains = [".".join(parts[i:]) for i in range(0, len(parts))]
         if all(parent not in all_domains for parent in parent_domains):
             non_university_domain_cache.add(domain)
             continue
-    else:
-        continue
 
     # cache commit stats
     commit_stats = commit.stats.total
@@ -104,7 +96,11 @@ for commit in tqdm(commits):
 
 
 def get_university(udomain):
-    """Get the university name if the domain or its parent domains belongs to a university."""
+    # Get the university name if the domain belongs to a university
+    for university in university_list:
+        if udomain in university["domains"]:
+            return university
+    # Get the university name if its parent domains belongs to a university
     parts = udomain.split(".")
     parent_domains = [".".join(parts[i:]) for i in range(0, len(parts))]
     for university in university_list:
