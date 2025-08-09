@@ -79,7 +79,7 @@ for commit in tqdm(commits):
     result_patches[domain] += 1
     result_lines[domain] += commit_stats["lines"]
     result_detail[domain].append(repo.git.show(commit.hexsha))
-    
+
     # update author information
     if email not in result_authors[domain]:
         result_authors[domain][email] = [commit.author.name, 0, []]
@@ -90,7 +90,7 @@ for commit in tqdm(commits):
             "summary": commit.summary,
             "date": commit.authored_datetime.isoformat(),
             "files": commit_stats["files"],
-            "lines": f"-{commit_stats["deletions"]}/+{commit_stats["insertions"]}"
+            "lines": f'-{commit_stats["deletions"]}/+{commit_stats["insertions"]}'
         }
     )
 
