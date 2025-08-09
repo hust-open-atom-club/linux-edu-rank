@@ -10,6 +10,8 @@ import git
 import requests
 from tqdm import tqdm
 
+import pytz
+shanghai_tz = pytz.timezone('Asia/Shanghai')
 
 parser = ArgumentParser()
 parser.add_argument("--branch", type=str, default="master")
@@ -37,7 +39,7 @@ print("Getting commits list...")
 commits = list(repo.iter_commits(branch))
 
 meta = {
-    "update": datetime.now().isoformat(),
+    "update": datetime.now(shanghai_tz).isoformat(),
     "repo": repo_name,
     "branch": branch,
     "commit": repo.commit("master").hexsha,
@@ -88,7 +90,7 @@ for commit in tqdm(commits):
         {
             "commit": commit.hexsha,
             "summary": commit.summary,
-            "date": commit.authored_datetime.isoformat(),
+            "date": commit.authored_datetime.astimezone(shanghai_tz).isoformat(),
             "files": commit_stats["files"],
             "lines": f'-{commit_stats["deletions"]}/+{commit_stats["insertions"]}'
         }
