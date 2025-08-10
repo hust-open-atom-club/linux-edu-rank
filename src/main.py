@@ -90,7 +90,7 @@ for commit in tqdm(commits):
         {
             "commit": commit.hexsha,
             "summary": commit.summary,
-            "date": commit.authored_datetime.astimezone(shanghai_tz).isoformat(),
+            "date": commit.authored_datetime.isoformat(),
             "files": commit_stats["files"],
             "lines": f'-{commit_stats["deletions"]}/+{commit_stats["insertions"]}'
         }
