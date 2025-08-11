@@ -206,7 +206,7 @@ def process_results(result_patches, result_lines, result_authors, university_lis
     merged_results = merge_university_results(initial_results)
 
     # Sort by patch count (descending)
-    sorted_results = sorted(merged_results, key=lambda x: x["count"], reverse=True)
+    sorted_results = sorted(merged_results, key=lambda x: (x["count"], x["lines"]), reverse=True)
 
     # Add rankings
     final_results = add_rankings(sorted_results)
