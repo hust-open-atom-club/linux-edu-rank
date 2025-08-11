@@ -314,7 +314,7 @@ def generate_all_html_files(processed_result, result_detailed):
     for item in processed_result:
         domains = item["domains"]
         item_id = item["id"]
-        title = f"Patches contributed by {item["name"]}"
+        title = f"Patches contributed by {item['name']}"
 
         # Collect all patches for this item
         patches = []
