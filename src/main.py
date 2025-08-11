@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Generate ranked contributions of university-affiliated commits from a Git repo."""
+
 import json
 import os
 import shutil
@@ -10,7 +12,8 @@ import requests
 from tqdm import tqdm
 
 import pytz
-shanghai_tz = pytz.timezone('Asia/Shanghai')
+
+shanghai_tz = pytz.timezone("Asia/Shanghai")
 
 parser = ArgumentParser()
 parser.add_argument("--branch", type=str, default="master")
@@ -25,12 +28,13 @@ repo_name = args.repo
 repo = git.Repo(path)
 
 print("Getting university list...")
-university_list:list = requests.get(
-    "https://github.com/Hipo/university-domains-list/raw/master/world_universities_and_domains.json"
+university_list: list = requests.get(
+    "https://github.com/Hipo/university-domains-list/raw/master/world_universities_and_domains.json",
+    timeout=(5, 10)
 ).json()
 
 # assemble all domains into one set
-all_domains = set(domain for u in university_list for domain in u["domains"])
+all_domains = set(d for u in university_list for d in u["domains"])
 # speed up domain check by caching
 non_university_domain_cache = set()
 
@@ -55,37 +59,37 @@ for commit in tqdm(commits):
     if not email:
         continue
     # get email domain
-    domain = email.split("@")[-1]
+    email_domain = email.split("@")[-1]
     # check if the domain is in the non_university_domain cache
-    if domain in non_university_domain_cache:
+    if email_domain in non_university_domain_cache:
         continue
-    if domain not in all_domains:
+    if email_domain not in all_domains:
         # check if its parent domains belong to a university
-        parts = domain.split(".")
+        parts = email_domain.split(".")
         parent_domains = [".".join(parts[i:]) for i in range(0, len(parts))]
         if all(parent not in all_domains for parent in parent_domains):
-            non_university_domain_cache.add(domain)
+            non_university_domain_cache.add(email_domain)
             continue
 
     # cache commit stats
     commit_stats = commit.stats.total
 
     # initialize result for this domain if not exists
-    if domain not in result_patches:
-        result_patches[domain] = 0
-        result_lines[domain] = 0
-        result_detail[domain] = []
-        result_authors[domain] = {}
+    if email_domain not in result_patches:
+        result_patches[email_domain] = 0
+        result_lines[email_domain] = 0
+        result_detail[email_domain] = []
+        result_authors[email_domain] = {}
 
-    result_patches[domain] += 1
-    result_lines[domain] += commit_stats["lines"]
-    result_detail[domain].append(repo.git.show(commit.hexsha))
+    result_patches[email_domain] += 1
+    result_lines[email_domain] += commit_stats["lines"]
+    result_detail[email_domain].append(repo.git.show(commit.hexsha))
 
     # update author information
-    if email not in result_authors[domain]:
-        result_authors[domain][email] = [commit.author.name, 0, []]
-    result_authors[domain][email][1] += 1
-    result_authors[domain][email][2].append(
+    if email not in result_authors[email_domain]:
+        result_authors[email_domain][email] = [commit.author.name, 0, []]
+    result_authors[email_domain][email][1] += 1
+    result_authors[email_domain][email][2].append(
         {
             "commit": commit.hexsha,
             "summary": commit.summary,
@@ -96,42 +100,44 @@ for commit in tqdm(commits):
     )
 
 
-def get_university(domain, university_list):
+def get_university(domain_name, uni_list):
     """Get the university information for a given domain."""
     # Check exact domain match first
-    for university in university_list:
-        if domain in university["domains"]:
+    for university in uni_list:
+        if domain_name in university["domains"]:
             return university
 
     # Check parent domains
-    parts = domain.split(".")
-    parent_domains = [".".join(parts[i:]) for i in range(0, len(parts))]
-    for university in university_list:
-        if any(parent in university["domains"] for parent in parent_domains):
+    domain_parts = domain_name.split(".")
+    parent_domains_list = [".".join(domain_parts[i:]) for i in range(0, len(domain_parts))]
+    for university in uni_list:
+        if any(parent in university["domains"] for parent in parent_domains_list):
             return university
 
     return None
 
-def transform_author_data(result_authors, domain):
+
+def transform_author_data(authors_map, target_domain):
     """Transform author data for a specific domain into a structured format."""
     authors = []
-    for email, author_info in result_authors.get(domain, {}).items():
+    for author_email, author_info in authors_map.get(target_domain, {}).items():
         authors.append({
-            "email": email,
+            "email": author_email,
             "name": author_info[0],
             "count": author_info[1],
             "commits": author_info[2],
         })
     return sorted(authors, key=lambda x: x["count"], reverse=True)
 
-def create_domain_result(domain, patches_count, lines_count, university, result_authors):
+
+def create_domain_result(domain_name, patches_count, lines_count, university, authors_map):
     """Create a result entry for a domain."""
-    authors = transform_author_data(result_authors, domain)
+    authors = transform_author_data(authors_map, domain_name)
 
     if university is None:
         return {
-            "name": f"Unknown ({domain})",
-            "domains": [domain],
+            "name": f"Unknown ({domain_name})",
+            "domains": [domain_name],
             "university": None,
             "count": patches_count,
             "lines": lines_count,
@@ -140,12 +146,13 @@ def create_domain_result(domain, patches_count, lines_count, university, result_
 
     return {
         "name": university["name"],
-        "domains": [domain],
+        "domains": [domain_name],
         "university": university,
         "count": patches_count,
         "lines": lines_count,
         "authors": authors,
     }
+
 
 def merge_university_results(results):
     """Merge results from the same university."""
@@ -153,21 +160,22 @@ def merge_university_results(results):
 
     for item in results:
         university_name = item["name"]
-        domain = item["domains"][0]  # Each item has exactly one domain at this point
+        domain_name = item["domains"][0]  # Each item has exactly one domain at this point
 
         if university_name not in merged_results:
             merged_results[university_name] = item.copy()
         else:
             # Merge with existing entry
             existing = merged_results[university_name]
-            if domain not in existing["domains"]:
-                existing["domains"].append(domain)
+            if domain_name not in existing["domains"]:
+                existing["domains"].append(domain_name)
                 existing["authors"].extend(item["authors"])
                 existing["count"] += item["count"]
                 existing["lines"] += item["lines"]
                 existing["authors"].sort(key=lambda x: x["count"], reverse=True)
 
     return list(merged_results.values())
+
 
 def add_rankings(sorted_results):
     """Add ID and rank fields to sorted results."""
@@ -192,14 +200,15 @@ def add_rankings(sorted_results):
 
     return results_with_ranks
 
-def process_results(result_patches, result_lines, result_authors, university_list):
+
+def process_results(patches_map, lines_map, authors_map, uni_list):
     """Process raw results into final ranked format."""
     # Create initial results with university information
     initial_results = []
-    for domain, patches_count in result_patches.items():
-        lines_count = result_lines[domain]
-        university = get_university(domain, university_list)
-        result_item = create_domain_result(domain, patches_count, lines_count, university, result_authors)
+    for domain_name, patches_count in patches_map.items():
+        lines_count = lines_map[domain_name]
+        university = get_university(domain_name, uni_list)
+        result_item = create_domain_result(domain_name, patches_count, lines_count, university, authors_map)
         initial_results.append(result_item)
 
     # Merge results by university
@@ -213,7 +222,8 @@ def process_results(result_patches, result_lines, result_authors, university_lis
 
     return final_results
 
-def create_pagination_html(page, page_num, id, get_href_func):
+
+def create_pagination_html(page, page_num, get_href_func):
     """Create pagination HTML for a given page."""
     pagination = ""
 
@@ -231,25 +241,27 @@ def create_pagination_html(page, page_num, id, get_href_func):
 
     return pagination
 
+
 def escape_html_content(content):
     """Escape HTML special characters in content."""
     return (content.replace("&", "&amp;")
                   .replace("<", "&lt;")
                   .replace(">", "&gt;"))
 
-def generate_html_page(id, title, patches, page, page_size=10):
+
+def generate_html_page(item_id, title, patches, page, page_size=10):
     """Generate HTML pages for patches with pagination."""
     total = len(patches)
     page_num = (total + page_size - 1) // page_size  # Ceiling division
 
-    def get_href(page_num):
-        return f"{id}.html" if page_num == 1 else f"{id}_{page_num}.html"
+    def get_href(page_num_local):
+        return f"{item_id}.html" if page_num_local == 1 else f"{item_id}_{page_num_local}.html"
 
     start_idx = (page - 1) * page_size
     end_idx = min(start_idx + page_size, total)
     page_patches = patches[start_idx:end_idx]
 
-    pagination = create_pagination_html(page, page_num, id, get_href)
+    pagination = create_pagination_html(page, page_num, get_href)
 
     # Create content
     content_parts = []
@@ -296,17 +308,18 @@ def generate_html_page(id, title, patches, page, page_size=10):
 
     return html_content, get_href(page)
 
-def generate_all_html_files(result, result_detail):
+
+def generate_all_html_files(processed_result, result_detailed):
     """Generate all HTML files for the results."""
-    for item in result:
+    for item in processed_result:
         domains = item["domains"]
         item_id = item["id"]
-        title = f"Patches contributed by {item['name']}"
+        title = f"Patches contributed by {item["name"]}"
 
         # Collect all patches for this item
         patches = []
-        for domain in domains:
-            patches.extend(result_detail[domain])
+        for domain_name in domains:
+            patches.extend(result_detailed[domain_name])
 
         # Generate paginated HTML files
         page_size = 10
@@ -316,19 +329,18 @@ def generate_all_html_files(result, result_detail):
         for page in range(1, page_num + 1):
             html_content, filename = generate_html_page(item_id, title, patches, page, page_size)
 
-            with open(f"detail/{filename}", "w", encoding="utf-8") as f:
-                # Handle encoding issues gracefully
+            with open(f"detail/{filename}", "w", encoding="utf-8") as file:
                 try:
-                    f.write(html_content)
+                    file.write(html_content)
                 except UnicodeEncodeError:
-                    # Fallback for problematic characters
                     safe_content = html_content.encode("utf-8", "replace").decode("utf-8")
-                    f.write(safe_content)
+                    file.write(safe_content)
 
-# Replace the original code with these function calls:
+
+# Run the processing
 result = process_results(result_patches, result_lines, result_authors, university_list)
 
-with open("result.json", "w") as f:
+with open("result.json", "w", encoding="utf-8") as f:
     f.write(json.dumps({"meta": meta, "data": result}, indent=2))
 print("Result saved to result.json")
 
