@@ -21,6 +21,9 @@ The result is displayed in a web page with a table.
 ```bash
 pdm start
 ```
-
-3. The result will be saved in `result.json` file and html files in `detail`
-4. Use web server to serve `index.html`, `result.json` and `detail` to view the result
+3. If you make changes, run the following command to lint your code
+```bash
+pdm lint
+```
+4. The result will be saved in `result.json` file and html files in `detail`
+5. Use web server to serve `index.html`, `result.json` and `detail` to view the result
