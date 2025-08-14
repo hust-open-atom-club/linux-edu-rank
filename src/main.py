@@ -196,6 +196,7 @@ def add_rankings(sorted_results):
 
         item_with_rank = item.copy()
         item_with_rank["rank"] = rank
+        item_with_rank["contributor_count"] = len(item_with_rank["authors"])
         results_with_ranks.append(item_with_rank)
 
     return results_with_ranks
