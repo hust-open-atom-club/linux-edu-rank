@@ -45,7 +45,7 @@ meta = {
     "update": datetime.now(shanghai_tz).isoformat(),
     "repo": repo_name,
     "branch": branch,
-    "commit": repo.commit("master").hexsha,
+    "commit": repo.commit("master").hexsha[0:12],
 }
 
 # exec command and turn pipe to iterator
