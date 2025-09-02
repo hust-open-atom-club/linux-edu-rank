@@ -15,89 +15,104 @@ import pytz
 
 shanghai_tz = pytz.timezone("Asia/Shanghai")
 
-parser = ArgumentParser()
-parser.add_argument("--branch", type=str, default="master")
-parser.add_argument("--path", type=str, default="./linux")
-parser.add_argument("--repo", type=str, default="Linux Mainline")
+def main():
+    parser = ArgumentParser()
+    parser.add_argument("--branch", type=str, default="master")
+    parser.add_argument("--path", type=str, default="./linux")
+    parser.add_argument("--repo", type=str, default="Linux Mainline")
 
-args = parser.parse_args()
-branch = args.branch
-path = args.path
-repo_name = args.repo
+    args = parser.parse_args()
+    branch = args.branch
+    path = args.path
+    repo_name = args.repo
 
-repo = git.Repo(path)
+    repo = git.Repo(path)
 
-print("Getting university list...")
-university_list: list = requests.get(
-    "https://github.com/Hipo/university-domains-list/raw/master/world_universities_and_domains.json",
-    timeout=(5, 10)
-).json()
+    print("Getting university list...")
+    university_list: list = requests.get(
+        "https://github.com/Hipo/university-domains-list/raw/master/world_universities_and_domains.json",
+        timeout=(5, 10)
+    ).json()
 
-# assemble all domains into one set
-all_domains = set(d for u in university_list for d in u["domains"])
-# speed up domain check by caching
-non_university_domain_cache = set()
+    # assemble all domains into one set
+    all_domains = set(d for u in university_list for d in u["domains"])
+    # speed up domain check by caching
+    non_university_domain_cache = set()
 
-print("Getting commits list...")
-commits = list(repo.iter_commits(branch))
+    print("Getting commits list...")
+    commits = list(repo.iter_commits(branch))
 
-meta = {
-    "update": datetime.now(shanghai_tz).isoformat(),
-    "repo": repo_name,
-    "branch": branch,
-    "commit": repo.commit("master").hexsha[0:12],
-}
+    meta = {
+        "update": datetime.now(shanghai_tz).isoformat(),
+        "repo": repo_name,
+        "branch": branch,
+        "commit": repo.commit("master").hexsha[0:12],
+    }
 
-# exec command and turn pipe to iterator
-result_patches = {}
-result_lines = {}
-result_detail = {}
-result_authors = {}
-print("Total commits: ", len(commits))
-for commit in tqdm(commits):
-    email = commit.author.email
-    if not email:
-        continue
-    # get email domain
-    email_domain = email.split("@")[-1]
-    # check if the domain is in the non_university_domain cache
-    if email_domain in non_university_domain_cache:
-        continue
-    if email_domain not in all_domains:
-        # check if its parent domains belong to a university
-        parts = email_domain.split(".")
-        parent_domains = [".".join(parts[i:]) for i in range(0, len(parts))]
-        if all(parent not in all_domains for parent in parent_domains):
-            non_university_domain_cache.add(email_domain)
+    # exec command and turn pipe to iterator
+    result_patches = {}
+    result_lines = {}
+    result_detail = {}
+    result_authors = {}
+    print("Total commits: ", len(commits))
+    for commit in tqdm(commits):
+        email = commit.author.email
+        if not email:
             continue
+        # get email domain
+        email_domain = email.split("@")[-1]
+        # check if the domain is in the non_university_domain cache
+        if email_domain in non_university_domain_cache:
+            continue
+        if email_domain not in all_domains:
+            # check if its parent domains belong to a university
+            parts = email_domain.split(".")
+            parent_domains = [".".join(parts[i:]) for i in range(0, len(parts))]
+            if all(parent not in all_domains for parent in parent_domains):
+                non_university_domain_cache.add(email_domain)
+                continue
 
-    # cache commit stats
-    commit_stats = commit.stats.total
+        # cache commit stats
+        commit_stats = commit.stats.total
 
-    # initialize result for this domain if not exists
-    if email_domain not in result_patches:
-        result_patches[email_domain] = 0
-        result_lines[email_domain] = 0
-        result_detail[email_domain] = []
-        result_authors[email_domain] = {}
+        # initialize result for this domain if not exists
+        if email_domain not in result_patches:
+            result_patches[email_domain] = 0
+            result_lines[email_domain] = 0
+            result_detail[email_domain] = []
+            result_authors[email_domain] = {}
 
-    result_patches[email_domain] += 1
-    result_lines[email_domain] += commit_stats["lines"]
-    result_detail[email_domain].append(repo.git.show(commit.hexsha))
+        result_patches[email_domain] += 1
+        result_lines[email_domain] += commit_stats["lines"]
+        result_detail[email_domain].append(repo.git.show(commit.hexsha))
 
-    # update author information
-    if email not in result_authors[email_domain]:
-        result_authors[email_domain][email] = [commit.author.name, 0, []]
-    result_authors[email_domain][email][1] += 1
-    result_authors[email_domain][email][2].append(
-        {
-            "commit": commit.hexsha,
-            "summary": commit.summary,
-            "date": commit.authored_datetime.isoformat(),
-            "files": commit_stats["files"],
-            "lines": f'-{commit_stats["deletions"]}/+{commit_stats["insertions"]}'
-        }
-    )
+        # update author information
+        if email not in result_authors[email_domain]:
+            result_authors[email_domain][email] = [commit.author.name, 0, []]
+        result_authors[email_domain][email][1] += 1
+        result_authors[email_domain][email][2].append(
+            {
+                "commit": commit.hexsha,
+                "summary": commit.summary,
+                "date": commit.authored_datetime.isoformat(),
+                "files": commit_stats["files"],
+                "lines": f'-{commit_stats["deletions"]}/+{commit_stats["insertions"]}'
+            }
+        )
+
+    # Run the processing
+    result = process_results(result_patches, result_lines, result_authors, university_list)
+
+    with open("result.json", "w", encoding="utf-8") as f:
+        f.write(json.dumps({"meta": meta, "data": result}, indent=2))
+    print("Result saved to result.json")
+
+    print("Save patches to detail dir...")
+    shutil.rmtree("detail", ignore_errors=True)
+    os.mkdir("detail")
+
+    generate_all_html_files(result, result_detail)
+
 
 
 def get_university(domain_name, uni_list):
@@ -338,15 +353,5 @@ def generate_all_html_files(processed_result, result_detailed):
                     file.write(safe_content)
 
 
-# Run the processing
-result = process_results(result_patches, result_lines, result_authors, university_list)
-
-with open("result.json", "w", encoding="utf-8") as f:
-    f.write(json.dumps({"meta": meta, "data": result}, indent=2))
-print("Result saved to result.json")
-
-print("Save patches to detail dir...")
-shutil.rmtree("detail", ignore_errors=True)
-os.mkdir("detail")
-
-generate_all_html_files(result, result_detail)
+if __name__ == "__main__":
+    main()
