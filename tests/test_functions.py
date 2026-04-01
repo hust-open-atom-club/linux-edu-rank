@@ -151,11 +151,13 @@ def test_create_pagination_html():
     assert "&lt;&lt;Prev" not in html
     assert "Next&gt;&gt;" in html
     assert "index_2.html" in html and "[1]" in html
+    assert "class='page-btn'" in html
 
     html2 = create_pagination_html(page=2, page_num=3, get_href_func=get_href)
     assert "&lt;&lt;Prev" in html2 and "Next&gt;&gt;" in html2
     assert "index.html" in html2 and "[2]" in html2
     assert "index_3.html" in html2
+    assert "class='page-btn current'" in html2
 
 
 def test_escape_html_content():
@@ -173,8 +175,10 @@ def test_generate_html_page():
     )
     assert fname1 == "7.html"
     assert "<pre>1&lt;2&amp;3</pre>" in html1
-    assert "<a href='7_2.html'>2</a>" in html1
+    assert "href='7_2.html'" in html1
     assert "[1]" in html1
+    assert "patch-card" in html1
+    assert "Back to rankings" in html1
 
     # Page 2: filename suffix, has Prev, shows second patch
     html2, fname2 = generate_html_page(
@@ -186,6 +190,7 @@ def test_generate_html_page():
     )
     assert fname2 == "7_2.html"
     assert "<pre>second</pre>" in html2
-    assert "<a href='7.html'>&lt;&lt;Prev</a>" in html2
+    assert "href='7.html'" in html2
+    assert "&lt;&lt;Prev" in html2
     assert "Next&gt;&gt;" not in html2
     assert "[2]" in html2

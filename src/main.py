@@ -244,16 +244,16 @@ def create_pagination_html(page, page_num, get_href_func):
     pagination = ""
 
     if page > 1:
-        pagination += f"<a href='{get_href_func(page - 1)}'>&lt;&lt;Prev</a>"
+        pagination += f"<a class='page-btn' href='{get_href_func(page - 1)}'>&lt;&lt;Prev</a>"
 
     for i in range(1, page_num + 1):
         if i == page:
-            pagination += f"<span>[{i}]</span>"
+            pagination += f"<span class='page-btn current'>[{i}]</span>"
         else:
-            pagination += f"<a href='{get_href_func(i)}'>{i}</a>"
+            pagination += f"<a class='page-btn' href='{get_href_func(i)}'>{i}</a>"
 
     if page < page_num:
-        pagination += f"<a href='{get_href_func(page + 1)}'>Next&gt;&gt;</a>"
+        pagination += f"<a class='page-btn' href='{get_href_func(page + 1)}'>Next&gt;&gt;</a>"
 
     return pagination
 
@@ -283,8 +283,10 @@ def generate_html_page(item_id, title, patches, page, page_size=10):
     content_parts = []
     for patch in page_patches:
         escaped_patch = escape_html_content(patch)
-        content_parts.append(f"<pre>{escaped_patch}</pre>")
-    content = "<hr>".join(content_parts)
+        content_parts.append(
+            f'<div class="patch-card"><pre>{escaped_patch}</pre></div>'
+        )
+    content = "\n".join(content_parts)
 
     template = """<!DOCTYPE html>
 <html>
@@ -293,25 +295,111 @@ def generate_html_page(item_id, title, patches, page, page_size=10):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title}</title>
     <style>
-    .pagination {{
-        border-top: 1px solid #ddd;
-        border-bottom: 1px solid #ddd;
-        overflow-wrap: break-word;
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{
+        background: #f0f2f5;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+                     'Helvetica Neue', Arial, sans-serif;
+        color: #262626;
     }}
-    .pagination a, .pagination span {{
-        margin: 0 4px;
+    .detail-header {{
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        color: #fff;
+        padding: 36px 32px 32px;
+        text-align: center;
+    }}
+    .detail-header h1 {{
+        font-size: 22px;
+        font-weight: 700;
+        margin-bottom: 10px;
+    }}
+    .back-link {{
+        display: inline-block;
+        color: rgba(255,255,255,0.7);
+        text-decoration: none;
+        font-size: 14px;
+        transition: color 0.2s;
+    }}
+    .back-link:hover {{ color: #fff; }}
+    .container {{
+        max-width: 960px;
+        margin: -16px auto 40px;
+        padding: 0 20px;
+        position: relative;
+    }}
+    .pagination {{
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        padding: 12px 16px;
+        margin-bottom: 16px;
+        overflow-wrap: break-word;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+    }}
+    .page-btn {{
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 6px;
+        text-decoration: none;
+        font-size: 14px;
+        color: #595959;
+        background: #f5f5f5;
+        border: 1px solid #f0f0f0;
+        transition: all 0.2s;
+    }}
+    a.page-btn:hover {{
+        color: #1677ff;
+        border-color: #1677ff;
+        background: #e6f4ff;
+    }}
+    .page-btn.current {{
+        background: #1677ff;
+        color: #fff;
+        border-color: #1677ff;
+        font-weight: 600;
+    }}
+    .patch-card {{
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        margin-bottom: 16px;
+        overflow: hidden;
+    }}
+    .patch-card pre {{
+        padding: 20px;
+        margin: 0;
+        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.6;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        color: #333;
+    }}
+    @media (max-width: 576px) {{
+        .detail-header {{ padding: 24px 16px 20px; }}
+        .detail-header h1 {{ font-size: 18px; }}
+        .container {{ padding: 0 12px; }}
+        .patch-card pre {{ padding: 12px; font-size: 12px; }}
     }}
     </style>
 </head>
 <body>
-    <h1>{title}</h1>
-    <div class="pagination">
-        {pagination}
+    <div class="detail-header">
+        <a class="back-link" href="../index.html">&larr; Back to rankings</a>
+        <h1>{title}</h1>
     </div>
-    <hr>
-    {content}
-    <div class="pagination">
-        {pagination}
+    <div class="container">
+        <div class="pagination">
+            {pagination}
+        </div>
+        {content}
+        <div class="pagination">
+            {pagination}
+        </div>
     </div>
 </body>
 </html>"""
