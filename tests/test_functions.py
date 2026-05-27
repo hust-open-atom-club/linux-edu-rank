@@ -1,5 +1,6 @@
 """Unit tests for functions in main.py."""
 from main import (
+    SUPPORTED_LOCALES,
     get_university,
     transform_author_data,
     create_domain_result,
@@ -8,6 +9,9 @@ from main import (
     create_pagination_html,
     escape_html_content,
     generate_html_page,
+    generate_all_html_files,
+    message,
+    write_result_files,
 )
 
 
@@ -159,9 +163,13 @@ def test_create_pagination_html():
     assert "index_3.html" in html2
     assert "class='page-btn current'" in html2
 
+    html_zh = create_pagination_html(page=2, page_num=3, get_href_func=get_href, locale="zh-CN")
+    assert "&lt;&lt;上一页" in html_zh and "下一页&gt;&gt;" in html_zh
+
 
 def test_escape_html_content():
     assert escape_html_content("<a&b>") == "&lt;a&amp;b&gt;"
+    assert escape_html_content('"quoted"') == "&quot;quoted&quot;"
 
 
 def test_generate_html_page():
@@ -179,6 +187,8 @@ def test_generate_html_page():
     assert "[1]" in html1
     assert "patch-card" in html1
     assert "Back to rankings" in html1
+    assert "../../index.html?lang=en" in html1
+    assert '<html lang="en">' in html1
 
     # Page 2: filename suffix, has Prev, shows second patch
     html2, fname2 = generate_html_page(
@@ -194,3 +204,66 @@ def test_generate_html_page():
     assert "&lt;&lt;Prev" in html2
     assert "Next&gt;&gt;" not in html2
     assert "[2]" in html2
+
+    html_zh, fname_zh = generate_html_page(
+        item_id=7,
+        title="T",
+        patches=["first", "second"],
+        page=2,
+        page_size=1,
+        locale="zh-CN",
+    )
+    assert fname_zh == "7_2.html"
+    assert '<html lang="zh-CN">' in html_zh
+    assert "返回排行榜" in html_zh
+    assert "../../index.html?lang=zh-CN" in html_zh
+    assert "&lt;&lt;上一页" in html_zh
+
+    html_title, _ = generate_html_page(
+        item_id=7,
+        title='A <B> "C"',
+        patches=["patch"],
+        page=1,
+        page_size=1,
+    )
+    assert "A &lt;B&gt; &quot;C&quot;" in html_title
+    assert 'A <B> "C"' not in html_title
+
+
+def test_supported_locale_messages():
+    for locale in SUPPORTED_LOCALES:
+        assert message(locale, "back_to_rankings")
+        assert message(locale, "patches_contributed_by").format(name="Test")
+
+
+def test_generate_all_html_files_creates_locale_directories(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    processed_result = [
+        {
+            "id": 1,
+            "name": "Foo Univ",
+            "domains": ["foo.edu"],
+        }
+    ]
+    result_detailed = {"foo.edu": ["patch"]}
+
+    generate_all_html_files(processed_result, result_detailed, locales=("en", "ja"))
+
+    en_html = tmp_path / "detail" / "en" / "1.html"
+    ja_html = tmp_path / "detail" / "ja" / "1.html"
+    assert en_html.exists()
+    assert ja_html.exists()
+    assert "Patches contributed by Foo Univ" in en_html.read_text(encoding="utf-8")
+    assert "Foo Univ によるパッチ" in ja_html.read_text(encoding="utf-8")
+
+
+def test_write_result_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    payload = {"meta": {"repo": "Test"}, "data": []}
+
+    write_result_files(payload)
+
+    assert (tmp_path / "result.json").exists()
+    result_js = (tmp_path / "result.js").read_text(encoding="utf-8")
+    assert result_js.startswith("window.__LINUX_EDU_RANK_RESULT__ = ")
+    assert '"repo": "Test"' in result_js

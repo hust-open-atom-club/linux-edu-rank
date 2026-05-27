@@ -10,8 +10,9 @@ linux-edu-rank/
 │   ├── conftest.py         # Adds src/ to sys.path for test imports
 │   └── test_functions.py   # Unit tests for core functions
 ├── index.html              # Frontend SPA (React 18 + Ant Design)
-├── result.json             # Generated output (not committed)
-├── detail/                 # Generated HTML detail pages (not committed)
+├── result.json             # Generated JSON output (not committed)
+├── result.js               # Generated JS output for direct file:// viewing (not committed)
+├── detail/                 # Generated localized HTML detail pages (not committed)
 ├── .github/workflows/
 │   ├── pylint.yml          # CI: lint on push/PR across Python 3.9-3.13
 │   └── update-page.yaml    # CD: daily data generation + GitHub Pages deploy
@@ -48,7 +49,7 @@ Sort by (patch count, lines) descending
 Assign ranks (same count → same rank)
         │
         ▼
-Write result.json + paginated HTML detail pages
+Write result.json/result.js + localized paginated HTML detail pages
 ```
 
 ## Key Functions
@@ -74,7 +75,20 @@ All functions live in `src/main.py`:
 - **React 18** (via CDN)
 - **Ant Design** (via CDN)
 
-It fetches `result.json` at runtime and renders the ranking table with search, sorting, and links to the detail pages.
+It loads generated data from `result.js` when available, falls back to fetching `result.json`, and renders the ranking table with search, sorting, language switching, and links to localized detail pages. `result.js` exists so the page can be opened directly with `file://`, where browsers commonly block `fetch('result.json')`.
+
+Supported locales are `en`, `zh-CN`, `zh-TW`, `ja`, and `ko`. Detail pages are generated under locale-specific directories:
+
+```text
+detail/
+├── en/
+├── zh-CN/
+├── zh-TW/
+├── ja/
+└── ko/
+```
+
+University names and commit data are not translated; only UI labels and generated detail-page navigation are localized.
 
 ## CI/CD Workflows
 
@@ -90,5 +104,5 @@ It fetches `result.json` at runtime and renders the ranking table with search, s
 - **Steps**:
   1. Checkout this repo and the full Linux kernel repo
   2. Install Python 3.12 + PDM + dependencies
-  3. Run `pdm start` to generate `result.json` and `detail/`
+  3. Run `pdm start` to generate `result.json`, `result.js`, and localized `detail/` pages
   4. Copy artifacts to `dist/` and deploy to GitHub Pages

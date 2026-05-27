@@ -15,6 +15,53 @@ import pytz
 
 shanghai_tz = pytz.timezone("Asia/Shanghai")
 
+DEFAULT_LOCALE = "en"
+SUPPORTED_LOCALES = ("en", "zh-CN", "zh-TW", "ja", "ko")
+MESSAGES = {
+    "en": {
+        "back_to_rankings": "Back to rankings",
+        "patches_contributed_by": "Patches contributed by {name}",
+        "prev": "Prev",
+        "next": "Next",
+    },
+    "zh-CN": {
+        "back_to_rankings": "返回排行榜",
+        "patches_contributed_by": "{name} 贡献的补丁",
+        "prev": "上一页",
+        "next": "下一页",
+    },
+    "zh-TW": {
+        "back_to_rankings": "返回排行榜",
+        "patches_contributed_by": "{name} 貢獻的補丁",
+        "prev": "上一頁",
+        "next": "下一頁",
+    },
+    "ja": {
+        "back_to_rankings": "ランキングに戻る",
+        "patches_contributed_by": "{name} によるパッチ",
+        "prev": "前へ",
+        "next": "次へ",
+    },
+    "ko": {
+        "back_to_rankings": "순위로 돌아가기",
+        "patches_contributed_by": "{name}의 패치",
+        "prev": "이전",
+        "next": "다음",
+    },
+}
+
+
+def message(locale, key):
+    """Return a localized UI message."""
+    messages = MESSAGES.get(locale, MESSAGES[DEFAULT_LOCALE])
+    return messages.get(key, MESSAGES[DEFAULT_LOCALE][key])
+
+
+def detail_dir(locale):
+    """Return the detail output directory for a locale."""
+    return os.path.join("detail", locale)
+
+
 def main():
     parser = ArgumentParser()
     parser.add_argument("--branch", type=str, default="master")
@@ -46,7 +93,7 @@ def main():
         "update": datetime.now(shanghai_tz).isoformat(),
         "repo": repo_name,
         "branch": branch,
-        "commit": repo.commit("master").hexsha[0:12],
+        "commit": repo.commit(branch).hexsha[0:12],
     }
 
     # exec command and turn pipe to iterator
@@ -103,13 +150,10 @@ def main():
     # Run the processing
     result = process_results(result_patches, result_lines, result_authors, university_list)
 
-    with open("result.json", "w", encoding="utf-8") as f:
-        f.write(json.dumps({"meta": meta, "data": result}, indent=2))
-    print("Result saved to result.json")
+    write_result_files({"meta": meta, "data": result})
 
     print("Save patches to detail dir...")
     shutil.rmtree("detail", ignore_errors=True)
-    os.mkdir("detail")
 
     generate_all_html_files(result, result_detail)
 
@@ -130,6 +174,18 @@ def get_university(domain_name, uni_list):
             return university
 
     return None
+
+
+def write_result_files(result_payload):
+    """Write result data as JSON and as a local-file-friendly JS payload."""
+    result_json = json.dumps(result_payload, ensure_ascii=False, indent=2)
+    with open("result.json", "w", encoding="utf-8") as file:
+        file.write(result_json)
+
+    with open("result.js", "w", encoding="utf-8") as file:
+        file.write(f"window.__LINUX_EDU_RANK_RESULT__ = {result_json};\n")
+
+    print("Result saved to result.json and result.js")
 
 
 def transform_author_data(authors_map, target_domain):
@@ -239,12 +295,15 @@ def process_results(patches_map, lines_map, authors_map, uni_list):
     return final_results
 
 
-def create_pagination_html(page, page_num, get_href_func):
+def create_pagination_html(page, page_num, get_href_func, locale=DEFAULT_LOCALE):
     """Create pagination HTML for a given page."""
     pagination = ""
 
     if page > 1:
-        pagination += f"<a class='page-btn' href='{get_href_func(page - 1)}'>&lt;&lt;Prev</a>"
+        prev_text = message(locale, "prev")
+        pagination += (
+            f"<a class='page-btn' href='{get_href_func(page - 1)}'>&lt;&lt;{prev_text}</a>"
+        )
 
     for i in range(1, page_num + 1):
         if i == page:
@@ -253,7 +312,10 @@ def create_pagination_html(page, page_num, get_href_func):
             pagination += f"<a class='page-btn' href='{get_href_func(i)}'>{i}</a>"
 
     if page < page_num:
-        pagination += f"<a class='page-btn' href='{get_href_func(page + 1)}'>Next&gt;&gt;</a>"
+        next_text = message(locale, "next")
+        pagination += (
+            f"<a class='page-btn' href='{get_href_func(page + 1)}'>{next_text}&gt;&gt;</a>"
+        )
 
     return pagination
 
@@ -261,11 +323,13 @@ def create_pagination_html(page, page_num, get_href_func):
 def escape_html_content(content):
     """Escape HTML special characters in content."""
     return (content.replace("&", "&amp;")
+                  .replace('"', "&quot;")
+                  .replace("'", "&#x27;")
                   .replace("<", "&lt;")
                   .replace(">", "&gt;"))
 
 
-def generate_html_page(item_id, title, patches, page, page_size=10):
+def generate_html_page(item_id, title, patches, page, page_size=10, locale=DEFAULT_LOCALE):
     """Generate HTML pages for patches with pagination."""
     total = len(patches)
     page_num = (total + page_size - 1) // page_size  # Ceiling division
@@ -277,7 +341,7 @@ def generate_html_page(item_id, title, patches, page, page_size=10):
     end_idx = min(start_idx + page_size, total)
     page_patches = patches[start_idx:end_idx]
 
-    pagination = create_pagination_html(page, page_num, get_href)
+    pagination = create_pagination_html(page, page_num, get_href, locale)
 
     # Create content
     content_parts = []
@@ -289,7 +353,7 @@ def generate_html_page(item_id, title, patches, page, page_size=10):
     content = "\n".join(content_parts)
 
     template = """<!DOCTYPE html>
-<html>
+<html lang="{locale}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -389,7 +453,7 @@ def generate_html_page(item_id, title, patches, page, page_size=10):
 </head>
 <body>
     <div class="detail-header">
-        <a class="back-link" href="../index.html">&larr; Back to rankings</a>
+        <a class="back-link" href="../../index.html?lang={locale}">&larr; {back_to_rankings}</a>
         <h1>{title}</h1>
     </div>
     <div class="container">
@@ -405,20 +469,24 @@ def generate_html_page(item_id, title, patches, page, page_size=10):
 </html>"""
 
     html_content = template.format(
-        title=title,
+        locale=locale,
+        title=escape_html_content(title),
         pagination=pagination,
-        content=content
+        content=content,
+        back_to_rankings=message(locale, "back_to_rankings"),
     )
 
     return html_content, get_href(page)
 
 
-def generate_all_html_files(processed_result, result_detailed):
+def generate_all_html_files(processed_result, result_detailed, locales=SUPPORTED_LOCALES):
     """Generate all HTML files for the results."""
+    for locale in locales:
+        os.makedirs(detail_dir(locale), exist_ok=True)
+
     for item in processed_result:
         domains = item["domains"]
         item_id = item["id"]
-        title = f'Patches contributed by {item["name"]}'
 
         # Collect all patches for this item
         patches = []
@@ -430,15 +498,20 @@ def generate_all_html_files(processed_result, result_detailed):
         total_patches = len(patches)
         page_num = (total_patches + page_size - 1) // page_size
 
-        for page in range(1, page_num + 1):
-            html_content, filename = generate_html_page(item_id, title, patches, page, page_size)
+        for locale in locales:
+            title = message(locale, "patches_contributed_by").format(name=item["name"])
+            for page in range(1, page_num + 1):
+                html_content, filename = generate_html_page(
+                    item_id, title, patches, page, page_size, locale
+                )
 
-            with open(f"detail/{filename}", "w", encoding="utf-8") as file:
-                try:
-                    file.write(html_content)
-                except UnicodeEncodeError:
-                    safe_content = html_content.encode("utf-8", "replace").decode("utf-8")
-                    file.write(safe_content)
+                output_path = os.path.join(detail_dir(locale), filename)
+                with open(output_path, "w", encoding="utf-8") as file:
+                    try:
+                        file.write(html_content)
+                    except UnicodeEncodeError:
+                        safe_content = html_content.encode("utf-8", "replace").decode("utf-8")
+                        file.write(safe_content)
 
 
 if __name__ == "__main__":

@@ -22,7 +22,13 @@ git clone git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
 pdm start
 ```
 
-The output is a `result.json` file and paginated HTML detail pages in `detail/`. Serve `index.html` with any web server to view the rankings.
+The output is `result.json`, `result.js`, and localized paginated HTML detail pages in `detail/<locale>/`. Serve `index.html` with any web server to view the rankings, or open it directly as a local file after generation.
+
+## Internationalization
+
+The website supports `en`, `zh-CN`, `zh-TW`, `ja`, and `ko`. Use the language selector in the page header, or open the page with `?lang=<locale>` such as `?lang=zh-CN`.
+
+University names, author names, domains, emails, and commit summaries remain in their source language. The localized content covers the website UI and generated detail-page navigation.
 
 ## Requirements
 
@@ -44,7 +50,7 @@ pdm test                 # Run all tests
 2. Iterates through all git commits, matching author email domains to universities (with parent domain fallback, e.g. `cs.mit.edu` matches `mit.edu`)
 3. Aggregates per-domain statistics and merges aliases for the same university
 4. Ranks universities by patch count (tiebreak: total lines changed)
-5. Writes `result.json` and generates paginated HTML detail pages
+5. Writes `result.json` and generates localized paginated HTML detail pages
 
 ## CI/CD
 
